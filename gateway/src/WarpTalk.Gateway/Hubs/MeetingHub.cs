@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using WarpTalk.Gateway.Services;
 
 namespace WarpTalk.Gateway.Hubs;
 
@@ -13,11 +14,19 @@ namespace WarpTalk.Gateway.Hubs;
 public class MeetingHub : Hub
 {
     private readonly IConnectionManager _connectionManager;
+    private readonly RedisStreamService _streamService;
+    private readonly ActiveMeetingRegistry _meetingRegistry;
     private readonly ILogger<MeetingHub> _logger;
 
-    public MeetingHub(IConnectionManager connectionManager, ILogger<MeetingHub> logger)
+    public MeetingHub(
+        IConnectionManager connectionManager,
+        RedisStreamService streamService,
+        ActiveMeetingRegistry meetingRegistry,
+        ILogger<MeetingHub> logger)
     {
         _connectionManager = connectionManager;
+        _streamService = streamService;
+        _meetingRegistry = meetingRegistry;
         _logger = logger;
     }
 
@@ -71,6 +80,9 @@ public class MeetingHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantJoined", participantInfo);
 
+        // Register with AI pipeline — starts consuming AI results for this meeting
+        _meetingRegistry.RegisterParticipant(meetingId.ToString(), userId);
+
         _logger.LogInformation(
             "MeetingHub: User {UserId} joined meeting {MeetingId}",
             userId, meetingId);
@@ -89,6 +101,9 @@ public class MeetingHub : Hub
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLeft", userId);
+
+        // Unregister from AI pipeline — stops consuming if last participant
+        _meetingRegistry.UnregisterParticipant(meetingId.ToString(), userId);
 
         _logger.LogInformation(
             "MeetingHub: User {UserId} left meeting {MeetingId}",
@@ -152,6 +167,26 @@ public class MeetingHub : Hub
             .SendAsync("MeetingEnded", meetingId);
 
         _logger.LogInformation("MeetingHub: Meeting {MeetingId} ended", meetingId);
+    }
+
+    /// <summary>
+    /// Receive an audio chunk from the client and forward to the AI pipeline via Redis.
+    /// Audio is base64-encoded on the client, forwarded as-is to the STT worker.
+    /// </summary>
+    public async Task SendAudioChunk(Guid meetingId, string audioBase64, int chunkIndex, string language = "auto")
+    {
+        var userId = GetUserId();
+
+        await _streamService.PublishAudioChunkAsync(
+            meetingId: meetingId.ToString(),
+            speakerId: userId,
+            chunkIndex: chunkIndex,
+            audioBase64: audioBase64,
+            language: language);
+
+        _logger.LogDebug(
+            "MeetingHub: Audio chunk {ChunkIndex} from {UserId} in meeting {MeetingId}",
+            chunkIndex, userId, meetingId);
     }
 
     // ── Helpers ────────────────────────────────────────────

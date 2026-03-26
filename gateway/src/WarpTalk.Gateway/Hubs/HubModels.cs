@@ -45,3 +45,18 @@ public record NotificationDto(
     string Priority,
     object? Data,
     DateTime CreatedAt);
+
+// ── AI Pipeline Result DTOs ───────────────────────────────
+
+public record TranslatedAudioDto(
+    string SegmentId,
+    Guid SpeakerId,
+    string AudioBase64,
+    string VoiceType,
+    int DurationMs);
+
+public record AiAssistantResultDto(
+    string MeetingId,
+    string Type,
+    string Content,
+    DateTime CreatedAt);
