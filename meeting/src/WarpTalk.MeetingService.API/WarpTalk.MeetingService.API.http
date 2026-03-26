@@ -1,0 +1,6 @@
+@WarpTalk.MeetingService.API_HostAddress = http://localhost:5242
+
+GET {{WarpTalk.MeetingService.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

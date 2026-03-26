@@ -1,0 +1,164 @@
+# ====================================================================
+# WarpTalk Backend — Docker Compose
+# Runs: PostgreSQL + Auth + Meeting + Transcript + Notification + Gateway
+# Usage: docker compose up --build
+# ====================================================================
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: warptalk-postgres
+    environment:
+      POSTGRES_DB: warptalk
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - warptalk-net
+
+  # ── Auth Service ────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
+    container_name: warptalk-auth
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__AuthDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=auth,public"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+    ports:
+      - "5101:5101"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - warptalk-net
+
+  # ── Meeting Service ─────────────────────────────────────────────────
+  meeting-service:
+    build:
+      context: .
+      dockerfile: meeting/Dockerfile
+    container_name: warptalk-meeting
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__MeetingDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=meeting,public"
+      GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+    ports:
+      - "5102:5102"
+      - "50052:50052"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
+  # ── Transcript Service ──────────────────────────────────────────────
+  transcript-service:
+    build:
+      context: .
+      dockerfile: transcript/Dockerfile
+    container_name: warptalk-transcript
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=transcript,public"
+      GrpcUrls__AuthServiceUrl: "http://auth-service:50051"
+      GrpcUrls__MeetingServiceUrl: "http://meeting-service:50052"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+    ports:
+      - "5103:5103"
+      - "50053:50053"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      meeting-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
+  # ── Notification Service ────────────────────────────────────────────
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
+    container_name: warptalk-notification
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=notification,public"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+      Kestrel__Endpoints__Http__Url: "http://0.0.0.0:5104"
+      Kestrel__Endpoints__Http__Protocols: "Http1"
+      Kestrel__Endpoints__gRPC__Url: "http://0.0.0.0:50054"
+      Kestrel__Endpoints__gRPC__Protocols: "Http2"
+    ports:
+      - "5104:5104"
+      - "50054:50054"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - warptalk-net
+
+  # ── API Gateway (YARP + SignalR) ────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/src/WarpTalk.Gateway/Dockerfile
+    container_name: warptalk-gateway
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: "http://0.0.0.0:5200"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+      # YARP cluster addresses — use Docker service names
+      ReverseProxy__Clusters__auth-cluster__Destinations__auth-service__Address: "http://auth-service:5101"
+      ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5102"
+      ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
+      ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
+      AllowedOrigins__0: "http://localhost:3000"
+      AllowedOrigins__1: "http://localhost:5173"
+      AllowedOrigins__2: "https://warptalk.vn"
+    ports:
+      - "5200:5200"
+    depends_on:
+      auth-service:
+        condition: service_started
+      meeting-service:
+        condition: service_started
+      transcript-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
+volumes:
+  pgdata:
+
+networks:
+  warptalk-net:
+    driver: bridge

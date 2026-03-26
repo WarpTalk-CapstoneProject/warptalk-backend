@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WarpTalk.NotificationService.API/WarpTalk.NotificationService.API.csproj" />
+    <Project Path="src/WarpTalk.NotificationService.Application/WarpTalk.NotificationService.Application.csproj" />
+    <Project Path="src/WarpTalk.NotificationService.Domain/WarpTalk.NotificationService.Domain.csproj" />
+    <Project Path="src/WarpTalk.NotificationService.Infrastructure/WarpTalk.NotificationService.Infrastructure.csproj" />
+  </Folder>
+</Solution>

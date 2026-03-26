@@ -1,0 +1,162 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+using System.Threading.RateLimiting;
+using WarpTalk.Gateway.Hubs;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// 1. Configure JWT Authentication
+var jwtSettings = builder.Configuration.GetSection("Jwt");
+var secretKey = jwtSettings["Secret"];
+
+if (string.IsNullOrEmpty(secretKey))
+{
+    throw new InvalidOperationException("JWT Secret is not configured.");
+}
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = jwtSettings["Issuer"],
+            ValidAudience = jwtSettings["Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+            ClockSkew = TimeSpan.Zero
+        };
+
+        // SignalR: Extract JWT from query string for WebSocket handshake.
+        // Browsers cannot send Authorization headers during WebSocket upgrade requests,
+        // so the client passes the token as ?access_token=<jwt> query parameter.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+
+                // Only extract from query string for Hub paths
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) &&
+                    path.StartsWithSegments("/hubs"))
+                {
+                    context.Token = accessToken;
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+    });
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
+});
+
+// 2. Configure CORS (with configurable origins)
+var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
+    ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials(); // Required for SignalR
+    });
+});
+
+// 3. Configure Rate Limiting
+builder.Services.AddRateLimiter(options =>
+{
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? httpContext.Request.Headers.Host.ToString(),
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+    
+    // Specific policy for login
+    options.AddFixedWindowLimiter("LoginPolicy", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
+});
+
+// 4. Configure YARP Reverse Proxy
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
+
+// 5. Configure SignalR
+var signalRBuilder = builder.Services.AddSignalR(options =>
+{
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+    options.MaximumReceiveMessageSize = 64 * 1024; // 64 KB
+});
+
+// Optional: Use Redis backplane for horizontal scaling
+var redisConnectionString = builder.Configuration["SignalR:Redis"];
+if (!string.IsNullOrEmpty(redisConnectionString))
+{
+    signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
+    {
+        options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk");
+    });
+}
+
+// 6. Register Connection Manager (singleton — in-memory tracking)
+builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
+
+// 7. Configure Health Checks
+builder.Services.AddHealthChecks();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+app.UseCors();
+
+// Security Headers Middleware
+app.Use(async (context, next) => {
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
+    context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    await next();
+});
+
+app.UseRateLimiter();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Map YARP
+app.MapReverseProxy();
+
+// Map SignalR Hubs (JWT-protected)
+app.MapHub<MeetingHub>("/hubs/meeting")
+    .RequireAuthorization("RequireAuth");
+
+app.MapHub<NotificationHub>("/hubs/notification")
+    .RequireAuthorization("RequireAuth");
+
+// Map Health Checks
+app.MapHealthChecks("/health");
+app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
+
+app.Run();
