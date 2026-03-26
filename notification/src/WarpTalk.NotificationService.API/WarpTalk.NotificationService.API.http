@@ -1,0 +1,6 @@
+@WarpTalk.NotificationService.API_HostAddress = http://localhost:5209
+
+GET {{WarpTalk.NotificationService.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

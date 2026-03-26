@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WarpTalk.TranscriptService.API/WarpTalk.TranscriptService.API.csproj" />
+    <Project Path="src/WarpTalk.TranscriptService.Application/WarpTalk.TranscriptService.Application.csproj" />
+    <Project Path="src/WarpTalk.TranscriptService.Domain/WarpTalk.TranscriptService.Domain.csproj" />
+    <Project Path="src/WarpTalk.TranscriptService.Infrastructure/WarpTalk.TranscriptService.Infrastructure.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WarpTalk.MeetingService.API/WarpTalk.MeetingService.API.csproj" />
+    <Project Path="src/WarpTalk.MeetingService.Application/WarpTalk.MeetingService.Application.csproj" />
+    <Project Path="src/WarpTalk.MeetingService.Domain/WarpTalk.MeetingService.Domain.csproj" />
+    <Project Path="src/WarpTalk.MeetingService.Infrastructure/WarpTalk.MeetingService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WarpTalk.MeetingService.Tests/WarpTalk.MeetingService.Tests.csproj" />
+  </Folder>
+</Solution>

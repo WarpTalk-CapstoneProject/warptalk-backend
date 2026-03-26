@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package notification;
+
+service NotificationGrpcService {
+  rpc SendNotification (SendNotificationRequest) returns (SendNotificationResponse);
+  rpc GetUserPreferences (GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+}
+
+message SendNotificationRequest {
+  string user_id = 1;
+  string type = 2;
+  string title = 3;
+  string body = 4;
+  string action_url = 5;
+  map<string, string> metadata = 6;
+}
+
+message SendNotificationResponse {
+  bool success = 1;
+  string notification_id = 2;
+}
+
+message GetUserPreferencesRequest {
+  string user_id = 1;
+}
+
+message NotificationChannelPreference {
+  string channel = 1;
+  bool enabled = 2;
+}
+
+message GetUserPreferencesResponse {
+  string user_id = 1;
+  repeated NotificationChannelPreference preferences = 2;
+}
