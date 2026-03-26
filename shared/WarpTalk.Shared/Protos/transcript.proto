@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package transcript;
+
+service TranscriptService {
+  rpc GetTranscriptById (GetTranscriptRequest) returns (GetTranscriptResponse);
+  rpc GetTranscriptsByMeetingId (GetTranscriptsByMeetingRequest) returns (GetTranscriptsByMeetingResponse);
+}
+
+message GetTranscriptRequest {
+  string id = 1;
+}
+
+message GetTranscriptResponse {
+  string id = 1;
+  string meeting_id = 2;
+  int32 version = 3;
+  string status = 4;
+  string source_language = 5;
+  int32 total_segments = 6;
+  int32 total_duration_ms = 7;
+  string created_at = 8;
+  string finalized_at = 9;
+}
+
+message GetTranscriptsByMeetingRequest {
+  string meeting_id = 1;
+}
+
+message GetTranscriptsByMeetingResponse {
+  repeated GetTranscriptResponse transcripts = 1;
+}

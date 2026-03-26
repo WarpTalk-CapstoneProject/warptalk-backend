@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WarpTalk.AuthService.API/WarpTalk.AuthService.API.csproj" />
+    <Project Path="src/WarpTalk.AuthService.Application/WarpTalk.AuthService.Application.csproj" />
+    <Project Path="src/WarpTalk.AuthService.Domain/WarpTalk.AuthService.Domain.csproj" />
+    <Project Path="src/WarpTalk.AuthService.Infrastructure/WarpTalk.AuthService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WarpTalk.AuthService.Tests/WarpTalk.AuthService.Tests.csproj" />
+  </Folder>
+  <Project Path="../shared/WarpTalk.Shared/WarpTalk.Shared.csproj" />
+</Solution>
