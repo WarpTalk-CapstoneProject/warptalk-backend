@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
+using StackExchange.Redis;
 using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -104,7 +106,7 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
     options.EnableDetailedErrors = builder.Environment.IsDevelopment();
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
-    options.MaximumReceiveMessageSize = 64 * 1024; // 64 KB
+    options.MaximumReceiveMessageSize = 128 * 1024; // 128 KB — voice-cloned audio chunks
 });
 
 // Optional: Use Redis backplane for horizontal scaling
@@ -120,7 +122,19 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 // 6. Register Connection Manager (singleton — in-memory tracking)
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
 
-// 7. Configure Health Checks
+// 7. Configure Redis for AI pipeline streams
+var redisStreamConnectionString = builder.Configuration["Redis:ConnectionString"]
+    ?? redisConnectionString // Fall back to SignalR Redis config
+    ?? "localhost:6379";
+
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    ConnectionMultiplexer.Connect(redisStreamConnectionString));
+
+builder.Services.AddSingleton<RedisStreamService>();
+builder.Services.AddSingleton<ActiveMeetingRegistry>();
+builder.Services.AddHostedService<AiResultConsumerService>();
+
+// 8. Configure Health Checks
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();

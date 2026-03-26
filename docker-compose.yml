@@ -5,6 +5,23 @@
 # ====================================================================
 
 services:
+  # ── Redis ────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: warptalk-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - warptalk-net
+
   # ── PostgreSQL ──────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -134,6 +151,9 @@ services:
       Jwt__Secret: "REDACTED_JWT_SECRET"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      # Redis — shared by SignalR backplane + AI worker streams
+      Redis__ConnectionString: "redis:6379"
+      SignalR__Redis: "redis:6379"
       # YARP cluster addresses — use Docker service names
       ReverseProxy__Clusters__auth-cluster__Destinations__auth-service__Address: "http://auth-service:5101"
       ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5102"
@@ -145,6 +165,8 @@ services:
     ports:
       - "5200:5200"
     depends_on:
+      redis:
+        condition: service_healthy
       auth-service:
         condition: service_started
       meeting-service:
@@ -158,6 +180,7 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
 
 networks:
   warptalk-net:
