@@ -60,3 +60,11 @@ public record AiAssistantResultDto(
     string Type,
     string Content,
     DateTime CreatedAt);
+
+public record TranslationTextDto(
+    string SegmentId,
+    Guid SpeakerId,
+    string OriginalText,
+    string TranslatedText,
+    string SourceLang,
+    string TargetLang);

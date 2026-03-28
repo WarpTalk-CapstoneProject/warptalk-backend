@@ -95,8 +95,9 @@ public sealed class AiResultConsumerService : BackgroundService
 
         _logger.LogInformation("Starting AI result consumers for meeting {MeetingId}", meetingId);
 
-        // Start 3 parallel consumer loops for this meeting
+        // Start 4 parallel consumer loops for this meeting
         _ = Task.Run(() => ConsumeSTTResultsAsync(meetingId, cts.Token));
+        _ = Task.Run(() => ConsumeTranslationResultsAsync(meetingId, cts.Token));
         _ = Task.Run(() => ConsumeTTSResultsAsync(meetingId, cts.Token));
         _ = Task.Run(() => ConsumeAiAssistantResultsAsync(meetingId, cts.Token));
     }
@@ -138,8 +139,8 @@ public sealed class AiResultConsumerService : BackgroundService
                         TranslatedText: null,
                         TargetLanguage: null,
                         Confidence: float.TryParse(RedisStreamService.GetField(entry, "confidence"), out var conf) ? conf : 1.0f,
-                        StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_time_ms"), out var start) ? start : 0,
-                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_time_ms"), out var end) ? end : 0);
+                        StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_ms"), out var start) ? start : 0,
+                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var end) ? end : 0);
 
                     await _hubContext.Clients
                         .Group($"meeting:{meetingId}")
@@ -147,12 +148,58 @@ public sealed class AiResultConsumerService : BackgroundService
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error consuming STT results for meeting {MeetingId}", meetingId);
                 await Task.Delay(1000, ct);
+            }
+        }
+    }
+
+    // ── Translation Results → TranslationTextReceived ────────
+
+    private async Task ConsumeTranslationResultsAsync(string meetingId, CancellationToken ct)
+    {
+        var streamKey = $"translate:results:{meetingId}";
+        await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var entries = await _streamService.ConsumeAsync(
+                    streamKey, ConsumerGroupName, _consumerName, count: 10);
+
+                foreach (var entry in entries)
+                {
+                    var dto = new TranslationTextDto(
+                        SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
+                        SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
+                        OriginalText: RedisStreamService.GetField(entry, "original_text") ?? "",
+                        TranslatedText: RedisStreamService.GetField(entry, "translated_text") ?? "",
+                        SourceLang: RedisStreamService.GetField(entry, "source_lang") ?? "",
+                        TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "");
+
+                    await _hubContext.Clients
+                        .Group($"meeting:{meetingId}")
+                        .SendAsync("TranslationTextReceived", dto, ct);
+
+                    await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error consuming Translation results for meeting {MeetingId}", meetingId);
+                await Task.Delay(2000, ct);
             }
         }
     }
@@ -192,6 +239,9 @@ public sealed class AiResultConsumerService : BackgroundService
                         "Delivered TTS audio: meeting={MeetingId}, segment={SegmentId}, voice={VoiceType}",
                         meetingId, audioDto.SegmentId, audioDto.VoiceType);
                 }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
@@ -232,6 +282,9 @@ public sealed class AiResultConsumerService : BackgroundService
 
                     await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
                 }
+
+                if (entries.Length == 0)
+                    await Task.Delay(500, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)

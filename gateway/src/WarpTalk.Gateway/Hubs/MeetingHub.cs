@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
+using StackExchange.Redis;
 using System.Security.Claims;
 using WarpTalk.Gateway.Services;
 
@@ -16,17 +17,20 @@ public class MeetingHub : Hub
     private readonly IConnectionManager _connectionManager;
     private readonly RedisStreamService _streamService;
     private readonly ActiveMeetingRegistry _meetingRegistry;
+    private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<MeetingHub> _logger;
 
     public MeetingHub(
         IConnectionManager connectionManager,
         RedisStreamService streamService,
         ActiveMeetingRegistry meetingRegistry,
+        IConnectionMultiplexer redis,
         ILogger<MeetingHub> logger)
     {
         _connectionManager = connectionManager;
         _streamService = streamService;
         _meetingRegistry = meetingRegistry;
+        _redis = redis;
         _logger = logger;
     }
 
@@ -83,9 +87,16 @@ public class MeetingHub : Hub
         // Register with AI pipeline — starts consuming AI results for this meeting
         _meetingRegistry.RegisterParticipant(meetingId.ToString(), userId);
 
+        // Set target language for AI Translation Worker
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync(
+            $"meeting:{meetingId}:languages",
+            userId,
+            listenLanguage);
+
         _logger.LogInformation(
-            "MeetingHub: User {UserId} joined meeting {MeetingId}",
-            userId, meetingId);
+            "MeetingHub: User {UserId} joined meeting {MeetingId} (listen={ListenLanguage})",
+            userId, meetingId, listenLanguage);
     }
 
     /// <summary>
@@ -104,6 +115,10 @@ public class MeetingHub : Hub
 
         // Unregister from AI pipeline — stops consuming if last participant
         _meetingRegistry.UnregisterParticipant(meetingId.ToString(), userId);
+
+        // Clean up language preference
+        var db = _redis.GetDatabase();
+        await db.HashDeleteAsync($"meeting:{meetingId}:languages", userId);
 
         _logger.LogInformation(
             "MeetingHub: User {UserId} left meeting {MeetingId}",
