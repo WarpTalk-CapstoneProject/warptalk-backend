@@ -123,9 +123,15 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
 
 // 7. Configure Redis for AI pipeline streams
-var redisStreamConnectionString = builder.Configuration["Redis:ConnectionString"]
-    ?? redisConnectionString // Fall back to SignalR Redis config
-    ?? "localhost:6379";
+var redisStreamConnectionString = builder.Configuration["Redis:ConnectionString"];
+if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
+{
+    redisStreamConnectionString = redisConnectionString; // Fall back to SignalR Redis config
+}
+if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
+{
+    redisStreamConnectionString = "localhost:6379";
+}
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisStreamConnectionString));

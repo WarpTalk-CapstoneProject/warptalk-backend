@@ -24,7 +24,7 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly ILogger<AiResultConsumerService> _logger;
 
     private const string ConsumerGroupName = "gateway-consumers";
-    private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid():N[..8]}";
+    private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
 
     // meetingId → CancellationTokenSource (for stopping consumers when meeting ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _meetingCts = new();
