@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_DIR="/tmp/warptalk_logs"
 PG_CONTAINER="warptalk-postgres"
+REDIS_CONTAINER="warptalk-redis"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,6 +37,7 @@ print_banner() {
     echo "║             🚀 WarpTalk Backend Stack               ║"
     echo "╠══════════════════════════════════════════════════════╣"
     echo "║  PostgreSQL  (Docker)         → localhost:5432       ║"
+    echo "║  Redis       (Docker)         → localhost:6379       ║"
     echo "║  Auth        (REST+gRPC)      → :5101 / :50051      ║"
     echo "║  Meeting     (REST+gRPC)      → :5102 / :50052      ║"
     echo "║  Transcript  (REST+gRPC)      → :5103 / :50053      ║"
@@ -83,6 +85,35 @@ start_postgres() {
     echo -ne "   Waiting for PostgreSQL to be ready"
     for i in $(seq 1 30); do
         if docker exec "$PG_CONTAINER" pg_isready -U postgres -q 2>/dev/null; then
+            echo -e " ${GREEN}✅${NC}"
+            return
+        fi
+        echo -n "."
+        sleep 1
+    done
+    echo -e " ${RED}❌ Timeout${NC}"
+    exit 1
+}
+
+start_redis() {
+    echo -e "${CYAN}🔴 Starting Redis...${NC}"
+    if docker ps --format '{{.Names}}' | grep -q "^${REDIS_CONTAINER}$"; then
+        echo -e "   ${GREEN}Already running${NC}"
+    elif docker ps -a --format '{{.Names}}' | grep -q "^${REDIS_CONTAINER}$"; then
+        docker start "$REDIS_CONTAINER" > /dev/null
+        echo -e "   ${GREEN}Started existing container${NC}"
+    else
+        docker run -d \
+            --name "$REDIS_CONTAINER" \
+            -p 6379:6379 \
+            redis:7-alpine redis-server --appendonly yes > /dev/null
+        echo -e "   ${GREEN}Created and started new container${NC}"
+    fi
+
+    # Wait until Redis is ready
+    echo -ne "   Waiting for Redis to be ready"
+    for i in $(seq 1 30); do
+        if docker exec "$REDIS_CONTAINER" redis-cli ping | grep -q PONG > /dev/null 2>&1; then
             echo -e " ${GREEN}✅${NC}"
             return
         fi
@@ -203,6 +234,13 @@ show_status() {
         echo -e "   ${RED}❌ PostgreSQL (Docker: $PG_CONTAINER)${NC}"
     fi
 
+    # Redis
+    if docker ps --format '{{.Names}}' | grep -q "^${REDIS_CONTAINER}$"; then
+        echo -e "   ${GREEN}✅ Redis (Docker: $REDIS_CONTAINER)${NC}"
+    else
+        echo -e "   ${RED}❌ Redis (Docker: $REDIS_CONTAINER)${NC}"
+    fi
+
     # .NET services
     for entry in "${SERVICES[@]}"; do
         IFS='|' read -r name cwd port <<< "$entry"
@@ -238,7 +276,8 @@ stop_services() {
 
     kill_ports
     echo -e "${GREEN}✅ All .NET services stopped.${NC}"
-    echo -e "${YELLOW}   Note: PostgreSQL container left running. Stop with: docker stop $PG_CONTAINER${NC}"
+    echo -e "${YELLOW}   Note: PostgreSQL and Redis containers left running.${NC}"
+    echo -e "${YELLOW}   Stop with: docker stop $PG_CONTAINER $REDIS_CONTAINER${NC}"
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────
@@ -253,6 +292,7 @@ case "${1:-}" in
         print_banner
         kill_ports
         start_postgres
+        start_redis
         start_services_bg
         wait_and_test
         ;;
