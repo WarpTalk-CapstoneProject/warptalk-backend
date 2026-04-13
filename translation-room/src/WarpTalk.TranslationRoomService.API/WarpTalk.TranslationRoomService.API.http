@@ -1,0 +1,6 @@
+@WarpTalk.TranslationRoomService.API_HostAddress = http://localhost:5242
+
+GET {{WarpTalk.TranslationRoomService.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

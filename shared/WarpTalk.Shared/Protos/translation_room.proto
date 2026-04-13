@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package translation_room;
+
+service TranslationRoomService {
+  rpc GetTranslationRoomById (GetTranslationRoomRequest) returns (GetTranslationRoomResponse);
+}
+
+message GetTranslationRoomRequest {
+  string id = 1;
+}
+
+message GetTranslationRoomResponse {
+  string id = 1;
+  string title = 2;
+  string hostId = 3;
+}

@@ -137,7 +137,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisStreamConnectionString));
 
 builder.Services.AddSingleton<RedisStreamService>();
-builder.Services.AddSingleton<ActiveMeetingRegistry>();
+builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
 
 // 8. Configure Health Checks
@@ -166,7 +166,7 @@ app.UseAuthorization();
 app.MapReverseProxy();
 
 // Map SignalR Hubs (JWT-protected)
-app.MapHub<MeetingHub>("/hubs/meeting")
+app.MapHub<TranslationRoomHub>("/hubs/translation-room")
     .RequireAuthorization("RequireAuth");
 
 app.MapHub<NotificationHub>("/hubs/notification")

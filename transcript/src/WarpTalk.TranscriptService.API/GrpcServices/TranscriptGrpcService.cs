@@ -27,26 +27,26 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
         return MapToResponse(transcript);
     }
 
-    public override async Task<GetTranscriptsByMeetingResponse> GetTranscriptsByMeetingId(GetTranscriptsByMeetingRequest request, ServerCallContext context)
+    public override async Task<GetTranscriptsByTranslationRoomResponse> GetTranscriptsByTranslationRoomId(GetTranscriptsByTranslationRoomRequest request, ServerCallContext context)
     {
-        if (!Guid.TryParse(request.MeetingId, out var parsedMeetingId))
-            throw GrpcErrors.InvalidId("Meeting");
+        if (!Guid.TryParse(request.TranslationRoomId, out var parsedTranslationRoomId))
+            throw GrpcErrors.InvalidId("TranslationRoom");
 
         var allTranscripts = await _unitOfWork.Transcripts.GetAllAsync();
-        var meetingTranscripts = allTranscripts
-            .Where(t => t.MeetingId == parsedMeetingId && t.DeletedAt == null)
+        var translationRoomTranscripts = allTranscripts
+            .Where(t => t.TranslationRoomId == parsedTranslationRoomId && t.DeletedAt == null)
             .OrderByDescending(t => t.Version)
             .ToList();
 
-        var response = new GetTranscriptsByMeetingResponse();
-        response.Transcripts.AddRange(meetingTranscripts.Select(MapToResponse));
+        var response = new GetTranscriptsByTranslationRoomResponse();
+        response.Transcripts.AddRange(translationRoomTranscripts.Select(MapToResponse));
         return response;
     }
 
     private static GetTranscriptResponse MapToResponse(Domain.Entities.Transcript t) => new()
     {
         Id = t.Id.ToString(),
-        MeetingId = t.MeetingId.ToString(),
+        TranslationRoomId = t.TranslationRoomId.ToString(),
         Version = t.Version,
         Status = t.Status,
         SourceLanguage = t.SourceLanguage,

@@ -1,6 +1,6 @@
 # ====================================================================
 # WarpTalk Backend — Docker Compose
-# Runs: PostgreSQL + Auth + Meeting + Transcript + Notification + Gateway
+# Runs: PostgreSQL + Auth + TranslationRoom + Transcript + Notification + Gateway
 # Usage: docker compose up --build
 # ====================================================================
 
@@ -63,15 +63,15 @@ services:
     networks:
       - warptalk-net
 
-  # ── Meeting Service ─────────────────────────────────────────────────
-  meeting-service:
+  # ── TranslationRoom Service ─────────────────────────────────────────────────
+  translation-room-service:
     build:
       context: .
       dockerfile: meeting/Dockerfile
     container_name: warptalk-meeting
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__MeetingDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=meeting,public"
+      ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=meeting,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
@@ -97,7 +97,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=transcript,public"
       GrpcUrls__AuthServiceUrl: "http://auth-service:50051"
-      GrpcUrls__MeetingServiceUrl: "http://meeting-service:50052"
+      GrpcUrls__TranslationRoomServiceUrl: "http://translation-room-service:50052"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
@@ -109,7 +109,7 @@ services:
         condition: service_healthy
       auth-service:
         condition: service_started
-      meeting-service:
+      translation-room-service:
         condition: service_started
     networks:
       - warptalk-net
@@ -152,7 +152,7 @@ services:
       SignalR__Redis: "redis:6379"
       # YARP cluster addresses — use Docker service names
       ReverseProxy__Clusters__auth-cluster__Destinations__auth-service__Address: "http://auth-service:5101"
-      ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5102"
+      ReverseProxy__Clusters__translation-room-cluster__Destinations__translation-room-service__Address: "http://translation-room-service:5102"
       ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
       AllowedOrigins__0: "http://localhost:3000"
@@ -165,7 +165,7 @@ services:
         condition: service_healthy
       auth-service:
         condition: service_started
-      meeting-service:
+      translation-room-service:
         condition: service_started
       transcript-service:
         condition: service_started

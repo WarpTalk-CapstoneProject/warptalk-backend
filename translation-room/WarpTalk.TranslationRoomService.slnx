@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WarpTalk.TranslationRoomService.API/WarpTalk.TranslationRoomService.API.csproj" />
+    <Project Path="src/WarpTalk.TranslationRoomService.Application/WarpTalk.TranslationRoomService.Application.csproj" />
+    <Project Path="src/WarpTalk.TranslationRoomService.Domain/WarpTalk.TranslationRoomService.Domain.csproj" />
+    <Project Path="src/WarpTalk.TranslationRoomService.Infrastructure/WarpTalk.TranslationRoomService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WarpTalk.TranslationRoomService.Tests/WarpTalk.TranslationRoomService.Tests.csproj" />
+  </Folder>
+</Solution>
