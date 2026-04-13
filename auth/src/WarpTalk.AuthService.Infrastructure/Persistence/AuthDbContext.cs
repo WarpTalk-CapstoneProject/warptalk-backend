@@ -247,7 +247,7 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.AutoGenerateSummary)
                 .HasDefaultValue(true)
                 .HasColumnName("auto_generate_summary");
-            entity.Property(e => e.AutoRecordMeetings).HasColumnName("auto_record_meetings");
+            entity.Property(e => e.AutoRecordTranslationRooms).HasColumnName("auto_record_translationRooms");
             entity.Property(e => e.CompactParticipantList).HasColumnName("compact_participant_list");
             entity.Property(e => e.DefaultListenLanguage)
                 .HasMaxLength(5)
@@ -257,10 +257,10 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.DefaultMaxParticipants)
                 .HasDefaultValue(10)
                 .HasColumnName("default_max_participants");
-            entity.Property(e => e.DefaultMeetingType)
+            entity.Property(e => e.DefaultTranslationRoomType)
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'group'::character varying")
-                .HasColumnName("default_meeting_type");
+                .HasColumnName("default_translation_room_type");
             entity.Property(e => e.DefaultSpeakLanguage)
                 .HasMaxLength(5)
                 .HasDefaultValueSql("'vi-VN'::bpchar")

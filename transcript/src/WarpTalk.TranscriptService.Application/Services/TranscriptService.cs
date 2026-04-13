@@ -20,7 +20,7 @@ public class TranscriptService : ITranscriptService
         var transcript = new Transcript
         {
             Id = Guid.NewGuid(),
-            MeetingId = request.MeetingId,
+            TranslationRoomId = request.TranslationRoomId,
             Version = 1,
             Status = "recording",
             SourceLanguage = request.SourceLanguage,
@@ -86,5 +86,5 @@ public class TranscriptService : ITranscriptService
     }
 
     private TranscriptDto MapToDto(Transcript t) =>
-        new TranscriptDto(t.Id, t.MeetingId, t.Version, t.Status, t.SourceLanguage, t.TotalSegments, t.TotalDurationMs, t.CreatedAt, t.UpdatedAt, t.FinalizedAt);
+        new TranscriptDto(t.Id, t.TranslationRoomId, t.Version, t.Status, t.SourceLanguage, t.TotalSegments, t.TotalDurationMs, t.CreatedAt, t.UpdatedAt, t.FinalizedAt);
 }

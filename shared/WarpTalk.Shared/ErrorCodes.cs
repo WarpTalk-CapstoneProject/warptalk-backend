@@ -22,8 +22,8 @@ public static class ErrorCodes
     public const string UserNotFound = "USER_NOT_FOUND";
     public const string InvalidPassword = "INVALID_PASSWORD";
 
-    // ── Meeting ──────────────────────────────────────────
-    public const string MeetingNotActive = "MEETING_NOT_ACTIVE";
+    // ── TranslationRoom ──────────────────────────────────────────
+    public const string TranslationRoomNotActive = "MEETING_NOT_ACTIVE";
 
     // ── Notification ─────────────────────────────────────
     public const string PreferencesNotFound = "PREFERENCES_NOT_FOUND";

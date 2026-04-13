@@ -1,6 +1,6 @@
 namespace WarpTalk.Gateway.Hubs;
 
-// ── Meeting Hub DTOs ──────────────────────────────────────
+// ── TranslationRoom Hub DTOs ──────────────────────────────────────
 
 public record ParticipantInfoDto(
     Guid UserId,
@@ -29,9 +29,9 @@ public record ChatMessageDto(
     string Content,
     DateTime SentAt);
 
-public record MeetingStateDto(
-    Guid MeetingId,
-    string MeetingCode,
+public record TranslationRoomStateDto(
+    Guid TranslationRoomId,
+    string TranslationRoomCode,
     string Status,
     List<ParticipantInfoDto> Participants);
 
@@ -56,7 +56,7 @@ public record TranslatedAudioDto(
     int DurationMs);
 
 public record AiAssistantResultDto(
-    string MeetingId,
+    string TranslationRoomId,
     string Type,
     string Content,
     DateTime CreatedAt);

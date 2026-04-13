@@ -29,7 +29,7 @@ public sealed class RedisStreamService
     /// Fields match Python AudioChunkMessage.to_redis() exactly.
     /// </summary>
     public async Task<string> PublishAudioChunkAsync(
-        string meetingId,
+        string translationRoomId,
         string speakerId,
         int chunkIndex,
         string audioBase64,
@@ -37,12 +37,12 @@ public sealed class RedisStreamService
         int sampleRate = 16000)
     {
         var db = _redis.GetDatabase();
-        var streamKey = $"audio:chunks:{meetingId}";
+        var streamKey = $"audio:chunks:{translationRoomId}";
         var timestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
         var entries = new NameValueEntry[]
         {
-            new("meeting_id", meetingId),
+            new("translation_room_id", translationRoomId),
             new("speaker_id", speakerId),
             new("chunk_index", chunkIndex.ToString()),
             new("audio_data", audioBase64),
@@ -55,8 +55,8 @@ public sealed class RedisStreamService
             streamKey, entries, maxLength: _streamMaxLength, useApproximateMaxLength: true);
 
         _logger.LogDebug(
-            "Published audio chunk to {StreamKey}: meeting={MeetingId}, speaker={SpeakerId}, chunk={ChunkIndex}",
-            streamKey, meetingId, speakerId, chunkIndex);
+            "Published audio chunk to {StreamKey}: translationRoom={TranslationRoomId}, speaker={SpeakerId}, chunk={ChunkIndex}",
+            streamKey, translationRoomId, speakerId, chunkIndex);
 
         return messageId.ToString();
     }

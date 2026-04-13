@@ -17,9 +17,9 @@ public partial class UserSetting
 
     public bool MicNoiseSuppression { get; set; }
 
-    public string DefaultMeetingType { get; set; } = null!;
+    public string DefaultTranslationRoomType { get; set; } = null!;
 
-    public bool AutoRecordMeetings { get; set; }
+    public bool AutoRecordTranslationRooms { get; set; }
 
     public bool AutoGenerateSummary { get; set; }
 

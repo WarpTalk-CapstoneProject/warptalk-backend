@@ -1,38 +1,39 @@
-using System.Net;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.TranslationRoomService.API.GrpcServices;
+using WarpTalk.TranslationRoomService.Domain.Interfaces;
+using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
+using WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 using WarpTalk.Shared.Protos;
-using WarpTalk.TranscriptService.Domain.Interfaces;
-using WarpTalk.TranscriptService.Infrastructure.Persistence;
-using WarpTalk.TranscriptService.Infrastructure.Repositories;
-using WarpTalk.TranscriptService.Application.Interfaces;
-using WarpTalk.TranscriptService.Application.Services;
-using WarpTalk.TranscriptService.API.GrpcServices;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.ConfigureKestrel(options =>
 {
     // HTTP/1-only port for REST API Gateway
-    options.ListenAnyIP(5103, listenOptions =>
+    options.ListenAnyIP(5102, listenOptions =>
     {
         listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1;
     });
 
     // HTTP/2-only port for gRPC
-    options.ListenAnyIP(50053, listenOptions =>
+    options.ListenAnyIP(50052, listenOptions =>
     {
         listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
     });
 });
 
-builder.Services.AddDbContext<TranscriptDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("TranscriptDb")));
+builder.Services.AddDbContext<TranslationRoomDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("TranslationRoomDb")));
 
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
-builder.Services.AddScoped<ITranscriptService, WarpTalk.TranscriptService.Application.Services.TranscriptService>();
+builder.Services.AddScoped<ITranslationRoomService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -49,19 +50,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 builder.Services.AddAuthorization();
-builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["GrpcUrls:AuthServiceUrl"]!);
-});
-
-builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
-{
-    o.Address = new Uri(builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]!);
+    o.Address = new Uri(builder.Configuration["GrpcSettings:AuthServiceUrl"] ?? "http://localhost:5101");
 });
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
+
+builder.Services.AddGrpc();
 
 var app = builder.Build();
 
@@ -76,6 +73,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapGrpcService<TranscriptGrpcService>();
+app.MapGrpcService<TranslationRoomGrpcService>();
 
 app.Run();
