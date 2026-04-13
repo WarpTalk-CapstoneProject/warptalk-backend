@@ -1,7 +1,7 @@
 namespace WarpTalk.TranscriptService.Application.DTOs;
 
 public record CreateTranscriptRequest(
-    Guid MeetingId,
+    Guid TranslationRoomId,
     string SourceLanguage
 );
 
@@ -17,7 +17,7 @@ public record ProcessAudioChunkRequest(
 
 public record TranscriptDto(
     Guid Id,
-    Guid MeetingId,
+    Guid TranslationRoomId,
     int Version,
     string Status,
     string SourceLanguage,

@@ -6,7 +6,7 @@ package transcript;
 
 service TranscriptService {
   rpc GetTranscriptById (GetTranscriptRequest) returns (GetTranscriptResponse);
-  rpc GetTranscriptsByMeetingId (GetTranscriptsByMeetingRequest) returns (GetTranscriptsByMeetingResponse);
+  rpc GetTranscriptsByTranslationRoomId (GetTranscriptsByTranslationRoomRequest) returns (GetTranscriptsByTranslationRoomResponse);
 }
 
 message GetTranscriptRequest {
@@ -15,7 +15,7 @@ message GetTranscriptRequest {
 
 message GetTranscriptResponse {
   string id = 1;
-  string meeting_id = 2;
+  string translation_room_id = 2;
   int32 version = 3;
   string status = 4;
   string source_language = 5;
@@ -25,10 +25,10 @@ message GetTranscriptResponse {
   string finalized_at = 9;
 }
 
-message GetTranscriptsByMeetingRequest {
-  string meeting_id = 1;
+message GetTranscriptsByTranslationRoomRequest {
+  string translation_room_id = 1;
 }
 
-message GetTranscriptsByMeetingResponse {
+message GetTranscriptsByTranslationRoomResponse {
   repeated GetTranscriptResponse transcripts = 1;
 }

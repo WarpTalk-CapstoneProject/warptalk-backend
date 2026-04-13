@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\WarpTalk.TranslationRoomService.Domain\WarpTalk.TranslationRoomService.Domain.csproj" />
+    <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

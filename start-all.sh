@@ -25,7 +25,7 @@ NC='\033[0m'
 # Service definitions: name|cwd|port
 SERVICES=(
     "auth|auth/src/WarpTalk.AuthService.API|5101"
-    "meeting|meeting/src/WarpTalk.MeetingService.API|5102"
+    "translation-room|translation-room/src/WarpTalk.TranslationRoomService.API|5102"
     "transcript|transcript/src/WarpTalk.TranscriptService.API|5103"
     "notification|notification/src/WarpTalk.NotificationService.API|5104"
     "gateway|gateway/src/WarpTalk.Gateway|5200"
@@ -39,13 +39,13 @@ print_banner() {
     echo "║  PostgreSQL  (Docker)         → localhost:5432       ║"
     echo "║  Redis       (Docker)         → localhost:6379       ║"
     echo "║  Auth        (REST+gRPC)      → :5101 / :50051      ║"
-    echo "║  Meeting     (REST+gRPC)      → :5102 / :50052      ║"
+    echo "║  TranslationRoom(REST+gRPC)   → :5102 / :50052      ║"
     echo "║  Transcript  (REST+gRPC)      → :5103 / :50053      ║"
     echo "║  Notification (REST)          → :5104 / :50054      ║"
     echo "║  Gateway     (YARP+SignalR)   → :5200                ║"
     echo "║                                                      ║"
     echo "║  SignalR Hubs:                                       ║"
-    echo "║    Meeting      → ws://localhost:5200/hubs/meeting   ║"
+    echo "║    TranslationRoom→ ws://localhost:5200/hubs/translation-room║"
     echo "║    Notification → ws://localhost:5200/hubs/notification║"
     echo "╚══════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -93,6 +93,22 @@ start_postgres() {
     done
     echo -e " ${RED}❌ Timeout${NC}"
     exit 1
+}
+
+run_migrations() {
+    echo -e "${CYAN}🐘 Running PostgreSQL migrations...${NC}"
+    MIGRATIONS_DIR="$SCRIPT_DIR/../warptalk-infrastructure/scripts/migrations"
+    if [[ -d "$MIGRATIONS_DIR" ]]; then
+        for file in "$MIGRATIONS_DIR"/*.sql; do
+            if [[ -f "$file" ]]; then
+                echo -e "   Executing $(basename "$file")..."
+                docker exec -i "$PG_CONTAINER" psql -U postgres -d warptalk < "$file" || echo -e "   ${YELLOW}⚠ Failed or already executed${NC}"
+            fi
+        done
+        echo -e "   ${GREEN}✅ Migrations completed${NC}"
+    else
+        echo -e "   ${YELLOW}⚠ No migrations directory found at $MIGRATIONS_DIR${NC}"
+    fi
 }
 
 start_redis() {
@@ -200,13 +216,13 @@ wait_and_test() {
     echo -e "${CYAN}🧪 Testing SignalR negotiate...${NC}"
     local signalr_code
     signalr_code=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST http://localhost:5200/hubs/meeting/negotiate?negotiateVersion=1 2>/dev/null || echo "000")
+        -X POST http://localhost:5200/hubs/translation-room/negotiate?negotiateVersion=1 2>/dev/null || echo "000")
     if [[ "$signalr_code" == "401" ]]; then
-        echo -e "   ${GREEN}✅ /hubs/meeting/negotiate → 401 (JWT required, correct!)${NC}"
+        echo -e "   ${GREEN}✅ /hubs/translation-room/negotiate → 401 (JWT required, correct!)${NC}"
     elif [[ "$signalr_code" == "200" ]]; then
-        echo -e "   ${RED}⚠  /hubs/meeting/negotiate → 200 (auth not enforced!)${NC}"
+        echo -e "   ${RED}⚠  /hubs/translation-room/negotiate → 200 (auth not enforced!)${NC}"
     else
-        echo -e "   ${YELLOW}⚠  /hubs/meeting/negotiate → HTTP $signalr_code${NC}"
+        echo -e "   ${YELLOW}⚠  /hubs/translation-room/negotiate → HTTP $signalr_code${NC}"
     fi
 
     signalr_code=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -292,6 +308,7 @@ case "${1:-}" in
         print_banner
         kill_ports
         start_postgres
+        run_migrations
         start_redis
         start_services_bg
         wait_and_test

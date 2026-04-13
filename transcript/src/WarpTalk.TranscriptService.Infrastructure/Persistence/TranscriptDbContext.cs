@@ -20,7 +20,7 @@ public class TranscriptDbContext : DbContext
             entity.ToTable("transcripts");
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Id).HasColumnName("id");
-            entity.Property(e => e.MeetingId).HasColumnName("meeting_id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
             entity.Property(e => e.Version).HasColumnName("version");
             entity.Property(e => e.Status).HasColumnName("status");
             entity.Property(e => e.SourceLanguage).HasColumnName("source_language");
