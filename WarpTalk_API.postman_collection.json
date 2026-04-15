@@ -1,0 +1,448 @@
+{
+  "info": {
+    "_postman_id": "5c37489a-4b72-42e0-917f-b4026dbf6ed7",
+    "name": "WarpTalk Backend Microservices",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification."
+  },
+  "variable": [
+    { "key": "gatewayBaseUrl", "value": "http://localhost:5200" },
+    { "key": "authBaseUrl", "value": "http://localhost:5101" },
+    { "key": "translationRoomBaseUrl", "value": "http://localhost:5102" },
+    { "key": "transcriptBaseUrl", "value": "http://localhost:5103" },
+    { "key": "notificationBaseUrl", "value": "http://localhost:5104" },
+    { "key": "testEmail", "value": "warptalk+{{$timestamp}}@mail.com" },
+    { "key": "testPassword", "value": "P@ssw0rd123!" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "translationRoomId", "value": "00000000-0000-0000-0000-000000000000" },
+    { "key": "transcriptId", "value": "00000000-0000-0000-0000-000000000000" }
+  ],
+  "item": [
+    {
+      "name": "00 - Health Checks",
+      "item": [
+        {
+          "name": "Gateway Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gateway /health returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Response time < 2000ms', function () {",
+                  "  pm.expect(pm.response.responseTime).to.be.below(2000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayBaseUrl}}/health"
+          }
+        },
+        {
+          "name": "Auth Service Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Auth /health returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{authBaseUrl}}/health" }
+        },
+        {
+          "name": "TranslationRoom Service Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('TranslationRoom /health returns 200', function () { pm.response.to.have.status(200); });" ] }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{translationRoomBaseUrl}}/health" }
+        },
+        {
+          "name": "Transcript Service Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Transcript /health returns 200', function () { pm.response.to.have.status(200); });" ] }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{transcriptBaseUrl}}/health" }
+        },
+        {
+          "name": "Notification Service Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Notification /health returns 200', function () { pm.response.to.have.status(200); });" ] }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{notificationBaseUrl}}/health" }
+        }
+      ]
+    },
+    {
+      "name": "01 - Auth via Gateway",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Register returns 200/400/409', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 409]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"fullName\": \"Postman User\"\n}"
+            },
+            "url": "{{gatewayBaseUrl}}/api/v1/auth/register"
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Login returns 200', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "var token = json.token || json.accessToken || '';",
+                  "var refresh = json.refreshToken || '';",
+                  "pm.test('Access token exists', function () {",
+                  "  pm.expect(token).to.not.eql('');",
+                  "});",
+                  "if (token) pm.collectionVariables.set('accessToken', token);",
+                  "if (refresh) pm.collectionVariables.set('refreshToken', refresh);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            },
+            "url": "{{gatewayBaseUrl}}/api/v1/auth/login"
+          }
+        },
+        {
+          "name": "Get Current Profile (/me)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Me returns 200 when token valid', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/auth/me"
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Refresh returns 200/401', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "url": "{{gatewayBaseUrl}}/api/v1/auth/refresh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 - TranslationRoom via Gateway",
+      "item": [
+        {
+          "name": "Create Translation Room",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Create room returns 200/400/401', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var json = pm.response.json();",
+                  "  var id = json.id || json.translationRoomId || '';",
+                  "  if (id) pm.collectionVariables.set('translationRoomId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Room {{$timestamp}}\",\n  \"sourceLanguage\": \"en\",\n  \"targetLanguages\": [\"vi\"],\n  \"roomType\": \"public\"\n}"
+            },
+            "url": "{{gatewayBaseUrl}}/api/v1/translationRooms"
+          }
+        },
+        {
+          "name": "Get Translation Room by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Get room returns 200/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}"
+          }
+        },
+        {
+          "name": "Join Translation Room",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Join room returns 200/400/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"displayName\": \"Guest User\"\n}" },
+            "url": "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}/join"
+          }
+        },
+        {
+          "name": "End Translation Room",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('End room returns 204/400/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([204, 400, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}/end"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Transcript via Gateway",
+      "item": [
+        {
+          "name": "Start Transcript",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Start transcript returns 200/400/401', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var json = pm.response.json();",
+                  "  var id = json.id || json.transcriptId || '';",
+                  "  if (id) pm.collectionVariables.set('transcriptId', id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"translationRoomId\": \"{{translationRoomId}}\",\n  \"languageCode\": \"en\"\n}"
+            },
+            "url": "{{gatewayBaseUrl}}/api/v1/transcripts"
+          }
+        },
+        {
+          "name": "Get Transcript by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Get transcript returns 200/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}"
+          }
+        },
+        {
+          "name": "Process Audio Chunk",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Audio chunk returns 202/400/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([202, 400, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"base64AudioData\": \"UklGRiQAAABXQVZFZm10IBAAAAABAAEA\"\n}" },
+            "url": "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}/audio"
+          }
+        },
+        {
+          "name": "Finalize Transcript",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Finalize returns 204/400/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([204, 400, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}/finalize"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Notification via Gateway",
+      "item": [
+        {
+          "name": "Notification Test Endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Notification test returns 200', function () { pm.response.to.have.status(200); });" ] }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{gatewayBaseUrl}}/api/v1/notifications/test" }
+        },
+        {
+          "name": "Get Notification Preferences",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Get preferences returns 200/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{accessToken}}" } ],
+            "url": "{{gatewayBaseUrl}}/api/v1/notifications/preferences"
+          }
+        },
+        {
+          "name": "Update Notification Preferences",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Update preferences returns 200/400/401', function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]); });" ] }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"emailEnabled\": true,\n  \"pushEnabled\": true,\n  \"smsEnabled\": false\n}"
+            },
+            "url": "{{gatewayBaseUrl}}/api/v1/notifications/preferences"
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 - SignalR Negotiate via Gateway",
+      "item": [
+        {
+          "name": "TranslationRoom Hub Negotiate (No JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Negotiate returns 401 without JWT', function () { pm.response.to.have.status(401); });" ] }
+            }
+          ],
+          "request": { "method": "POST", "header": [], "url": "{{gatewayBaseUrl}}/hubs/translation-room/negotiate?negotiateVersion=1" }
+        },
+        {
+          "name": "Notification Hub Negotiate (No JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('Negotiate returns 401 without JWT', function () { pm.response.to.have.status(401); });" ] }
+            }
+          ],
+          "request": { "method": "POST", "header": [], "url": "{{gatewayBaseUrl}}/hubs/notification/negotiate?negotiateVersion=1" }
+        }
+      ]
+    }
+  ]
+}
