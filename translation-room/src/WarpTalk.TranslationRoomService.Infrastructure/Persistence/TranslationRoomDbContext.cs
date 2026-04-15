@@ -38,19 +38,19 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translationRooms_pkey");
 
-            entity.ToTable("translationRooms", "translationRoom");
+            entity.ToTable("translation_rooms", "translation_room");
 
-            entity.HasIndex(e => e.HostId, "idx_translationRooms_host");
+            entity.HasIndex(e => e.HostId, "idx_translation_rooms_host");
 
-            entity.HasIndex(e => e.ScheduledAt, "idx_translationRooms_scheduled")
+            entity.HasIndex(e => e.ScheduledAt, "idx_translation_rooms_scheduled")
                 .IsDescending()
                 .HasFilter("(deleted_at IS NULL)");
 
-            entity.HasIndex(e => e.Status, "idx_translationRooms_status").HasFilter("(deleted_at IS NULL)");
+            entity.HasIndex(e => e.Status, "idx_translation_rooms_status").HasFilter("(deleted_at IS NULL)");
 
-            entity.HasIndex(e => e.WorkspaceId, "idx_translationRooms_workspace");
+            entity.HasIndex(e => e.WorkspaceId, "idx_translation_rooms_workspace");
 
-            entity.HasIndex(e => e.TranslationRoomCode, "translationRooms_translation_room_code_key").IsUnique();
+            entity.HasIndex(e => e.TranslationRoomCode, "translation_rooms_translation_room_code_key").IsUnique();
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("public.uuid_generate_v7()")
@@ -104,9 +104,9 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_room_audio_routes_pkey");
 
-            entity.ToTable("translation_room_audio_routes", "translationRoom");
+            entity.ToTable("translation_room_audio_routes", "translation_room");
 
-            entity.HasIndex(e => e.TranslationRoomId, "idx_audio_routes_translationRoom");
+            entity.HasIndex(e => e.TranslationRoomId, "idx_audio_routes_translation_room");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("public.uuid_generate_v7()")
@@ -151,9 +151,9 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_room_feedback_pkey");
 
-            entity.ToTable("translation_room_feedback", "translationRoom");
+            entity.ToTable("translation_room_feedback", "translation_room");
 
-            entity.HasIndex(e => e.TranslationRoomId, "idx_feedback_translationRoom");
+            entity.HasIndex(e => e.TranslationRoomId, "idx_feedback_translation_room");
 
             entity.HasIndex(e => new { e.TranslationRoomId, e.UserId }, "translation_room_feedback_translation_room_id_user_id_key").IsUnique();
 
@@ -183,9 +183,9 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_room_participants_pkey");
 
-            entity.ToTable("translation_room_participants", "translationRoom");
+            entity.ToTable("translation_room_participants", "translation_room");
 
-            entity.HasIndex(e => e.TranslationRoomId, "idx_participants_translationRoom");
+            entity.HasIndex(e => e.TranslationRoomId, "idx_participants_translation_room");
 
             entity.HasIndex(e => e.UserId, "idx_participants_user");
 
@@ -234,9 +234,9 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_room_recordings_pkey");
 
-            entity.ToTable("translation_room_recordings", "translationRoom");
+            entity.ToTable("translation_room_recordings", "translation_room");
 
-            entity.HasIndex(e => e.TranslationRoomId, "idx_recordings_translationRoom");
+            entity.HasIndex(e => e.TranslationRoomId, "idx_recordings_translation_room");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("public.uuid_generate_v7()")
@@ -274,7 +274,7 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_room_summaries_pkey");
 
-            entity.ToTable("translation_room_summaries", "translationRoom");
+            entity.ToTable("translation_room_summaries", "translation_room");
 
             entity.HasIndex(e => e.TranslationRoomId, "translation_room_summaries_translation_room_id_key").IsUnique();
 
