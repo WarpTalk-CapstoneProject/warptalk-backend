@@ -68,11 +68,11 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("max_participants");
             entity.Property(e => e.TranslationRoomCode)
                 .HasMaxLength(12)
-                .HasColumnName("translation_room_code");
+                .HasColumnName("meeting_code");
             entity.Property(e => e.TranslationRoomType)
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'group'::character varying")
-                .HasColumnName("translation_room_type");
+                .HasColumnName("meeting_type");
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at");
             entity.Property(e => e.Settings)
                 .HasDefaultValueSql("'{}'::jsonb")
