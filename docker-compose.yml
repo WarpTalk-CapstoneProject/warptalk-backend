@@ -67,11 +67,11 @@ services:
   translation-room-service:
     build:
       context: .
-      dockerfile: meeting/Dockerfile
-    container_name: warptalk-meeting
+      dockerfile: translation-room/Dockerfile
+    container_name: warptalk-translation-room
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=meeting,public"
+      ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=translation_room,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
       Jwt__Secret: "REDACTED_JWT_SECRET"
       Jwt__Issuer: "WarpTalk.AuthService"
