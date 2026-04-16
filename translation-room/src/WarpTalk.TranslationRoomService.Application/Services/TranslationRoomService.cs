@@ -76,7 +76,7 @@ public class TranslationRoomService : ITranslationRoomService
             Role = "participant",
             ListenLanguage = request.ListenLanguage,
             SpeakLanguage = request.SpeakLanguage,
-            Status = "joined",
+            Status = "connected",
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
