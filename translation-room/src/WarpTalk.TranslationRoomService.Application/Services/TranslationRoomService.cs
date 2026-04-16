@@ -17,12 +17,6 @@ public class TranslationRoomService : ITranslationRoomService
 
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
     {
-        var normalizedType = NormalizeTranslationRoomType(request.TranslationRoomType);
-        if (normalizedType is null)
-            return Result.Failure<TranslationRoomDto>(
-                "Invalid TranslationRoomType. Allowed values: instant, scheduled, one_to_one, group, webinar, b2b_virtual_mic.",
-                ErrorCodes.ValidationError);
-
         var targetLangsJson = string.IsNullOrWhiteSpace(request.TargetLanguages) 
             ? "[]" 
             : (request.TargetLanguages.Trim().StartsWith("[") 
@@ -38,7 +32,7 @@ public class TranslationRoomService : ITranslationRoomService
             Description = request.Description,
             TranslationRoomCode = GenerateTranslationRoomCode(),
             Status = "scheduled",
-            TranslationRoomType = normalizedType,
+            TranslationRoomType = request.TranslationRoomType,
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = request.SourceLanguage,
             TargetLanguages = targetLangsJson,
@@ -82,7 +76,7 @@ public class TranslationRoomService : ITranslationRoomService
             Role = "participant",
             ListenLanguage = request.ListenLanguage,
             SpeakLanguage = request.SpeakLanguage,
-            Status = "connected",
+            Status = "joined",
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -132,26 +126,6 @@ public class TranslationRoomService : ITranslationRoomService
         var code = new string(Enumerable.Repeat(chars, 9)
             .Select(s => s[random.Next(s.Length)]).ToArray());
         return $"{code.Substring(0, 3)}-{code.Substring(3, 3)}-{code.Substring(6, 3)}";
-    }
-
-    private static string? NormalizeTranslationRoomType(string? requestedType)
-    {
-        if (string.IsNullOrWhiteSpace(requestedType))
-            return null;
-
-        var normalized = requestedType.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            // Compatibility aliases used by current client payloads
-            "instant" => "group",
-            "scheduled" => "group",
-            // Supported values in current DB constraint
-            "one_to_one" => "one_to_one",
-            "group" => "group",
-            "webinar" => "webinar",
-            "b2b_virtual_mic" => "b2b_virtual_mic",
-            _ => null
-        };
     }
 
     private TranslationRoomDto MapToDto(TranslationRoom translationRoom)
