@@ -71,7 +71,7 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("translation_room_code");
             entity.Property(e => e.TranslationRoomType)
                 .HasMaxLength(20)
-                .HasDefaultValueSql("'group'::character varying")
+                .HasDefaultValueSql("'GROUP'::character varying")
                 .HasColumnName("translation_room_type");
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at");
             entity.Property(e => e.Settings)
