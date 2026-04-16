@@ -1,0 +1,64 @@
+version: '3.8'
+
+x-logging-prod: &logging-prod
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart-prod: &restart-prod
+  restart: unless-stopped
+
+services:
+  redis:
+    <<: *restart-prod
+    logging: *logging-prod
+
+  postgres:
+    <<: *restart-prod
+    logging: *logging-prod
+
+  auth-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  translation-room-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  transcript-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  notification-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  gateway:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
