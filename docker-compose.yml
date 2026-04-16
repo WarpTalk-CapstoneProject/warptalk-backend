@@ -49,7 +49,7 @@ services:
       dockerfile: auth/Dockerfile
     container_name: warptalk-auth
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__AuthDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=auth,public"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
@@ -70,7 +70,7 @@ services:
       dockerfile: translation-room/Dockerfile
     container_name: warptalk-translation-room
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=translation_room,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
@@ -94,7 +94,7 @@ services:
       dockerfile: transcript/Dockerfile
     container_name: warptalk-transcript
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=transcript,public"
       GrpcUrls__AuthServiceUrl: "http://auth-service:50051"
       GrpcUrls__TranslationRoomServiceUrl: "http://translation-room-service:50052"
@@ -121,7 +121,7 @@ services:
       dockerfile: notification/Dockerfile
     container_name: warptalk-notification
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=notification,public"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
@@ -142,7 +142,7 @@ services:
       dockerfile: gateway/src/WarpTalk.Gateway/Dockerfile
     container_name: warptalk-gateway
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://0.0.0.0:5200"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
