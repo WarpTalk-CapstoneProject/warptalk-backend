@@ -31,7 +31,7 @@ $$ LANGUAGE plpgsql VOLATILE;
 -- 1. SERVICE_ACCOUNTS & ISOLATION
 -- ============================================
 CREATE USER auth_svc WITH ENCRYPTED PASSWORD 'warptalk_auth_dev';
-CREATE USER meeting_svc WITH ENCRYPTED PASSWORD 'warptalk_meeting_dev';
+CREATE USER translation_room_svc WITH ENCRYPTED PASSWORD 'warptalk_translation_room_dev';
 CREATE USER transcript_svc WITH ENCRYPTED PASSWORD 'warptalk_transcript_dev';
 CREATE USER sub_svc WITH ENCRYPTED PASSWORD 'warptalk_sub_dev';
 CREATE USER notif_svc WITH ENCRYPTED PASSWORD 'warptalk_notif_dev';
@@ -141,9 +141,9 @@ CREATE TABLE auth.user_settings (
     default_listen_language   CHAR(5) NOT NULL DEFAULT 'en-US',
     voice_clone_enabled       BOOLEAN NOT NULL DEFAULT false,
     mic_noise_suppression     BOOLEAN NOT NULL DEFAULT true,
-    default_meeting_type      VARCHAR(20) NOT NULL DEFAULT 'group'
-                              CHECK (default_meeting_type IN ('one_to_one','group','webinar','b2b_virtual_mic')),
-    auto_record_meetings      BOOLEAN NOT NULL DEFAULT false,
+    default_translation_room_type      VARCHAR(20) NOT NULL DEFAULT 'group'
+                              CHECK (default_translation_room_type IN ('one_to_one','group','webinar','b2b_virtual_mic')),
+    auto_record_translation_rooms      BOOLEAN NOT NULL DEFAULT false,
     auto_generate_summary     BOOLEAN NOT NULL DEFAULT true,
     default_max_participants  INT NOT NULL DEFAULT 10 CHECK (default_max_participants BETWEEN 1 AND 500),
     theme                     VARCHAR(10) NOT NULL DEFAULT 'system'
@@ -201,21 +201,21 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA auth GRANT SELECT, INSERT, UPDATE, DELETE ON 
 
 
 -- ============================================
--- 3. MEETING SCHEMA
+-- 3. TRANSLATION ROOM SCHEMA
 -- ============================================
-CREATE SCHEMA IF NOT EXISTS meeting;
+CREATE SCHEMA IF NOT EXISTS translation_room;
 
-CREATE TABLE meeting.meetings (
+CREATE TABLE translation_room.translation_rooms (
     id               UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     workspace_id     UUID NOT NULL,
     host_id          UUID NOT NULL,
     title            VARCHAR(255) NOT NULL,
     description      TEXT,
-    meeting_code     VARCHAR(12) UNIQUE NOT NULL,
+    translation_room_code     VARCHAR(12) UNIQUE NOT NULL,
     status           VARCHAR(20) NOT NULL DEFAULT 'scheduled'
                      CHECK (status IN ('scheduled','waiting','in_progress','ended','archived','cancelled')),
-    meeting_type     VARCHAR(20) NOT NULL DEFAULT 'group'
-                     CHECK (meeting_type IN ('one_to_one','group','webinar','b2b_virtual_mic')),
+    translation_room_type     VARCHAR(20) NOT NULL DEFAULT 'group'
+                     CHECK (translation_room_type IN ('one_to_one','group','webinar','b2b_virtual_mic')),
     max_participants INT NOT NULL DEFAULT 10 CHECK (max_participants >= 1 AND max_participants <= 500),
     source_language  CHAR(5) NOT NULL,
     target_languages JSONB NOT NULL DEFAULT '[]',
@@ -229,9 +229,9 @@ CREATE TABLE meeting.meetings (
     deleted_at       TIMESTAMPTZ
 );
 
-CREATE TABLE meeting.meeting_participants (
+CREATE TABLE translation_room.translation_room_participants (
     id                   UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id           UUID NOT NULL REFERENCES meeting.meetings(id) ON DELETE CASCADE,
+    translation_room_id           UUID NOT NULL REFERENCES translation_room.translation_rooms(id) ON DELETE CASCADE,
     user_id              UUID NOT NULL,
     display_name         VARCHAR(100) NOT NULL,
     role                 VARCHAR(20) NOT NULL DEFAULT 'participant'
@@ -248,11 +248,11 @@ CREATE TABLE meeting.meeting_participants (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE meeting.meeting_audio_routes (
+CREATE TABLE translation_room.translation_room_audio_routes (
     id                     UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id             UUID NOT NULL REFERENCES meeting.meetings(id) ON DELETE CASCADE,
-    source_participant_id  UUID NOT NULL REFERENCES meeting.meeting_participants(id) ON DELETE CASCADE,
-    target_participant_id  UUID NOT NULL REFERENCES meeting.meeting_participants(id) ON DELETE CASCADE,
+    translation_room_id             UUID NOT NULL REFERENCES translation_room.translation_rooms(id) ON DELETE CASCADE,
+    source_participant_id  UUID NOT NULL REFERENCES translation_room.translation_room_participants(id) ON DELETE CASCADE,
+    target_participant_id  UUID NOT NULL REFERENCES translation_room.translation_room_participants(id) ON DELETE CASCADE,
     source_language        CHAR(5) NOT NULL,
     target_language        CHAR(5) NOT NULL,
     voice_clone_enabled    BOOLEAN NOT NULL DEFAULT false,
@@ -263,9 +263,9 @@ CREATE TABLE meeting.meeting_audio_routes (
     CHECK (source_participant_id != target_participant_id)
 );
 
-CREATE TABLE meeting.meeting_recordings (
+CREATE TABLE translation_room.translation_room_recordings (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id      UUID NOT NULL REFERENCES meeting.meetings(id) ON DELETE CASCADE,
+    translation_room_id      UUID NOT NULL REFERENCES translation_room.translation_rooms(id) ON DELETE CASCADE,
     recording_type  VARCHAR(20) NOT NULL CHECK (recording_type IN ('audio','video','transcript')),
     file_url        VARCHAR(500) NOT NULL,
     file_format     VARCHAR(10) NOT NULL,
@@ -277,9 +277,9 @@ CREATE TABLE meeting.meeting_recordings (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE meeting.meeting_summaries (
+CREATE TABLE translation_room.translation_room_summaries (
     id                UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id        UUID NOT NULL REFERENCES meeting.meetings(id) ON DELETE CASCADE,
+    translation_room_id        UUID NOT NULL REFERENCES translation_room.translation_rooms(id) ON DELETE CASCADE,
     summary           TEXT NOT NULL,
     key_points        JSONB NOT NULL DEFAULT '[]',
     decisions         JSONB NOT NULL DEFAULT '[]',
@@ -287,12 +287,12 @@ CREATE TABLE meeting.meeting_summaries (
     model_used        VARCHAR(50) NOT NULL,
     processing_time_ms INT NOT NULL CHECK (processing_time_ms >= 0),
     generated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (meeting_id)
+    UNIQUE (translation_room_id)
 );
 
-CREATE TABLE meeting.meeting_feedback (
+CREATE TABLE translation_room.translation_room_feedback (
     id                    UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id            UUID NOT NULL REFERENCES meeting.meetings(id) ON DELETE CASCADE,
+    translation_room_id            UUID NOT NULL REFERENCES translation_room.translation_rooms(id) ON DELETE CASCADE,
     user_id               UUID NOT NULL,
     overall_rating        INT NOT NULL CHECK (overall_rating BETWEEN 1 AND 5),
     translation_quality   INT CHECK (translation_quality BETWEEN 1 AND 5),
@@ -301,24 +301,24 @@ CREATE TABLE meeting.meeting_feedback (
     comments              TEXT,
     communication_insights JSONB,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (meeting_id, user_id)
+    UNIQUE (translation_room_id, user_id)
 );
 
 -- Indexes for Meeting
-CREATE INDEX idx_meetings_workspace ON meeting.meetings(workspace_id);
-CREATE INDEX idx_meetings_host ON meeting.meetings(host_id);
-CREATE INDEX idx_meetings_status ON meeting.meetings(status) WHERE deleted_at IS NULL;
-CREATE INDEX idx_meetings_scheduled ON meeting.meetings(scheduled_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_participants_meeting ON meeting.meeting_participants(meeting_id);
-CREATE INDEX idx_participants_user ON meeting.meeting_participants(user_id);
-CREATE INDEX idx_audio_routes_meeting ON meeting.meeting_audio_routes(meeting_id);
-CREATE INDEX idx_recordings_meeting ON meeting.meeting_recordings(meeting_id);
-CREATE INDEX idx_feedback_meeting ON meeting.meeting_feedback(meeting_id);
+CREATE INDEX idx_translation_rooms_workspace ON translation_room.translation_rooms(workspace_id);
+CREATE INDEX idx_translation_rooms_host ON translation_room.translation_rooms(host_id);
+CREATE INDEX idx_translation_rooms_status ON translation_room.translation_rooms(status) WHERE deleted_at IS NULL;
+CREATE INDEX idx_translation_rooms_scheduled ON translation_room.translation_rooms(scheduled_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX idx_participants_translation_room ON translation_room.translation_room_participants(translation_room_id);
+CREATE INDEX idx_participants_user ON translation_room.translation_room_participants(user_id);
+CREATE INDEX idx_audio_routes_translation_room ON translation_room.translation_room_audio_routes(translation_room_id);
+CREATE INDEX idx_recordings_translation_room ON translation_room.translation_room_recordings(translation_room_id);
+CREATE INDEX idx_feedback_translation_room ON translation_room.translation_room_feedback(translation_room_id);
 
 -- Grants
-GRANT USAGE ON SCHEMA meeting TO meeting_svc;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA meeting TO meeting_svc;
-ALTER DEFAULT PRIVILEGES IN SCHEMA meeting GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO meeting_svc;
+GRANT USAGE ON SCHEMA translation_room TO translation_room_svc;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA translation_room TO translation_room_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA translation_room GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO translation_room_svc;
 
 
 -- ============================================
@@ -328,7 +328,7 @@ CREATE SCHEMA IF NOT EXISTS transcript;
 
 CREATE TABLE transcript.transcripts (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
-    meeting_id      UUID NOT NULL,
+    translation_room_id      UUID NOT NULL,
     version         INT NOT NULL DEFAULT 1 CHECK (version >= 1),
     status          VARCHAR(20) NOT NULL DEFAULT 'recording'
                     CHECK (status IN ('recording','processing','finalized','archived')),
@@ -339,7 +339,7 @@ CREATE TABLE transcript.transcripts (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finalized_at    TIMESTAMPTZ,
     deleted_at      TIMESTAMPTZ,
-    UNIQUE (meeting_id, version)
+    UNIQUE (translation_room_id, version)
 );
 
 CREATE TABLE transcript.transcript_segments (
@@ -433,7 +433,7 @@ CREATE TABLE transcript.glossary_terms (
 );
 
 -- Indexes for Transcript
-CREATE INDEX idx_transcripts_meeting ON transcript.transcripts(meeting_id);
+CREATE INDEX idx_transcripts_translation_room ON transcript.transcripts(translation_room_id);
 CREATE INDEX idx_segments_transcript ON transcript.transcript_segments(transcript_id);
 CREATE INDEX idx_segments_transcript_order ON transcript.transcript_segments(transcript_id, sequence_order);
 CREATE INDEX idx_segments_speaker ON transcript.transcript_segments(speaker_id);
@@ -572,7 +572,7 @@ CREATE TABLE subscription.usage_records (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
     subscription_id UUID NOT NULL REFERENCES subscription.subscriptions(id) ON DELETE RESTRICT,
     user_id         UUID NOT NULL,
-    meeting_id      UUID,
+    translation_room_id      UUID,
     usage_type      VARCHAR(30) NOT NULL
                     CHECK (usage_type IN ('stt_minutes','translation_chunks','tts_minutes','voice_clone_minutes','ai_summary')),
     credits_consumed INT NOT NULL CHECK (credits_consumed >= 0),
@@ -595,7 +595,7 @@ CREATE INDEX idx_payments_provider_tx ON subscription.payments(provider_transact
 CREATE INDEX idx_invoices_payment ON subscription.invoices(payment_id);
 CREATE INDEX idx_invoices_user ON subscription.invoices(user_id);
 CREATE INDEX idx_usage_subscription ON subscription.usage_records(subscription_id);
-CREATE INDEX idx_usage_meeting ON subscription.usage_records(meeting_id);
+CREATE INDEX idx_usage_translation_room ON subscription.usage_records(translation_room_id);
 
 -- Grants
 GRANT USAGE ON SCHEMA subscription TO sub_svc;
