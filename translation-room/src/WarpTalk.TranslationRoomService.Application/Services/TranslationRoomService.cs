@@ -3,6 +3,7 @@ using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
 
@@ -32,7 +33,7 @@ public class TranslationRoomService : ITranslationRoomService
             Description = request.Description,
             TranslationRoomCode = GenerateTranslationRoomCode(),
             Status = "scheduled",
-            TranslationRoomType = request.TranslationRoomType,
+            TranslationRoomType = request.TranslationRoomType.ToString(),
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = request.SourceLanguage,
             TargetLanguages = targetLangsJson,
@@ -138,7 +139,7 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.Description,
             translationRoom.TranslationRoomCode,
             translationRoom.Status,
-            translationRoom.TranslationRoomType,
+            Enum.Parse<TranslationRoomType>(translationRoom.TranslationRoomType, true),
             translationRoom.MaxParticipants,
             translationRoom.ScheduledAt,
             translationRoom.StartedAt,
