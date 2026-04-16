@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  auth-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/auth/src/WarpTalk.AuthService.API
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
+
+  translation-room-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/translation-room/src/WarpTalk.TranslationRoomService.API
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
+
+  transcript-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/transcript/src/WarpTalk.TranscriptService.API
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
+
+  notification-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/notification/src/WarpTalk.NotificationService.API
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
+
+  gateway:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/gateway/src/WarpTalk.Gateway
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
