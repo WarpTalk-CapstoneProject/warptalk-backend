@@ -1,0 +1,325 @@
+﻿{
+    "info":  {
+                 "_postman_id":  "b7a9c479-2e15-47ef-8981-603768cb09f9",
+                 "name":  "WarpTalk Backend - Translationroom",
+                 "description":  "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
+                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+                 "_exporter_id":  "51979719",
+                 "_collection_link":  "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
+             },
+    "item":  [
+                 {
+                     "name":  "02 - TranslationRoom via Gateway",
+                     "item":  [
+                                  {
+                                      "name":  "Create Translation Room",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Create room returns 200/400/401\u0027, function () {",
+                                                                                    "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]);",
+                                                                                    "});",
+                                                                                    "if (pm.response.code === 200) {",
+                                                                                    "  var json = pm.response.json();",
+                                                                                    "  var id = json.id || json.translationRoomId || \u0027\u0027;",
+                                                                                    "  if (id) pm.collectionVariables.set(\u0027translationRoomId\u0027, id);",
+                                                                                    "}"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "packages":  {
+
+                                                                                    },
+                                                                       "requests":  {
+
+                                                                                    }
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     },
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"Title\": \"Test Room\",\n  \"TranslationRoomType\": \"instant\",\n  \"MaxParticipants\": 10,\n  \"SourceLanguage\": \"vi\",\n  \"TargetLanguages\": \"en\" \n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/translationRooms",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "translationRooms"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Get Translation Room by ID",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Get room returns 200/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "GET",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "translationRooms",
+                                                                               "{{translationRoomId}}"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Join Translation Room",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Join room returns 200/400/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401, 404]); });"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "packages":  {
+
+                                                                                    },
+                                                                       "requests":  {
+
+                                                                                    }
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     },
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"displayName\": \"Guest User\",\n  \"ListenLanguage\": \"vi\",\n  \"SpeakLanguage\": \"en\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}/join",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "translationRooms",
+                                                                               "{{translationRoomId}}",
+                                                                               "join"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "End Translation Room",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027End room returns 204/400/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([204, 400, 401, 404]); });"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/translationRooms/{{translationRoomId}}/end",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "translationRooms",
+                                                                               "{{translationRoomId}}",
+                                                                               "end"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  }
+                              ],
+                     "auth":  {
+                                  "type":  "bearer",
+                                  "bearer":  [
+                                                 {
+                                                     "key":  "token",
+                                                     "value":  "{{accessToken}}",
+                                                     "type":  "string"
+                                                 }
+                                             ]
+                              },
+                     "event":  [
+                                   {
+                                       "listen":  "prerequest",
+                                       "script":  {
+                                                      "type":  "text/javascript",
+                                                      "packages":  {
+
+                                                                   },
+                                                      "requests":  {
+
+                                                                   },
+                                                      "exec":  [
+                                                                   ""
+                                                               ]
+                                                  }
+                                   },
+                                   {
+                                       "listen":  "test",
+                                       "script":  {
+                                                      "type":  "text/javascript",
+                                                      "packages":  {
+
+                                                                   },
+                                                      "requests":  {
+
+                                                                   },
+                                                      "exec":  [
+                                                                   ""
+                                                               ]
+                                                  }
+                                   }
+                               ]
+                 }
+             ],
+    "variable":  [
+                     {
+                         "key":  "gatewayBaseUrl",
+                         "value":  "http://localhost:5200"
+                     },
+                     {
+                         "key":  "authBaseUrl",
+                         "value":  "http://localhost:5101"
+                     },
+                     {
+                         "key":  "translationRoomBaseUrl",
+                         "value":  "http://localhost:5102"
+                     },
+                     {
+                         "key":  "transcriptBaseUrl",
+                         "value":  "http://localhost:5103"
+                     },
+                     {
+                         "key":  "notificationBaseUrl",
+                         "value":  "http://localhost:5104"
+                     },
+                     {
+                         "key":  "testEmail",
+                         "value":  "warptalk+{{$timestamp}}@mail.com"
+                     },
+                     {
+                         "key":  "testPassword",
+                         "value":  "P@ssw0rd123!"
+                     },
+                     {
+                         "key":  "accessToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "refreshToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "translationRoomId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     },
+                     {
+                         "key":  "transcriptId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     }
+                 ],
+    "event":  [
+                  {
+                      "listen":  "prerequest",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  },
+                  {
+                      "listen":  "test",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  }
+              ]
+}
