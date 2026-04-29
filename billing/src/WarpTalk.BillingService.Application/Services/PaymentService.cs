@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -52,8 +53,11 @@ public class PaymentService : IPaymentService
         if (request.PlanId.HasValue)
         {
             var plan = await _planRepository.GetByIdAsync(request.PlanId.Value, cancellationToken);
-            if (plan == null) throw new Exception("Subscription plan not found.");
-            
+            if (plan == null || !plan.IsActive)
+            {
+                throw new InvalidOperationException("Subscription plan not found or inactive.");
+            }
+
             amount = plan.PriceVnd;
             minutes = plan.BaseQuotaMinutes;
             description = $"Upgrade to {plan.Name} Plan";
@@ -67,11 +71,12 @@ public class PaymentService : IPaymentService
         }
         else
         {
-            throw new Exception("Must provide either PlanId or TopUpMinutes.");
+            throw new InvalidOperationException("Must provide either PlanId or TopUpMinutes.");
         }
 
         // Generate a unique order code (numeric for PayOS)
-        long orderCode = long.Parse(DateTime.UtcNow.ToString("yyMMddHHmmss") + new Random().Next(100, 999));
+        var randomSuffix = RandomNumberGenerator.GetInt32(100, 1000);
+        long orderCode = long.Parse($"{DateTime.UtcNow:yyMMddHHmmss}{randomSuffix}", CultureInfo.InvariantCulture);
 
         var transaction = new Transaction
         {
@@ -183,24 +188,61 @@ public class PaymentService : IPaymentService
         }
     }
 
-    public async Task<IEnumerable<Transaction>> GetTransactionsByWorkspaceAsync(Guid workspaceId, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<Transaction>> GetTransactionsByWorkspaceAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
     {
-        return await _transactionRepository.GetByWorkspaceIdAsync(workspaceId, cancellationToken);
+        return await _transactionRepository.GetByWorkspaceIdAsync(workspaceId, page, pageSize, cancellationToken);
     }
 
-    public async Task<IEnumerable<QuotaAuditLog>> GetUsageLogsByWorkspaceAsync(Guid workspaceId, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<QuotaAuditLog>> GetUsageLogsByWorkspaceAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
     {
-        return await _auditLogRepository.GetByWorkspaceIdAsync(workspaceId, cancellationToken);
+        return await _auditLogRepository.GetByWorkspaceIdAsync(workspaceId, page, pageSize, cancellationToken);
     }
 
     private bool VerifySignature(PayOsWebhookPayload payload)
     {
         var checksumKey = _configuration["PayOS:ChecksumKey"];
-        if (string.IsNullOrEmpty(checksumKey)) return true; // Skip if not configured for dev
+        var isDevelopment = string.Equals(
+            _configuration["ASPNETCORE_ENVIRONMENT"],
+            "Development",
+            StringComparison.OrdinalIgnoreCase);
 
-        // Standard PayOS signature logic (simplified for implementation)
-        // In reality, we would sort keys and hash the content.
-        // For production, we would use the PayOS SDK or exact logic from their docs.
-        return true; // Assume true for now to allow testing, but structure is ready.
+        if (string.IsNullOrWhiteSpace(checksumKey))
+        {
+            var allowInsecureDev = bool.TryParse(
+                _configuration["Security:AllowInsecureWebhookSignatureInDevelopment"],
+                out var parsedValue) && parsedValue;
+
+            return isDevelopment && allowInsecureDev;
+        }
+
+        var data = payload.Data;
+        if (data == null || string.IsNullOrWhiteSpace(payload.Signature))
+        {
+            return false;
+        }
+
+        var fields = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["amount"] = data.Amount.ToString(CultureInfo.InvariantCulture),
+            ["code"] = payload.Code,
+            ["currency"] = data.Currency,
+            ["desc"] = payload.Desc,
+            ["orderCode"] = data.OrderCode.ToString(CultureInfo.InvariantCulture),
+            ["paymentLinkId"] = data.PaymentLinkId,
+            ["reference"] = data.Reference,
+            ["transactionDateTime"] = data.TransactionDateTime
+        };
+
+        var payloadToSign = string.Join("&", fields.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(checksumKey));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payloadToSign));
+        var computedSignature = Convert.ToHexString(hash).ToLowerInvariant();
+
+        var providedSignature = payload.Signature.Trim().ToLowerInvariant();
+        var computedBytes = Encoding.UTF8.GetBytes(computedSignature);
+        var providedBytes = Encoding.UTF8.GetBytes(providedSignature);
+
+        return CryptographicOperations.FixedTimeEquals(computedBytes, providedBytes);
     }
 }

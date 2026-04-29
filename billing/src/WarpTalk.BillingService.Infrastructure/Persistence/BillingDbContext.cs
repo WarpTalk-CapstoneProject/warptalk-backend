@@ -10,6 +10,8 @@ namespace WarpTalk.BillingService.Infrastructure.Persistence;
 
 public class BillingDbContext : DbContext, IUnitOfWork
 {
+    private static readonly DateTime SeedCreatedAt = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
     public BillingDbContext(DbContextOptions<BillingDbContext> options) : base(options)
     {
     }
@@ -37,10 +39,10 @@ public class BillingDbContext : DbContext, IUnitOfWork
 
             // Seeding Default Plans
             entity.HasData(
-                new SubscriptionPlan { Id = Guid.Parse("11111111-1111-1111-1111-111111111111"), Name = PlanType.Free, BaseQuotaMinutes = 30, PriceVnd = 0, MaxParticipants = 5 },
-                new SubscriptionPlan { Id = Guid.Parse("22222222-2222-2222-2222-222222222222"), Name = PlanType.Pro, BaseQuotaMinutes = 500, PriceVnd = 199000, MaxParticipants = 25 },
-                new SubscriptionPlan { Id = Guid.Parse("33333333-3333-3333-3333-333333333333"), Name = PlanType.Premium, BaseQuotaMinutes = 1000, PriceVnd = 499000, MaxParticipants = 100 },
-                new SubscriptionPlan { Id = Guid.Parse("44444444-4444-4444-4444-444444444444"), Name = PlanType.Enterprise, BaseQuotaMinutes = 10000, PriceVnd = 0, MaxParticipants = 1000 }
+                new SubscriptionPlan { Id = Guid.Parse("11111111-1111-1111-1111-111111111111"), Name = PlanType.Free, BaseQuotaMinutes = 30, PriceVnd = 0, MaxParticipants = 5, CreatedAt = SeedCreatedAt },
+                new SubscriptionPlan { Id = Guid.Parse("22222222-2222-2222-2222-222222222222"), Name = PlanType.Pro, BaseQuotaMinutes = 500, PriceVnd = 199000, MaxParticipants = 25, CreatedAt = SeedCreatedAt },
+                new SubscriptionPlan { Id = Guid.Parse("33333333-3333-3333-3333-333333333333"), Name = PlanType.Premium, BaseQuotaMinutes = 1000, PriceVnd = 499000, MaxParticipants = 100, CreatedAt = SeedCreatedAt },
+                new SubscriptionPlan { Id = Guid.Parse("44444444-4444-4444-4444-444444444444"), Name = PlanType.Enterprise, BaseQuotaMinutes = 10000, PriceVnd = 0, MaxParticipants = 1000, CreatedAt = SeedCreatedAt }
             );
         });
 
@@ -60,20 +62,6 @@ public class BillingDbContext : DbContext, IUnitOfWork
                   .WithMany()
                   .HasForeignKey(e => e.PlanId)
                   .OnDelete(DeleteBehavior.Restrict);
-
-            // Seeding a default UsageQuota for testing
-            entity.HasData(
-                new UsageQuota
-                {
-                    Id = Guid.Parse("99999999-9999-9999-9999-999999999999"),
-                    WorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777"),
-                    PlanId = Guid.Parse("22222222-2222-2222-2222-222222222222"), // Pro Plan
-                    TotalAllocatedMinutes = 500,
-                    ConsumedMinutes = 0,
-                    CycleStartDate = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-                    CycleEndDate = new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc)
-                }
-            );
         });
 
         // Transaction Configuration
@@ -91,7 +79,7 @@ public class BillingDbContext : DbContext, IUnitOfWork
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.WorkspaceId);
-            entity.HasIndex(e => e.ReferenceId); // Idempotency
+            entity.HasIndex(e => new { e.WorkspaceId, e.ReferenceId }).IsUnique(); // Idempotency per workspace
             entity.Property(e => e.Action).IsRequired().HasConversion<string>();
             entity.Property(e => e.Amount).HasColumnType("decimal(18,4)");
             entity.Property(e => e.BalanceAfter).HasColumnType("decimal(18,4)");

@@ -37,7 +37,7 @@ public class ExceptionHandlingMiddleware
         {
             status = context.Response.StatusCode,
             message = "An internal server error occurred.",
-            detail = exception.Message
+            traceId = context.TraceIdentifier
         };
 
         var json = JsonSerializer.Serialize(response);

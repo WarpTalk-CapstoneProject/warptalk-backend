@@ -1,13 +1,12 @@
 using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
 /// <summary>
 /// Request to deduct usage quota
 /// </summary>
-/// <param name="SessionId">Unique identifier of the meeting session (Idempotency Key)</param>
-/// <param name="ConsumedMinutes">Amount of minutes to deduct</param>
-/// <param name="Source">Source of the deduction (e.g., meeting description)</param>
 /// <example>
 /// {
 ///   "workspaceId": "77777777-7777-7777-7777-777777777777",
@@ -16,8 +15,39 @@ namespace WarpTalk.BillingService.Application.DTOs;
 ///   "source": "Weekly Sync Meeting"
 /// }
 /// </example>
-public record QuotaDeductRequest(
-    Guid SessionId,
-    decimal ConsumedMinutes,
-    string Source
-);
+public class QuotaDeductRequest : IValidatableObject
+{
+    public QuotaDeductRequest()
+    {
+    }
+
+    public QuotaDeductRequest(Guid sessionId, decimal consumedMinutes, string source)
+    {
+        SessionId = sessionId;
+        ConsumedMinutes = consumedMinutes;
+        Source = source;
+    }
+
+    [Required]
+    public Guid SessionId { get; set; }
+
+    [Range(typeof(decimal), "0.01", "10000")]
+    public decimal ConsumedMinutes { get; set; }
+
+    [Required]
+    [StringLength(100)]
+    public string Source { get; set; } = string.Empty;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (SessionId == Guid.Empty)
+        {
+            yield return new ValidationResult("SessionId cannot be empty.", [nameof(SessionId)]);
+        }
+
+        if (string.IsNullOrWhiteSpace(Source))
+        {
+            yield return new ValidationResult("Source is required.", [nameof(Source)]);
+        }
+    }
+}

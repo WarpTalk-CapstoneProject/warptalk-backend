@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services;
@@ -20,6 +21,7 @@ public class PayOsController : ControllerBase
     /// <summary>
     /// Nhận Webhook từ PayOS
     /// </summary>
+    [AllowAnonymous]
     [HttpPost("webhook")]
     public async Task<IActionResult> HandlePayOsWebhook([FromBody] PayOsWebhookPayload payload, CancellationToken cancellationToken)
     {
@@ -35,10 +37,17 @@ public class PayOsController : ControllerBase
             // PayOS expects 200 OK or specific response to acknowledge receipt
             return Ok(new { success = true });
         }
-        catch (System.Exception ex)
+        catch (UnauthorizedAccessException)
         {
-            // Even if signature fails, we might return 400 as per spec
-            return BadRequest(new { message = ex.Message });
+            return BadRequest(new { message = "Invalid PayOS signature." });
+        }
+        catch (System.Exception)
+        {
+            return BadRequest(new
+            {
+                message = "Webhook processing failed.",
+                traceId = HttpContext.TraceIdentifier
+            });
         }
     }
 }

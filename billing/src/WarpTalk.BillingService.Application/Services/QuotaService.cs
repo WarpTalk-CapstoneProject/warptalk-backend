@@ -102,7 +102,7 @@ public class QuotaService : IQuotaService
             _logger.LogError("Concurrency conflict deducting quota for Workspace {WorkspaceId}", workspaceId);
             return new QuotaDeductResponse(false, remaining, "ConcurrencyConflict");
         }
-        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("IX_QuotaAuditLogs_ReferenceId") == true)
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("IX_QuotaAuditLogs_WorkspaceId_ReferenceId") == true)
         {
             _logger.LogWarning("Session {SessionId} already processed for Workspace {WorkspaceId}", request.SessionId, workspaceId);
 
@@ -150,7 +150,7 @@ public class QuotaService : IQuotaService
             _logger.LogError("Concurrency conflict refunding quota for Workspace {WorkspaceId}", workspaceId);
             return new QuotaDeductResponse(false, quota.TotalAllocatedMinutes - quota.ConsumedMinutes, "ConcurrencyConflict");
         }
-        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("IX_QuotaAuditLogs_ReferenceId") == true)
+        catch (DbUpdateException ex) when (ex.InnerException?.Message.Contains("IX_QuotaAuditLogs_WorkspaceId_ReferenceId") == true)
         {
             _logger.LogWarning("Refund for Session {SessionId} already processed for Workspace {WorkspaceId}", request.SessionId, workspaceId);
 
