@@ -30,7 +30,6 @@ WarpTalk áp dụng mô hình Tiered Subscriptions để phân cấp quyền tru
   - **Voices**: Premium TTS Voices (Nhiều lựa chọn ngữ điệu tự nhiên, đa ngôn ngữ), Hỗ trợ Clone Voice.
   - **Meeting Size**: Tối đa 25 người tham gia.
   - **Add-ons**: Cho phép tải xuống (Export) raw Transcript sau cuộc họp.
-  - **Integrations**: Tích hợp các nền tảng họp trực tuyến như: Zoom, Google Meet.
 
 ### 1.3. Premium Plan
 - **Mục tiêu**: Dành cho các nhóm làm việc (teams, SMBs) có nhu cầu họp liên tục, cần tích hợp AI meeting summary và đa ngôn ngữ chuyên sâu.
