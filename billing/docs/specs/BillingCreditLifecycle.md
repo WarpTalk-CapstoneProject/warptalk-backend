@@ -65,13 +65,7 @@ Tuổi thọ của Credit (Expiration) thay đổi tùy theo xuất xứ của m
 
 ## 5. Rollover (Cộng dồn)
 
-Quy tắc xử lý tín dụng thừa (Rollover) sang chu kỳ tiếp theo:
-
-1. **Free / Pro / Premium Plan**:
-   - **Không áp dụng Rollover**. Số phút Base dư khi kết thúc ngày cuối tháng UTC sẽ bị vô hiệu hóa hoàn toàn (Use it or lose it).
-2. **Enterprise Plan**:
-   - Tùy chỉnh (SLA Contract-based): Doanh nghiệp có thể đàm phán chính sách "Rollover 1 tháng kế tiếp" đối với dung lượng Base Quota không xài hết. 
-   - Quota rollover sẽ được gán Type riêng `Rollover_Quota` có HSD duy nhất ở tháng kế tiếp, và tuân theo nguyên tắc Deduct ưu tiên cao nhất trước cả Base Quota tháng mới.
+**Không áp dụng Rollover cho mọi gói cước**. Số phút Base dư khi kết thúc chu kỳ thanh toán sẽ bị vô hiệu hóa hoàn toàn (Use it or lose it). Dù là gói Free, Pro, Premium hay Enterprise đều tuân theo nguyên tắc không cộng dồn tín dụng chưa sử dụng sang tháng sau.
 
 ---
 
