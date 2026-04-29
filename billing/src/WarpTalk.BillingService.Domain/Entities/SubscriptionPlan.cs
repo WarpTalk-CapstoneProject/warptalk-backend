@@ -3,6 +3,20 @@ using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
+/// <summary>
+/// Subscription plan details
+/// </summary>
+/// <example>
+/// {
+///   "id": "22222222-2222-2222-2222-222222222222",
+///   "name": "Pro",
+///   "baseQuotaMinutes": 500,
+///   "priceVnd": 199000,
+///   "maxParticipants": 25,
+///   "featuresJson": "{\"advancedTranslation\": true}",
+///   "isActive": true
+/// }
+/// </example>
 public class SubscriptionPlan
 {
     public Guid Id { get; set; } = Guid.NewGuid();

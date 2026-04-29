@@ -18,11 +18,10 @@ public class UsageQuota
     public DateTime CycleStartDate { get; set; }
     public DateTime CycleEndDate { get; set; }
     
-    /// <summary>
-    /// Concurrency token for Optimistic Locking (mapped to xmin in PostgreSQL)
-    /// </summary>
-    public uint Version { get; set; } 
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
     
     // Navigation property
-    public SubscriptionPlan Plan { get; set; }
+    public SubscriptionPlan Plan { get; set; } = null!;
 }
+
