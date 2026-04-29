@@ -1,5 +1,21 @@
 namespace WarpTalk.BillingService.Application.DTOs;
 
+/// <summary>
+/// Payload received from PayOS Webhook
+/// </summary>
+/// <example>
+/// {
+///   "code": "00",
+///   "desc": "success",
+///   "data": {
+///     "orderCode": 123456,
+///     "amount": 200000,
+///     "description": "WarpTalk Pro Upgrade",
+///     "transactionDateTime": "2026-04-29 10:00:00"
+///   },
+///   "signature": "38475834759348759348759348"
+/// }
+/// </example>
 public class PayOsWebhookPayload
 {
     public string Code { get; set; } = string.Empty;

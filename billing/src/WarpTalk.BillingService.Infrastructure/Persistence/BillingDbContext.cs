@@ -2,10 +2,13 @@ using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Enums;
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using WarpTalk.BillingService.Domain.Interfaces;
 
 namespace WarpTalk.BillingService.Infrastructure.Persistence;
 
-public class BillingDbContext : DbContext
+public class BillingDbContext : DbContext, IUnitOfWork
 {
     public BillingDbContext(DbContextOptions<BillingDbContext> options) : base(options)
     {
@@ -48,13 +51,29 @@ public class BillingDbContext : DbContext
             entity.HasIndex(e => e.WorkspaceId).IsUnique();
             entity.Property(e => e.TotalAllocatedMinutes).HasColumnType("decimal(18,4)");
             entity.Property(e => e.ConsumedMinutes).HasColumnType("decimal(18,4)");
-            entity.Property(e => e.Version).IsRowVersion(); // Optimistic Concurrency
+            entity.Property<uint>("Version").IsRowVersion(); // Keep a property for easy mapping if needed, or use xmin
+
+
 
             // One-to-Many: SubscriptionPlan -> UsageQuotas
             entity.HasOne(e => e.Plan)
                   .WithMany()
                   .HasForeignKey(e => e.PlanId)
                   .OnDelete(DeleteBehavior.Restrict);
+
+            // Seeding a default UsageQuota for testing
+            entity.HasData(
+                new UsageQuota
+                {
+                    Id = Guid.Parse("99999999-9999-9999-9999-999999999999"),
+                    WorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777"),
+                    PlanId = Guid.Parse("22222222-2222-2222-2222-222222222222"), // Pro Plan
+                    TotalAllocatedMinutes = 500,
+                    ConsumedMinutes = 0,
+                    CycleStartDate = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                    CycleEndDate = new DateTime(2026, 12, 31, 23, 59, 59, DateTimeKind.Utc)
+                }
+            );
         });
 
         // Transaction Configuration
