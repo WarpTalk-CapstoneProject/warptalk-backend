@@ -23,17 +23,18 @@ WarpTalk áp dụng mô hình Tiered Subscriptions để phân cấp quyền tru
 
 ### 1.2. Pro Plan
 - **Mục tiêu**: Dành cho người dùng cá nhân (freelancers, educators) cần tổ chức cuộc họp cường độ trung bình với chất lượng cao.
-- **Credit Allocation**: Cấp 500 phút / tháng (cộng dồn hoặc roll-over không được hỗ trợ trong Phase 1).
+- **Credit Allocation**: Cấp 500 phút / tháng (không hỗ trợ cộng dồn sang tháng sau).
 - **Feature Access Rules**:
   - **Models**: Advanced Translation Models (độ chính xác cao hơn, ít delay).
   - **Latency**: Priority Queue (ưu tiên xử lý so với Free).
-  - **Voices**: Premium TTS Voices (Nhiều lựa chọn ngữ điệu tự nhiên, đa ngôn ngữ).
+  - **Voices**: Premium TTS Voices (Nhiều lựa chọn ngữ điệu tự nhiên, đa ngôn ngữ), Hỗ trợ Clone Voice.
   - **Meeting Size**: Tối đa 25 người tham gia.
   - **Add-ons**: Cho phép tải xuống (Export) raw Transcript sau cuộc họp.
+  - **Integrations**: Tích hợp các nền tảng họp trực tuyến như: Zoom, Google Meet.
 
 ### 1.3. Premium Plan
 - **Mục tiêu**: Dành cho các nhóm làm việc (teams, SMBs) có nhu cầu họp liên tục, cần tích hợp AI meeting summary và đa ngôn ngữ chuyên sâu.
-- **Credit Allocation**: Cấp 2,000 phút / tháng. Hỗ trợ mua thêm (Top-up credits) theo dạng pay-as-you-go khi hết.
+- **Credit Allocation**: Cấp 1,000 phút / tháng. Hỗ trợ mua thêm (Top-up credits) theo dạng pay-as-you-go khi hết.
 - **Feature Access Rules**:
   - **Models**: State-of-the-art Translation, hỗ trợ thuật ngữ chuyên biệt (Custom Dictionaries).
   - **Latency**: Zero-latency Streaming (Dedicated compute priority).
@@ -76,5 +77,5 @@ WarpTalk áp dụng mô hình Tiered Subscriptions để phân cấp quyền tru
 
 Thiết kế Database (dựa theo commit `fa8b7c7`) bao gồm:
 - Bảng `subscription_plan`: Định nghĩa metadata của 4 gói (Tên, Limits cơ sở).
-- Bảng `usage_quota`: Ghi nhận Allocate amount (Ví dụ: 30, 500, 2000) và Used amount (tiêu thụ hàng ngày).
+- Bảng `usage_quota`: Ghi nhận Allocate amount (Ví dụ: 30, 500, 1000) và Used amount (tiêu thụ hàng ngày).
 - Endpoint `/api/v1/billing/quota/check` sẽ filter theo ID và lấy Plan settings tương ứng để check Feature Access (ví dụ: host request *Premium Voice* nhưng đang ở *Free Plan* -> Trả về `403 Forbidden`).
