@@ -1,7 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Security;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services;
 
@@ -27,9 +29,10 @@ public class QuotaController : ControllerBase
         [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId, 
         CancellationToken cancellationToken)
     {
-        if (workspaceId == Guid.Empty)
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
+        if (accessError != null)
         {
-            return BadRequest(new { message = "X-Workspace-Id header is required." });
+            return accessError;
         }
 
         var response = await _quotaService.CheckQuotaAsync(workspaceId, cancellationToken);
@@ -52,6 +55,12 @@ public class QuotaController : ControllerBase
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var accessError = WorkspaceAuthorizationHelper.ValidateServiceAccess(HttpContext, workspaceId);
+        if (accessError != null)
+        {
+            return accessError;
+        }
+
         if (!ModelState.IsValid)
         {
             return BadRequest(ModelState);
@@ -85,6 +94,12 @@ public class QuotaController : ControllerBase
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
+        var accessError = WorkspaceAuthorizationHelper.ValidateServiceAccess(HttpContext, workspaceId);
+        if (accessError != null)
+        {
+            return accessError;
+        }
+
         if (!ModelState.IsValid)
         {
             return BadRequest(ModelState);
@@ -99,6 +114,7 @@ public class QuotaController : ControllerBase
         return BadRequest(response);
     }
 
+    [AllowAnonymous]
     [HttpGet("plans")]
     public async Task<IActionResult> GetPlans(CancellationToken cancellationToken)
     {
@@ -112,6 +128,12 @@ public class QuotaController : ControllerBase
         [FromBody] Guid planId, 
         CancellationToken cancellationToken)
     {
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        if (accessError != null)
+        {
+            return accessError;
+        }
+
         var success = await _quotaService.UpgradePlanAsync(workspaceId, planId, cancellationToken);
         if (success)
         {
@@ -120,4 +142,3 @@ public class QuotaController : ControllerBase
         return BadRequest(new { message = "Failed to upgrade plan." });
     }
 }
-

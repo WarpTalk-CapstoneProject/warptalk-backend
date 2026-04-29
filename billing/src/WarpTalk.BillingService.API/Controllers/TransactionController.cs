@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Security;
 using WarpTalk.BillingService.Application.Services;
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -22,15 +23,25 @@ public class TransactionController : ControllerBase
     /// </summary>
     [HttpGet("history")]
     public async Task<IActionResult> GetTransactionHistory(
-        [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId, 
-        CancellationToken cancellationToken)
+        [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken cancellationToken = default)
     {
-        if (workspaceId == Guid.Empty)
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        if (accessError != null)
         {
-            return BadRequest(new { message = "X-Workspace-Id header is required." });
+            return accessError;
         }
 
-        var transactions = await _paymentService.GetTransactionsByWorkspaceAsync(workspaceId, cancellationToken);
+        if (page < 1 || pageSize < 1)
+        {
+            return BadRequest(new { message = "page and pageSize must be greater than 0." });
+        }
+
+        pageSize = Math.Min(pageSize, 200);
+
+        var transactions = await _paymentService.GetTransactionsByWorkspaceAsync(workspaceId, page, pageSize, cancellationToken);
         return Ok(transactions);
     }
 
@@ -39,16 +50,25 @@ public class TransactionController : ControllerBase
     /// </summary>
     [HttpGet("usage-logs")]
     public async Task<IActionResult> GetUsageLogs(
-        [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId, 
-        CancellationToken cancellationToken)
+        [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        CancellationToken cancellationToken = default)
     {
-        if (workspaceId == Guid.Empty)
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        if (accessError != null)
         {
-            return BadRequest(new { message = "X-Workspace-Id header is required." });
+            return accessError;
         }
 
-        var logs = await _paymentService.GetUsageLogsByWorkspaceAsync(workspaceId, cancellationToken);
+        if (page < 1 || pageSize < 1)
+        {
+            return BadRequest(new { message = "page and pageSize must be greater than 0." });
+        }
+
+        pageSize = Math.Min(pageSize, 200);
+
+        var logs = await _paymentService.GetUsageLogsByWorkspaceAsync(workspaceId, page, pageSize, cancellationToken);
         return Ok(logs);
     }
 }
-

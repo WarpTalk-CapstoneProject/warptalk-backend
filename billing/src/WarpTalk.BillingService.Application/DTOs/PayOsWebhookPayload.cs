@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace WarpTalk.BillingService.Application.DTOs;
 
 /// <summary>
@@ -18,22 +20,54 @@ namespace WarpTalk.BillingService.Application.DTOs;
 /// </example>
 public class PayOsWebhookPayload
 {
+    [Required]
+    [StringLength(10)]
     public string Code { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(255)]
     public string Desc { get; set; } = string.Empty;
+
+    [Required]
     public PayOsWebhookData? Data { get; set; }
+
+    [Required]
+    [StringLength(512)]
     public string Signature { get; set; } = string.Empty;
 }
 
 public class PayOsWebhookData
 {
+    [Range(1, long.MaxValue)]
     public long OrderCode { get; set; }
+
+    [Range(1, int.MaxValue)]
     public int Amount { get; set; }
+
+    [StringLength(255)]
     public string Description { get; set; } = string.Empty;
+
+    [StringLength(100)]
     public string AccountNumber { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(128)]
     public string Reference { get; set; } = string.Empty;
+
+    [Required]
+    [StringLength(64)]
     public string TransactionDateTime { get; set; } = string.Empty;
+
+    [Required]
+    [RegularExpression("^[A-Z]{3}$")]
     public string Currency { get; set; } = "VND";
+
+    [StringLength(128)]
     public string PaymentLinkId { get; set; } = string.Empty;
+
+    [StringLength(10)]
     public string Code { get; set; } = string.Empty;
+
+    [StringLength(255)]
     public string Desc { get; set; } = string.Empty;
 }

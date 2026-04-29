@@ -35,8 +35,10 @@ public class PaymentServiceTests
         _loggerMock = new Mock<ILogger<PaymentService>>();
         _configMock = new Mock<IConfiguration>();
 
-        // Mock configuration for PayOS
-        _configMock.Setup(c => c["PayOS:ChecksumKey"]).Returns("test_checksum_key");
+        // Mock configuration for PayOS in unit-test mode (no real signature material).
+        _configMock.Setup(c => c["PayOS:ChecksumKey"]).Returns(string.Empty);
+        _configMock.Setup(c => c["ASPNETCORE_ENVIRONMENT"]).Returns("Development");
+        _configMock.Setup(c => c["Security:AllowInsecureWebhookSignatureInDevelopment"]).Returns("true");
 
         _paymentService = new PaymentService(
             _transactionRepoMock.Object,

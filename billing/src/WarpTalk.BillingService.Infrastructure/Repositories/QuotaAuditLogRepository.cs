@@ -19,11 +19,16 @@ public class QuotaAuditLogRepository : IQuotaAuditLogRepository
         _dbContext = dbContext;
     }
 
-    public async Task<IEnumerable<QuotaAuditLog>> GetByWorkspaceIdAsync(Guid workspaceId, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<QuotaAuditLog>> GetByWorkspaceIdAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
     {
+        var safePage = Math.Max(1, page);
+        var safePageSize = Math.Clamp(pageSize, 1, 200);
+
         return await _dbContext.QuotaAuditLogs
             .Where(l => l.WorkspaceId == workspaceId)
             .OrderByDescending(l => l.CreatedAt)
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
             .ToListAsync(cancellationToken);
     }
 

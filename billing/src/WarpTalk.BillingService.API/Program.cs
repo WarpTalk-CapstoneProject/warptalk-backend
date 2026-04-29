@@ -4,8 +4,11 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.API.Middleware;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using System.Linq;
 using System.IO;
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;
 
@@ -20,15 +23,66 @@ Log.Logger = new LoggerConfiguration()
 
 builder.Host.UseSerilog();
 
+var requireAuthentication = builder.Configuration.GetValue("Security:RequireAuthentication", false);
+
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? Array.Empty<string>();
+
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
+    options.AddPolicy("BillingCors", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        if (allowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyMethod()
+                  .AllowAnyHeader();
+            return;
+        }
+
+        // Keep local development usable when env config is missing.
+        if (builder.Environment.IsDevelopment())
+        {
+            policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
+                  .AllowAnyMethod()
+                  .AllowAnyHeader();
+            return;
+        }
+
+        throw new InvalidOperationException("CORS origins must be configured for non-development environments.");
     });
 });
+
+if (requireAuthentication)
+{
+    var jwtSecret = builder.Configuration["Jwt:Secret"]
+        ?? throw new InvalidOperationException("Jwt:Secret is required when authentication is enabled.");
+
+    var jwtIssuer = builder.Configuration["Jwt:Issuer"]
+        ?? throw new InvalidOperationException("Jwt:Issuer is required when authentication is enabled.");
+
+    var jwtAudience = builder.Configuration["Jwt:Audience"]
+        ?? throw new InvalidOperationException("Jwt:Audience is required when authentication is enabled.");
+
+    builder.Services
+        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = jwtIssuer,
+                ValidateAudience = true,
+                ValidAudience = jwtAudience,
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.FromMinutes(1)
+            };
+        });
+
+    builder.Services.AddAuthorization();
+}
 
 builder.Services.AddControllers()
     .ConfigureApiBehaviorOptions(options =>
@@ -75,7 +129,13 @@ builder.Services.AddSwaggerGen(c =>
 // Add DbContext
 builder.Services.AddDbContext<BillingDbContext>(options =>
 {
-    options.UseNpgsql(builder.Configuration.GetConnectionString("BillingDb"));
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("BillingDb"),
+        npgsql =>
+        {
+            npgsql.CommandTimeout(15);
+            npgsql.EnableRetryOnFailure(3, TimeSpan.FromSeconds(2), null);
+        });
     options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
 });
 
@@ -98,7 +158,55 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseCors("AllowAll");
+app.UseHttpsRedirection();
+app.UseCors("BillingCors");
+
+var requireServiceClientCertificate = builder.Configuration.GetValue("Security:RequireServiceClientCertificate", false);
+var allowedServiceClientThumbprints = builder.Configuration
+    .GetSection("Security:AllowedServiceClientCertificateThumbprints")
+    .Get<string[]>()
+    ?? Array.Empty<string>();
+
+if (requireServiceClientCertificate)
+{
+    if (allowedServiceClientThumbprints.Length == 0)
+    {
+        throw new InvalidOperationException("At least one service client certificate thumbprint is required when mTLS is enabled.");
+    }
+
+    var allowedThumbprints = allowedServiceClientThumbprints
+        .Select(NormalizeThumbprint)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    app.Use(async (context, next) =>
+    {
+        if (context.Request.Path.StartsWithSegments("/health"))
+        {
+            await next();
+            return;
+        }
+
+        var certificate = await context.Connection.GetClientCertificateAsync();
+        if (certificate == null || !allowedThumbprints.Contains(NormalizeThumbprint(certificate.Thumbprint)))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                message = "Valid service client certificate required.",
+                traceId = context.TraceIdentifier
+            });
+            return;
+        }
+
+        await next();
+    });
+}
+
+if (requireAuthentication)
+{
+    app.UseAuthentication();
+    app.UseAuthorization();
+}
 
 // Security Headers
 app.Use(async (context, next) =>
@@ -112,38 +220,54 @@ app.Use(async (context, next) =>
 // Enrich logs with WorkspaceId
 app.Use(async (context, next) =>
 {
-    var workspaceId = context.Request.Headers["X-Workspace-Id"].ToString();
-    if (!string.IsNullOrEmpty(workspaceId))
+    var correlationId = context.Request.Headers["X-Correlation-Id"].ToString();
+    if (string.IsNullOrWhiteSpace(correlationId))
     {
-        using (Serilog.Context.LogContext.PushProperty("WorkspaceId", workspaceId))
+        correlationId = context.TraceIdentifier;
+    }
+
+    var workspaceId = context.Request.Headers["X-Workspace-Id"].ToString();
+
+    context.Response.Headers["X-Correlation-Id"] = correlationId;
+
+    using (Serilog.Context.LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        if (!string.IsNullOrEmpty(workspaceId))
+        {
+            using (Serilog.Context.LogContext.PushProperty("WorkspaceId", workspaceId))
+            {
+                await next();
+            }
+        }
+        else
         {
             await next();
         }
     }
-    else
-    {
-        await next();
-    }
 });
 
-app.MapControllers();
+var controllerRoute = app.MapControllers();
+if (requireAuthentication)
+{
+    controllerRoute.RequireAuthorization();
+}
+
 app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/live");
+app.MapHealthChecks("/health/ready");
 
 app.MapGet("/", () => "WarpTalk Billing Service is running.");
 
 
-// Auto-Seeding in Development
-if (app.Environment.IsDevelopment())
+// Auto-Seeding in Development (opt-in only)
+var autoSeedOnStartup = builder.Configuration.GetValue("Billing:AutoSeedOnStartup", false);
+if (app.Environment.IsDevelopment() && autoSeedOnStartup)
 {
     using var scope = app.Services.CreateScope();
     var context = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
-    
-    // Đảm bảo Database đã được tạo
+
     context.Database.EnsureCreated();
 
-
-
-    // Seed Plans if empty
     if (!context.SubscriptionPlans.Any())
     {
         var plans = new List<WarpTalk.BillingService.Domain.Entities.SubscriptionPlan>
@@ -157,7 +281,6 @@ if (app.Environment.IsDevelopment())
         context.SaveChanges();
     }
 
-    // Seed test workspace if empty
     var testWorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
     if (!context.UsageQuotas.Any(q => q.WorkspaceId == testWorkspaceId))
     {
@@ -165,7 +288,7 @@ if (app.Environment.IsDevelopment())
         {
             Id = Guid.NewGuid(),
             WorkspaceId = testWorkspaceId,
-            PlanId = Guid.Parse("22222222-2222-2222-2222-222222222222"), // Pro Plan
+            PlanId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
             TotalAllocatedMinutes = 500,
             ConsumedMinutes = 0,
             CycleStartDate = DateTime.UtcNow.AddDays(-1),
@@ -179,5 +302,9 @@ if (app.Environment.IsDevelopment())
 
 app.Run();
 
-public partial class Program { }
+static string NormalizeThumbprint(string? thumbprint)
+{
+    return (thumbprint ?? string.Empty).Replace(" ", string.Empty).Replace(":", string.Empty).ToUpperInvariant();
+}
 
+public partial class Program { }

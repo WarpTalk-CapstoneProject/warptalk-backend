@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Infrastructure.Persistence;
@@ -21,6 +22,15 @@ public class IntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     {
         _factory = factory.WithWebHostBuilder(builder =>
         {
+            builder.ConfigureAppConfiguration((_, config) =>
+            {
+                config.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Security:RequireAuthentication"] = "false",
+                    ["Billing:AutoSeedOnStartup"] = "false"
+                });
+            });
+
             builder.ConfigureServices(services =>
             {
                 // Deep remove any DB-related services

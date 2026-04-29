@@ -54,9 +54,41 @@ services:
           cpus: '0.5'
           memory: 512M
 
+  billing-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    environment:
+      ASPNETCORE_Kestrel__Endpoints__Http__Url: "http://0.0.0.0:5105"
+      ASPNETCORE_Kestrel__Endpoints__Https__Url: "https://0.0.0.0:5445"
+      ASPNETCORE_Kestrel__Endpoints__Https__Certificate__Path: "${BILLING_TLS_CERT_PATH:?BILLING_TLS_CERT_PATH is required}"
+      ASPNETCORE_Kestrel__Endpoints__Https__Certificate__Password: "${BILLING_TLS_CERT_PASSWORD:?BILLING_TLS_CERT_PASSWORD is required}"
+      ASPNETCORE_Kestrel__Endpoints__Https__ClientCertificateMode: "AllowCertificate"
+      Security__RequireServiceClientCertificate: "true"
+      Security__AllowedServiceClientCertificateThumbprints__0: "${GATEWAY_CLIENT_CERT_THUMBPRINT:?GATEWAY_CLIENT_CERT_THUMBPRINT is required}"
+    volumes:
+      - ${BILLING_TLS_CERT_DIR:?BILLING_TLS_CERT_DIR is required}:/https:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
   gateway:
     <<: *restart-prod
     logging: *logging-prod
+    environment:
+      ASPNETCORE_URLS: "http://0.0.0.0:5200;https://0.0.0.0:5443"
+      ASPNETCORE_Kestrel__Certificates__Default__Path: "${GATEWAY_TLS_CERT_PATH:?GATEWAY_TLS_CERT_PATH is required}"
+      ASPNETCORE_Kestrel__Certificates__Default__Password: "${GATEWAY_TLS_CERT_PASSWORD:?GATEWAY_TLS_CERT_PASSWORD is required}"
+      Gateway__ServiceClientCertificate__Path: "${GATEWAY_CLIENT_CERT_PATH:?GATEWAY_CLIENT_CERT_PATH is required}"
+      Gateway__ServiceClientCertificate__Password: "${GATEWAY_CLIENT_CERT_PASSWORD:?GATEWAY_CLIENT_CERT_PASSWORD is required}"
+      Gateway__BillingServerCertificate__Thumbprint: "${BILLING_SERVER_CERT_THUMBPRINT:?BILLING_SERVER_CERT_THUMBPRINT is required}"
+      ReverseProxy__Clusters__billing-cluster__Destinations__billing-service__Address: "https://billing-service:5445"
+    ports:
+      - "80:5200"
+      - "443:5443"
+    volumes:
+      - ${GATEWAY_TLS_CERT_DIR:?GATEWAY_TLS_CERT_DIR is required}:/https:ro
     deploy:
       resources:
         limits:

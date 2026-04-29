@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Security;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services;
 
@@ -27,9 +28,10 @@ public class CheckoutController : ControllerBase
         [FromBody] CreatePaymentLinkRequest request,
         CancellationToken cancellationToken)
     {
-        if (workspaceId == Guid.Empty)
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
+        if (accessError != null)
         {
-            return BadRequest(new { message = "X-Workspace-Id header is required." });
+            return accessError;
         }
 
         if (!ModelState.IsValid)
@@ -42,9 +44,13 @@ public class CheckoutController : ControllerBase
             var response = await _paymentService.CreatePaymentLinkAsync(workspaceId, request, cancellationToken);
             return Ok(response);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return BadRequest(new { message = ex.Message });
+            return BadRequest(new
+            {
+                message = "Failed to create payment link.",
+                traceId = HttpContext.TraceIdentifier
+            });
         }
     }
 }

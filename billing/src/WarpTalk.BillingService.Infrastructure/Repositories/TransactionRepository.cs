@@ -23,11 +23,16 @@ public class TransactionRepository : ITransactionRepository
             .FirstOrDefaultAsync(t => t.OrderCode == orderCode, cancellationToken);
     }
 
-    public async Task<IEnumerable<Transaction>> GetByWorkspaceIdAsync(Guid workspaceId, CancellationToken cancellationToken = default)
+    public async Task<IEnumerable<Transaction>> GetByWorkspaceIdAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
     {
+        var safePage = Math.Max(1, page);
+        var safePageSize = Math.Clamp(pageSize, 1, 200);
+
         return await _dbContext.Transactions
             .Where(t => t.WorkspaceId == workspaceId)
             .OrderByDescending(t => t.CreatedAt)
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
             .ToListAsync(cancellationToken);
     }
 
