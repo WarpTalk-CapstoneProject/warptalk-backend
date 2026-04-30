@@ -150,6 +150,12 @@ builder.Services.AddHostedService<AiResultConsumerService>();
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
 
+// 9. Configure gRPC Clients
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

@@ -3,16 +3,17 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Entities;
+using WarpTalk.NotificationService.Application.Interfaces;
 
 namespace WarpTalk.NotificationService.API.GrpcServices;
 
 public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationGrpcServiceBase
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly INotificationService _notificationService;
 
-    public NotificationGrpcServiceImpl(IUnitOfWork unitOfWork)
+    public NotificationGrpcServiceImpl(INotificationService notificationService)
     {
-        _unitOfWork = unitOfWork;
+        _notificationService = notificationService;
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)
@@ -20,16 +21,36 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
         if (string.IsNullOrWhiteSpace(request.UserId))
             throw GrpcErrors.Required("User ID");
 
-        if (!Guid.TryParse(request.UserId, out _))
+        if (!Guid.TryParse(request.UserId, out var parsedUserId))
             throw GrpcErrors.InvalidId("User");
 
-        // Placeholder: real dispatch logic (Email/Push/In-App) to be wired later
-        var notificationId = Guid.NewGuid().ToString();
+        var payloadJson = "{}";
+        if (request.Metadata != null && request.Metadata.Count > 0)
+        {
+            payloadJson = System.Text.Json.JsonSerializer.Serialize(request.Metadata);
+        }
+
+        var result = await _notificationService.CreateNotificationAsync(
+            parsedUserId, 
+            request.Type, 
+            request.Title, 
+            request.Body, 
+            payloadJson, 
+            context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            return new SendNotificationResponse
+            {
+                Success = false,
+                NotificationId = ""
+            };
+        }
 
         return new SendNotificationResponse
         {
             Success = true,
-            NotificationId = notificationId
+            NotificationId = result.Value.Id.ToString()
         };
     }
 
@@ -38,17 +59,16 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
         if (!Guid.TryParse(request.UserId, out var parsedUserId))
             throw GrpcErrors.InvalidId("User");
 
-        var repo = _unitOfWork.Repository<NotificationPreference>();
-        var allPrefs = await repo.FindAsync(p => p.UserId == parsedUserId);
-        var prefsList = allPrefs.ToList();
+        var result = await _notificationService.GetPreferencesAsync(parsedUserId, context.CancellationToken);
 
         var response = new GetUserPreferencesResponse
         {
             UserId = request.UserId
         };
 
-        foreach (var pref in prefsList)
+        if (result.IsSuccess && result.Value != null)
         {
+            var pref = result.Value;
             response.Preferences.Add(new NotificationChannelPreference
             {
                 Channel = pref.NotificationType ?? "SYSTEM",
@@ -57,5 +77,38 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
         }
 
         return response;
+    }
+
+    public override async Task<MarkAsReadResponse> MarkAsRead(MarkAsReadRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.UserId, out var userId))
+            return new MarkAsReadResponse { Success = false, ErrorMessage = "Invalid User ID", ErrorCode = ErrorCodes.ValidationError };
+
+        if (!Guid.TryParse(request.NotificationId, out var notificationId))
+            return new MarkAsReadResponse { Success = false, ErrorMessage = "Invalid Notification ID", ErrorCode = ErrorCodes.ValidationError };
+
+        var result = await _notificationService.MarkAsReadAsync(userId, notificationId, context.CancellationToken);
+
+        return new MarkAsReadResponse
+        {
+            Success = result.IsSuccess,
+            ErrorMessage = result.Error,
+            ErrorCode = result.ErrorCode ?? ""
+        };
+    }
+
+    public override async Task<MarkAllAsReadResponse> MarkAllAsRead(MarkAllAsReadRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.UserId, out var userId))
+            return new MarkAllAsReadResponse { Success = false, ErrorMessage = "Invalid User ID", ErrorCode = ErrorCodes.ValidationError };
+
+        var result = await _notificationService.MarkAllAsReadAsync(userId, context.CancellationToken);
+
+        return new MarkAllAsReadResponse
+        {
+            Success = result.IsSuccess,
+            ErrorMessage = result.Error,
+            ErrorCode = result.ErrorCode ?? ""
+        };
     }
 }
