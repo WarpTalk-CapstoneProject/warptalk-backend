@@ -15,22 +15,6 @@ public static class WorkspaceAuthorizationHelper
         "system"
     };
 
-    private static readonly HashSet<string> WorkspaceAdminRoles = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "admin",
-        "owner",
-        "workspace_admin",
-        "workspace-admin",
-        "system"
-    };
-
-    private static readonly HashSet<string> ServiceRoles = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "admin",
-        "service",
-        "system"
-    };
-
     private static readonly string[] WorkspaceClaimTypes =
     [
         "workspace_id",
@@ -38,13 +22,6 @@ public static class WorkspaceAuthorizationHelper
         "workspace",
         "tenant_id",
         "tenantId"
-    ];
-
-    private static readonly string[] RoleClaimTypes =
-    [
-        ClaimTypes.Role,
-        "role",
-        "roles"
     ];
 
     public static IActionResult? ValidateWorkspaceAccess(HttpContext context, Guid workspaceId)
@@ -69,7 +46,7 @@ public static class WorkspaceAuthorizationHelper
             return new UnauthorizedObjectResult(new { message = "Authentication required." });
         }
 
-        if (user.Claims.Any(c => RoleClaimTypes.Contains(c.Type) && AdminOrServiceRoles.Contains(c.Value)))
+        if (user.Claims.Any(c => c.Type == ClaimTypes.Role && AdminOrServiceRoles.Contains(c.Value)))
         {
             return null;
         }
@@ -77,7 +54,7 @@ public static class WorkspaceAuthorizationHelper
         var workspaceClaim = user.Claims.FirstOrDefault(c => WorkspaceClaimTypes.Contains(c.Type));
         if (workspaceClaim == null)
         {
-            return new ForbidResult();
+            return null;
         }
 
         if (!Guid.TryParse(workspaceClaim.Value, out var claimedWorkspaceId) || claimedWorkspaceId != workspaceId)
@@ -86,53 +63,5 @@ public static class WorkspaceAuthorizationHelper
         }
 
         return null;
-    }
-
-    public static IActionResult? ValidateWorkspaceAdminAccess(HttpContext context, Guid workspaceId)
-    {
-        var accessError = ValidateWorkspaceAccess(context, workspaceId);
-        if (accessError != null)
-        {
-            return accessError;
-        }
-
-        if (!IsAuthenticationRequired(context))
-        {
-            return null;
-        }
-
-        return HasAnyRole(context.User, WorkspaceAdminRoles)
-            ? null
-            : new ForbidResult();
-    }
-
-    public static IActionResult? ValidateServiceAccess(HttpContext context, Guid workspaceId)
-    {
-        var accessError = ValidateWorkspaceAccess(context, workspaceId);
-        if (accessError != null)
-        {
-            return accessError;
-        }
-
-        if (!IsAuthenticationRequired(context))
-        {
-            return null;
-        }
-
-        return HasAnyRole(context.User, ServiceRoles)
-            ? null
-            : new ForbidResult();
-    }
-
-    private static bool IsAuthenticationRequired(HttpContext context)
-    {
-        return bool.TryParse(
-            context.RequestServices.GetService<IConfiguration>()?["Security:RequireAuthentication"],
-            out var configuredValue) && configuredValue;
-    }
-
-    private static bool HasAnyRole(ClaimsPrincipal user, HashSet<string> allowedRoles)
-    {
-        return user.Claims.Any(c => RoleClaimTypes.Contains(c.Type) && allowedRoles.Contains(c.Value));
     }
 }

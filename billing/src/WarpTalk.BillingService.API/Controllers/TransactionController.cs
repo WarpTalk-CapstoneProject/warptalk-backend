@@ -28,7 +28,7 @@ public class TransactionController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken cancellationToken = default)
     {
-        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
         if (accessError != null)
         {
             return accessError;
@@ -55,7 +55,7 @@ public class TransactionController : ControllerBase
         [FromQuery] int pageSize = 50,
         CancellationToken cancellationToken = default)
     {
-        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
         if (accessError != null)
         {
             return accessError;
@@ -72,3 +72,4 @@ public class TransactionController : ControllerBase
         return Ok(logs);
     }
 }
+

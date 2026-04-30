@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -18,6 +19,13 @@ namespace WarpTalk.BillingService.Application.Services;
 
 public class PaymentService : IPaymentService
 {
+    private const string VnPaySuccessCode = "00";
+    private const string VnPayOrderNotFoundCode = "01";
+    private const string VnPayOrderAlreadyConfirmedCode = "02";
+    private const string VnPayInvalidAmountCode = "04";
+    private const string VnPayInvalidSignatureCode = "97";
+    private const string VnPayUnknownErrorCode = "99";
+
     private readonly ITransactionRepository _transactionRepository;
     private readonly IUsageQuotaRepository _quotaRepository;
     private readonly IQuotaAuditLogRepository _auditLogRepository;
@@ -25,6 +33,7 @@ public class PaymentService : IPaymentService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<PaymentService> _logger;
     private readonly IConfiguration _configuration;
+    private readonly IPayOsService _payOsService;
 
     public PaymentService(
         ITransactionRepository transactionRepository,
@@ -33,7 +42,8 @@ public class PaymentService : IPaymentService
         ISubscriptionPlanRepository planRepository,
         IUnitOfWork unitOfWork,
         ILogger<PaymentService> logger,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IPayOsService payOsService)
     {
         _transactionRepository = transactionRepository;
         _quotaRepository = quotaRepository;
@@ -42,6 +52,7 @@ public class PaymentService : IPaymentService
         _unitOfWork = unitOfWork;
         _logger = logger;
         _configuration = configuration;
+        _payOsService = payOsService;
     }
 
     public async Task<PaymentLinkResponse> CreatePaymentLinkAsync(Guid workspaceId, CreatePaymentLinkRequest request, CancellationToken cancellationToken = default)
@@ -92,16 +103,24 @@ public class PaymentService : IPaymentService
         await _transactionRepository.AddAsync(transaction, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        // MOCK PayOS Link Generation (Integrate with Net.payOS SDK later)
-        // For now, return a dummy link for UI testing
-        string checkoutUrl = $"https://pay.payos.vn/web/{Guid.NewGuid()}?orderCode={orderCode}";
+        // Create real PayOS checkout link
+        var returnUrl = _configuration["Webhook:ReturnUrl"] ?? "http://localhost:3000/checkout/result";
+        var cancelUrl = _configuration["Webhook:CancelUrl"] ?? "http://localhost:3000/checkout/cancel";
+        
+        var payOsResponse = await _payOsService.CreateCheckoutLinkAsync(
+            orderCode,
+            (long)amount,
+            description,
+            returnUrl,
+            cancelUrl,
+            cancellationToken);
 
         _logger.LogInformation("Created payment link for Workspace {WorkspaceId}, OrderCode {OrderCode}, Amount {Amount}", 
             workspaceId, orderCode, amount);
 
         return new PaymentLinkResponse
         {
-            CheckoutUrl = checkoutUrl,
+            CheckoutUrl = payOsResponse.Data.CheckoutUrl,
             OrderCode = orderCode,
             Status = "Pending"
         };
@@ -188,6 +207,107 @@ public class PaymentService : IPaymentService
         }
     }
 
+    public async Task<VnPayIpnResponse> ProcessVnPayIpnAsync(IReadOnlyDictionary<string, string> queryParameters, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!VerifyVnPaySignature(queryParameters))
+            {
+                _logger.LogWarning("Invalid VNPAY IPN signature for TxnRef: {TxnRef}", GetQueryValue(queryParameters, "vnp_TxnRef"));
+                return new VnPayIpnResponse(VnPayInvalidSignatureCode, "Invalid signature");
+            }
+
+            if (!long.TryParse(GetQueryValue(queryParameters, "vnp_TxnRef"), NumberStyles.None, CultureInfo.InvariantCulture, out var orderCode))
+            {
+                _logger.LogWarning("Invalid VNPAY IPN TxnRef format.");
+                return new VnPayIpnResponse(VnPayOrderNotFoundCode, "Order not found");
+            }
+
+            var transaction = await _transactionRepository.GetByOrderCodeAsync(orderCode, cancellationToken);
+            if (transaction == null)
+            {
+                _logger.LogWarning("VNPAY IPN transaction with OrderCode {OrderCode} not found.", orderCode);
+                return new VnPayIpnResponse(VnPayOrderNotFoundCode, "Order not found");
+            }
+
+            if (!long.TryParse(GetQueryValue(queryParameters, "vnp_Amount"), NumberStyles.None, CultureInfo.InvariantCulture, out var vnpAmountMinor))
+            {
+                _logger.LogWarning("Invalid VNPAY IPN amount for OrderCode {OrderCode}.", orderCode);
+                return new VnPayIpnResponse(VnPayInvalidAmountCode, "Invalid amount");
+            }
+
+            var expectedAmountMinor = decimal.ToInt64(decimal.Round(transaction.AmountVnd * 100, 0, MidpointRounding.AwayFromZero));
+            if (vnpAmountMinor != expectedAmountMinor)
+            {
+                _logger.LogWarning("VNPAY IPN amount mismatch for OrderCode {OrderCode}.", orderCode);
+                return new VnPayIpnResponse(VnPayInvalidAmountCode, "Invalid amount");
+            }
+
+            if (transaction.Status != TransactionStatus.Pending)
+            {
+                _logger.LogInformation("VNPAY IPN transaction {OrderCode} already confirmed with status {Status}.", orderCode, transaction.Status);
+                return new VnPayIpnResponse(VnPayOrderAlreadyConfirmedCode, "Order already confirmed");
+            }
+
+            var responseCode = GetQueryValue(queryParameters, "vnp_ResponseCode");
+            var transactionStatus = GetQueryValue(queryParameters, "vnp_TransactionStatus");
+            var isSuccess = string.Equals(responseCode, VnPaySuccessCode, StringComparison.Ordinal)
+                && string.Equals(transactionStatus, VnPaySuccessCode, StringComparison.Ordinal);
+
+            if (isSuccess)
+            {
+                transaction.Status = TransactionStatus.Success;
+                transaction.PayOsTransactionId = GetQueryValue(queryParameters, "vnp_TransactionNo");
+                transaction.CompletedAt = DateTime.UtcNow;
+
+                var quota = await _quotaRepository.GetByWorkspaceIdAsync(transaction.WorkspaceId, cancellationToken);
+                if (quota != null)
+                {
+                    quota.TotalAllocatedMinutes += transaction.PurchasedMinutes;
+                    await _quotaRepository.UpdateAsync(quota, cancellationToken);
+
+                    var auditLog = new QuotaAuditLog
+                    {
+                        Id = Guid.NewGuid(),
+                        WorkspaceId = transaction.WorkspaceId,
+                        Action = AuditAction.TopUp,
+                        Amount = transaction.PurchasedMinutes,
+                        BalanceAfter = quota.TotalAllocatedMinutes - quota.ConsumedMinutes,
+                        ReferenceId = $"VNPAY_{orderCode}",
+                        Description = $"VNPAY top up {transaction.PurchasedMinutes} mins from order {orderCode}",
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    await _auditLogRepository.AddAsync(auditLog, cancellationToken);
+                }
+                else
+                {
+                    _logger.LogWarning("Workspace {WorkspaceId} not found while processing VNPAY top up for OrderCode {OrderCode}.", transaction.WorkspaceId, orderCode);
+                }
+            }
+            else
+            {
+                transaction.Status = TransactionStatus.Failed;
+                transaction.CompletedAt = DateTime.UtcNow;
+            }
+
+            await _transactionRepository.UpdateAsync(transaction, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            _logger.LogInformation("Processed verified VNPAY IPN for OrderCode {OrderCode} with status {Status}.", orderCode, transaction.Status);
+            return new VnPayIpnResponse(VnPaySuccessCode, "Confirm Success");
+        }
+        catch (DbUpdateException ex)
+        {
+            _logger.LogError(ex, "Failed to persist VNPAY IPN result.");
+            return new VnPayIpnResponse(VnPayUnknownErrorCode, "Unknown error");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process VNPAY IPN.");
+            return new VnPayIpnResponse(VnPayUnknownErrorCode, "Unknown error");
+        }
+    }
+
     public async Task<IEnumerable<Transaction>> GetTransactionsByWorkspaceAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
     {
         return await _transactionRepository.GetByWorkspaceIdAsync(workspaceId, page, pageSize, cancellationToken);
@@ -244,5 +364,48 @@ public class PaymentService : IPaymentService
         var providedBytes = Encoding.UTF8.GetBytes(providedSignature);
 
         return CryptographicOperations.FixedTimeEquals(computedBytes, providedBytes);
+    }
+
+    private bool VerifyVnPaySignature(IReadOnlyDictionary<string, string> queryParameters)
+    {
+        var hashSecret = _configuration["VNPay:HashSecret"] ?? _configuration["VnPay:HashSecret"];
+        if (string.IsNullOrWhiteSpace(hashSecret))
+        {
+            return false;
+        }
+
+        var providedSignature = GetQueryValue(queryParameters, "vnp_SecureHash");
+        if (string.IsNullOrWhiteSpace(providedSignature))
+        {
+            return false;
+        }
+
+        var hashData = BuildVnPayHashData(queryParameters);
+        using var hmac = new HMACSHA512(Encoding.UTF8.GetBytes(hashSecret));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(hashData));
+        var computedSignature = Convert.ToHexString(hash).ToLowerInvariant();
+
+        var computedBytes = Encoding.UTF8.GetBytes(computedSignature);
+        var providedBytes = Encoding.UTF8.GetBytes(providedSignature.Trim().ToLowerInvariant());
+        return computedBytes.Length == providedBytes.Length
+            && CryptographicOperations.FixedTimeEquals(computedBytes, providedBytes);
+    }
+
+    private static string BuildVnPayHashData(IReadOnlyDictionary<string, string> queryParameters)
+    {
+        return string.Join(
+            "&",
+            queryParameters
+                .Where(kvp => kvp.Key.StartsWith("vnp_", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(kvp.Key, "vnp_SecureHash", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(kvp.Key, "vnp_SecureHashType", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrEmpty(kvp.Value))
+                .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+                .Select(kvp => $"{WebUtility.UrlEncode(kvp.Key)}={WebUtility.UrlEncode(kvp.Value)}"));
+    }
+
+    private static string GetQueryValue(IReadOnlyDictionary<string, string> queryParameters, string key)
+    {
+        return queryParameters.TryGetValue(key, out var value) ? value : string.Empty;
     }
 }

@@ -55,7 +55,7 @@ public class QuotaController : ControllerBase
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var accessError = WorkspaceAuthorizationHelper.ValidateServiceAccess(HttpContext, workspaceId);
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
         if (accessError != null)
         {
             return accessError;
@@ -94,7 +94,7 @@ public class QuotaController : ControllerBase
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         CancellationToken cancellationToken)
     {
-        var accessError = WorkspaceAuthorizationHelper.ValidateServiceAccess(HttpContext, workspaceId);
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
         if (accessError != null)
         {
             return accessError;
@@ -128,7 +128,7 @@ public class QuotaController : ControllerBase
         [FromBody] Guid planId, 
         CancellationToken cancellationToken)
     {
-        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAdminAccess(HttpContext, workspaceId);
+        var accessError = WorkspaceAuthorizationHelper.ValidateWorkspaceAccess(HttpContext, workspaceId);
         if (accessError != null)
         {
             return accessError;
@@ -142,3 +142,4 @@ public class QuotaController : ControllerBase
         return BadRequest(new { message = "Failed to upgrade plan." });
     }
 }
+
