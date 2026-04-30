@@ -146,6 +146,18 @@ builder.Services.AddScoped<IQuotaAuditLogRepository, QuotaAuditLogRepository>();
 builder.Services.AddScoped<ISubscriptionPlanRepository, SubscriptionPlanRepository>();
 builder.Services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<BillingDbContext>());
 builder.Services.AddScoped<IQuotaService, QuotaService>();
+
+// Register PayOS service - use Mock in development if real API is not accessible
+var usePayOsMock = builder.Configuration.GetValue<bool>("PayOS:UseMockService", false);
+if (usePayOsMock)
+{
+    builder.Services.AddScoped<IPayOsService, MockPayOsService>();
+}
+else
+{
+    builder.Services.AddHttpClient<IPayOsService, PayOsService>();
+}
+
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 
 var app = builder.Build();
@@ -160,47 +172,6 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors("BillingCors");
-
-var requireServiceClientCertificate = builder.Configuration.GetValue("Security:RequireServiceClientCertificate", false);
-var allowedServiceClientThumbprints = builder.Configuration
-    .GetSection("Security:AllowedServiceClientCertificateThumbprints")
-    .Get<string[]>()
-    ?? Array.Empty<string>();
-
-if (requireServiceClientCertificate)
-{
-    if (allowedServiceClientThumbprints.Length == 0)
-    {
-        throw new InvalidOperationException("At least one service client certificate thumbprint is required when mTLS is enabled.");
-    }
-
-    var allowedThumbprints = allowedServiceClientThumbprints
-        .Select(NormalizeThumbprint)
-        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    app.Use(async (context, next) =>
-    {
-        if (context.Request.Path.StartsWithSegments("/health"))
-        {
-            await next();
-            return;
-        }
-
-        var certificate = await context.Connection.GetClientCertificateAsync();
-        if (certificate == null || !allowedThumbprints.Contains(NormalizeThumbprint(certificate.Thumbprint)))
-        {
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            await context.Response.WriteAsJsonAsync(new
-            {
-                message = "Valid service client certificate required.",
-                traceId = context.TraceIdentifier
-            });
-            return;
-        }
-
-        await next();
-    });
-}
 
 if (requireAuthentication)
 {
@@ -302,9 +273,5 @@ if (app.Environment.IsDevelopment() && autoSeedOnStartup)
 
 app.Run();
 
-static string NormalizeThumbprint(string? thumbprint)
-{
-    return (thumbprint ?? string.Empty).Replace(" ", string.Empty).Replace(":", string.Empty).ToUpperInvariant();
-}
-
 public partial class Program { }
+

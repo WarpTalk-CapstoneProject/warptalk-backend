@@ -20,9 +20,9 @@ public class CheckoutController : ControllerBase
     }
 
     /// <summary>
-    /// Tạo Link Thanh Toán (PayOS)
+    /// Tạo Link Thanh Toán (PayOS) - POST /api/v1/billing/checkout
     /// </summary>
-    [HttpPost("create-link")]
+    [HttpPost]
     public async Task<IActionResult> CreatePaymentLink(
         [FromHeader(Name = "X-Workspace-Id")] Guid workspaceId,
         [FromBody] CreatePaymentLinkRequest request,
