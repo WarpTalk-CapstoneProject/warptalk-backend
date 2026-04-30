@@ -45,4 +45,24 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
     {
         _dbSet.Remove(entity);
     }
+
+    public IQueryable<T> Query()
+    {
+        return _dbSet.AsQueryable();
+    }
+
+    public async Task<int> CountAsync(Expression<Func<T, bool>> predicate)
+    {
+        return await _dbSet.CountAsync(predicate);
+    }
+
+    public async Task<IEnumerable<T>> FindWithPaginationAsync(Expression<Func<T, bool>> predicate, int skip, int take, Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null)
+    {
+        var query = _dbSet.Where(predicate);
+        if (orderBy != null)
+        {
+            query = orderBy(query);
+        }
+        return await query.Skip(skip).Take(take).ToListAsync();
+    }
 }

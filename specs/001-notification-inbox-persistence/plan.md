@@ -11,7 +11,7 @@ Implement database persistence for the in-app notification inbox with heavy emph
 
 **Language/Version**: C# / .NET 9
 **Primary Dependencies**: ASP.NET Core, Entity Framework Core, SignalR, gRPC
-**Storage**: SQL Server (NotificationDbContext)
+**Storage**: PostgreSQL (NotificationDbContext)
 **Testing**: xUnit, Postman (for API Contract testing)
 **Target Platform**: Backend Microservices
 
@@ -19,7 +19,7 @@ Implement database persistence for the in-app notification inbox with heavy emph
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 - Security: Endpoints must retrieve `userId` through JWT Claims (`HttpContext.User`). Rate limit middleware must be integrated. XSS encodings applied to JSON response outputs.
-- Database: Encryption at Rest policies must be verified for the SQL Server instance if PII exists.
+- Database: Encryption at Rest policies must be verified for the PostgreSQL instance if PII exists.
 - Networking: TLS for all exposed HTTP endpoints and mTLS considered for internal gRPC.
 
 ## Project Structure

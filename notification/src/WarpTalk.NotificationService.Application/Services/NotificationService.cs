@@ -70,6 +70,92 @@ public class NotificationService : INotificationService
         return Result.Success();
     }
 
+    public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
+    {
+        var repo = _unitOfWork.Repository<NotificationMessage>();
+        var count = await repo.CountAsync(n => n.UserId == userId);
+        var items = await repo.FindWithPaginationAsync(
+            n => n.UserId == userId, 
+            (page - 1) * pageSize, 
+            pageSize, 
+            q => q.OrderByDescending(n => n.CreatedAt)
+        );
+
+        var dtoItems = items.Select(n => new NotificationMessageDto(
+            n.Id, n.Type, n.Title, n.Content, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
+        ));
+
+        return Result.Success(new NotificationPaginatedResponse(dtoItems, count, page, pageSize));
+    }
+
+    public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
+    {
+        var repo = _unitOfWork.Repository<NotificationMessage>();
+        var notification = await repo.GetByIdAsync(notificationId);
+        
+        if (notification == null)
+            return Result.Failure("Notification not found", ErrorCodes.NotFound);
+            
+        if (notification.UserId != userId)
+            return Result.Failure("Forbidden access", ErrorCodes.Forbidden);
+            
+        if (!notification.IsRead)
+        {
+            notification.IsRead = true;
+            notification.ReadAt = DateTime.UtcNow;
+            repo.Update(notification);
+            await _unitOfWork.SaveChangesAsync();
+        }
+        
+        return Result.Success();
+    }
+
+    public async Task<Result> MarkAllAsReadAsync(Guid userId, CancellationToken ct = default)
+    {
+        var repo = _unitOfWork.Repository<NotificationMessage>();
+        var unreadItems = await repo.FindAsync(n => n.UserId == userId && !n.IsRead);
+        
+        var now = DateTime.UtcNow;
+        foreach (var item in unreadItems)
+        {
+            item.IsRead = true;
+            item.ReadAt = now;
+            repo.Update(item);
+        }
+        
+        if (unreadItems.Any())
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        
+        return Result.Success();
+    }
+
+    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string payloadJson, CancellationToken ct = default)
+    {
+        var repo = _unitOfWork.Repository<NotificationMessage>();
+        
+        var notification = new NotificationMessage
+        {
+            UserId = userId,
+            Type = type,
+            Title = title,
+            Content = content,
+            PayloadJson = payloadJson,
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+        
+        await repo.AddAsync(notification);
+        await _unitOfWork.SaveChangesAsync();
+        
+        var dto = new NotificationMessageDto(
+            notification.Id, notification.Type, notification.Title, notification.Content, notification.PayloadJson, notification.IsRead, notification.ReadAt, notification.CreatedAt
+        );
+        
+        return Result.Success(dto);
+    }
+
     private NotificationPreferenceDto MapToDto(NotificationPreference p) =>
         new NotificationPreferenceDto(
             p.Id,

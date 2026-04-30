@@ -16,7 +16,7 @@ description: "Task list for Notification Inbox Persistence implementation"
 - [ ] T001 [P] Create `NotificationMessage` entity in `NotificationService.Domain`.
 - [ ] T002 Update `NotificationDbContext` to include `DbSet<NotificationMessage>` with mapping to `notification_messages` schema.
 - [ ] T003 Add database indexes for `user_id`, `is_read`, and `created_at`.
-- [ ] T004 Review SQL Server DB configuration for Encryption at Rest policies (TDE, etc.).
+- [ ] T004 Review PostgreSQL DB configuration for Encryption at Rest policies.
 - [ ] T005 Define payload boundary: Ensure `PayloadJson` excludes secret/internal credential dumping.
 - [ ] T006 Generate and apply EF Core Migration for the new tables.
 

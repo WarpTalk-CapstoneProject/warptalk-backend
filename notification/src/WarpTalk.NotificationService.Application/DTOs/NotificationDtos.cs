@@ -15,3 +15,21 @@ public record UpdateNotificationPreferenceRequest(
     bool? PushEnabled,
     bool? InAppEnabled
 );
+
+public record NotificationMessageDto(
+    Guid Id,
+    string Type,
+    string Title,
+    string Content,
+    string PayloadJson,
+    bool IsRead,
+    DateTime? ReadAt,
+    DateTime CreatedAt
+);
+
+public record NotificationPaginatedResponse(
+    IEnumerable<NotificationMessageDto> Items,
+    int TotalCount,
+    int Page,
+    int PageSize
+);

@@ -94,6 +94,13 @@ builder.Services.AddRateLimiter(options =>
         opt.PermitLimit = 5;
         opt.Window = TimeSpan.FromMinutes(1);
     });
+
+    // Specific policy for inbox
+    options.AddFixedWindowLimiter("InboxPolicy", opt =>
+    {
+        opt.PermitLimit = 30;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
 });
 
 // 4. Configure YARP Reverse Proxy
