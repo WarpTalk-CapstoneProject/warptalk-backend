@@ -14,6 +14,8 @@ public partial class NotificationMessage
 
     public string Content { get; set; } = null!;
 
+    public string? ActionUrl { get; set; }
+
     public string PayloadJson { get; set; } = "{}";
 
     public bool IsRead { get; set; }

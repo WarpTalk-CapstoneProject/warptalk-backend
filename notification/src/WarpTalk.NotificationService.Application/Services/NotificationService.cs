@@ -82,7 +82,7 @@ public class NotificationService : INotificationService
         );
 
         var dtoItems = items.Select(n => new NotificationMessageDto(
-            n.Id, n.Type, n.Title, n.Content, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
+            n.Id, n.Type, n.Title, n.Content, n.ActionUrl, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
         ));
 
         return Result.Success(new NotificationPaginatedResponse(dtoItems, count, page, pageSize));
@@ -131,12 +131,12 @@ public class NotificationService : INotificationService
         return Result.Success();
     }
 
-    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string payloadJson, CancellationToken ct = default)
+    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default)
     {
-        var validationResult = WarpTalk.NotificationService.Application.Validators.NotificationValidator.Validate(type, title, content, payloadJson);
+        var validationResult = WarpTalk.NotificationService.Application.Validators.NotificationValidator.Validate(type, title, content, actionUrl, payloadJson);
         if (!validationResult.IsSuccess)
         {
-            return Result.Failure<NotificationMessageDto>(validationResult.Error, validationResult.ErrorCode);
+            return Result.Failure<NotificationMessageDto>(validationResult.Error ?? "Validation failed", validationResult.ErrorCode);
         }
 
         var repo = _unitOfWork.Repository<NotificationMessage>();
@@ -147,6 +147,7 @@ public class NotificationService : INotificationService
             Type = type,
             Title = title,
             Content = content,
+            ActionUrl = actionUrl,
             PayloadJson = payloadJson,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
@@ -156,7 +157,7 @@ public class NotificationService : INotificationService
         await _unitOfWork.SaveChangesAsync();
         
         var dto = new NotificationMessageDto(
-            notification.Id, notification.Type, notification.Title, notification.Content, notification.PayloadJson, notification.IsRead, notification.ReadAt, notification.CreatedAt
+            notification.Id, notification.Type, notification.Title, notification.Content, notification.ActionUrl, notification.PayloadJson, notification.IsRead, notification.ReadAt, notification.CreatedAt
         );
         
         return Result.Success(dto);

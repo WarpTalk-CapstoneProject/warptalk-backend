@@ -50,6 +50,9 @@ public partial class NotificationDbContext : DbContext
                 .HasMaxLength(255)
                 .HasColumnName("title");
             entity.Property(e => e.Content).HasColumnName("content");
+            entity.Property(e => e.ActionUrl)
+                .HasMaxLength(500)
+                .HasColumnName("action_url");
             entity.Property(e => e.PayloadJson)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")

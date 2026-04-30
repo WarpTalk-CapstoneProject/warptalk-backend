@@ -34,10 +34,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             foreach (var kvp in request.Metadata) meta[kvp.Key] = kvp.Value;
         }
 
-        if (!string.IsNullOrEmpty(request.ActionUrl))
-        {
-            meta["action_url"] = request.ActionUrl;
-        }
+        // ActionUrl is now passed as a dedicated column, not in meta
 
         var payloadJson = "{}";
         if (meta.Count > 0)
@@ -50,10 +47,11 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             request.Type, 
             request.Title, 
             request.Body, 
+            string.IsNullOrEmpty(request.ActionUrl) ? null : request.ActionUrl,
             payloadJson, 
             context.CancellationToken);
 
-        if (!result.IsSuccess)
+        if (!result.IsSuccess || result.Value == null)
         {
             return new SendNotificationResponse
             {
@@ -71,6 +69,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
                 Type = result.Value.Type,
                 Title = result.Value.Title,
                 Content = result.Value.Content,
+                ActionUrl = result.Value.ActionUrl ?? string.Empty,
                 PayloadJson = result.Value.PayloadJson,
                 CreatedAt = result.Value.CreatedAt.ToString("O")
             });

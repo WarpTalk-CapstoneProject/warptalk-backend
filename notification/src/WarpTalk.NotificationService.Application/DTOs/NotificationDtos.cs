@@ -21,6 +21,7 @@ public record NotificationMessageDto(
     string Type,
     string Title,
     string Content,
+    string? ActionUrl,
     string PayloadJson,
     bool IsRead,
     DateTime? ReadAt,

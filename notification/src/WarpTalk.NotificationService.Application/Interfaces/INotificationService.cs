@@ -11,5 +11,5 @@ public interface INotificationService
     Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default);
     Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default);
     Task<Result> MarkAllAsReadAsync(Guid userId, CancellationToken ct = default);
-    Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string payloadJson, CancellationToken ct = default);
+    Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default);
 }

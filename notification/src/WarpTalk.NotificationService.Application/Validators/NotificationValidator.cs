@@ -19,36 +19,32 @@ public static class NotificationValidator
         {
             "SYSTEM", new PayloadSchema
             {
-                OptionalFields = { { "action_url", JsonValueKind.String } }
             }
         },
         {
             "MEETING_INVITE", new PayloadSchema
             {
-                RequiredFields = { { "meeting_id", JsonValueKind.String }, { "inviter_name", JsonValueKind.String } },
-                OptionalFields = { { "action_url", JsonValueKind.String } }
+                RequiredFields = { { "meeting_id", JsonValueKind.String }, { "inviter_name", JsonValueKind.String } }
             }
         },
         {
             "TRANSCRIPT_READY", new PayloadSchema
             {
-                RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } },
-                OptionalFields = { { "action_url", JsonValueKind.String } }
+                RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }
             }
         },
         {
             "MESSAGE", new PayloadSchema
             {
-                RequiredFields = { { "sender_id", JsonValueKind.String }, { "sender_name", JsonValueKind.String }, { "room_id", JsonValueKind.String } },
-                OptionalFields = { { "action_url", JsonValueKind.String } }
+                RequiredFields = { { "sender_id", JsonValueKind.String }, { "sender_name", JsonValueKind.String }, { "room_id", JsonValueKind.String } }
             }
         }
     };
 
-    public static Result Validate(string type, string title, string content, string? payloadJson)
+    public static Result Validate(string type, string title, string content, string? actionUrl, string? payloadJson)
     {
         // 1. Check Title and Content for HTML
-        if (HasHtml(title) || HasHtml(content))
+        if (HasHtml(title) || HasHtml(content) || HasHtml(actionUrl))
         {
             return Result.Failure("HTML_NOT_ALLOWED", ErrorCodes.ValidationError);
         }
@@ -139,7 +135,7 @@ public static class NotificationValidator
         return Result.Success();
     }
 
-    private static bool HasHtml(string text)
+    private static bool HasHtml(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
         return HtmlRegex.IsMatch(text);

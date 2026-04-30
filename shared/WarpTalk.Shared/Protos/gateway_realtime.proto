@@ -14,8 +14,9 @@ message PushNewNotificationRequest {
   string type = 3;
   string title = 4;
   string content = 5;
-  string payload_json = 6;
-  string created_at = 7;
+  optional string action_url = 6;
+  string payload_json = 7;
+  string created_at = 8;
 }
 
 message PushNewNotificationResponse {
