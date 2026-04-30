@@ -74,20 +74,30 @@ public class NotificationHub : Hub
             NotificationId = notificationId.ToString()
         };
 
-        var response = await _grpcClient.MarkAsReadAsync(request);
-        if (response.Success)
+        try
         {
-            // Broadcast the read event to all user's connections
-            await Clients.Group(UserGroupName(userId))
-                .SendAsync("NotificationRead", notificationId);
+            var response = await _grpcClient.MarkAsReadAsync(request);
+            if (response.Success)
+            {
+                // Broadcast the read event to all user's connections
+                await Clients.Group(UserGroupName(userId))
+                    .SendAsync("NotificationRead", notificationId);
 
-            _logger.LogDebug(
-                "NotificationHub: User {UserId} marked notification {NotificationId} as read",
-                userId, notificationId);
+                _logger.LogDebug(
+                    "NotificationHub: User {UserId} marked notification {NotificationId} as read",
+                    userId, notificationId);
+            }
+            else
+            {
+                _logger.LogWarning("NotificationHub: Failed to mark {NotificationId} as read. Reason: {Reason}", notificationId, response.ErrorMessage);
+                // Can also send error back to client
+                await Clients.Caller.SendAsync("NotificationError", $"Failed to mark as read: {response.ErrorMessage}");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            _logger.LogWarning("NotificationHub: Failed to mark {NotificationId} as read. Reason: {Reason}", notificationId, response.ErrorMessage);
+            _logger.LogError(ex, "NotificationHub: Error calling gRPC MarkAsRead for user {UserId}", userId);
+            await Clients.Caller.SendAsync("NotificationError", "An error occurred while marking as read.");
         }
     }
 
@@ -100,20 +110,29 @@ public class NotificationHub : Hub
 
         // Call NotificationService via gRPC to persist
         var request = new WarpTalk.Shared.Protos.MarkAllAsReadRequest { UserId = userId };
-        var response = await _grpcClient.MarkAllAsReadAsync(request);
-
-        if (response.Success)
+        try
         {
-            await Clients.Group(UserGroupName(userId))
-                .SendAsync("AllNotificationsRead");
+            var response = await _grpcClient.MarkAllAsReadAsync(request);
 
-            _logger.LogDebug(
-                "NotificationHub: User {UserId} marked all notifications as read",
-                userId);
+            if (response.Success)
+            {
+                await Clients.Group(UserGroupName(userId))
+                    .SendAsync("AllNotificationsRead");
+
+                _logger.LogDebug(
+                    "NotificationHub: User {UserId} marked all notifications as read",
+                    userId);
+            }
+            else
+            {
+                _logger.LogWarning("NotificationHub: Failed to mark all as read. Reason: {Reason}", response.ErrorMessage);
+                await Clients.Caller.SendAsync("NotificationError", $"Failed to mark all as read: {response.ErrorMessage}");
+            }
         }
-        else
+        catch (Exception ex)
         {
-            _logger.LogWarning("NotificationHub: Failed to mark all as read. Reason: {Reason}", response.ErrorMessage);
+            _logger.LogError(ex, "NotificationHub: Error calling gRPC MarkAllAsRead for user {UserId}", userId);
+            await Clients.Caller.SendAsync("NotificationError", "An error occurred while marking all as read.");
         }
     }
 

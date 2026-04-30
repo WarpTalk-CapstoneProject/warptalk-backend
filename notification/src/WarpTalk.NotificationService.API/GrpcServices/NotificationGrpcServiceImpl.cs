@@ -10,10 +10,14 @@ namespace WarpTalk.NotificationService.API.GrpcServices;
 public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationGrpcServiceBase
 {
     private readonly INotificationService _notificationService;
+    private readonly GatewayRealtimeService.GatewayRealtimeServiceClient _gatewayRealtimeClient;
 
-    public NotificationGrpcServiceImpl(INotificationService notificationService)
+    public NotificationGrpcServiceImpl(
+        INotificationService notificationService,
+        GatewayRealtimeService.GatewayRealtimeServiceClient gatewayRealtimeClient)
     {
         _notificationService = notificationService;
+        _gatewayRealtimeClient = gatewayRealtimeClient;
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)
@@ -24,10 +28,21 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
         if (!Guid.TryParse(request.UserId, out var parsedUserId))
             throw GrpcErrors.InvalidId("User");
 
-        var payloadJson = "{}";
-        if (request.Metadata != null && request.Metadata.Count > 0)
+        var meta = new Dictionary<string, string>();
+        if (request.Metadata != null)
         {
-            payloadJson = System.Text.Json.JsonSerializer.Serialize(request.Metadata);
+            foreach (var kvp in request.Metadata) meta[kvp.Key] = kvp.Value;
+        }
+
+        if (!string.IsNullOrEmpty(request.ActionUrl))
+        {
+            meta["action_url"] = request.ActionUrl;
+        }
+
+        var payloadJson = "{}";
+        if (meta.Count > 0)
+        {
+            payloadJson = System.Text.Json.JsonSerializer.Serialize(meta);
         }
 
         var result = await _notificationService.CreateNotificationAsync(
@@ -45,6 +60,24 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
                 Success = false,
                 NotificationId = ""
             };
+        }
+
+        try
+        {
+            await _gatewayRealtimeClient.PushNewNotificationAsync(new PushNewNotificationRequest
+            {
+                Id = result.Value.Id.ToString(),
+                UserId = request.UserId,
+                Type = result.Value.Type,
+                Title = result.Value.Title,
+                Content = result.Value.Content,
+                PayloadJson = result.Value.PayloadJson,
+                CreatedAt = result.Value.CreatedAt.ToString("O")
+            });
+        }
+        catch
+        {
+            // Ignore error so notification creation still succeeds
         }
 
         return new SendNotificationResponse

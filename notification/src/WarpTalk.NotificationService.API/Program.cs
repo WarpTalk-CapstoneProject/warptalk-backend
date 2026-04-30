@@ -54,6 +54,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 builder.Services.AddGrpc();
 
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.GatewayRealtimeService.GatewayRealtimeServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["Gateway:Address"] ?? "http://localhost:5100");
+});
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())

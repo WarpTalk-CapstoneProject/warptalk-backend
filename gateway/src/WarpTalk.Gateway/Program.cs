@@ -150,7 +150,8 @@ builder.Services.AddHostedService<AiResultConsumerService>();
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
 
-// 9. Configure gRPC Clients
+// 9. Configure gRPC Clients & Server
+builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
@@ -184,6 +185,8 @@ app.MapHub<TranslationRoomHub>("/hubs/translation-room")
 
 app.MapHub<NotificationHub>("/hubs/notification")
     .RequireAuthorization("RequireAuth");
+
+app.MapGrpcService<WarpTalk.Gateway.GrpcServices.GatewayRealtimeServiceImpl>();
 
 // Map Health Checks
 app.MapHealthChecks("/health");
