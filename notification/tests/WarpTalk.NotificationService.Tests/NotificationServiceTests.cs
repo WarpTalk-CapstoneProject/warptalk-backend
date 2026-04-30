@@ -1,0 +1,78 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Moq;
+using WarpTalk.NotificationService.Application.Services;
+using WarpTalk.NotificationService.Domain.Entities;
+using WarpTalk.NotificationService.Domain.Interfaces;
+using WarpTalk.Shared;
+using Xunit;
+
+namespace WarpTalk.NotificationService.Tests;
+
+public class NotificationServiceTests
+{
+    private readonly Mock<IUnitOfWork> _mockUnitOfWork;
+    private readonly Mock<IGenericRepository<NotificationMessage>> _mockRepo;
+    private readonly Application.Services.NotificationService _sut;
+
+    public NotificationServiceTests()
+    {
+        _mockUnitOfWork = new Mock<IUnitOfWork>();
+        _mockRepo = new Mock<IGenericRepository<NotificationMessage>>();
+
+        _mockUnitOfWork.Setup(u => u.Repository<NotificationMessage>()).Returns(_mockRepo.Object);
+
+        _sut = new Application.Services.NotificationService(_mockUnitOfWork.Object);
+    }
+
+    [Fact]
+    public async Task MarkAsReadAsync_ShouldReturnForbidden_WhenUserIsNotOwner()
+    {
+        // Arrange
+        var ownerId = Guid.NewGuid();
+        var attackerId = Guid.NewGuid();
+        var notificationId = Guid.NewGuid();
+
+        var notification = new NotificationMessage
+        {
+            Id = notificationId,
+            UserId = ownerId,
+            IsRead = false
+        };
+
+        _mockRepo.Setup(r => r.GetByIdAsync(notificationId)).ReturnsAsync(notification);
+
+        // Act
+        var result = await _sut.MarkAsReadAsync(attackerId, notificationId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task MarkAsReadAsync_ShouldSucceed_WhenUserIsOwner()
+    {
+        // Arrange
+        var ownerId = Guid.NewGuid();
+        var notificationId = Guid.NewGuid();
+
+        var notification = new NotificationMessage
+        {
+            Id = notificationId,
+            UserId = ownerId,
+            IsRead = false
+        };
+
+        _mockRepo.Setup(r => r.GetByIdAsync(notificationId)).ReturnsAsync(notification);
+
+        // Act
+        var result = await _sut.MarkAsReadAsync(ownerId, notificationId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        _mockRepo.Verify(r => r.Update(It.Is<NotificationMessage>(n => n.IsRead == true)), Times.Once);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+}
