@@ -133,6 +133,12 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string payloadJson, CancellationToken ct = default)
     {
+        var validationResult = WarpTalk.NotificationService.Application.Validators.NotificationValidator.Validate(type, title, content, payloadJson);
+        if (!validationResult.IsSuccess)
+        {
+            return Result.Failure<NotificationMessageDto>(validationResult.Error, validationResult.ErrorCode);
+        }
+
         var repo = _unitOfWork.Repository<NotificationMessage>();
         
         var notification = new NotificationMessage
