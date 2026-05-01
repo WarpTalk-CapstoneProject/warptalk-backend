@@ -155,6 +155,28 @@ builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
+})
+.AddCallCredentials((context, metadata, serviceProvider) =>
+{
+    var config = serviceProvider.GetRequiredService<IConfiguration>();
+    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
+    
+    var rawGrpcSecret = config["Grpc:InternalSecret"];
+    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
+                             rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
+                             rawGrpcSecret.Length < 32;
+
+    if (env.IsProduction() && isDefaultOrInvalid)
+    {
+        throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
+    }
+
+    var secret = isDefaultOrInvalid 
+        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
+        : rawGrpcSecret!;
+        
+    metadata.Add("x-internal-token", secret);
+    return Task.CompletedTask;
 });
 
 var app = builder.Build();

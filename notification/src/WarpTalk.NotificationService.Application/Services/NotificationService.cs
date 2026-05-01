@@ -3,16 +3,19 @@ using WarpTalk.NotificationService.Application.DTOs;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace WarpTalk.NotificationService.Application.Services;
 
 public class NotificationService : INotificationService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<NotificationService> _logger;
 
-    public NotificationService(IUnitOfWork unitOfWork)
+    public NotificationService(IUnitOfWork unitOfWork, ILogger<NotificationService> logger)
     {
         _unitOfWork = unitOfWork;
+        _logger = logger;
     }
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
@@ -72,6 +75,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
+        pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
         var repo = _unitOfWork.Repository<NotificationMessage>();
         var count = await repo.CountAsync(n => n.UserId == userId);
         var items = await repo.FindWithPaginationAsync(
@@ -97,7 +101,10 @@ public class NotificationService : INotificationService
             return Result.Failure("Notification not found", ErrorCodes.NotFound);
             
         if (notification.UserId != userId)
+        {
+            _logger.LogWarning("IDOR Attempt: User {UserId} attempted to mark notification {NotificationId} as read which belongs to User {OwnerId}", userId, notificationId, notification.UserId);
             return Result.Failure("Forbidden access", ErrorCodes.Forbidden);
+        }
             
         if (!notification.IsRead)
         {
@@ -136,6 +143,7 @@ public class NotificationService : INotificationService
         var validationResult = WarpTalk.NotificationService.Application.Validators.NotificationValidator.Validate(type, title, content, actionUrl, payloadJson);
         if (!validationResult.IsSuccess)
         {
+            _logger.LogWarning("Validation failed for creating notification. User: {UserId}, Type: {Type}, Error: {Error}, ErrorCode: {ErrorCode}", userId, type, validationResult.Error, validationResult.ErrorCode);
             return Result.Failure<NotificationMessageDto>(validationResult.Error ?? "Validation failed", validationResult.ErrorCode);
         }
 

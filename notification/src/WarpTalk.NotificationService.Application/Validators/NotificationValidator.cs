@@ -6,7 +6,10 @@ namespace WarpTalk.NotificationService.Application.Validators;
 
 public static class NotificationValidator
 {
-    private static readonly Regex HtmlRegex = new Regex(@"<[^>]+>", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    // Matches specific known HTML tags to distinguish from normal text (e.g., '1 < 2')
+    private static readonly Regex HtmlRegex = new Regex(
+        @"<\/?\s*(?:script|iframe|object|embed|svg|img|base|a|div|span|p|b|i|strong|em|h[1-6]|ul|ol|li|table|tr|td|th|tbody|thead|tfoot|style|link|meta|head|title|body|html|br|hr)(?:\s+[^>]*)?>", 
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private class PayloadSchema
     {

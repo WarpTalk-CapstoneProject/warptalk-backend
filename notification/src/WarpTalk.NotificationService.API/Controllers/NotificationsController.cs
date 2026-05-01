@@ -13,10 +13,12 @@ namespace WarpTalk.NotificationService.API.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly INotificationService _notificationService;
+    private readonly ILogger<NotificationsController> _logger;
 
-    public NotificationsController(INotificationService notificationService)
+    public NotificationsController(INotificationService notificationService, ILogger<NotificationsController> logger)
     {
         _notificationService = notificationService;
+        _logger = logger;
     }
 
     [HttpGet("test")]
@@ -60,6 +62,8 @@ public class NotificationsController : ControllerBase
         var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
             return Unauthorized();
+
+        pageSize = Math.Max(1, Math.Min(pageSize, 100));
 
         var result = await _notificationService.GetNotificationsAsync(userId, page, pageSize, ct);
         if (!result.IsSuccess)
