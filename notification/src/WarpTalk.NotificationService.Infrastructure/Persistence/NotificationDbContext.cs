@@ -31,13 +31,13 @@ public partial class NotificationDbContext : DbContext
 
         modelBuilder.Entity<NotificationMessage>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("notification_messages_pkey");
+            entity.HasKey(e => new { e.Id, e.CreatedAt }).HasName("notification_messages_pkey");
 
             entity.ToTable("notification_messages", "notification");
 
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "idx_notif_msgs_user_unread").IsDescending(false, true).HasFilter("(is_read = FALSE)");
+            entity.HasIndex(e => e.CreatedAt, "idx_notif_msgs_created_at").IsDescending();
             entity.HasIndex(e => e.UserId, "idx_notif_msgs_user");
-            entity.HasIndex(e => e.IsRead, "idx_notif_msgs_is_read");
-            entity.HasIndex(e => e.CreatedAt, "idx_notif_msgs_created_at");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v7()")
