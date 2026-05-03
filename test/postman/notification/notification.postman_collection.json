@@ -1,220 +1,412 @@
-﻿{
-    "info":  {
-                 "_postman_id":  "3c2b65f2-7087-412c-95db-d712347472d2",
-                 "name":  "WarpTalk Backend - Notification",
-                 "description":  "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
-                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-                 "_exporter_id":  "51979719",
-                 "_collection_link":  "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
-             },
-    "item":  [
-                 {
-                     "name":  "04 - Notification via Gateway",
-                     "item":  [
-                                  {
-                                      "name":  "Notification Test Endpoint",
-                                      "event":  [
-                                                    {
-                                                        "listen":  "test",
-                                                        "script":  {
-                                                                       "exec":  [
-                                                                                    "pm.test(\u0027Notification test returns 200\u0027, function () { pm.response.to.have.status(200); });"
-                                                                                ],
-                                                                       "type":  "text/javascript",
-                                                                       "packages":  {
-
-                                                                                    },
-                                                                       "requests":  {
-
-                                                                                    }
-                                                                   }
-                                                    }
-                                                ],
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  {
-                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/notifications/test",
-                                                                  "host":  [
-                                                                               "{{gatewayBaseUrl}}"
-                                                                           ],
-                                                                  "path":  [
-                                                                               "api",
-                                                                               "v1",
-                                                                               "notifications",
-                                                                               "test"
-                                                                           ]
-                                                              }
-                                                  },
-                                      "response":  [
-
-                                                   ]
-                                  },
-                                  {
-                                      "name":  "Get Notification Preferences",
-                                      "event":  [
-                                                    {
-                                                        "listen":  "test",
-                                                        "script":  {
-                                                                       "type":  "text/javascript",
-                                                                       "exec":  [
-                                                                                    "pm.test(\u0027Get preferences returns 200/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });"
-                                                                                ]
-                                                                   }
-                                                    }
-                                                ],
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Authorization",
-                                                                         "value":  "Bearer {{accessToken}}"
-                                                                     }
-                                                                 ],
-                                                      "url":  {
-                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
-                                                                  "host":  [
-                                                                               "{{gatewayBaseUrl}}"
-                                                                           ],
-                                                                  "path":  [
-                                                                               "api",
-                                                                               "v1",
-                                                                               "notifications",
-                                                                               "preferences"
-                                                                           ]
-                                                              }
-                                                  },
-                                      "response":  [
-
-                                                   ]
-                                  },
-                                  {
-                                      "name":  "Update Notification Preferences",
-                                      "event":  [
-                                                    {
-                                                        "listen":  "test",
-                                                        "script":  {
-                                                                       "type":  "text/javascript",
-                                                                       "exec":  [
-                                                                                    "pm.test(\u0027Update preferences returns 200/400/401\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]); });"
-                                                                                ]
-                                                                   }
-                                                    }
-                                                ],
-                                      "request":  {
-                                                      "method":  "PUT",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     },
-                                                                     {
-                                                                         "key":  "Authorization",
-                                                                         "value":  "Bearer {{accessToken}}"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"emailEnabled\": true,\n  \"pushEnabled\": true,\n  \"smsEnabled\": false\n}"
-                                                               },
-                                                      "url":  {
-                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
-                                                                  "host":  [
-                                                                               "{{gatewayBaseUrl}}"
-                                                                           ],
-                                                                  "path":  [
-                                                                               "api",
-                                                                               "v1",
-                                                                               "notifications",
-                                                                               "preferences"
-                                                                           ]
-                                                              }
-                                                  },
-                                      "response":  [
-
-                                                   ]
-                                  }
-                              ]
-                 }
-             ],
-    "variable":  [
-                     {
-                         "key":  "gatewayBaseUrl",
-                         "value":  "http://localhost:5200"
-                     },
-                     {
-                         "key":  "authBaseUrl",
-                         "value":  "http://localhost:5101"
-                     },
-                     {
-                         "key":  "translationRoomBaseUrl",
-                         "value":  "http://localhost:5102"
-                     },
-                     {
-                         "key":  "transcriptBaseUrl",
-                         "value":  "http://localhost:5103"
-                     },
-                     {
-                         "key":  "notificationBaseUrl",
-                         "value":  "http://localhost:5104"
-                     },
-                     {
-                         "key":  "testEmail",
-                         "value":  "warptalk+{{$timestamp}}@mail.com"
-                     },
-                     {
-                         "key":  "testPassword",
-                         "value":  "P@ssw0rd123!"
-                     },
-                     {
-                         "key":  "accessToken",
-                         "value":  ""
-                     },
-                     {
-                         "key":  "refreshToken",
-                         "value":  ""
-                     },
-                     {
-                         "key":  "translationRoomId",
-                         "value":  "00000000-0000-0000-0000-000000000000"
-                     },
-                     {
-                         "key":  "transcriptId",
-                         "value":  "00000000-0000-0000-0000-000000000000"
-                     }
-                 ],
-    "event":  [
-                  {
-                      "listen":  "prerequest",
-                      "script":  {
-                                     "type":  "text/javascript",
-                                     "packages":  {
-
-                                                  },
-                                     "requests":  {
-
-                                                  },
-                                     "exec":  [
-                                                  ""
-                                              ]
-                                 }
-                  },
-                  {
-                      "listen":  "test",
-                      "script":  {
-                                     "type":  "text/javascript",
-                                     "packages":  {
-
-                                                  },
-                                     "requests":  {
-
-                                                  },
-                                     "exec":  [
-                                                  ""
-                                              ]
-                                 }
-                  }
-              ]
+{
+    "info": {
+        "_postman_id": "3c2b65f2-7087-412c-95db-d712347472d2",
+        "name": "WarpTalk Backend - Notification",
+        "description": "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_exporter_id": "51979719",
+        "_collection_link": "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
+    },
+    "item": [
+        {
+            "name": "04 - Notification via Gateway",
+            "item": [
+                {
+                    "name": "Notification Test Endpoint",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Notification test returns 200', function () { pm.response.to.have.status(200); });"
+                                ],
+                                "type": "text/javascript",
+                                "packages": {},
+                                "requests": {}
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/test",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "test"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Notification Preferences",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Get preferences returns 200/401/404', function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });"
+                                ]
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "preferences"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Update Notification Preferences",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Update preferences returns 200/400/401', function () { pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]); });"
+                                ]
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"emailEnabled\": true,\n  \"pushEnabled\": true,\n  \"smsEnabled\": false\n}"
+                        },
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "preferences"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Unread Notifications (Happy Path)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Status code is 200', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "});",
+                                    "var jsonData = pm.response.json();",
+                                    "pm.test('Response has items array', function () {",
+                                    "    pm.expect(jsonData.value.items).to.be.an('array');",
+                                    "});",
+                                    "if (jsonData.value.items.length > 0) {",
+                                    "    pm.collectionVariables.set('notificationId', jsonData.value.items[0].id);",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=1&pageSize=50",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications"
+                            ],
+                            "query": [
+                                {
+                                    "key": "page",
+                                    "value": "1"
+                                },
+                                {
+                                    "key": "pageSize",
+                                    "value": "50"
+                                }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Mark Notification As Read (Happy Path / Idempotent)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Status code is 200 or 404', function () {",
+                                    "    pm.expect(pm.response.code).to.be.oneOf([200, 404]);",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/{{notificationId}}/read",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "{{notificationId}}",
+                                "read"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Mark Notification As Read (Negative Path - Invalid ID)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Status code is 400 or 404', function () {",
+                                    "    pm.expect(pm.response.code).to.be.oneOf([400, 404]);",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/00000000-0000-0000-0000-000000000000/read",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "00000000-0000-0000-0000-000000000000",
+                                "read"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Mark All As Read (Happy Path)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Status code is 200', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications/read-all",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications",
+                                "read-all"
+                            ]
+                        }
+                    }
+                },
+                {
+                    "name": "Get Unread Notifications (Edge Case - Negative Page)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Status code is 200 or 400', function () {",
+                                    "    pm.expect(pm.response.code).to.be.oneOf([200, 400]);",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{accessToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=-1&pageSize=9999",
+                            "host": [
+                                "{{gatewayBaseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                "notifications"
+                            ],
+                            "query": [
+                                {
+                                    "key": "page",
+                                    "value": "-1"
+                                },
+                                {
+                                    "key": "pageSize",
+                                    "value": "9999"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "gatewayBaseUrl",
+            "value": "http://localhost:5200"
+        },
+        {
+            "key": "authBaseUrl",
+            "value": "http://localhost:5101"
+        },
+        {
+            "key": "translationRoomBaseUrl",
+            "value": "http://localhost:5102"
+        },
+        {
+            "key": "transcriptBaseUrl",
+            "value": "http://localhost:5103"
+        },
+        {
+            "key": "notificationBaseUrl",
+            "value": "http://localhost:5104"
+        },
+        {
+            "key": "testEmail",
+            "value": "warptalk+{{$timestamp}}@mail.com"
+        },
+        {
+            "key": "testPassword",
+            "value": "P@ssw0rd123!"
+        },
+        {
+            "key": "accessToken",
+            "value": ""
+        },
+        {
+            "key": "refreshToken",
+            "value": ""
+        },
+        {
+            "key": "translationRoomId",
+            "value": "00000000-0000-0000-0000-000000000000"
+        },
+        {
+            "key": "transcriptId",
+            "value": "00000000-0000-0000-0000-000000000000"
+        }
+    ],
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {},
+                "exec": [
+                    ""
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {},
+                "exec": [
+                    ""
+                ]
+            }
+        }
+    ]
 }
