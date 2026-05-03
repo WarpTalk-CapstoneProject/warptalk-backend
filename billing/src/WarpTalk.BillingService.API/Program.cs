@@ -192,6 +192,15 @@ builder.Services.AddHealthChecks()
 // =======================================================
 var app = builder.Build();
 
+if (builder.Configuration.GetValue<bool>("Billing:AutoSeedOnStartup"))
+{
+    await using var scope = app.Services.CreateAsyncScope();
+    var db = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
+
+    await db.Database.EnsureDeletedAsync();
+    await db.Database.EnsureCreatedAsync();
+}
+
 // Middleware
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 

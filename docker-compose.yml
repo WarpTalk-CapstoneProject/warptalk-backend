@@ -150,7 +150,7 @@ services:
       dockerfile: billing/Dockerfile
     container_name: warptalk-billing
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: "http://0.0.0.0:5105"
       ConnectionStrings__BillingDb: "Host=postgres;Port=5432;Database=warptalk;Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required};Search Path=billing,public"
       Security__RequireAuthentication: "true"
@@ -162,7 +162,7 @@ services:
       Cors__AllowedOrigins__1: "http://localhost:5173"
       Cors__AllowedOrigins__2: "https://warptalk.vn"
       PayOS__ChecksumKey: "${PAYOS_CHECKSUM_KEY:-}"
-      Billing__AutoSeedOnStartup: "false"
+      Billing__AutoSeedOnStartup: "true"
     ports:
       - "5105:5105"
     volumes:
