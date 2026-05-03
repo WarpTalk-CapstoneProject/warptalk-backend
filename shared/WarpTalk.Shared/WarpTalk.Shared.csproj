@@ -20,7 +20,6 @@
     <Protobuf Include="Protos\translation_room.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\transcript.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\notification.proto" GrpcServices="Both" />
-    <Protobuf Include="Protos\gateway_realtime.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>

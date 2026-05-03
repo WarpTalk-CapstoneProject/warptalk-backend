@@ -23,7 +23,8 @@ public class NotificationServiceTests
 
         _mockUnitOfWork.Setup(u => u.Repository<NotificationMessage>()).Returns(_mockRepo.Object);
 
-        _sut = new Application.Services.NotificationService(_mockUnitOfWork.Object);
+        var mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<Application.Services.NotificationService>>();
+        _sut = new Application.Services.NotificationService(_mockUnitOfWork.Object, mockLogger.Object);
     }
 
     [Fact]

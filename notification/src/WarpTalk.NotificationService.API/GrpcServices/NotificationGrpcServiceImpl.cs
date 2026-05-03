@@ -7,17 +7,23 @@ using WarpTalk.NotificationService.Application.Interfaces;
 
 namespace WarpTalk.NotificationService.API.GrpcServices;
 
+/// <summary>
+/// gRPC Service handling server-to-server commands.
+/// Responsibilities:
+/// - Persist newly created notifications to DB and publish events to Redis.
+/// - Process MarkAsRead/MarkAllAsRead commands and update the database strictly before UI updates.
+/// </summary>
 public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationGrpcServiceBase
 {
     private readonly INotificationService _notificationService;
-    private readonly GatewayRealtimeService.GatewayRealtimeServiceClient _gatewayRealtimeClient;
+    private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
 
     public NotificationGrpcServiceImpl(
         INotificationService notificationService,
-        GatewayRealtimeService.GatewayRealtimeServiceClient gatewayRealtimeClient)
+        StackExchange.Redis.IConnectionMultiplexer redis)
     {
         _notificationService = notificationService;
-        _gatewayRealtimeClient = gatewayRealtimeClient;
+        _redis = redis;
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)
@@ -62,7 +68,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
 
         try
         {
-            await _gatewayRealtimeClient.PushNewNotificationAsync(new PushNewNotificationRequest
+            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
             {
                 Id = result.Value.Id.ToString(),
                 UserId = request.UserId,
@@ -72,7 +78,9 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
                 ActionUrl = result.Value.ActionUrl ?? string.Empty,
                 PayloadJson = result.Value.PayloadJson,
                 CreatedAt = result.Value.CreatedAt.ToString("O")
-            });
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(msg);
+            await _redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal("warptalk:notifications:new"), json);
         }
         catch
         {

@@ -42,6 +42,7 @@ var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) ||
                          rawJwtSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                          rawJwtSecret.Length < 32;
 
+// [Security] Prevent starting in Production with a weak or default JWT secret to avoid token forgery.
 if (builder.Environment.IsProduction() && isDefaultOrInvalid)
 {
     throw new InvalidOperationException("CRITICAL SECURITY: JWT Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
@@ -67,46 +68,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 builder.Services.AddAuthorization();
+// [Security] Register global interceptor to enforce Zero-Trust Authentication for all incoming gRPC calls.
 builder.Services.AddGrpc(options => 
 {
     options.Interceptors.Add<WarpTalk.NotificationService.API.Interceptors.InternalAuthInterceptor>();
 });
 
-builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.GatewayRealtimeService.GatewayRealtimeServiceClient>(o =>
-{
-    o.Address = new Uri(builder.Configuration["Gateway:Address"] ?? "http://localhost:5100");
-})
-.ConfigurePrimaryHttpMessageHandler(() =>
-{
-    var handler = new HttpClientHandler();
-    if (builder.Environment.IsDevelopment())
-    {
-        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-    }
-    return handler;
-})
-.AddCallCredentials((context, metadata, serviceProvider) =>
-{
-    var config = serviceProvider.GetRequiredService<IConfiguration>();
-    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    
-    var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
-                             rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
-                             rawGrpcSecret.Length < 32;
-
-    if (env.IsProduction() && isDefaultOrInvalid)
-    {
-        throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
-    }
-
-    var secret = isDefaultOrInvalid 
-        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
-        : rawGrpcSecret!;
-        
-    metadata.Add("x-internal-token", secret);
-    return Task.CompletedTask;
-});
+builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
+    StackExchange.Redis.ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379"));
 
 var app = builder.Build();
 

@@ -3,6 +3,10 @@ using Grpc.Core.Interceptors;
 
 namespace WarpTalk.NotificationService.API.Interceptors;
 
+/// <summary>
+/// gRPC Interceptor for Zero-Trust Inter-service Authentication.
+/// Secures internal communication between microservices by validating an internal secret token.
+/// </summary>
 public class InternalAuthInterceptor : Interceptor
 {
     private readonly string _internalSecret;

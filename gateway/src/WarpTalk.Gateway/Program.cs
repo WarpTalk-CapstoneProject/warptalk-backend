@@ -146,6 +146,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
+builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
@@ -161,12 +162,14 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
     var handler = new HttpClientHandler();
     if (builder.Environment.IsDevelopment())
     {
+        // [Security] Bypass TLS verification ONLY in local development to fix trust certificate issues (T014).
         handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
     }
     return handler;
 })
 .AddCallCredentials((context, metadata, serviceProvider) =>
 {
+    // [Security] Zero-Trust Inter-service Authentication: Inject internal secret to gRPC requests.
     var config = serviceProvider.GetRequiredService<IConfiguration>();
     var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
     
@@ -194,6 +197,7 @@ var app = builder.Build();
 app.UseCors();
 
 // Security Headers Middleware
+// [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
 app.Use(async (context, next) => {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
@@ -217,7 +221,7 @@ app.MapHub<TranslationRoomHub>("/hubs/translation-room")
 app.MapHub<NotificationHub>("/hubs/notification")
     .RequireAuthorization("RequireAuth");
 
-app.MapGrpcService<WarpTalk.Gateway.GrpcServices.GatewayRealtimeServiceImpl>();
+
 
 // Map Health Checks
 app.MapHealthChecks("/health");
