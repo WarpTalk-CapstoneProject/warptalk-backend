@@ -15,6 +15,55 @@
                     "name": "0. Setup & Seed Data",
                     "item": [
                         {
+                            "name": "Login & Auto-Set Token",
+                            "event": [
+                                {
+                                    "listen": "test",
+                                    "script": {
+                                        "exec": [
+                                            "pm.test(\"Status code is 200\", function () {",
+                                            "    pm.response.to.have.status(200);",
+                                            "});",
+                                            "if (pm.response.code === 200) {",
+                                            "    var json = pm.response.json();",
+                                            "    var token = json.accessToken || json.token;",
+                                            "    if (token) {",
+                                            "        pm.collectionVariables.set(\"accessToken\", token);",
+                                            "        console.log(\"Token acquired and saved automatically!\");",
+                                            "    }",
+                                            "}"
+                                        ],
+                                        "type": "text/javascript"
+                                    }
+                                }
+                            ],
+                            "request": {
+                                "method": "POST",
+                                "header": [
+                                    {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                    }
+                                ],
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+                                },
+                                "url": {
+                                    "raw": "{{gatewayBaseUrl}}/api/v1/auth/login",
+                                    "host": [
+                                        "{{gatewayBaseUrl}}"
+                                    ],
+                                    "path": [
+                                        "api",
+                                        "v1",
+                                        "auth",
+                                        "login"
+                                    ]
+                                }
+                            }
+                        },
+                        {
                             "name": "Seed Mock Data (Integration Point)",
                             "event": [
                                 {
@@ -628,7 +677,7 @@
         },
         {
             "key": "testEmail",
-            "value": "warptalk+{{$timestamp}}@mail.com"
+            "value": "warptalk@mail.com"
         },
         {
             "key": "testPassword",
