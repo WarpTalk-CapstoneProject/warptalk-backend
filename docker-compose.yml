@@ -132,6 +132,7 @@ services:
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      Redis__ConnectionString: "redis:6379"
     ports:
       - "5104:5104"
       - "50054:50054"
