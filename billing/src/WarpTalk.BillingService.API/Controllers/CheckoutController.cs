@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Security;
 using WarpTalk.BillingService.Application.DTOs;
-using WarpTalk.BillingService.Application.Services;
+using WarpTalk.BillingService.Application.Services.Interface;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -13,10 +13,12 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class CheckoutController : ControllerBase
 {
     private readonly IPaymentService _paymentService;
+    private readonly IWorkspaceOwnershipResolver _workspaceOwnershipResolver;
 
-    public CheckoutController(IPaymentService paymentService)
+    public CheckoutController(IPaymentService paymentService, IWorkspaceOwnershipResolver workspaceOwnershipResolver)
     {
         _paymentService = paymentService;
+        _workspaceOwnershipResolver = workspaceOwnershipResolver;
     }
 
     /// <summary>
@@ -41,7 +43,8 @@ public class CheckoutController : ControllerBase
 
         try
         {
-            var response = await _paymentService.CreatePaymentLinkAsync(workspaceId, request, cancellationToken);
+            var ownerId = await _workspaceOwnershipResolver.ResolveOwnerUserIdAsync(workspaceId, cancellationToken);
+            var response = await _paymentService.CreatePaymentLinkByOwnerAsync(ownerId, request, cancellationToken);
             return Ok(response);
         }
         catch (Exception)

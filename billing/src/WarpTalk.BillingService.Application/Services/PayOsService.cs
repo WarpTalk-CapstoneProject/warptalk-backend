@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Services.Interface;
 
 namespace WarpTalk.BillingService.Application.Services;
 

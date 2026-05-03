@@ -1,88 +1,297 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using System.Data;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Enums;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using WarpTalk.BillingService.Domain.Interfaces;
 
 namespace WarpTalk.BillingService.Infrastructure.Persistence;
 
 public class BillingDbContext : DbContext, IUnitOfWork
 {
-    private static readonly DateTime SeedCreatedAt = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private IDbContextTransaction? _currentTransaction;
 
-    public BillingDbContext(DbContextOptions<BillingDbContext> options) : base(options)
-    {
-    }
+    private static readonly DateTime SeedCreatedAt =
+        new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
-    public DbSet<SubscriptionPlan> SubscriptionPlans { get; set; } = null!;
-    public DbSet<UsageQuota> UsageQuotas { get; set; } = null!;
-    public DbSet<Transaction> Transactions { get; set; } = null!;
-    public DbSet<QuotaAuditLog> QuotaAuditLogs { get; set; } = null!;
+    public BillingDbContext(DbContextOptions<BillingDbContext> options)
+        : base(options) { }
+
+    // ================= DbSets =================
+
+    public DbSet<SubscriptionPlan> SubscriptionPlans => Set<SubscriptionPlan>();
+    public DbSet<Subscription> Subscriptions => Set<Subscription>();
+    public DbSet<CreditLedgerEntry> CreditLedgerEntries => Set<CreditLedgerEntry>();
+    public DbSet<WorkspaceQuotaSnapshot> WorkspaceQuotaSnapshots => Set<WorkspaceQuotaSnapshot>();
+    public DbSet<UsageEvent> UsageEvents => Set<UsageEvent>();
+    public DbSet<MeetingUsageSession> MeetingUsageSessions => Set<MeetingUsageSession>();
+    public DbSet<Transaction> Transactions => Set<Transaction>();
+    public DbSet<QuotaAuditLog> QuotaAuditLogs => Set<QuotaAuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        
-        // Đặt mặc định schema cho service Billing
+
         modelBuilder.HasDefaultSchema("billing");
 
-        // SubscriptionPlan Configuration
-        modelBuilder.Entity<SubscriptionPlan>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name).IsRequired().HasConversion<string>();
-            entity.Property(e => e.BaseQuotaMinutes).HasColumnType("decimal(18,4)");
-            entity.Property(e => e.PriceVnd).HasColumnType("decimal(18,2)");
-            entity.Property(e => e.FeaturesJson).HasColumnType("jsonb");
+        ConfigureSubscriptionPlan(modelBuilder);
+        ConfigureSubscription(modelBuilder);
+        ConfigureCreditLedgerEntry(modelBuilder);
+        ConfigureWorkspaceQuotaSnapshot(modelBuilder);
+        ConfigureUsageEvent(modelBuilder);
+        ConfigureMeetingUsageSession(modelBuilder);
+        ConfigureTransaction(modelBuilder);
+        ConfigureQuotaAuditLog(modelBuilder);
+    }
 
-            // Seeding Default Plans
-            entity.HasData(
-                new SubscriptionPlan { Id = Guid.Parse("11111111-1111-1111-1111-111111111111"), Name = PlanType.Free, BaseQuotaMinutes = 30, PriceVnd = 0, MaxParticipants = 5, CreatedAt = SeedCreatedAt },
-                new SubscriptionPlan { Id = Guid.Parse("22222222-2222-2222-2222-222222222222"), Name = PlanType.Pro, BaseQuotaMinutes = 500, PriceVnd = 199000, MaxParticipants = 25, CreatedAt = SeedCreatedAt },
-                new SubscriptionPlan { Id = Guid.Parse("33333333-3333-3333-3333-333333333333"), Name = PlanType.Premium, BaseQuotaMinutes = 1000, PriceVnd = 499000, MaxParticipants = 100, CreatedAt = SeedCreatedAt },
-                new SubscriptionPlan { Id = Guid.Parse("44444444-4444-4444-4444-444444444444"), Name = PlanType.Enterprise, BaseQuotaMinutes = 10000, PriceVnd = 0, MaxParticipants = 1000, CreatedAt = SeedCreatedAt }
+    // ===================================================
+    // SubscriptionPlan
+    // ===================================================
+    private static void ConfigureSubscriptionPlan(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<SubscriptionPlan>(e =>
+        {
+            e.ToTable("SubscriptionPlans");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Type)
+                    .HasConversion<string>()
+                    .IsRequired();
+
+            e.Property(x => x.MonthlyPriceVnd).HasColumnType("decimal(18,2)");
+            e.Property(x => x.IncludedCredits).HasColumnType("decimal(18,4)");
+
+            e.Property(x => x.VoiceTranslationRatePerHour).HasColumnType("decimal(18,4)");
+            e.Property(x => x.TextTranslationRatePerHour).HasColumnType("decimal(18,4)");
+            e.Property(x => x.VoiceCloningMultiplier).HasColumnType("decimal(18,4)");
+            e.Property(x => x.MultiLanguageStreamMultiplier).HasColumnType("decimal(18,4)");
+            e.Property(x => x.AiAssistantMultiplier).HasColumnType("decimal(18,4)");
+
+            e.HasIndex(x => x.Type).IsUnique();
+
+            e.HasData(
+                new SubscriptionPlan
+                {
+                    Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                    Type = PlanType.Free,
+                    MonthlyPriceVnd = 0,
+                    IncludedCredits = 30,
+                    VoiceTranslationRatePerHour = 30,
+                    TextTranslationRatePerHour = 10,
+                    VoiceCloningMultiplier = 1,
+                    MultiLanguageStreamMultiplier = 1,
+                    AiAssistantMultiplier = 1,
+                    MaxParticipants = 5,
+                    MaxConcurrentMeetings = 1,
+                    MaxLanguagesPerMeeting = 1,
+                    SupportsVoiceCloning = false,
+                    SupportsAiAssistant = false,
+                    SupportsEnterpriseGlossary = false,
+                    SupportsMultiLanguageRoom = false,
+                    SupportsCreditRollover = false,
+                    IsActive = true,
+                    CreatedAt = SeedCreatedAt
+                }
             );
         });
+    }
 
-        // UsageQuota Configuration
-        modelBuilder.Entity<UsageQuota>(entity =>
+    // ===================================================
+    // Subscription
+    // ===================================================
+    private static void ConfigureSubscription(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Subscription>(e =>
         {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => e.WorkspaceId).IsUnique();
-            entity.Property(e => e.TotalAllocatedMinutes).HasColumnType("decimal(18,4)");
-            entity.Property(e => e.ConsumedMinutes).HasColumnType("decimal(18,4)");
-            entity.Property<uint>("Version").IsRowVersion(); // Keep a property for easy mapping if needed, or use xmin
+            e.ToTable("Subscriptions");
 
+            e.HasKey(x => x.Id);
 
+            e.Property(x => x.Status).HasConversion<string>();
 
-            // One-to-Many: SubscriptionPlan -> UsageQuotas
-            entity.HasOne(e => e.Plan)
-                  .WithMany()
-                  .HasForeignKey(e => e.PlanId)
-                  .OnDelete(DeleteBehavior.Restrict);
-        });
+            e.Property(x => x.SnapshotMonthlyPriceVnd).HasColumnType("decimal(18,2)");
+            e.Property(x => x.SnapshotIncludedCredits).HasColumnType("decimal(18,4)");
 
-        // Transaction Configuration
-        modelBuilder.Entity<Transaction>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => e.OrderCode).IsUnique();
-            entity.Property(e => e.AmountVnd).HasColumnType("decimal(18,2)");
-            entity.Property(e => e.PurchasedMinutes).HasColumnType("decimal(18,4)");
-            entity.Property(e => e.Status).IsRequired().HasConversion<string>();
-        });
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.OwnerUserId);
 
-        // QuotaAuditLog Configuration
-        modelBuilder.Entity<QuotaAuditLog>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => e.WorkspaceId);
-            entity.HasIndex(e => new { e.WorkspaceId, e.ReferenceId }).IsUnique(); // Idempotency per workspace
-            entity.Property(e => e.Action).IsRequired().HasConversion<string>();
-            entity.Property(e => e.Amount).HasColumnType("decimal(18,4)");
-            entity.Property(e => e.BalanceAfter).HasColumnType("decimal(18,4)");
+            e.HasOne<SubscriptionPlan>()
+                .WithMany()
+                .HasForeignKey(x => x.PlanId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
+
+    // ===================================================
+    // CreditLedgerEntry
+    // ===================================================
+    private static void ConfigureCreditLedgerEntry(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<CreditLedgerEntry>(e =>
+        {
+            e.ToTable("CreditLedgerEntries");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Type).HasConversion<string>();
+            e.Property(x => x.FeatureType).HasConversion<string>();
+
+            e.Property(x => x.Amount).HasColumnType("decimal(18,4)");
+            e.Property(x => x.BalanceAfter).HasColumnType("decimal(18,4)");
+
+            e.Property(x => x.IdempotencyKey).HasMaxLength(200);
+            e.Property(x => x.MetadataJson).HasColumnType("jsonb");
+
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.MeetingId);
+            e.HasIndex(x => x.IdempotencyKey).IsUnique();
+        });
+    }
+
+    // ===================================================
+    // WorkspaceQuotaSnapshot
+    // ===================================================
+    private static void ConfigureWorkspaceQuotaSnapshot(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<WorkspaceQuotaSnapshot>(e =>
+        {
+            e.ToTable("WorkspaceQuotaSnapshots");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.CurrentBalance).HasColumnType("decimal(18,4)");
+            e.Property(x => x.ReservedCredits).HasColumnType("decimal(18,4)");
+            e.Property(x => x.CurrentMode).HasConversion<string>();
+
+            e.HasIndex(x => x.WorkspaceId).IsUnique();
+        });
+    }
+
+    // ===================================================
+    // UsageEvent
+    // ===================================================
+    private static void ConfigureUsageEvent(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<UsageEvent>(e =>
+        {
+            e.ToTable("UsageEvents");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.FeatureType).HasConversion<string>();
+            e.Property(x => x.Status).HasConversion<string>();
+
+            e.Property(x => x.CalculatedCredits).HasColumnType("decimal(18,4)");
+            e.Property(x => x.IdempotencyKey).HasMaxLength(200);
+
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.MeetingId);
+            e.HasIndex(x => x.Status);
+            e.HasIndex(x => x.IdempotencyKey).IsUnique();
+        });
+    }
+
+    // ===================================================
+    // MeetingUsageSession
+    // ===================================================
+    private static void ConfigureMeetingUsageSession(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<MeetingUsageSession>(e =>
+        {
+            e.ToTable("MeetingUsageSessions");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.QuotaMode).HasConversion<string>();
+            e.Property(x => x.Status).HasConversion<string>();
+
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.MeetingId).IsUnique();
+            e.HasIndex(x => x.HostUserId);
+        });
+    }
+
+    // ===================================================
+    // Transaction
+    // ===================================================
+    private static void ConfigureTransaction(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Transaction>(e =>
+        {
+            e.ToTable("Transactions");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Type).HasConversion<string>();
+            e.Property(x => x.Status).HasConversion<string>();
+
+            e.Property(x => x.AmountVnd).HasColumnType("decimal(18,2)");
+
+            e.Property(x => x.IdempotencyKey).HasMaxLength(200);
+
+            e.HasIndex(x => x.OrderCode).IsUnique();
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.OwnerUserId);
+            e.HasIndex(x => x.IdempotencyKey).IsUnique();
+
+            e.HasOne<SubscriptionPlan>()
+                .WithMany()
+                .HasForeignKey(x => x.PlanId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+    }
+
+    // ===================================================
+    // QuotaAuditLog
+    // ===================================================
+    private static void ConfigureQuotaAuditLog(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<QuotaAuditLog>(e =>
+        {
+            e.ToTable("QuotaAuditLogs");
+
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Action).HasConversion<string>();
+            e.Property(x => x.Description).HasMaxLength(1000);
+            e.Property(x => x.MetadataJson).HasColumnType("jsonb");
+
+            e.HasIndex(x => x.WorkspaceId);
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => x.MeetingId);
+        });
+    }
+
+    // ================= Unit of Work =================
+
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        => await base.SaveChangesAsync(cancellationToken);
+
+    public async Task BeginTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        if (_currentTransaction != null) return;
+        _currentTransaction = await Database.BeginTransactionAsync(cancellationToken);
+    }
+
+    public async Task CommitAsync(CancellationToken cancellationToken = default)
+    {
+        if (_currentTransaction == null) return;
+
+        await _currentTransaction.CommitAsync(cancellationToken);
+        await _currentTransaction.DisposeAsync();
+        _currentTransaction = null;
+    }
+
+    public async Task RollbackAsync(CancellationToken cancellationToken = default)
+    {
+        if (_currentTransaction == null) return;
+
+        await _currentTransaction.RollbackAsync(cancellationToken);
+        await _currentTransaction.DisposeAsync();
+        _currentTransaction = null;
+    }
+
+    public IDbTransaction? GetCurrentTransaction()
+        => _currentTransaction?.GetDbTransaction();
 }

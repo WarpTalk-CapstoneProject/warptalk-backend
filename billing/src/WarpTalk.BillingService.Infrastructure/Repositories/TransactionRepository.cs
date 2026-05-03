@@ -1,8 +1,6 @@
-using System;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Enums;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 
@@ -10,40 +8,90 @@ namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class TransactionRepository : ITransactionRepository
 {
-    private readonly BillingDbContext _dbContext;
+    private readonly BillingDbContext _db;
 
-    public TransactionRepository(BillingDbContext dbContext)
+    public TransactionRepository(BillingDbContext db)
     {
-        _dbContext = dbContext;
+        _db = db;
     }
 
-    public async Task<Transaction?> GetByOrderCodeAsync(long orderCode, CancellationToken cancellationToken = default)
+    public async Task<Transaction?> GetByIdAsync(Guid id, CancellationToken ct = default)
     {
-        return await _dbContext.Transactions
-            .FirstOrDefaultAsync(t => t.OrderCode == orderCode, cancellationToken);
+        return await _db.Transactions
+            .FirstOrDefaultAsync(x => x.Id == id, ct);
     }
 
-    public async Task<IEnumerable<Transaction>> GetByWorkspaceIdAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
+    public async Task<Transaction?> GetByOrderCodeAsync(long orderCode, CancellationToken ct = default)
     {
-        var safePage = Math.Max(1, page);
-        var safePageSize = Math.Clamp(pageSize, 1, 200);
-
-        return await _dbContext.Transactions
-            .Where(t => t.WorkspaceId == workspaceId)
-            .OrderByDescending(t => t.CreatedAt)
-            .Skip((safePage - 1) * safePageSize)
-            .Take(safePageSize)
-            .ToListAsync(cancellationToken);
+        return await _db.Transactions
+            .FirstOrDefaultAsync(x => x.OrderCode == orderCode, ct);
     }
 
-    public async Task AddAsync(Transaction transaction, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<Transaction>> GetByOwnerUserIdAsync(
+        Guid ownerUserId,
+        int skip,
+        int take,
+        CancellationToken ct = default)
     {
-        await _dbContext.Transactions.AddAsync(transaction, cancellationToken);
+        return await _db.Transactions
+            .AsNoTracking()
+            .Where(x => x.OwnerUserId == ownerUserId)
+            .OrderByDescending(x => x.CreatedAt)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
     }
 
-    public Task UpdateAsync(Transaction transaction, CancellationToken cancellationToken = default)
+    // ================= FIXED =================
+    public async Task<IReadOnlyList<Transaction>> GetByWorkspaceIdAsync(
+        Guid workspaceId,
+        int skip,
+        int take,
+        CancellationToken ct = default)
     {
-        _dbContext.Transactions.Update(transaction);
+        return await _db.Transactions
+            .AsNoTracking()
+            .Where(x => x.WorkspaceId == workspaceId)
+            .OrderByDescending(x => x.CreatedAt)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync(ct);
+    }
+
+    public async Task AddAsync(Transaction entity, CancellationToken ct = default)
+    {
+        await _db.Transactions.AddAsync(entity, ct);
+    }
+
+    public Task UpdateAsync(Transaction entity, CancellationToken ct = default)
+    {
+        _db.Transactions.Update(entity);
         return Task.CompletedTask;
+    }
+
+    public async Task<bool> ExistsByIdempotencyKeyAsync(string key, CancellationToken ct = default)
+    {
+        return await _db.Transactions.AnyAsync(x => x.IdempotencyKey == key, ct);
+    }
+
+    // ================= FIXED =================
+    public async Task UpdateStatusAsync(
+        Guid transactionId,
+        TransactionStatus status,
+        CancellationToken ct = default)
+    {
+        var tx = await _db.Transactions
+            .FirstOrDefaultAsync(x => x.Id == transactionId, ct);
+
+        if (tx == null) return;
+
+        tx.Status = status;
+
+        if (status == TransactionStatus.Success || status == TransactionStatus.Failed)
+        {
+            tx.CompletedAt = DateTime.UtcNow;
+        }
+
+        _db.Transactions.Update(tx);
     }
 }

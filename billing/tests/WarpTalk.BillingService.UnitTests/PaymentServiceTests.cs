@@ -16,6 +16,7 @@ using WarpTalk.BillingService.Domain.Enums;
 using WarpTalk.BillingService.Domain.Interfaces;
 using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
+using WarpTalk.BillingService.Application.Services.Interface;
 
 namespace WarpTalk.BillingService.UnitTests;
 
@@ -97,13 +98,19 @@ public class PaymentServiceTests
         var payload = new PayOsWebhookPayload
         {
             Code = "00",
-            Data = new PayOsWebhookData { OrderCode = orderCode }
+            Data = new PayOsWebhookData
+            {
+                OrderCode = orderCode,
+                Amount = 100000
+            }
         };
 
         // Act
-        await _paymentService.ProcessPayOsWebhookAsync(payload);
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
 
         // Assert
+        result.Success.Should().BeTrue();
+        result.ResultCode.Should().Be("SUCCESS");
         transaction.Status.Should().Be(TransactionStatus.Success);
         quota.TotalAllocatedMinutes.Should().Be(600); // 500 + 100
         _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
@@ -125,9 +132,11 @@ public class PaymentServiceTests
         };
 
         // Act
-        await _paymentService.ProcessPayOsWebhookAsync(payload);
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
 
         // Assert
+        result.Success.Should().BeTrue();
+        result.ResultCode.Should().Be("ALREADY_PROCESSED");
         _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
@@ -147,9 +156,107 @@ public class PaymentServiceTests
         };
 
         // Act
-        await _paymentService.ProcessPayOsWebhookAsync(payload);
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
 
         // Assert
+        result.Success.Should().BeFalse();
+        result.ResultCode.Should().Be("FAILED");
+        transaction.Status.Should().Be(TransactionStatus.Failed);
+        _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessPayOsWebhookAsync_ShouldReturnOrderNotFound_WhenTransactionMissing()
+    {
+        // Arrange
+        var payload = new PayOsWebhookPayload
+        {
+            Code = "00",
+            Data = new PayOsWebhookData { OrderCode = 999999 }
+        };
+
+        _transactionRepoMock
+            .Setup(r => r.GetByOrderCodeAsync(payload.Data.OrderCode, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Transaction?)null);
+
+        // Act
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        result.ResultCode.Should().Be("ORDER_NOT_FOUND");
+        _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessPayOsWebhookAsync_ShouldReturnInvalidAmount_WhenSuccessfulPayloadAmountDoesNotMatch()
+    {
+        // Arrange
+        var orderCode = 12346L;
+        var transaction = new Transaction
+        {
+            OrderCode = orderCode,
+            WorkspaceId = Guid.NewGuid(),
+            Status = TransactionStatus.Pending,
+            AmountVnd = 100000,
+            PurchasedMinutes = 100
+        };
+
+        _transactionRepoMock.Setup(r => r.GetByOrderCodeAsync(orderCode, It.IsAny<CancellationToken>())).ReturnsAsync(transaction);
+
+        var payload = new PayOsWebhookPayload
+        {
+            Code = "00",
+            Data = new PayOsWebhookData
+            {
+                OrderCode = orderCode,
+                Amount = 99000
+            }
+        };
+
+        // Act
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        result.ResultCode.Should().Be("INVALID_AMOUNT");
+        transaction.Status.Should().Be(TransactionStatus.Pending);
+        _transactionRepoMock.Verify(r => r.UpdateAsync(It.IsAny<Transaction>(), It.IsAny<CancellationToken>()), Times.Never);
+        _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task ProcessPayOsWebhookAsync_ShouldReturnCancelled_WhenPayloadCodeIs02()
+    {
+        // Arrange
+        var orderCode = 12347L;
+        var transaction = new Transaction
+        {
+            OrderCode = orderCode,
+            WorkspaceId = Guid.NewGuid(),
+            Status = TransactionStatus.Pending,
+            AmountVnd = 25000,
+            PurchasedMinutes = 50
+        };
+
+        _transactionRepoMock.Setup(r => r.GetByOrderCodeAsync(orderCode, It.IsAny<CancellationToken>())).ReturnsAsync(transaction);
+
+        var payload = new PayOsWebhookPayload
+        {
+            Code = "02",
+            Data = new PayOsWebhookData
+            {
+                OrderCode = orderCode,
+                Amount = 25000
+            }
+        };
+
+        // Act
+        var result = await _paymentService.ProcessPayOsWebhookAsync(payload);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        result.ResultCode.Should().Be("CANCELLED");
         transaction.Status.Should().Be(TransactionStatus.Failed);
         _uowMock.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }

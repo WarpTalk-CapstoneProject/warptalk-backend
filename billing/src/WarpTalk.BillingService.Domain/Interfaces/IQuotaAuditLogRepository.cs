@@ -1,11 +1,30 @@
-using System.Threading;
-using System.Threading.Tasks;
+// =======================================================
+// IQuotaAuditLogRepository.cs
+// =======================================================
+
 using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.Domain.Interfaces;
 
+/// <summary>
+/// Repository for quota audit log operations
+/// </summary>
 public interface IQuotaAuditLogRepository
 {
-    Task<IEnumerable<QuotaAuditLog>> GetByWorkspaceIdAsync(Guid workspaceId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default);
-    Task AddAsync(QuotaAuditLog log, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<QuotaAuditLog>> GetByUserIdAsync(
+        Guid userId,
+        int skip,
+        int take,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<QuotaAuditLog>> GetByMeetingIdAsync(
+        Guid meetingId,
+        CancellationToken cancellationToken = default);
+    Task AddAsync(
+        QuotaAuditLog log,
+        CancellationToken cancellationToken = default);
+
+    Task AddRangeAsync(
+        IEnumerable<QuotaAuditLog> logs,
+        CancellationToken cancellationToken = default);
 }

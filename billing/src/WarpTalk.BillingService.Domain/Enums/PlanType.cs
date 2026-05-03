@@ -1,3 +1,7 @@
+// =======================================================
+// Domain/Enums/PlanType.cs
+// =======================================================
+
 namespace WarpTalk.BillingService.Domain.Enums;
 
 public enum PlanType
