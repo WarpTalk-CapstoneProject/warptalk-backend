@@ -76,6 +76,15 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.GatewayRealtimeService.Gat
 {
     o.Address = new Uri(builder.Configuration["Gateway:Address"] ?? "http://localhost:5100");
 })
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    if (builder.Environment.IsDevelopment())
+    {
+        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    }
+    return handler;
+})
 .AddCallCredentials((context, metadata, serviceProvider) =>
 {
     var config = serviceProvider.GetRequiredService<IConfiguration>();

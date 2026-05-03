@@ -156,6 +156,15 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
 {
     o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
 })
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    if (builder.Environment.IsDevelopment())
+    {
+        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    }
+    return handler;
+})
 .AddCallCredentials((context, metadata, serviceProvider) =>
 {
     var config = serviceProvider.GetRequiredService<IConfiguration>();
