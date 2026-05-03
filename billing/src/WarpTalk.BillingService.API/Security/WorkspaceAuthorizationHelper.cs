@@ -1,13 +1,15 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace WarpTalk.BillingService.API.Security;
 
 public static class WorkspaceAuthorizationHelper
 {
-    private static readonly HashSet<string> AdminOrServiceRoles = new(StringComparer.OrdinalIgnoreCase)
+    private const string WorkspaceClaimType = "workspace_id";
+
+    private static readonly HashSet<string> PrivilegedRoles = new(StringComparer.OrdinalIgnoreCase)
     {
         "admin",
         "owner",
@@ -15,50 +17,69 @@ public static class WorkspaceAuthorizationHelper
         "system"
     };
 
-    private static readonly string[] WorkspaceClaimTypes =
-    [
-        "workspace_id",
-        "workspaceId",
-        "workspace",
-        "tenant_id",
-        "tenantId"
-    ];
-
-    public static IActionResult? ValidateWorkspaceAccess(HttpContext context, Guid workspaceId)
+    public static IActionResult? ValidateWorkspaceAccess(
+        HttpContext context,
+        Guid workspaceId)
     {
         if (workspaceId == Guid.Empty)
         {
-            return new BadRequestObjectResult(new { message = "X-Workspace-Id header is required." });
+            return new BadRequestObjectResult(new
+            {
+                message = "WorkspaceId is required."
+            });
         }
 
-        var requireAuthentication = bool.TryParse(
-            context.RequestServices.GetService<IConfiguration>()?["Security:RequireAuthentication"],
-            out var configuredValue) && configuredValue;
+        var config = context.RequestServices.GetService<IConfiguration>();
+        var logger = context.RequestServices.GetService<ILoggerFactory>()
+            ?.CreateLogger("WorkspaceAuth");
 
-        if (!requireAuthentication)
-        {
+        var requireAuth = config?.GetValue<bool>("Security:RequireAuthentication") ?? false;
+
+        if (!requireAuth)
             return null;
-        }
 
         var user = context.User;
+
         if (user?.Identity?.IsAuthenticated != true)
         {
-            return new UnauthorizedObjectResult(new { message = "Authentication required." });
+            return new UnauthorizedObjectResult(new
+            {
+                message = "Authentication required."
+            });
         }
 
-        if (user.Claims.Any(c => c.Type == ClaimTypes.Role && AdminOrServiceRoles.Contains(c.Value)))
+        // =======================================================
+        // 1. PRIVILEGED ROLES
+        // =======================================================
+        var roles = user.FindAll(ClaimTypes.Role).Select(x => x.Value);
+
+        if (roles.Any(r => PrivilegedRoles.Contains(r)))
         {
             return null;
         }
 
-        var workspaceClaim = user.Claims.FirstOrDefault(c => WorkspaceClaimTypes.Contains(c.Type));
+        // =======================================================
+        // 2. WORKSPACE CHECK
+        // =======================================================
+        var workspaceClaim = user.FindFirst(WorkspaceClaimType);
+
         if (workspaceClaim == null)
         {
-            return null;
+            logger?.LogWarning("Missing workspace claim for user {User}", user.Identity?.Name);
+            return new ForbidResult();
         }
 
-        if (!Guid.TryParse(workspaceClaim.Value, out var claimedWorkspaceId) || claimedWorkspaceId != workspaceId)
+        if (!Guid.TryParse(workspaceClaim.Value, out var claimedWorkspaceId))
         {
+            logger?.LogWarning("Invalid workspace claim format: {Value}", workspaceClaim.Value);
+            return new ForbidResult();
+        }
+
+        if (claimedWorkspaceId != workspaceId)
+        {
+            logger?.LogWarning("Workspace mismatch. Claim={Claimed}, Request={Requested}",
+                claimedWorkspaceId, workspaceId);
+
             return new ForbidResult();
         }
 

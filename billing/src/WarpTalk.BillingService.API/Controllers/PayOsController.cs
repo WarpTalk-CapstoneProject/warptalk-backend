@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
-using WarpTalk.BillingService.Application.Services;
+using WarpTalk.BillingService.Application.Services.Interface;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -32,10 +32,15 @@ public class PayOsController : ControllerBase
 
         try
         {
-            await _paymentService.ProcessPayOsWebhookAsync(payload, cancellationToken);
-            
-            // PayOS expects 200 OK or specific response to acknowledge receipt
-            return Ok(new { success = true });
+            var result = await _paymentService.ProcessPayOsWebhookAsync(payload, cancellationToken);
+
+            return result.ResultCode switch
+            {
+                "ORDER_NOT_FOUND" => NotFound(result),
+                "INVALID_PAYLOAD" => BadRequest(result),
+                "INVALID_AMOUNT" => BadRequest(result),
+                _ => Ok(result)
+            };
         }
         catch (UnauthorizedAccessException)
         {

@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text.Json;
-using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.Domain.Exceptions;
 
 namespace WarpTalk.BillingService.API.Middleware;
 
@@ -9,7 +9,9 @@ public class ExceptionHandlingMiddleware
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionHandlingMiddleware> _logger;
 
-    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger)
     {
         _next = next;
         _logger = logger;
@@ -23,24 +25,56 @@ public class ExceptionHandlingMiddleware
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "An unhandled exception occurred.");
+            _logger.LogError(ex,
+                "Unhandled exception. TraceId={TraceId}, Path={Path}",
+                context.TraceIdentifier,
+                context.Request.Path);
+
             await HandleExceptionAsync(context, ex);
         }
     }
 
-    private static Task HandleExceptionAsync(HttpContext context, Exception exception)
+    private static async Task HandleExceptionAsync(
+        HttpContext context,
+        Exception exception)
     {
-        context.Response.ContentType = "application/json";
-        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+        context.Response.ContentType = "application/problem+json";
+
+        var (statusCode, message) = MapException(exception);
+
+        context.Response.StatusCode = statusCode;
 
         var response = new
         {
-            status = context.Response.StatusCode,
-            message = "An internal server error occurred.",
+            type = "https://httpstatuses.com/" + statusCode,
+            title = message,
+            status = statusCode,
             traceId = context.TraceIdentifier
         };
 
-        var json = JsonSerializer.Serialize(response);
-        return context.Response.WriteAsync(json);
+        await context.Response.WriteAsync(
+            JsonSerializer.Serialize(response));
+    }
+
+    private static (int statusCode, string message) MapException(Exception ex)
+    {
+        return ex switch
+        {
+            BillingDomainException e =>
+                ((int)HttpStatusCode.BadRequest, e.Message),
+
+            KeyNotFoundException =>
+                ((int)HttpStatusCode.NotFound,
+                    "Not found."),
+
+            InvalidOperationException e when
+                e.Message.Contains("duplicate", StringComparison.OrdinalIgnoreCase) =>
+                ((int)HttpStatusCode.Conflict,
+                    "Duplicate operation."),
+
+            _ =>
+                ((int)HttpStatusCode.InternalServerError,
+                    "Unexpected error.")
+        };
     }
 }

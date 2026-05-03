@@ -1,20 +1,22 @@
-using Microsoft.EntityFrameworkCore;
-using WarpTalk.BillingService.Infrastructure.Persistence;
-using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Repositories;
-using WarpTalk.BillingService.Application.Services;
-using WarpTalk.BillingService.API.Middleware;
+﻿using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
-using System.Linq;
-using System.IO;
-using System.Text;
-using Microsoft.AspNetCore.Mvc;
 using Serilog;
+
+using WarpTalk.BillingService.API.Middleware;
+using WarpTalk.BillingService.Application.Services;
+using WarpTalk.BillingService.Application.Services.Interface;
+using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Setup Serilog
+// =======================================================
+// SERILOG
+// =======================================================
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
@@ -23,11 +25,18 @@ Log.Logger = new LoggerConfiguration()
 
 builder.Host.UseSerilog();
 
-var requireAuthentication = builder.Configuration.GetValue("Security:RequireAuthentication", false);
+// =======================================================
+// CONFIG
+// =======================================================
+var requireAuth = builder.Configuration.GetValue<bool>("Security:RequireAuthentication", false);
 
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? Array.Empty<string>();
+var allowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>() ?? [];
 
+// =======================================================
+// CORS
+// =======================================================
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("BillingCors", policy =>
@@ -35,40 +44,35 @@ builder.Services.AddCors(options =>
         if (allowedOrigins.Length > 0)
         {
             policy.WithOrigins(allowedOrigins)
-                  .AllowAnyMethod()
-                  .AllowAnyHeader();
-            return;
+                .AllowAnyHeader()
+                .AllowAnyMethod();
         }
-
-        // Keep local development usable when env config is missing.
-        if (builder.Environment.IsDevelopment())
+        else if (builder.Environment.IsDevelopment())
         {
             policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
-                  .AllowAnyMethod()
-                  .AllowAnyHeader();
-            return;
+                .AllowAnyHeader()
+                .AllowAnyMethod();
         }
-
-        throw new InvalidOperationException("CORS origins must be configured for non-development environments.");
+        else
+        {
+            throw new InvalidOperationException("CORS not configured.");
+        }
     });
 });
 
-if (requireAuthentication)
+// =======================================================
+// AUTH
+// =======================================================
+if (requireAuth)
 {
-    var jwtSecret = builder.Configuration["Jwt:Secret"]
-        ?? throw new InvalidOperationException("Jwt:Secret is required when authentication is enabled.");
+    var jwtSecret = builder.Configuration["Jwt:Secret"]!;
+    var jwtIssuer = builder.Configuration["Jwt:Issuer"]!;
+    var jwtAudience = builder.Configuration["Jwt:Audience"]!;
 
-    var jwtIssuer = builder.Configuration["Jwt:Issuer"]
-        ?? throw new InvalidOperationException("Jwt:Issuer is required when authentication is enabled.");
-
-    var jwtAudience = builder.Configuration["Jwt:Audience"]
-        ?? throw new InvalidOperationException("Jwt:Audience is required when authentication is enabled.");
-
-    builder.Services
-        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options =>
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(o =>
         {
-            options.TokenValidationParameters = new TokenValidationParameters
+            o.TokenValidationParameters = new TokenValidationParameters
             {
                 ValidateIssuer = true,
                 ValidIssuer = jwtIssuer,
@@ -84,72 +88,89 @@ if (requireAuthentication)
     builder.Services.AddAuthorization();
 }
 
-builder.Services.AddControllers()
-    .ConfigureApiBehaviorOptions(options =>
-    {
-        options.InvalidModelStateResponseFactory = context =>
-        {
-            var errors = context.ModelState
-                .Where(e => e.Value?.Errors.Count > 0)
-                .Select(e => new
-                {
-                    Field = e.Key,
-                    Message = e.Value?.Errors.First().ErrorMessage
-                });
-
-            return new BadRequestObjectResult(new
-            {
-                status = 400,
-                message = "Validation Error",
-                errors = errors
-            });
-        };
-    });
-
+// =======================================================
+// CONTROLLERS
+// =======================================================
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddHealthChecks()
-    .AddDbContextCheck<BillingDbContext>();
+builder.Services.AddSwaggerGen();
 
-builder.Services.AddSwaggerGen(c =>
-{
-    c.SwaggerDoc("v1", new() { Title = "WarpTalk Billing Service API", Version = "v1" });
-    
-    var apiXmlFile = $"{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.xml";
-    var apiXmlPath = Path.Combine(AppContext.BaseDirectory, apiXmlFile);
-    c.IncludeXmlComments(apiXmlPath);
+// =======================================================
+// DB CONTEXT
+// =======================================================
+var useInMemory = builder.Configuration.GetValue<bool>("UseInMemoryDatabase");
 
-    var appXmlFile = "WarpTalk.BillingService.Application.xml";
-    var appXmlPath = Path.Combine(AppContext.BaseDirectory, appXmlFile);
-    if (File.Exists(appXmlPath))
-    {
-        c.IncludeXmlComments(appXmlPath);
-    }
-});
-
-// Add DbContext
 builder.Services.AddDbContext<BillingDbContext>(options =>
 {
-    options.UseNpgsql(
-        builder.Configuration.GetConnectionString("BillingDb"),
-        npgsql =>
-        {
-            npgsql.CommandTimeout(15);
-            npgsql.EnableRetryOnFailure(3, TimeSpan.FromSeconds(2), null);
-        });
-    options.ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning));
+    if (useInMemory)
+    {
+        options.UseInMemoryDatabase("BillingDb");
+    }
+    else
+    {
+        options.UseNpgsql(builder.Configuration.GetConnectionString("BillingDb"));
+    }
+
+    options.ConfigureWarnings(w =>
+        w.Ignore(RelationalEventId.PendingModelChangesWarning));
 });
 
-// Dependency Injection
-builder.Services.AddScoped<IUsageQuotaRepository, UsageQuotaRepository>();
-builder.Services.AddScoped<ITransactionRepository, TransactionRepository>();
-builder.Services.AddScoped<IQuotaAuditLogRepository, QuotaAuditLogRepository>();
-builder.Services.AddScoped<ISubscriptionPlanRepository, SubscriptionPlanRepository>();
-builder.Services.AddScoped<IUnitOfWork>(provider => provider.GetRequiredService<BillingDbContext>());
-builder.Services.AddScoped<IQuotaService, QuotaService>();
+// =======================================================
+// REPOSITORIES
+// =======================================================
 
-// Register PayOS service - use Mock in development if real API is not accessible
-var usePayOsMock = builder.Configuration.GetValue<bool>("PayOS:UseMockService", false);
-if (usePayOsMock)
+// Billing core
+builder.Services.AddScoped<ISubscriptionPlanRepository, SubscriptionPlanRepository>();
+builder.Services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
+
+// Credit
+builder.Services.AddScoped<ICreditLedgerRepository, CreditLedgerRepository>();
+
+// Transaction / Payment
+builder.Services.AddScoped<ITransactionRepository, TransactionRepository>();
+
+// Usage
+builder.Services.AddScoped<IUsageEventRepository, UsageEventRepository>();
+
+// Meeting
+builder.Services.AddScoped<IMeetingUsageSessionRepository, MeetingUsageSessionRepository>();
+
+// Quota snapshot
+builder.Services.AddScoped<IWorkspaceQuotaSnapshotRepository, WorkspaceQuotaSnapshotRepository>();
+
+// Audit
+builder.Services.AddScoped<IQuotaAuditLogRepository, QuotaAuditLogRepository>();
+
+// =======================================================
+// UNIT OF WORK
+// =======================================================
+builder.Services.AddScoped<IUnitOfWork>(sp =>
+    sp.GetRequiredService<BillingDbContext>());
+
+// =======================================================
+// APPLICATION SERVICES (FULL DOMAIN)
+// =======================================================
+
+builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<ISubscriptionPlanService, SubscriptionPlanService>();
+
+builder.Services.AddScoped<IQuotaService, QuotaService>();
+builder.Services.AddScoped<IWorkspaceQuotaSnapshotService, WorkspaceQuotaSnapshotService>();
+
+builder.Services.AddScoped<ITransactionService, TransactionService>();
+
+builder.Services.AddScoped<IUsageEventService, UsageEventService>();
+builder.Services.AddScoped<IMeetingUsageSessionService, MeetingUsageSessionService>();
+
+builder.Services.AddScoped<IWorkspaceOwnershipResolver, WorkspaceOwnershipResolver>();
+
+builder.Services.AddScoped<IPaymentService, PaymentService>();
+// =======================================================
+// PAYMENT
+// =======================================================
+var useMockPayOs = builder.Configuration.GetValue<bool>("PayOS:UseMockService");
+
+if (useMockPayOs)
 {
     builder.Services.AddScoped<IPayOsService, MockPayOsService>();
 }
@@ -160,8 +181,18 @@ else
 
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 
+// =======================================================
+// HEALTHCHECK
+// =======================================================
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<BillingDbContext>();
+
+// =======================================================
+// BUILD APP
+// =======================================================
 var app = builder.Build();
 
+// Middleware
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
@@ -173,105 +204,47 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseCors("BillingCors");
 
-if (requireAuthentication)
+if (requireAuth)
 {
     app.UseAuthentication();
     app.UseAuthorization();
 }
 
-// Security Headers
-app.Use(async (context, next) =>
+// Security headers
+app.Use(async (ctx, next) =>
 {
-    context.Response.Headers.Append("X-Frame-Options", "DENY");
-    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
-    context.Response.Headers.Append("Referrer-Policy", "no-referrer");
+    ctx.Response.Headers["X-Frame-Options"] = "DENY";
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
     await next();
 });
 
-// Enrich logs with WorkspaceId
-app.Use(async (context, next) =>
+// Correlation ID
+app.Use(async (ctx, next) =>
 {
-    var correlationId = context.Request.Headers["X-Correlation-Id"].ToString();
-    if (string.IsNullOrWhiteSpace(correlationId))
-    {
-        correlationId = context.TraceIdentifier;
-    }
+    var correlationId = ctx.Request.Headers["X-Correlation-Id"].ToString();
+    if (string.IsNullOrEmpty(correlationId))
+        correlationId = ctx.TraceIdentifier;
 
-    var workspaceId = context.Request.Headers["X-Workspace-Id"].ToString();
-
-    context.Response.Headers["X-Correlation-Id"] = correlationId;
+    ctx.Response.Headers["X-Correlation-Id"] = correlationId;
 
     using (Serilog.Context.LogContext.PushProperty("CorrelationId", correlationId))
     {
-        if (!string.IsNullOrEmpty(workspaceId))
-        {
-            using (Serilog.Context.LogContext.PushProperty("WorkspaceId", workspaceId))
-            {
-                await next();
-            }
-        }
-        else
-        {
-            await next();
-        }
+        await next();
     }
 });
 
-var controllerRoute = app.MapControllers();
-if (requireAuthentication)
+// Routes
+var routes = app.MapControllers();
+
+if (requireAuth)
 {
-    controllerRoute.RequireAuthorization();
+    routes.RequireAuthorization();
 }
 
+// Health
 app.MapHealthChecks("/health");
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
-
-app.MapGet("/", () => "WarpTalk Billing Service is running.");
-
-
-// Auto-Seeding in Development (opt-in only)
-var autoSeedOnStartup = builder.Configuration.GetValue("Billing:AutoSeedOnStartup", false);
-if (app.Environment.IsDevelopment() && autoSeedOnStartup)
-{
-    using var scope = app.Services.CreateScope();
-    var context = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
-
-    context.Database.EnsureCreated();
-
-    if (!context.SubscriptionPlans.Any())
-    {
-        var plans = new List<WarpTalk.BillingService.Domain.Entities.SubscriptionPlan>
-        {
-            new() { Id = Guid.Parse("11111111-1111-1111-1111-111111111111"), Name = WarpTalk.BillingService.Domain.Enums.PlanType.Free, BaseQuotaMinutes = 30, PriceVnd = 0, MaxParticipants = 5, CreatedAt = DateTime.UtcNow },
-            new() { Id = Guid.Parse("22222222-2222-2222-2222-222222222222"), Name = WarpTalk.BillingService.Domain.Enums.PlanType.Pro, BaseQuotaMinutes = 500, PriceVnd = 199000, MaxParticipants = 25, CreatedAt = DateTime.UtcNow },
-            new() { Id = Guid.Parse("33333333-3333-3333-3333-333333333333"), Name = WarpTalk.BillingService.Domain.Enums.PlanType.Premium, BaseQuotaMinutes = 1000, PriceVnd = 499000, MaxParticipants = 100, CreatedAt = DateTime.UtcNow },
-            new() { Id = Guid.Parse("44444444-4444-4444-4444-444444444444"), Name = WarpTalk.BillingService.Domain.Enums.PlanType.Enterprise, BaseQuotaMinutes = 10000, PriceVnd = 0, MaxParticipants = 1000, CreatedAt = DateTime.UtcNow }
-        };
-        context.SubscriptionPlans.AddRange(plans);
-        context.SaveChanges();
-    }
-
-    var testWorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
-    if (!context.UsageQuotas.Any(q => q.WorkspaceId == testWorkspaceId))
-    {
-        var quota = new WarpTalk.BillingService.Domain.Entities.UsageQuota
-        {
-            Id = Guid.NewGuid(),
-            WorkspaceId = testWorkspaceId,
-            PlanId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
-            TotalAllocatedMinutes = 500,
-            ConsumedMinutes = 0,
-            CycleStartDate = DateTime.UtcNow.AddDays(-1),
-            CycleEndDate = DateTime.UtcNow.AddDays(30)
-        };
-
-        context.UsageQuotas.Add(quota);
-        context.SaveChanges();
-    }
-}
+app.MapGet("/", () => "WarpTalk Billing Service Running");
 
 app.Run();
 
 public partial class Program { }
-

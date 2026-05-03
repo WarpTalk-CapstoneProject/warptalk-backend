@@ -14,6 +14,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.0" />
     <PackageReference Include="Microsoft.OpenApi" Version="2.4.1" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.0" />
@@ -24,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WarpTalk.BillingService.Application\WarpTalk.BillingService.Application.csproj" />
+    <ProjectReference Include="..\WarpTalk.BillingService.Domain\WarpTalk.BillingService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.BillingService.Infrastructure\WarpTalk.BillingService.Infrastructure.csproj" />
   </ItemGroup>
 
