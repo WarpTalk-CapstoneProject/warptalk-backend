@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services.Interface;
 using WarpTalk.BillingService.Domain.Enums;
@@ -7,6 +8,7 @@ namespace WarpTalk.BillingService.API.Controllers;
 
 [Route("api/admin/billing")]
 [ApiController]
+[Authorize(Roles = "admin,owner")]
 public class AdminBillingController : ControllerBase
 {
     private readonly ITransactionService _transactionService;
@@ -30,6 +32,15 @@ public class AdminBillingController : ControllerBase
         [FromQuery] int pageSize = 20,
         CancellationToken ct = default)
     {
+        // Validation: workspaceId
+        if (workspaceId == Guid.Empty)
+            return BadRequest(new { message = "WorkspaceId is required and cannot be empty" });
+
+        // Validation: pagination bounds
+        const int MAX_PAGE_SIZE = 100;
+        if (pageSize > MAX_PAGE_SIZE) pageSize = MAX_PAGE_SIZE;
+        if (page < 1) page = 1;
+
         var skip = (page - 1) * pageSize;
 
         var result = await _transactionService.GetByWorkspaceAsync(
@@ -49,6 +60,10 @@ public class AdminBillingController : ControllerBase
         Guid id,
         CancellationToken ct = default)
     {
+        // Validation: id
+        if (id == Guid.Empty)
+            return BadRequest(new { message = "Transaction ID is required and cannot be empty" });
+
         var result = await _transactionService.GetByIdAsync(id, ct);
 
         if (result == null)
@@ -117,6 +132,10 @@ public class AdminBillingController : ControllerBase
         Guid workspaceId,
         CancellationToken ct)
     {
+        // Validation: workspaceId
+        if (workspaceId == Guid.Empty)
+            return BadRequest(new { message = "WorkspaceId is required and cannot be empty" });
+
         var result = await _subscriptionService.GetActiveAsync(workspaceId, ct);
         return Ok(result);
     }

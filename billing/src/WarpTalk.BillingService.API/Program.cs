@@ -202,6 +202,7 @@ if (builder.Configuration.GetValue<bool>("Billing:AutoSeedOnStartup"))
 }
 
 // Middleware
+app.UseMiddleware<SensitiveDataMaskingMiddleware>();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 if (app.Environment.IsDevelopment())
