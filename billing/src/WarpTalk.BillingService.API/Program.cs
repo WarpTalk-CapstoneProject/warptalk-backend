@@ -1,11 +1,18 @@
 ﻿using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System.Threading.RateLimiting;
 
 using WarpTalk.BillingService.API.Middleware;
+using Microsoft.AspNetCore.Authentication;
+using System.Security.Claims;
+using Microsoft.Extensions.Options;
+using System.Text.Encodings.Web;
+using WarpTalk.BillingService.API.Swagger;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Application.Services.Interface;
 using WarpTalk.BillingService.Domain.Interfaces;
@@ -29,6 +36,13 @@ builder.Host.UseSerilog();
 // CONFIG
 // =======================================================
 var requireAuth = builder.Configuration.GetValue<bool>("Security:RequireAuthentication", false);
+
+// Quick dev convenience: disable auth in Development so Swagger/manual testing works
+var isDev = builder.Environment.IsDevelopment();
+if (isDev)
+{
+    requireAuth = false;
+}
 
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -63,29 +77,60 @@ builder.Services.AddCors(options =>
 // =======================================================
 // AUTH
 // =======================================================
+// Register a minimal authentication stack; in production we enable JwtBearer with validation.
 if (requireAuth)
 {
     var jwtSecret = builder.Configuration["Jwt:Secret"]!;
     var jwtIssuer = builder.Configuration["Jwt:Issuer"]!;
     var jwtAudience = builder.Configuration["Jwt:Audience"]!;
 
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(o =>
+    builder.Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(o =>
+    {
+        o.TokenValidationParameters = new TokenValidationParameters
         {
-            o.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuer = true,
-                ValidIssuer = jwtIssuer,
-                ValidateAudience = true,
-                ValidAudience = jwtAudience,
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.FromMinutes(1)
-            };
-        });
+            ValidateIssuer = true,
+            ValidIssuer = jwtIssuer,
+            ValidateAudience = true,
+            ValidAudience = jwtAudience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(1)
+        };
+    });
+
+    // Ensure defaults are set even if another part of the system overrides AddAuthentication
+    builder.Services.PostConfigure<Microsoft.AspNetCore.Authentication.AuthenticationOptions>(options =>
+    {
+        if (string.IsNullOrEmpty(options.DefaultAuthenticateScheme))
+            options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+        if (string.IsNullOrEmpty(options.DefaultChallengeScheme))
+            options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    });
 
     builder.Services.AddAuthorization();
+}
+else if (isDev)
+{
+    // Development-only: register a test auth scheme so AuthorizationMiddleware has a valid handler
+    builder.Services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme = "DevTest";
+        options.DefaultChallengeScheme = "DevTest";
+    }).AddScheme<AuthenticationSchemeOptions, DevTestAuthHandler>("DevTest", opts => { });
+
+    // Make authorization permissive in dev so you can call admin endpoints from Swagger
+    builder.Services.AddAuthorization(options =>
+    {
+        options.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+            .RequireAssertion(_ => true)
+            .Build();
+    });
 }
 
 // =======================================================
@@ -93,7 +138,10 @@ if (requireAuth)
 // =======================================================
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.OperationFilter<BillingSwaggerExamplesOperationFilter>();
+});
 
 // =======================================================
 // DB CONTEXT
@@ -188,6 +236,90 @@ builder.Services.AddHealthChecks()
     .AddDbContextCheck<BillingDbContext>();
 
 // =======================================================
+// RATE LIMITING (Security: Prevent DoS attacks)
+// =======================================================
+builder.Services.AddRateLimiter(options =>
+{
+    // Global policy: IP-based, 100 requests per minute
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // Policy 1: Strict limit for checkout/payment endpoints (5 req/min per IP)
+    options.AddPolicy("PaymentEndpoints", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // Policy 2: Moderate limit for quota operations (20 req/min per IP)
+    options.AddPolicy("QuotaEndpoints", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 20,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // Policy 3: Webhooks - higher limit (50 req/min, no user check needed)
+    options.AddPolicy("WebhookEndpoints", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 50,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // Policy 4: Admin endpoints - very high limit (500 req/min)
+    options.AddPolicy("AdminEndpoints", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 500,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // Policy 5: Health checks - very high limit (10000 req/min - effectively unlimited)
+    options.AddPolicy("HealthEndpoints", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10000,
+                Window = TimeSpan.FromMinutes(1),
+                AutoReplenishment = true
+            }));
+
+    // On rejected, return 429 Too Many Requests
+    options.OnRejected = async (context, _) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            message = "Too many requests. Please try again later.",
+            retryAfter = context.HttpContext.Response.Headers["Retry-After"]
+        });
+    };
+});
+
+// =======================================================
 // BUILD APP
 // =======================================================
 var app = builder.Build();
@@ -205,13 +337,20 @@ if (builder.Configuration.GetValue<bool>("Billing:AutoSeedOnStartup"))
 app.UseMiddleware<SensitiveDataMaskingMiddleware>();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-if (app.Environment.IsDevelopment())
+// Swagger UI - Enable in Development and non-Production environments
+if (!app.Environment.IsProduction())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "WarpTalk Billing API v1");
+        c.RoutePrefix = string.Empty; // Serve at /
+        c.DefaultModelsExpandDepth(2);
+    });
 }
 
 app.UseHttpsRedirection();
+app.UseRateLimiter();
 app.UseCors("BillingCors");
 
 if (requireAuth)
@@ -225,6 +364,7 @@ app.Use(async (ctx, next) =>
 {
     ctx.Response.Headers["X-Frame-Options"] = "DENY";
     ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     await next();
 });
 
@@ -258,3 +398,22 @@ app.MapGet("/", () => "WarpTalk Billing Service Running");
 app.Run();
 
 public partial class Program { }
+
+// Development-only test auth handler (returns a test user with admin role)
+internal class DevTestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public DevTestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, UrlEncoder encoder, ISystemClock clock)
+        : base(options, logger, encoder, clock)
+    {
+    }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        var claims = new[] { new Claim(ClaimTypes.Name, "dev"), new Claim(ClaimTypes.Role, "admin") };
+        var identity = new ClaimsIdentity(claims, "DevTest");
+        var principal = new ClaimsPrincipal(identity);
+        var ticket = new AuthenticationTicket(principal, "DevTest");
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+}
