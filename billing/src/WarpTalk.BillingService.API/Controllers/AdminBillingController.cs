@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authorization;
+﻿using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services.Interface;
@@ -28,8 +29,8 @@ public class AdminBillingController : ControllerBase
     [HttpGet("transactions/{workspaceId}")]
     public async Task<IActionResult> GetWorkspaceTransactions(
         Guid workspaceId,
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
+        [FromQuery, Range(1, int.MaxValue)] int page = 1,
+        [FromQuery, Range(1, 100)] int pageSize = 20,
         CancellationToken ct = default)
     {
         // Validation: workspaceId
@@ -38,8 +39,14 @@ public class AdminBillingController : ControllerBase
 
         // Validation: pagination bounds
         const int MAX_PAGE_SIZE = 100;
-        if (pageSize > MAX_PAGE_SIZE) pageSize = MAX_PAGE_SIZE;
-        if (page < 1) page = 1;
+        if (page < 1)
+            return BadRequest(new { message = "Page must be >= 1" });
+
+        if (pageSize < 1)
+            return BadRequest(new { message = "PageSize must be >= 1" });
+
+        if (pageSize > MAX_PAGE_SIZE)
+            return BadRequest(new { message = $"PageSize must be <= {MAX_PAGE_SIZE}" });
 
         var skip = (page - 1) * pageSize;
 
@@ -75,7 +82,7 @@ public class AdminBillingController : ControllerBase
     // ===================================================
     // GET TRANSACTION BY ORDER CODE
     // ===================================================
-    [HttpGet("transactions/order/{orderCode}")]
+    [HttpGet("transactions/by-order/{orderCode}")]
     public async Task<IActionResult> GetByOrderCode(
         long orderCode,
         CancellationToken ct = default)

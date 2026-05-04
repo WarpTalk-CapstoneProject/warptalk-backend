@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
 
 // For more information on enabling Web API for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
 
@@ -12,7 +13,7 @@ namespace WarpTalk.BillingService.API.Controllers
         // INGEST USAGE EVENT (AI / API / TOKEN CONSUMPTION)
         // ===================================================
         [HttpPost]
-        public IActionResult IngestUsageEvent([FromBody] object payload)
+        public IActionResult IngestUsageEvent([FromBody] JsonElement payload)
         {
             // TODO: integrate later with quota engine
             return Ok(new

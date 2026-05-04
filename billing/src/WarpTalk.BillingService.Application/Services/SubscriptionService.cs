@@ -1,6 +1,7 @@
 ﻿using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services.Interface;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Exceptions;
 using WarpTalk.BillingService.Domain.Enums;
 using WarpTalk.BillingService.Domain.Interfaces;
 
@@ -47,18 +48,25 @@ public class SubscriptionService : ISubscriptionService
     {
         var plan = await _planRepo.GetByIdAsync(command.PlanId, ct);
 
-        if (plan == null || !plan.IsActive)
-            throw new Exception("Invalid plan");
+        if (plan == null)
+            throw new BillingDomainException($"Subscription plan not found: {command.PlanId}");
+
+        if (!plan.IsActive)
+            throw new BillingDomainException($"Subscription plan is inactive: {command.PlanId}");
 
         var subscription = new Subscription
         {
             Id = Guid.NewGuid(),
             WorkspaceId = command.WorkspaceId,
+            OwnerUserId = command.OwnerUserId,
             PlanId = plan.Id,
             Status = SubscriptionStatus.Active,
-            StartDate = DateTime.UtcNow,
+            SnapshotMonthlyPriceVnd = plan.MonthlyPriceVnd,
+            SnapshotIncludedCredits = plan.IncludedCredits,
+            AutoRenew = true,
+            StartDate = command.StartDate == default ? DateTime.UtcNow : command.StartDate,
             EndDate = command.DurationDays.HasValue
-                ? DateTime.UtcNow.AddDays(command.DurationDays.Value)
+                ? (command.StartDate == default ? DateTime.UtcNow : command.StartDate).AddDays(command.DurationDays.Value)
                 : null
         };
 
@@ -83,8 +91,11 @@ public class SubscriptionService : ISubscriptionService
 
         var plan = await _planRepo.GetByIdAsync(command.NewPlanId, ct);
 
-        if (plan == null || !plan.IsActive)
-            throw new Exception("Invalid plan");
+        if (plan == null)
+            throw new BillingDomainException($"Subscription plan not found: {command.NewPlanId}");
+
+        if (!plan.IsActive)
+            throw new BillingDomainException($"Subscription plan is inactive: {command.NewPlanId}");
 
         subscription.PlanId = plan.Id;
         subscription.UpdatedAt = DateTime.UtcNow;
