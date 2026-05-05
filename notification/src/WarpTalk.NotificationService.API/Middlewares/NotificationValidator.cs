@@ -2,7 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using WarpTalk.Shared;
 
-namespace WarpTalk.NotificationService.Application.Validators;
+namespace WarpTalk.NotificationService.API.Middlewares;
 
 public static class NotificationValidator
 {

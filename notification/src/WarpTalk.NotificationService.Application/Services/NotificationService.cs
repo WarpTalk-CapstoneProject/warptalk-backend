@@ -20,7 +20,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationPreference>();
+        var repo = _unitOfWork.NotificationPreferenceRepository;
         
         // We do a simple fallback if multiple matching items exist
         // Real implementation usually handles SingleOrDefault correctly
@@ -43,12 +43,12 @@ public class NotificationService : INotificationService
             await _unitOfWork.SaveChangesAsync();
         }
 
-        return Result.Success(MapToDto(pref));
+        return Result.Success(pref.ToDto());
     }
 
     public async Task<Result<NotificationPreferenceDto>> UpdatePreferencesAsync(Guid userId, UpdateNotificationPreferenceRequest request, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationPreference>();
+        var repo = _unitOfWork.NotificationPreferenceRepository;
         var prefs = await repo.FindAsync(p => p.UserId == userId);
         var pref = prefs.FirstOrDefault();
 
@@ -63,7 +63,7 @@ public class NotificationService : INotificationService
         repo.Update(pref);
         await _unitOfWork.SaveChangesAsync();
 
-        return Result.Success(MapToDto(pref));
+        return Result.Success(pref.ToDto());
     }
 
     public async Task<Result> SendNotificationAsync(Guid userId, string templateCode, Dictionary<string, string> variables, CancellationToken ct = default)
@@ -76,14 +76,7 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
         pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        var count = await repo.CountAsync(n => n.UserId == userId);
-        var items = await repo.FindWithPaginationAsync(
-            n => n.UserId == userId, 
-            (page - 1) * pageSize, 
-            pageSize, 
-            q => q.OrderByDescending(n => n.CreatedAt)
-        );
+        var (items, count) = await _unitOfWork.NotificationMessageRepository.GetPaginatedByUserIdAsync(userId, page, pageSize, ct);
 
         var dtoItems = items.Select(n => new NotificationMessageDto(
             n.Id, n.Type, n.Title, n.Content, n.ActionUrl, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
@@ -94,8 +87,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        var notification = await repo.GetByIdAsync(notificationId);
+        var notification = await _unitOfWork.NotificationMessageRepository.GetByIdAsync(notificationId);
         
         if (notification == null)
             return Result.Failure("Notification not found", ErrorCodes.NotFound);
@@ -108,10 +100,7 @@ public class NotificationService : INotificationService
             
         if (!notification.IsRead)
         {
-            notification.IsRead = true;
-            notification.ReadAt = DateTime.UtcNow;
-            repo.Update(notification);
-            await _unitOfWork.SaveChangesAsync();
+            await _unitOfWork.NotificationMessageRepository.MarkAsReadAsync(notificationId, userId, ct);
         }
         
         return Result.Success();
@@ -119,36 +108,13 @@ public class NotificationService : INotificationService
 
     public async Task<Result> MarkAllAsReadAsync(Guid userId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        var unreadItems = await repo.FindAsync(n => n.UserId == userId && !n.IsRead);
-        
-        var now = DateTime.UtcNow;
-        foreach (var item in unreadItems)
-        {
-            item.IsRead = true;
-            item.ReadAt = now;
-            repo.Update(item);
-        }
-        
-        if (unreadItems.Any())
-        {
-            await _unitOfWork.SaveChangesAsync();
-        }
-        
+        await _unitOfWork.NotificationMessageRepository.MarkAllAsReadAsync(userId, ct);
         return Result.Success();
     }
 
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default)
     {
-        var validationResult = WarpTalk.NotificationService.Application.Validators.NotificationValidator.Validate(type, title, content, actionUrl, payloadJson);
-        if (!validationResult.IsSuccess)
-        {
-            _logger.LogWarning("Validation failed for creating notification. User: {UserId}, Type: {Type}, Error: {Error}, ErrorCode: {ErrorCode}", userId, type, validationResult.Error, validationResult.ErrorCode);
-            return Result.Failure<NotificationMessageDto>(validationResult.Error ?? "Validation failed", validationResult.ErrorCode);
-        }
 
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        
         var notification = new NotificationMessage
         {
             UserId = userId,
@@ -161,7 +127,7 @@ public class NotificationService : INotificationService
             CreatedAt = DateTime.UtcNow
         };
         
-        await repo.AddAsync(notification);
+        await _unitOfWork.NotificationMessageRepository.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
         
         var dto = new NotificationMessageDto(
@@ -171,14 +137,4 @@ public class NotificationService : INotificationService
         return Result.Success(dto);
     }
 
-    private NotificationPreferenceDto MapToDto(NotificationPreference p) =>
-        new NotificationPreferenceDto(
-            p.Id,
-            p.UserId,
-            p.NotificationType ?? "SYSTEM",
-            p.EmailEnabled,
-            p.PushEnabled,
-            p.InAppEnabled,
-            p.UpdatedAt
-        );
 }

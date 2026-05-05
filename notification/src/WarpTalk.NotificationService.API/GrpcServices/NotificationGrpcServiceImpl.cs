@@ -4,6 +4,8 @@ using WarpTalk.Shared.Protos;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Application.Interfaces;
+using WarpTalk.NotificationService.API.Middlewares;
+using Microsoft.Extensions.Logging;
 
 namespace WarpTalk.NotificationService.API.GrpcServices;
 
@@ -17,13 +19,16 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
 {
     private readonly INotificationService _notificationService;
     private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
+    private readonly ILogger<NotificationGrpcServiceImpl> _logger;
 
     public NotificationGrpcServiceImpl(
         INotificationService notificationService,
-        StackExchange.Redis.IConnectionMultiplexer redis)
+        StackExchange.Redis.IConnectionMultiplexer redis,
+        ILogger<NotificationGrpcServiceImpl> logger)
     {
         _notificationService = notificationService;
         _redis = redis;
+        _logger = logger;
     }
 
     public override async Task<SendNotificationResponse> SendNotification(SendNotificationRequest request, ServerCallContext context)
@@ -46,6 +51,17 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
         if (meta.Count > 0)
         {
             payloadJson = System.Text.Json.JsonSerializer.Serialize(meta);
+        }
+
+        var validationResult = NotificationValidator.Validate(request.Type, request.Title, request.Body, request.ActionUrl, payloadJson);
+        if (!validationResult.IsSuccess)
+        {
+            _logger.LogWarning("Validation failed for creating notification. User: {UserId}, Type: {Type}, Error: {Error}, ErrorCode: {ErrorCode}", parsedUserId, request.Type, validationResult.Error, validationResult.ErrorCode);
+            return new SendNotificationResponse
+            {
+                Success = false,
+                NotificationId = ""
+            };
         }
 
         var result = await _notificationService.CreateNotificationAsync(
@@ -82,9 +98,9 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             var json = System.Text.Json.JsonSerializer.Serialize(msg);
             await _redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal("warptalk:notifications:new"), json);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore error so notification creation still succeeds
+            _logger.LogError(ex, "Failed to publish real-time notification to Redis for notification ID: {NotificationId}, User ID: {UserId}", result.Value.Id, request.UserId);
         }
 
         return new SendNotificationResponse

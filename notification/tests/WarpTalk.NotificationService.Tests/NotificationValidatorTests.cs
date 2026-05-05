@@ -1,5 +1,5 @@
 using System.Text.Json;
-using WarpTalk.NotificationService.Application.Validators;
+using WarpTalk.NotificationService.API.Middlewares;
 using WarpTalk.Shared;
 
 namespace WarpTalk.NotificationService.Tests;

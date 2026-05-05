@@ -59,10 +59,7 @@ public class NotificationHub : Hub
 
     // ── Server Methods (Client → Server) ──────────────────
 
-    /// <summary>
-    /// Mark a notification as read. Broadcasts to all user's devices
-    /// so the read status is synced across tabs/devices.
-    /// </summary>
+    
     public async Task MarkAsRead(Guid notificationId)
     {
         var userId = GetUserId();
@@ -101,9 +98,7 @@ public class NotificationHub : Hub
         }
     }
 
-    /// <summary>
-    /// Mark all notifications as read.
-    /// </summary>
+    
     public async Task MarkAllAsRead()
     {
         var userId = GetUserId();

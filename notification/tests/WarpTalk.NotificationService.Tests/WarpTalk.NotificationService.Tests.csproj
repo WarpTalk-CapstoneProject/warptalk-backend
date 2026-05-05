@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\WarpTalk.NotificationService.Application\WarpTalk.NotificationService.Application.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.NotificationService.Domain\WarpTalk.NotificationService.Domain.csproj" />
+    <ProjectReference Include="..\..\src\WarpTalk.NotificationService.API\WarpTalk.NotificationService.API.csproj" />
     <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
   </ItemGroup>
 

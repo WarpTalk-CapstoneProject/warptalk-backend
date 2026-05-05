@@ -21,12 +21,12 @@ public class NotificationsController : ControllerBase
         _logger = logger;
     }
 
-    [HttpGet("test")]
-    [AllowAnonymous]
-    public IActionResult Test()
-    {
-        return Ok(new { message = "Notification Service API up!" });
-    }
+    // [HttpGet("test")]
+    // [AllowAnonymous]
+    // public IActionResult Test()
+    // {
+    //     return Ok(new { message = "Notification Service API up!" });
+    // }
 
     [HttpGet("preferences")]
     public async Task<IActionResult> GetPreferences(CancellationToken ct)
@@ -104,51 +104,4 @@ public class NotificationsController : ControllerBase
         return NoContent();
     }
 
-    /// <summary>
-    /// INTERNAL/TESTING ONLY: Seeds a mock notification for integration testing.
-    /// Simulates what a gRPC call from another service would do.
-    /// </summary>
-    [HttpPost("internal/seed")]
-    public async Task<IActionResult> SeedMockNotification([FromServices] StackExchange.Redis.IConnectionMultiplexer redis, CancellationToken ct)
-    {
-        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
-            return Unauthorized();
-
-        var result = await _notificationService.CreateNotificationAsync(
-            userId, 
-            "SYSTEM_ALERT", 
-            "Mock Notification " + DateTime.UtcNow.Ticks, 
-            "This is a seeded notification for testing.", 
-            null, 
-            "{}", 
-            ct);
-
-        if (!result.IsSuccess || result.Value == null)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        // Simulate gRPC publishing to Redis
-        try
-        {
-            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
-            {
-                Id = result.Value.Id.ToString(),
-                UserId = userId.ToString(),
-                Type = result.Value.Type,
-                Title = result.Value.Title,
-                Content = result.Value.Content,
-                ActionUrl = result.Value.ActionUrl ?? string.Empty,
-                PayloadJson = result.Value.PayloadJson,
-                CreatedAt = result.Value.CreatedAt.ToString("O")
-            };
-            var json = System.Text.Json.JsonSerializer.Serialize(msg);
-            await redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal("warptalk:notifications:new"), json);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to publish mock notification to Redis");
-        }
-
-        return Ok(result.Value);
-    }
 }

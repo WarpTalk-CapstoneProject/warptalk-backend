@@ -13,15 +13,15 @@ namespace WarpTalk.NotificationService.Tests;
 public class NotificationServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<NotificationMessage>> _mockRepo;
+    private readonly Mock<INotificationMessageRepository> _mockRepo;
     private readonly Application.Services.NotificationService _sut;
 
     public NotificationServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockRepo = new Mock<IGenericRepository<NotificationMessage>>();
+        _mockRepo = new Mock<INotificationMessageRepository>();
 
-        _mockUnitOfWork.Setup(u => u.Repository<NotificationMessage>()).Returns(_mockRepo.Object);
+        _mockUnitOfWork.Setup(u => u.NotificationMessageRepository).Returns(_mockRepo.Object);
 
         var mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<Application.Services.NotificationService>>();
         _sut = new Application.Services.NotificationService(_mockUnitOfWork.Object, mockLogger.Object);
@@ -73,7 +73,20 @@ public class NotificationServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        _mockRepo.Verify(r => r.Update(It.Is<NotificationMessage>(n => n.IsRead == true)), Times.Once);
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+        _mockRepo.Verify(r => r.MarkAsReadAsync(notificationId, ownerId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task MarkAllAsReadAsync_ShouldSucceed()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+
+        // Act
+        var result = await _sut.MarkAllAsReadAsync(userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        _mockRepo.Verify(r => r.MarkAllAsReadAsync(userId, It.IsAny<CancellationToken>()), Times.Once);
     }
 }
