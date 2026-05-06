@@ -1,0 +1,1033 @@
+{
+	"info": {
+		"_postman_id": "8b846f7d-4b8c-4f5e-9e7d-f4d5b6c7a8b9",
+		"name": "WarpTalk Billing API - Full Test Suite",
+		"description": "Comprehensive test suite for WarpTalk Billing Service including Dev tokens, Plans, Subscriptions, Credits, and PayOS Simulation.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "0. Authentication",
+			"item": [
+				{
+					"name": "Generate Dev Token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.token) {",
+									"    pm.collectionVariables.set(\"authToken\", jsonData.token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"admin@warptalk.com\",\n  \"roles\": [\"billing_admin\"],\n  \"workspaceId\": \"{{workspaceId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/DevToken/generate",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"DevToken",
+								"generate"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Token Generated Successfully",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"email\": \"admin@warptalk.com\",\n  \"roles\": [\"billing_admin\"],\n  \"workspaceId\": \"{{workspaceId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/DevToken/generate",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"DevToken",
+										"generate"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n    \"expiresAt\": \"2026-05-07T12:00:00Z\",\n    \"userId\": \"admin-id\",\n    \"email\": \"admin@warptalk.com\",\n    \"roles\": [\"billing_admin\"]\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "1. Public Data",
+			"item": [
+				{
+					"name": "Get All Plans",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/plans",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"plans"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Plans List",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/plans",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"plans"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "[\n    {\n        \"id\": \"771e8400-e29b-41d4-a716-446655440000\",\n        \"name\": \"Free\",\n        \"description\": \"For trial users\",\n        \"price\": 0,\n        \"creditsPerMonth\": 100,\n        \"isActive\": true\n    },\n    {\n        \"id\": \"771e8400-e29b-41d4-a716-446655441111\",\n        \"name\": \"Basic\",\n        \"description\": \"For small teams\",\n        \"price\": 100000,\n        \"creditsPerMonth\": 1000,\n        \"isActive\": true\n    }\n]"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "2. Subscription Management",
+			"item": [
+				{
+					"name": "Get Active Subscription",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/active",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"subscriptions",
+								"active"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Active Subscription Found",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/active",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"subscriptions",
+										"active"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440001\",\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n    \"planName\": \"Basic\",\n    \"status\": \"Active\",\n    \"startDate\": \"2026-05-06T10:00:00Z\",\n    \"endDate\": \"2026-06-06T10:00:00Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Create New Subscription",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"planId\": \"{{planId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"subscriptions"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Subscription Created",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"planId\": \"{{planId}}\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"subscriptions"
+									]
+								}
+							},
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440001\",\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n    \"status\": \"Active\",\n    \"startDate\": \"2026-05-06T12:00:00Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Cancel Subscription",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"cancellationReason\": \"Test cancellation\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/cancel",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"subscriptions",
+								"cancel"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Subscription Cancelled",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"cancellationReason\": \"Test cancellation\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/cancel",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"subscriptions",
+										"cancel"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 0,\n    \"subscriptionStatus\": \"Cancelled\",\n    \"subscriptionEndDate\": \"2026-05-06T12:30:00Z\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3. Credits & Transactions",
+			"item": [
+				{
+					"name": "Get Credits Balance",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"credits"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Credits Balance Response",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"credits"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 1050,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Top-up Credits (Idempotent)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Idempotency-Key",
+								"value": "unique-topup-key-1",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"amount\": 1000\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/topup",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"credits",
+								"topup"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Top-up Success",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Idempotency-Key",
+										"value": "unique-topup-key-1",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"amount\": 1000\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/topup",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"credits",
+										"topup"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 2050,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Consume Credits (AI Usage)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Idempotency-Key",
+								"value": "unique-usage-key-1",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"amount\": 50,\n  \"referenceType\": \"transcription\",\n  \"referenceId\": \"550e8400-e29b-41d4-a716-446655440000\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"credits",
+								"consume"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Usage Consumed Successfully",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Idempotency-Key",
+										"value": "unique-usage-key-1",
+										"type": "text"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"amount\": 50,\n  \"referenceType\": \"transcription\",\n  \"referenceId\": \"550e8400-e29b-41d4-a716-446655440000\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"credits",
+								"consume"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 2000,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}"
+						},
+						{
+							"name": "Insufficient Credits",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"amount\": 999999,\n  \"referenceType\": \"heavy_computation\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"credits",
+										"consume"
+									]
+								}
+							},
+							"status": "Payment Required",
+							"code": 402,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"code\": \"INSUFFICIENT_CREDITS\",\n    \"message\": \"Insufficient credits for this operation\",\n    \"timestamp\": \"2026-05-06T12:00:00Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Credit History",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/history?pageNumber=1&pageSize=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"credits",
+								"history"
+							],
+							"query": [
+								{
+									"key": "pageNumber",
+									"value": "1"
+								},
+								{
+									"key": "pageSize",
+									"value": "50"
+								}
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Paginated Credit History",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/history?pageNumber=1&pageSize=50",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"credits",
+										"history"
+									],
+									"query": [
+										{
+											"key": "pageNumber",
+											"value": "1"
+										},
+										{
+											"key": "pageSize",
+											"value": "50"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"items\": [\n        {\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"amount\": 1000,\n            \"type\": \"TopUp\",\n            \"referenceType\": \"manual\",\n            \"createdAt\": \"2026-05-06T12:00:00Z\"\n        },\n        {\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"amount\": -50,\n            \"type\": \"Consumption\",\n            \"referenceType\": \"transcription\",\n            \"createdAt\": \"2026-05-06T12:05:00Z\"\n        }\n    ],\n    \"pageNumber\": 1,\n    \"pageSize\": 50,\n    \"totalCount\": 2,\n    \"totalPages\": 1\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Payment Transactions",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{authToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/transactions?pageNumber=1&pageSize=50",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"Billing",
+								"workspaces",
+								"{{workspaceId}}",
+								"transactions"
+							],
+							"query": [
+								{
+									"key": "pageNumber",
+									"value": "1"
+								},
+								{
+									"key": "pageSize",
+									"value": "50"
+								}
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Payment Transactions History",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/transactions?pageNumber=1&pageSize=50",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"Billing",
+										"workspaces",
+										"{{workspaceId}}",
+										"transactions"
+									],
+									"query": [
+										{
+											"key": "pageNumber",
+											"value": "1"
+										},
+										{
+											"key": "pageSize",
+											"value": "50"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"items\": [\n        {\n            \"id\": \"trans-id-1\",\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n            \"status\": \"Completed\",\n            \"amount\": 100000,\n            \"createdAt\": \"2026-05-06T10:00:00Z\"\n        }\n    ],\n    \"pageNumber\": 1,\n    \"pageSize\": 50,\n    \"totalCount\": 1,\n    \"totalPages\": 1\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "4. PayOS Simulation",
+			"item": [
+				{
+					"name": "Generate PayOS Test Payload",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/PayOSSimulation/generate-test-payload?amount=50000",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"PayOSSimulation",
+								"generate-test-payload"
+							],
+							"query": [
+								{
+									"key": "amount",
+									"value": "50000"
+								}
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Generated Payload Sample",
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/PayOSSimulation/generate-test-payload?amount=50000",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"PayOSSimulation",
+										"generate-test-payload"
+									],
+									"query": [
+										{
+											"key": "amount",
+											"value": "50000"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"code\": \"00\",\n    \"desc\": \"Success\",\n    \"data\": {\n        \"orderCode\": 1714382000,\n        \"amount\": 50000,\n        \"description\": \"WS:550e8400-e29b-41d4-a716-446655440005\",\n        \"status\": \"PAID\",\n        \"checkoutUrl\": \"https://pay.payos.vn/checkout/...\",\n        \"qrCode\": \"...\"\n    },\n    \"signature\": \"8f7e6d...\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Simulate Successful Webhook",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"code\": \"00\",\n    \"desc\": \"Success\",\n    \"data\": {\n        \"orderCode\": 123456,\n        \"amount\": 50000,\n        \"description\": \"WS:{{workspaceId}}\",\n        \"status\": \"PAID\",\n        \"checkoutUrl\": \"https://pay.payos.vn/checkout/...\",\n        \"qrCode\": \"...\"\n    },\n    \"signature\": \"simulated_signature\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/PayOSSimulation/webhook/simulate-success",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"PayOSSimulation",
+								"webhook",
+								"simulate-success"
+							]
+						}
+					},
+					"response": [
+						{
+							"name": "Simulation Success",
+							"originalRequest": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"code\": \"00\",\n    \"desc\": \"Success\",\n    \"data\": {\n        \"orderCode\": 123456,\n        \"amount\": 50000,\n        \"description\": \"WS:{{workspaceId}}\",\n        \"status\": \"PAID\"\n    },\n    \"signature\": \"simulated_signature\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{baseUrl}}/api/v1/PayOSSimulation/webhook/simulate-success",
+									"host": [
+										"{{baseUrl}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"PayOSSimulation",
+										"webhook",
+										"simulate-success"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "{\n    \"message\": \"Simulated payment processed successfully\",\n    \"addedCredits\": 500,\n    \"newBalance\": 2500\n}"
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:5201",
+			"type": "string"
+		},
+		{
+			"key": "workspaceId",
+			"value": "550e8400-e29b-41d4-a716-446655440005",
+			"type": "string"
+		},
+		{
+			"key": "planId",
+			"value": "771e8400-e29b-41d4-a716-446655441111",
+			"type": "string"
+		},
+		{
+			"key": "authToken",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

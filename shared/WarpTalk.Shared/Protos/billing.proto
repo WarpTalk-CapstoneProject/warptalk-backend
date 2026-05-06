@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package billing;
+
+service BillingService {
+  rpc GetWorkspaceCredits (GetCreditsRequest) returns (GetCreditsResponse);
+  rpc ConsumeCredits (ConsumeCreditsRequest) returns (ConsumeCreditsResponse);
+}
+
+message GetCreditsRequest {
+  string workspace_id = 1;
+}
+
+message GetCreditsResponse {
+  string workspace_id = 1;
+  int32 current_credits = 2;
+  string status = 3;
+}
+
+message ConsumeCreditsRequest {
+  string workspace_id = 1;
+  int32 amount = 2;
+  string reference_type = 3;
+  string reference_id = 4;
+}
+
+message ConsumeCreditsResponse {
+  bool success = 1;
+  int32 new_balance = 2;
+  string error_message = 3;
+}
