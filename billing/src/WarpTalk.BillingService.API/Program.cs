@@ -5,6 +5,7 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Context;
+using WarpTalk.BillingService.API.GrpcServices;
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.API.Swagger;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -28,7 +29,17 @@ try
 
     builder.WebHost.ConfigureKestrel(options =>
     {
+        // HTTP 1.1 for Swagger/REST
         options.ListenAnyIP(5201, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        
+        // HTTPS for Secure REST
+        options.ListenAnyIP(5202, listenOptions => 
+        {
+            listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
+            listenOptions.UseHttps();
+        });
+
+        // HTTP/2 for gRPC
         options.ListenAnyIP(50051, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
@@ -45,6 +56,7 @@ try
     builder.Services.AddScoped<IBillingService, WarpTalk.BillingService.Application.Services.BillingService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationService>();
+    builder.Services.AddGrpc();
 
     var jwtSettings = builder.Configuration.GetSection("Jwt");
     var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
@@ -253,6 +265,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
+    app.MapGrpcService<BillingServiceGrpc>();
 
     using (var scope = app.Services.CreateScope())
     {
