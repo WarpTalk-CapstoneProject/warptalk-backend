@@ -20,12 +20,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.NotificationPreferenceRepository;
-        
-        // We do a simple fallback if multiple matching items exist
-        // Real implementation usually handles SingleOrDefault correctly
-        var prefs = await repo.FindAsync(p => p.UserId == userId);
-        var pref = prefs.FirstOrDefault();
+        var pref = await _unitOfWork.NotificationPreferenceRepository.GetByUserIdAsync(userId, ct);
         
         if (pref == null)
         {
@@ -39,7 +34,7 @@ public class NotificationService : INotificationService
                 InAppEnabled = true,
                 UpdatedAt = DateTime.UtcNow
             };
-            await repo.AddAsync(pref);
+            await _unitOfWork.NotificationPreferenceRepository.AddAsync(pref);
             await _unitOfWork.SaveChangesAsync();
         }
 
@@ -48,9 +43,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPreferenceDto>> UpdatePreferencesAsync(Guid userId, UpdateNotificationPreferenceRequest request, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.NotificationPreferenceRepository;
-        var prefs = await repo.FindAsync(p => p.UserId == userId);
-        var pref = prefs.FirstOrDefault();
+        var pref = await _unitOfWork.NotificationPreferenceRepository.GetByUserIdAsync(userId, ct);
 
         if (pref == null)
             return Result.Failure<NotificationPreferenceDto>("Preferences not found", ErrorCodes.NotFound);
@@ -60,7 +53,7 @@ public class NotificationService : INotificationService
         if (request.InAppEnabled.HasValue) pref.InAppEnabled = request.InAppEnabled.Value;
 
         pref.UpdatedAt = DateTime.UtcNow;
-        repo.Update(pref);
+        _unitOfWork.NotificationPreferenceRepository.Update(pref);
         await _unitOfWork.SaveChangesAsync();
 
         return Result.Success(pref.ToDto());

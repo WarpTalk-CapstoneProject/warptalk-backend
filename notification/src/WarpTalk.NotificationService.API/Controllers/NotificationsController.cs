@@ -51,7 +51,10 @@ public class NotificationsController : ControllerBase
 
         var result = await _notificationService.UpdatePreferencesAsync(userId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -104,7 +107,7 @@ public class NotificationsController : ControllerBase
 
         return NoContent();
     }
-Temporary endpoint for seeding mock notifications to verify DB integration and testing.
+//Temporary endpoint for seeding mock notifications to verify DB integration and testing.
     [HttpPost("internal/seed")]
     public async Task<IActionResult> SeedMockNotification(CancellationToken ct)
     {

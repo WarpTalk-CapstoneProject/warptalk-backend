@@ -784,7 +784,7 @@
     },
     {
       "key": "testPassword",
-      "value": "P@ssw0rd123!"
+      "value": "YOUR_TEST_PASSWORD_HERE"
     },
     {
       "key": "accessToken",
