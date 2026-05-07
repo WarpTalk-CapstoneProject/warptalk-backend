@@ -57,6 +57,7 @@ try
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationService>();
     builder.Services.AddGrpc();
+    builder.Services.AddGrpcReflection();
 
     var jwtSettings = builder.Configuration.GetSection("Jwt");
     var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
@@ -266,6 +267,11 @@ try
     app.UseAuthorization();
     app.MapControllers();
     app.MapGrpcService<BillingServiceGrpc>();
+    
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapGrpcReflectionService();
+    }
 
     using (var scope = app.Services.CreateScope())
     {
