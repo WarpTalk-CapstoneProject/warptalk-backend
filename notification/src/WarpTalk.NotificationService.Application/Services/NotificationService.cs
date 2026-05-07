@@ -87,16 +87,10 @@ public class NotificationService : INotificationService
 
     public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
     {
-        var notification = await _unitOfWork.NotificationMessageRepository.GetByIdAsync(notificationId);
+        var notification = await _unitOfWork.NotificationMessageRepository.GetByIdAndUserIdAsync(notificationId, userId, ct);
         
         if (notification == null)
             return Result.Failure("Notification not found", ErrorCodes.NotFound);
-            
-        if (notification.UserId != userId)
-        {
-            _logger.LogWarning("IDOR Attempt: User {UserId} attempted to mark notification {NotificationId} as read which belongs to User {OwnerId}", userId, notificationId, notification.UserId);
-            return Result.Failure("Forbidden access", ErrorCodes.Forbidden);
-        }
             
         if (!notification.IsRead)
         {

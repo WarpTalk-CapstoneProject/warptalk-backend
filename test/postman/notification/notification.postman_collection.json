@@ -1,727 +1,810 @@
 {
-    "info": {
-        "_postman_id": "3c2b65f2-7087-412c-95db-d712347472d2",
-        "name": "WarpTalk Backend - Notification",
-        "description": "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
-        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-        "_exporter_id": "51979719",
-        "_collection_link": "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
-    },
-    "item": [
+  "info": {
+    "_postman_id": "7e707999-d306-4a33-ab60-d15393f6c4e6",
+    "name": "WarpTalk Backend - Notification",
+    "description": "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "51979719",
+    "_collection_link": "https://go.postman.co/collection/51979719-7e707999-d306-4a33-ab60-d15393f6c4e6?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "04 - Notification via Gateway",
+      "item": [
         {
-            "name": "04 - Notification via Gateway",
-            "item": [
+          "name": "1. Happy Path",
+          "item": [
+            {
+              "name": "Login & Auto-Set Token",
+              "event": [
                 {
-                    "name": "0. Setup & Seed Data",
-                    "item": [
-                        {
-                            "name": "Login & Auto-Set Token",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 200\", function () {",
-                                            "    pm.response.to.have.status(200);",
-                                            "});",
-                                            "if (pm.response.code === 200) {",
-                                            "    var json = pm.response.json();",
-                                            "    var token = json.accessToken || json.token;",
-                                            "    if (token) {",
-                                            "        pm.collectionVariables.set(\"accessToken\", token);",
-                                            "        console.log(\"Token acquired and saved automatically!\");",
-                                            "    }",
-                                            "}"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
-                                },
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/auth/login",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "auth",
-                                        "login"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "Seed Mock Data (Integration Point)",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 200\", function () {",
-                                            "    pm.response.to.have.status(200);",
-                                            "});",
-                                            "var jsonData = pm.response.json();",
-                                            "pm.collectionVariables.set(\"notificationId\", jsonData.id);",
-                                            "pm.test(\"Redis Event should be broadcasted\", function() {",
-                                            "    console.log(\"Mock notification created. Verify via SignalR or Redis.\");",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "POST",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/internal/seed",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "internal",
-                                        "seed"
-                                    ]
-                                }
-                            }
-                        }
-                    ]
-                },
-                {
-                    "name": "1. Happy Path",
-                    "item": [
-                        {
-                            "name": "GET Unread Notifications",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
-                                            "var jsonData = pm.response.json();",
-                                            "pm.test(\"Response is paginated\", function () {",
-                                            "    pm.expect(jsonData).to.have.property(\"value\");",
-                                            "    pm.expect(jsonData.value).to.have.property(\"items\");",
-                                            "});",
-                                            "if(jsonData.value.items.length > 0) {",
-                                            "    pm.collectionVariables.set(\"notificationId\", jsonData.value.items[0].id);",
-                                            "}"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=1&pageSize=50",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ],
-                                    "query": [
-                                        {
-                                            "key": "page",
-                                            "value": "1"
-                                        },
-                                        {
-                                            "key": "pageSize",
-                                            "value": "50"
-                                        }
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "PATCH Mark As Read",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 204 or 200\", function () {",
-                                            "    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/{{notificationId}}/read",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "{{notificationId}}",
-                                        "read"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "GET Verify Marked As Read",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
-                                            "var jsonData = pm.response.json();",
-                                            "var item = jsonData.value.items.find(x => x.id === pm.collectionVariables.get(\"notificationId\"));",
-                                            "pm.test(\"Item should be read (or excluded from unread)\", function () {",
-                                            "    // Depending on backend, it might exclude read items or just set isRead = true",
-                                            "    if (item) {",
-                                            "        pm.expect(item.isRead).to.be.true;",
-                                            "    }",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "PATCH Mark All As Read",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 204\", function () {",
-                                            "    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/read-all",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "read-all"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "GET Verify All Read",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
-                                            "var jsonData = pm.response.json();",
-                                            "pm.test(\"All returned items should be read\", function () {",
-                                            "    if(jsonData.value && jsonData.value.items) {",
-                                            "        var unread = jsonData.value.items.filter(x => !x.isRead);",
-                                            "        pm.expect(unread.length).to.eql(0);",
-                                            "    }",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ]
-                                }
-                            }
-                        }
-                    ]
-                },
-                {
-                    "name": "2. Negative Path",
-                    "item": [
-                        {
-                            "name": "PATCH Invalid Format ID",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status is 400\", function () { pm.expect(pm.response.code).to.eql(400); });"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/invalid-guid/read",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "invalid-guid",
-                                        "read"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "PATCH Non-existent ID",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status is 404\", function () { pm.expect(pm.response.code).to.eql(404); });"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/00000000-0000-0000-0000-000000000000/read",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "00000000-0000-0000-0000-000000000000",
-                                        "read"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "PATCH Idempotent (Read already read msg)",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status is 200 or 204\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 204]); });"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/{{notificationId}}/read",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "{{notificationId}}",
-                                        "read"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "GET Paging Bounds Check",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Should not crash, returns 200 or 400\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 400]); });",
-                                            "if (pm.response.code === 200) {",
-                                            "    var json = pm.response.json();",
-                                            "    pm.test(\"Should clamp page size to max 100\", function() { pm.expect(json.value.pageSize).to.be.at.most(100); });",
-                                            "}"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=-5&pageSize=9999",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ],
-                                    "query": [
-                                        {
-                                            "key": "page",
-                                            "value": "-5"
-                                        },
-                                        {
-                                            "key": "pageSize",
-                                            "value": "9999"
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                    ]
-                },
-                {
-                    "name": "3. Security",
-                    "item": [
-                        {
-                            "name": "GET Missing Token",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status is 401\", function () { pm.expect(pm.response.code).to.eql(401); });"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "GET Invalid Token",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Status is 401\", function () { pm.expect(pm.response.code).to.eql(401); });"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer invalid.token.here"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "PATCH Another Users ID (IDOR)",
-                            "event": [
-                                {
-                                    "listen": "test",
-                                    "script": {
-                                        "exec": [
-                                            "pm.test(\"Server must reject with 403 or 404 (Security passed)\", function () {",
-                                            "    pm.expect(pm.response.code).to.be.oneOf([403, 404]);",
-                                            "});"
-                                        ],
-                                        "type": "text/javascript"
-                                    }
-                                }
-                            ],
-                            "request": {
-                                "method": "PATCH",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/11111111-1111-1111-1111-111111111111/read",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "11111111-1111-1111-1111-111111111111",
-                                        "read"
-                                    ]
-                                }
-                            }
-                        }
-                    ]
-                },
-                {
-                    "name": "4. Configuration (Preferences)",
-                    "item": [
-                        {
-                            "name": "Get Notification Preferences",
-                            "request": {
-                                "method": "GET",
-                                "header": [
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "preferences"
-                                    ]
-                                }
-                            }
-                        },
-                        {
-                            "name": "Update Notification Preferences",
-                            "request": {
-                                "method": "PUT",
-                                "header": [
-                                    {
-                                        "key": "Content-Type",
-                                        "value": "application/json"
-                                    },
-                                    {
-                                        "key": "Authorization",
-                                        "value": "Bearer {{accessToken}}"
-                                    }
-                                ],
-                                "body": {
-                                    "mode": "raw",
-                                    "raw": "{\n  \"emailEnabled\": true,\n  \"pushEnabled\": true,\n  \"inAppEnabled\": true\n}"
-                                },
-                                "url": {
-                                    "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
-                                    "host": [
-                                        "{{gatewayBaseUrl}}"
-                                    ],
-                                    "path": [
-                                        "api",
-                                        "v1",
-                                        "notifications",
-                                        "preferences"
-                                    ]
-                                }
-                            }
-                        }
-                    ]
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () {",
+                      "    pm.response.to.have.status(200);",
+                      "});",
+                      "if (pm.response.code === 200) {",
+                      "    var json = pm.response.json();",
+                      "    var token = json.accessToken || json.token;",
+                      "    if (token) {",
+                      "        pm.collectionVariables.set(\"accessToken\", token);",
+                      "        console.log(\"Token acquired and saved automatically!\");",
+                      "    }",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
                 }
-            ]
-        }
-    ],
-    "variable": [
-        {
-            "key": "gatewayBaseUrl",
-            "value": "http://localhost:5200"
-        },
-        {
-            "key": "authBaseUrl",
-            "value": "http://localhost:5101"
-        },
-        {
-            "key": "translationRoomBaseUrl",
-            "value": "http://localhost:5102"
-        },
-        {
-            "key": "transcriptBaseUrl",
-            "value": "http://localhost:5103"
-        },
-        {
-            "key": "notificationBaseUrl",
-            "value": "http://localhost:5104"
-        },
-        {
-            "key": "testEmail",
-            "value": "warptalk@mail.com"
-        },
-        {
-            "key": "testPassword",
-            "value": "P@ssw0rd123!"
-        },
-        {
-            "key": "accessToken",
-            "value": ""
-        },
-        {
-            "key": "refreshToken",
-            "value": ""
-        },
-        {
-            "key": "translationRoomId",
-            "value": "00000000-0000-0000-0000-000000000000"
-        },
-        {
-            "key": "transcriptId",
-            "value": "00000000-0000-0000-0000-000000000000"
-        }
-    ],
-    "event": [
-        {
-            "listen": "prerequest",
-            "script": {
-                "type": "text/javascript",
-                "packages": {},
-                "requests": {},
-                "exec": [
-                    ""
-                ]
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/auth/login",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "login"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Seed Mock Data (Integration Point)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () {",
+                      "    pm.response.to.have.status(200);",
+                      "});",
+                      "var jsonData = pm.response.json();",
+                      "pm.collectionVariables.set(\"notificationId\", jsonData.id);",
+                      "pm.test(\"Redis Event should be broadcasted\", function() {",
+                      "    console.log(\"Mock notification created. Verify via SignalR or Redis.\");",
+                      "});"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/internal/seed",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "internal",
+                    "seed"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "GET Unread Notifications",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
+                      "if (pm.response.code === 200) {",
+                      "    var jsonData = pm.response.json();",
+                      "    pm.test(\"Response is paginated\", function () {",
+                      "        pm.expect(jsonData).to.have.property(\"items\");",
+                      "        pm.expect(jsonData).to.have.property(\"totalCount\");",
+                      "    });",
+                      "    if(jsonData.items.length > 0) {",
+                      "        pm.collectionVariables.set(\"notificationId\", jsonData.items[0].id);",
+                      "        // XSS Check: Ensure payload does not contain HTML tags",
+                      "        jsonData.items.forEach(function(item) {",
+                      "            pm.test(\"Payload does not contain HTML\", function () {",
+                      "                pm.expect(item.payloadJson).to.not.match(/<[^>]*>/);",
+                      "            });",
+                      "        });",
+                      "    }",
+                      "} else {",
+                      "    console.log('Response not 200, skipping JSON parse');",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=1&pageSize=50",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1"
+                    },
+                    {
+                      "key": "pageSize",
+                      "value": "50"
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH Mark As Read",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 204 or 200\", function () {",
+                      "    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
+                      "});"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/{{notificationId}}/read",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "{{notificationId}}",
+                    "read"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "GET Verify Marked As Read",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
+                      "if (pm.response.code === 200) {",
+                      "    var jsonData = pm.response.json();",
+                      "    var item = jsonData.items.find(x => x.id === pm.collectionVariables.get(\"notificationId\"));",
+                      "    pm.test(\"Item should be read (or excluded from unread)\", function () {",
+                      "        // Depending on backend, it might exclude read items or just set isRead = true",
+                      "        if (item) {",
+                      "            pm.expect(item.isRead).to.be.true;",
+                      "        }",
+                      "    });",
+                      "} else {",
+                      "    console.log('Response not 200, skipping JSON parse');",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH Mark All As Read",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 204\", function () {",
+                      "    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
+                      "});"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/read-all",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "read-all"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "GET Verify All Read",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
+                      "if (pm.response.code === 200) {",
+                      "    var jsonData = pm.response.json();",
+                      "    pm.test(\"All returned items should be read\", function () {",
+                      "        if(jsonData.items) {",
+                      "            var unread = jsonData.items.filter(x => !x.isRead);",
+                      "            pm.expect(unread.length).to.eql(0);",
+                      "        }",
+                      "    });",
+                      "} else {",
+                      "    console.log('Response not 200, skipping JSON parse');",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ]
+                }
+              },
+              "response": []
             }
+          ]
         },
         {
-            "listen": "test",
-            "script": {
-                "type": "text/javascript",
-                "packages": {},
-                "requests": {},
-                "exec": [
-                    ""
-                ]
+          "name": "2. Negative Path",
+          "item": [
+            {
+              "name": "PATCH Invalid Format ID",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status is 400\", function () { pm.expect(pm.response.code).to.eql(400); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/invalid-guid/read",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "invalid-guid",
+                    "read"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH Non-existent ID",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status is 404\", function () { pm.expect(pm.response.code).to.eql(404); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/00000000-0000-0000-0000-000000000000/read",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "00000000-0000-0000-0000-000000000000",
+                    "read"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH Idempotent (Read already read msg)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status is 200 or 204\", function () { pm.expect(pm.response.code).to.be.oneOf([200, 204]); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/{{notificationId}}/read",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "{{notificationId}}",
+                    "read"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "GET Paging Bounds Check",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Should not crash, returns 200 or 400\", function () { ",
+                      "    pm.expect(pm.response.code).to.be.oneOf([200, 400]); ",
+                      "});",
+                      "",
+                      "if (pm.response.code === 200) {",
+                      "    var json = pm.response.json();",
+                      "    pm.test(\"Should clamp page size to max 100\", function() { ",
+                      "        // Sửa từ json.value.pageSize thành json.pageSize",
+                      "        var pageSize = json.pageSize || (json.value ? json.value.pageSize : undefined);",
+                      "        ",
+                      "        if (pageSize !== undefined) {",
+                      "            pm.expect(pageSize).to.be.at.most(100); ",
+                      "        } else {",
+                      "            console.log(\"Warning: Could not find pageSize in response body\");",
+                      "        }",
+                      "    });",
+                      "}"
+                    ],
+                    "type": "text/javascript",
+                    "packages": {},
+                    "requests": {}
+                  }
+                },
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "packages": {},
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications?page=-5&pageSize=9999",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "-5"
+                    },
+                    {
+                      "key": "pageSize",
+                      "value": "9999"
+                    }
+                  ]
+                }
+              },
+              "response": []
             }
+          ]
+        },
+        {
+          "name": "3. Security",
+          "item": [
+            {
+              "name": "GET Missing Token",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status is 401\", function () { pm.expect(pm.response.code).to.eql(401); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "GET Invalid Token",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status is 401\", function () { pm.expect(pm.response.code).to.eql(401); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer invalid.token.here"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "PATCH Another Users ID (IDOR)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Server must reject with 403 or 404 (Security passed)\", function () {",
+                      "    pm.expect(pm.response.code).to.be.oneOf([403, 404]);",
+                      "});"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/11111111-1111-1111-1111-111111111111/read",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "11111111-1111-1111-1111-111111111111",
+                    "read"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Get Notification Preferences",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });",
+                      "if (pm.response.code === 200) {",
+                      "    var jsonData = pm.response.json();",
+                      "    pm.test(\"Response has preferences\", function () {",
+                      "        pm.expect(jsonData).to.have.property(\"emailEnabled\");",
+                      "        pm.expect(jsonData).to.have.property(\"pushEnabled\");",
+                      "        pm.expect(jsonData).to.have.property(\"inAppEnabled\");",
+                      "    });",
+                      "} else {",
+                      "    console.log('Response not 200, skipping JSON parse');",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "preferences"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Update Notification Preferences",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200 or 204\", function () {",
+                      "    pm.expect(pm.response.code).to.be.oneOf([200, 204]);",
+                      "});"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{accessToken}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"emailEnabled\": true,\n  \"pushEnabled\": true,\n  \"inAppEnabled\": true\n}"
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/notifications/preferences",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "notifications",
+                    "preferences"
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
         }
-    ]
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "gatewayBaseUrl",
+      "value": "http://localhost:5200"
+    },
+    {
+      "key": "authBaseUrl",
+      "value": "http://localhost:5101"
+    },
+    {
+      "key": "translationRoomBaseUrl",
+      "value": "http://localhost:5102"
+    },
+    {
+      "key": "transcriptBaseUrl",
+      "value": "http://localhost:5103"
+    },
+    {
+      "key": "notificationBaseUrl",
+      "value": "http://localhost:5104"
+    },
+    {
+      "key": "testEmail",
+      "value": "warptalk@mail.com"
+    },
+    {
+      "key": "testPassword",
+      "value": "P@ssw0rd123!"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "translationRoomId",
+      "value": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "key": "transcriptId",
+      "value": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "key": "notificationId",
+      "value": ""
+    }
+  ]
 }

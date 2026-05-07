@@ -63,6 +63,7 @@ public class NotificationsController : ControllerBase
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
             return Unauthorized();
 
+        page = Math.Max(1, page);
         pageSize = Math.Max(1, Math.Min(pageSize, 100));
 
         var result = await _notificationService.GetNotificationsAsync(userId, page, pageSize, ct);
@@ -102,6 +103,28 @@ public class NotificationsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
         return NoContent();
+    }
+Temporary endpoint for seeding mock notifications to verify DB integration and testing.
+    [HttpPost("internal/seed")]
+    public async Task<IActionResult> SeedMockNotification(CancellationToken ct)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
+            return Unauthorized();
+
+        var result = await _notificationService.CreateNotificationAsync(
+            userId,
+            "SYSTEM_ALERT",
+            "Mock Notification",
+            "This is a seeded notification for testing purposes.",
+            null,
+            "{}",
+            ct);
+
+        if (!result.IsSuccess)
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return Ok(new { id = result.Value.Id });
     }
 
 }
