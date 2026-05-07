@@ -183,6 +183,7 @@ public class BillingController : ControllerBase
     /// - 500 Service Unavailable: Error
     /// </remarks>
     [HttpPost("workspaces/{workspaceId:guid}/subscriptions")]
+    [AllowAnonymous]
     [ProducesResponseType(typeof(SubscriptionDto), 201)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
