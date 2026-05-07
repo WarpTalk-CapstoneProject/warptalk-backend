@@ -63,10 +63,11 @@ Users should be able to mark all of their unread notifications as read at once, 
 ### Functional Requirements
 
 - **FR-001**: System MUST persist a `NotificationMessage` when an in-app notification is generated.
-- **FR-002**: System MUST provide a REST API endpoint `GET /api/v1/notifications` to list notifications for the authenticated user, sorted by date descending.
+- **FR-002**: System MUST provide a REST API endpoint `GET /api/v1/notifications` to list notifications for the authenticated user, returning a paginated response (`Items`, `TotalCount`, `Page`, `PageSize`).
 - **FR-003**: System MUST provide a REST API endpoint `PATCH /api/v1/notifications/{id}/read` to mark a single notification as read.
 - **FR-004**: System MUST provide a REST API endpoint `PATCH /api/v1/notifications/read-all` to mark all unread notifications for the authenticated user as read.
 - **FR-005**: System MUST broadcast a realtime event via SignalR *after* successfully persisting read states to ensure multi-tab synchronization.
+- **FR-006**: System MUST provide REST API endpoints to fetch (`GET /api/v1/notifications/preferences`) and update (`PUT /api/v1/notifications/preferences`) user notification preferences.
 
 ### Security Requirements (ISO-Aligned)
 
@@ -80,7 +81,9 @@ Users should be able to mark all of their unread notifications as read at once, 
 ### Key Entities
 
 - **NotificationMessage**: Represents an individual notification in the inbox.
-  - Attributes: `Id`, `UserId`, `Type`, `Title`, `Content`, `PayloadJson`, `IsRead`, `ReadAt`, `CreatedAt`.
+  - Attributes: `Id`, `UserId`, `Type`, `Title`, `Content`, `ActionUrl` (optional), `PayloadJson`, `IsRead`, `ReadAt`, `CreatedAt`.
+- **NotificationPreference**: User preferences for notification channels.
+  - Attributes: `Id`, `UserId`, `NotificationType`, `EmailEnabled`, `PushEnabled`, `InAppEnabled`, `UpdatedAt`.
 
 ## Success Criteria *(mandatory)*
 
@@ -95,4 +98,4 @@ Users should be able to mark all of their unread notifications as read at once, 
 
 - We are adding to an existing `NotificationDbContext` inside a .NET microservice.
 - Authentication context is already available to controllers to securely identify "current user" via `HttpContext.User`.
-- Pagination logic is assumed standard (e.g., limit=50) for the GET endpoint.
+- Pagination uses an offset-based model by default returning a wrapped response with `Page` and `PageSize` capped at max 100.
