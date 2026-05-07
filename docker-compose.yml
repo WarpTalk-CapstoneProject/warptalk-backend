@@ -29,7 +29,7 @@ services:
     environment:
       POSTGRES_DB: warptalk
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
@@ -50,8 +50,8 @@ services:
     container_name: warptalk-auth
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__AuthDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=auth,public"
-      Jwt__Secret: "REDACTED_JWT_SECRET"
+      ConnectionStrings__AuthDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=${POSTGRES_PASSWORD};Search Path=auth,public"
+      Jwt__Secret: ${JWT_SECRET}
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
     ports:
@@ -73,9 +73,9 @@ services:
     container_name: warptalk-translation-room
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=translation_room,public"
+      ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=${POSTGRES_PASSWORD};Search Path=translation_room,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
-      Jwt__Secret: "REDACTED_JWT_SECRET"
+      Jwt__Secret: ${JWT_SECRET}
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
     ports:
@@ -99,10 +99,10 @@ services:
     container_name: warptalk-transcript
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=transcript,public"
+      ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=${POSTGRES_PASSWORD};Search Path=transcript,public"
       GrpcUrls__AuthServiceUrl: "http://auth-service:50051"
       GrpcUrls__TranslationRoomServiceUrl: "http://translation-room-service:50052"
-      Jwt__Secret: "REDACTED_JWT_SECRET"
+      Jwt__Secret: ${JWT_SECRET}
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
     ports:
@@ -128,8 +128,8 @@ services:
     container_name: warptalk-notification
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=<REDACTED_DB_PASSWORD>;Search Path=notification,public"
-      Jwt__Secret: "REDACTED_JWT_SECRET"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=${POSTGRES_PASSWORD};Search Path=notification,public"
+      Jwt__Secret: ${JWT_SECRET}
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
     ports:
@@ -152,7 +152,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://0.0.0.0:5200"
-      Jwt__Secret: "REDACTED_JWT_SECRET"
+      Jwt__Secret: ${JWT_SECRET}
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
       # Redis — shared by SignalR backplane + AI worker streams
