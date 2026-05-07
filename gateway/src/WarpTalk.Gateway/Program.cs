@@ -1,9 +1,7 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
@@ -62,13 +60,6 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
 
-builder.Services.Configure<ForwardedHeadersOptions>(options =>
-{
-    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    options.KnownNetworks.Clear();
-    options.KnownProxies.Clear();
-});
-
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
@@ -103,45 +94,11 @@ builder.Services.AddRateLimiter(options =>
         opt.PermitLimit = 5;
         opt.Window = TimeSpan.FromMinutes(1);
     });
-
-    options.AddPolicy("BillingQuotaPolicy", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: $"{httpContext.User.FindFirst("workspace_id")?.Value ?? httpContext.Connection.RemoteIpAddress?.ToString() ?? "anonymous"}:{httpContext.Request.Path}",
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                AutoReplenishment = true,
-                PermitLimit = 30,
-                Window = TimeSpan.FromMinutes(1)
-            }));
 });
 
 // 4. Configure YARP Reverse Proxy
 builder.Services.AddReverseProxy()
-    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
-    .ConfigureHttpClient((context, handler) =>
-    {
-        if (!string.Equals(context.ClusterId, "billing-cluster", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var certificatePath = builder.Configuration["Gateway:ServiceClientCertificate:Path"];
-        if (string.IsNullOrWhiteSpace(certificatePath))
-        {
-            return;
-        }
-
-        var certificatePassword = builder.Configuration["Gateway:ServiceClientCertificate:Password"];
-        handler.SslOptions.ClientCertificates ??= new X509CertificateCollection();
-        handler.SslOptions.ClientCertificates.Add(new X509Certificate2(certificatePath, certificatePassword));
-
-        var billingServerThumbprint = NormalizeThumbprint(builder.Configuration["Gateway:BillingServerCertificate:Thumbprint"]);
-        if (!string.IsNullOrWhiteSpace(billingServerThumbprint))
-        {
-            handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, _) =>
-                string.Equals(NormalizeThumbprint(certificate?.GetCertHashString()), billingServerThumbprint, StringComparison.OrdinalIgnoreCase);
-        }
-    });
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
 // 5. Configure SignalR
 var signalRBuilder = builder.Services.AddSignalR(options =>
@@ -189,14 +146,6 @@ builder.Services.AddHealthChecks();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-app.UseForwardedHeaders();
-
-if (!app.Environment.IsDevelopment())
-{
-    app.UseHsts();
-    app.UseHttpsRedirection();
-}
-
 app.UseCors();
 
 // Security Headers Middleware
@@ -231,8 +180,3 @@ app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.
 });
 
 app.Run();
-
-static string NormalizeThumbprint(string? thumbprint)
-{
-    return (thumbprint ?? string.Empty).Replace(" ", string.Empty).Replace(":", string.Empty).ToUpperInvariant();
-}

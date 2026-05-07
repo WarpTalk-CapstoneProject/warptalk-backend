@@ -1,6 +1,6 @@
 # ====================================================================
 # WarpTalk Backend — Docker Compose
-# Runs: PostgreSQL + Auth + TranslationRoom + Transcript + Notification + Billing + Gateway
+# Runs: PostgreSQL + Auth + TranslationRoom + Transcript + Notification + Gateway
 # Usage: docker compose up --build
 # ====================================================================
 
@@ -31,7 +31,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "55433:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -143,36 +143,6 @@ services:
     networks:
       - warptalk-net
 
-  # ── Billing Service ─────────────────────────────────────────────────
-  billing-service:
-    build:
-      context: .
-      dockerfile: billing/Dockerfile
-    container_name: warptalk-billing
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ASPNETCORE_URLS: "http://0.0.0.0:5105"
-      ConnectionStrings__BillingDb: "Host=postgres;Port=5432;Database=warptalk;Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required};Search Path=billing,public"
-      Security__RequireAuthentication: "true"
-      Security__AllowInsecureWebhookSignatureInDevelopment: "false"
-      Jwt__Secret: "${JWT_SECRET:?JWT_SECRET is required}"
-      Jwt__Issuer: "WarpTalk.AuthService"
-      Jwt__Audience: "WarpTalk"
-      Cors__AllowedOrigins__0: "http://localhost:3000"
-      Cors__AllowedOrigins__1: "http://localhost:5173"
-      Cors__AllowedOrigins__2: "https://warptalk.vn"
-      PayOS__ChecksumKey: "${PAYOS_CHECKSUM_KEY:-}"
-      Billing__AutoSeedOnStartup: "true"
-    ports:
-      - "5105:5105"
-    volumes:
-      - billing_dataprotection:/root/.aspnet/DataProtection-Keys
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - warptalk-net
-
   # ── API Gateway (YARP + SignalR) ────────────────────────────────────
   gateway:
     build:
@@ -193,7 +163,6 @@ services:
       ReverseProxy__Clusters__translation-room-cluster__Destinations__translation-room-service__Address: "http://translation-room-service:5102"
       ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
-      ReverseProxy__Clusters__billing-cluster__Destinations__billing-service__Address: "http://billing-service:5105"
       AllowedOrigins__0: "http://localhost:3000"
       AllowedOrigins__1: "http://localhost:5173"
       AllowedOrigins__2: "https://warptalk.vn"
@@ -212,8 +181,6 @@ services:
         condition: service_started
       notification-service:
         condition: service_started
-      billing-service:
-        condition: service_started
     networks:
       - warptalk-net
 
@@ -224,7 +191,6 @@ volumes:
   translation_room_dataprotection:
   transcript_dataprotection:
   notification_dataprotection:
-  billing_dataprotection:
   gateway_dataprotection:
 
 networks:
