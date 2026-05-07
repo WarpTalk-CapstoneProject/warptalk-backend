@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package billing;
+
+service BillingService {
+  // Read credit balance
+  rpc GetWorkspaceCredits (GetCreditsRequest) returns (GetCreditsResponse);
+  
+  // Deduct credits for usage
+  rpc ConsumeCredits (ConsumeCreditsRequest) returns (ConsumeCreditsResponse);
+  
+  // Add credits (Internal/Admin)
+  rpc TopUpCredits (TopUpRequest) returns (GetCreditsResponse);
+  
+  // Provision subscription
+  rpc CreateSubscription (CreateSubscriptionRequest) returns (SubscriptionResponse);
+
+  // Get active subscription
+  rpc GetActiveSubscription (GetCreditsRequest) returns (SubscriptionResponse);
+
+  // Cancel subscription
+  rpc CancelSubscription (CancelSubscriptionRequest) returns (SubscriptionResponse);
+
+  // History
+  rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
+  rpc GetTransactionHistory (GetHistoryRequest) returns (TransactionHistoryResponse);
+}
+
+message GetCreditsRequest {
+  string workspace_id = 1;
+}
+
+message GetCreditsResponse {
+  string workspace_id = 1;
+  int32 current_credits = 2;
+  string status = 3;
+}
+
+message ConsumeCreditsRequest {
+  string workspace_id = 1;
+  int32 amount = 2;
+  string reference_type = 3;
+  string reference_id = 4;
+}
+
+message ConsumeCreditsResponse {
+  bool success = 1;
+  int32 new_balance = 2;
+  string error_message = 3;
+}
+
+message TopUpRequest {
+  string workspace_id = 1;
+  int32 amount = 2;
+  string reference_type = 3;
+}
+
+message CreateSubscriptionRequest {
+  string workspace_id = 1;
+  string plan_id = 2;
+}
+
+message CancelSubscriptionRequest {
+  string workspace_id = 1;
+  string reason = 2;
+}
+
+message SubscriptionResponse {
+  string subscription_id = 1;
+  string status = 2;
+  string error_message = 3;
+  string plan_name = 4;
+}
+
+message GetHistoryRequest {
+  string workspace_id = 1;
+  int32 page_number = 2;
+  int32 page_size = 3;
+}
+
+message CreditHistoryResponse {
+  repeated CreditTransaction items = 1;
+  int32 total_count = 2;
+}
+
+message CreditTransaction {
+  string id = 1;
+  int32 amount = 2;
+  string type = 3;
+  string reference_type = 4;
+  string reference_id = 5;
+  string created_at = 6;
+}
+
+message TransactionHistoryResponse {
+  repeated PaymentTransaction items = 1;
+  int32 total_count = 2;
+}
+
+message PaymentTransaction {
+  string id = 1;
+  double amount = 2;
+  string currency = 3;
+  string status = 4;
+  string provider = 5;
+  string created_at = 6;
+}

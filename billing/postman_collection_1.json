@@ -1,0 +1,1351 @@
+﻿{
+    "info":  {
+                 "_postman_id":  "ce587e11-d065-432e-9a93-d5a72d7d8665",
+                 "name":  "WarpTalk Billing API - Full Test Suite",
+                 "description":  "Comprehensive test suite for WarpTalk Billing Service including Dev tokens, Plans, Subscriptions, Credits, and PayOS Simulation.",
+                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+                 "createdAt":  "2026-05-06T12:32:47.000Z",
+                 "updatedAt":  "2026-05-06T12:51:24.000Z",
+                 "lastUpdatedBy":  "48661879",
+                 "uid":  "48661879-ce587e11-d065-432e-9a93-d5a72d7d8665"
+             },
+    "item":  [
+                 {
+                     "name":  "0. Authentication",
+                     "item":  [
+                                  {
+                                      "name":  "Generate Dev Token",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "var jsonData = pm.response.json();",
+                                                                                    "if (jsonData.token) {",
+                                                                                    "    pm.collectionVariables.set(\"authToken\", jsonData.token);",
+                                                                                    "}"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "id":  "26674369-82c9-42f2-8e3c-f45d1618820a"
+                                                                   }
+                                                    }
+                                                ],
+                                      "id":  "59a02a1f-b5cf-4121-9249-58e45ce675d8",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"email\": \"admin@warptalk.com\",\n  \"roles\": [\"billing_admin\"],\n  \"workspaceId\": \"{{workspaceId}}\"\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/DevToken/generate",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "DevToken",
+                                                                               "generate"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "85fcab40-def2-4b44-a2a8-942839e39bbe",
+                                                           "name":  "Generate Dev Token",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n    \"userId\": \"64e39823-6934-49f8-8b35-0cb9aef01aba\",\n    \"email\": \"admin@warptalk.com\",\n    \"roles\": [\"billing_admin\"],\n    \"expirationMinutes\": 60\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/DevToken/token",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "DevToken",
+                                                                                                            "token"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  null,
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json; charset=utf-8"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Date",
+                                                                              "value":  "Wed, 06 May 2026 12:50:58 GMT"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Server",
+                                                                              "value":  "Kestrel"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Transfer-Encoding",
+                                                                              "value":  "chunked"
+                                                                          },
+                                                                          {
+                                                                              "key":  "X-Correlation-Id",
+                                                                              "value":  "4f5f0d5e-9eea-4b25-b41f-2e946b84f966"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NGUzOTgyMy02OTM0LTQ5ZjgtOGIzNS0wY2I5YWVmMDFhYmEiLCJlbWFpbCI6ImFkbWluQHdhcnB0YWxrLmNvbSIsImp0aSI6ImFjODRlMmQ4LWZkMjQtNDRmNy04NDFjLTI4Mjg0YjdlYmM4MiIsInJvbGUiOiJiaWxsaW5nX2FkbWluIiwiZXhwIjoxNzc4MDc1NDU5LCJpc3MiOiJXYXJwVGFsayIsImF1ZCI6IldhcnBUYWxrLkFQSSJ9.ypVzCIBbRpXwXIAjltyK-baT6CEPRalUMMH2l0mrMMI\",\n    \"expiresAt\": \"2026-05-06T13:50:59.2783855Z\",\n    \"userId\": \"64e39823-6934-49f8-8b35-0cb9aef01aba\",\n    \"email\": \"admin@warptalk.com\",\n    \"roles\": [\n        \"billing_admin\"\n    ],\n    \"swaggerValue\": \"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2NGUzOTgyMy02OTM0LTQ5ZjgtOGIzNS0wY2I5YWVmMDFhYmEiLCJlbWFpbCI6ImFkbWluQHdhcnB0YWxrLmNvbSIsImp0aSI6ImFjODRlMmQ4LWZkMjQtNDRmNy04NDFjLTI4Mjg0YjdlYmM4MiIsInJvbGUiOiJiaWxsaW5nX2FkbWluIiwiZXhwIjoxNzc4MDc1NDU5LCJpc3MiOiJXYXJwVGFsayIsImF1ZCI6IldhcnBUYWxrLkFQSSJ9.ypVzCIBbRpXwXIAjltyK-baT6CEPRalUMMH2l0mrMMI\"\n}",
+                                                           "createdAt":  "2026-05-06T12:51:06.000Z",
+                                                           "updatedAt":  "2026-05-06T12:51:06.000Z",
+                                                           "uid":  "48661879-85fcab40-def2-4b44-a2a8-942839e39bbe"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:51:17.000Z",
+                                      "uid":  "48661879-59a02a1f-b5cf-4121-9249-58e45ce675d8"
+                                  }
+                              ],
+                     "id":  "b9302ce5-b17c-4786-9a54-5ce78eff2653",
+                     "createdAt":  "2026-05-06T12:32:48.000Z",
+                     "updatedAt":  "2026-05-06T12:32:48.000Z",
+                     "uid":  "48661879-b9302ce5-b17c-4786-9a54-5ce78eff2653"
+                 },
+                 {
+                     "name":  "1. Public Data",
+                     "item":  [
+                                  {
+                                      "name":  "Get All Plans",
+                                      "id":  "cf00a253-fcba-42e7-ad98-01060572875c",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/plans",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "plans"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "cb436bde-107f-4934-907c-84d1e432b647",
+                                                           "name":  "Get All Plans",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/plans",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "plans"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  null,
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json; charset=utf-8"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Date",
+                                                                              "value":  "Wed, 06 May 2026 12:33:06 GMT"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Server",
+                                                                              "value":  "Kestrel"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Transfer-Encoding",
+                                                                              "value":  "chunked"
+                                                                          },
+                                                                          {
+                                                                              "key":  "X-Correlation-Id",
+                                                                              "value":  "6213c396-a8c4-475c-91a5-59a622856f70"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "[\n    {\n        \"id\": \"7eda32cd-148c-47f3-b290-fb5effb8a786\",\n        \"name\": \"Free\",\n        \"price\": 0,\n        \"creditsPerMonth\": 100,\n        \"isActive\": true,\n        \"createdAt\": null\n    },\n    {\n        \"id\": \"b45679e0-716e-4da7-9273-782789960646\",\n        \"name\": \"Basic\",\n        \"price\": 49000,\n        \"creditsPerMonth\": 2000,\n        \"isActive\": true,\n        \"createdAt\": null\n    },\n    {\n        \"id\": \"4b7a85ff-4c46-4190-ade3-27af0d4bbc75\",\n        \"name\": \"Pro\",\n        \"price\": 149000,\n        \"creditsPerMonth\": 10000,\n        \"isActive\": true,\n        \"createdAt\": null\n    },\n    {\n        \"id\": \"0e3cf2cf-a3ff-45bb-a70d-00e5969991dd\",\n        \"name\": \"Enterprise\",\n        \"price\": 349000,\n        \"creditsPerMonth\": 50000,\n        \"isActive\": true,\n        \"createdAt\": null\n    }\n]",
+                                                           "createdAt":  "2026-05-06T12:33:12.000Z",
+                                                           "updatedAt":  "2026-05-06T12:33:12.000Z",
+                                                           "uid":  "48661879-cb436bde-107f-4934-907c-84d1e432b647"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:33:16.000Z",
+                                      "uid":  "48661879-cf00a253-fcba-42e7-ad98-01060572875c"
+                                  }
+                              ],
+                     "id":  "3f46c08b-cbe6-474d-830a-f41523229442",
+                     "createdAt":  "2026-05-06T12:32:48.000Z",
+                     "updatedAt":  "2026-05-06T12:32:48.000Z",
+                     "uid":  "48661879-3f46c08b-cbe6-474d-830a-f41523229442"
+                 },
+                 {
+                     "name":  "2. Subscription Management",
+                     "item":  [
+                                  {
+                                      "name":  "Get Active Subscription",
+                                      "id":  "a7f3273c-90fa-4dd8-af8f-440eda9ffe00",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/active",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "subscriptions",
+                                                                               "active"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "18c6ba61-df91-4a93-be30-89064a4bdc54",
+                                                           "name":  "Active Subscription Found",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/active",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "subscriptions",
+                                                                                                            "active"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440001\",\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n    \"planName\": \"Basic\",\n    \"status\": \"Active\",\n    \"startDate\": \"2026-05-06T10:00:00Z\",\n    \"endDate\": \"2026-06-06T10:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-18c6ba61-df91-4a93-be30-89064a4bdc54"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-a7f3273c-90fa-4dd8-af8f-440eda9ffe00"
+                                  },
+                                  {
+                                      "name":  "Create New Subscription",
+                                      "id":  "90d63b07-8c41-44f4-af4c-93ed92f44293",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "POST",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"planId\": \"{{planId}}\"\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "subscriptions"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "3cf3d255-0603-4af2-8e90-ae9f8c740ba6",
+                                                           "name":  "Subscription Created",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"planId\": \"{{planId}}\"\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "subscriptions"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "Created",
+                                                           "code":  201,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440001\",\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n    \"status\": \"Active\",\n    \"startDate\": \"2026-05-06T12:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-3cf3d255-0603-4af2-8e90-ae9f8c740ba6"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-90d63b07-8c41-44f4-af4c-93ed92f44293"
+                                  },
+                                  {
+                                      "name":  "Cancel Subscription",
+                                      "id":  "c3f22f19-b0d8-4a4b-b4ba-b37996575799",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "POST",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"cancellationReason\": \"Test cancellation\"\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/cancel",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "subscriptions",
+                                                                               "cancel"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "2cdae1ab-92e1-43ca-8450-feb2476bc9a0",
+                                                           "name":  "Subscription Cancelled",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"cancellationReason\": \"Test cancellation\"\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/subscriptions/cancel",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "subscriptions",
+                                                                                                            "cancel"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 0,\n    \"subscriptionStatus\": \"Cancelled\",\n    \"subscriptionEndDate\": \"2026-05-06T12:30:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-2cdae1ab-92e1-43ca-8450-feb2476bc9a0"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-c3f22f19-b0d8-4a4b-b4ba-b37996575799"
+                                  }
+                              ],
+                     "id":  "299d7bb4-cc09-4ecd-b91c-0704e91d5aa4",
+                     "createdAt":  "2026-05-06T12:32:48.000Z",
+                     "updatedAt":  "2026-05-06T12:32:48.000Z",
+                     "uid":  "48661879-299d7bb4-cc09-4ecd-b91c-0704e91d5aa4"
+                 },
+                 {
+                     "name":  "3. Credits \u0026 Transactions",
+                     "item":  [
+                                  {
+                                      "name":  "Get Credits Balance",
+                                      "id":  "48ba9ac8-da5f-459f-ba0e-f793084a9bb9",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "credits"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "f6197b8c-deea-48e9-b2fa-92541d96c07f",
+                                                           "name":  "Credits Balance Response",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "credits"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 1050,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-f6197b8c-deea-48e9-b2fa-92541d96c07f"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-48ba9ac8-da5f-459f-ba0e-f793084a9bb9"
+                                  },
+                                  {
+                                      "name":  "Top-up Credits (Idempotent)",
+                                      "id":  "676fafe6-5249-4d3e-98bb-4a360f5569e9",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Idempotency-Key",
+                                                                         "value":  "unique-topup-key-1",
+                                                                         "type":  "text"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"amount\": 1000\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/topup",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "credits",
+                                                                               "topup"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "80b71c98-d608-4cb0-bc8f-6e5c0badd4ce",
+                                                           "name":  "Top-up Success",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+                                                                                                  {
+                                                                                                      "key":  "Idempotency-Key",
+                                                                                                      "value":  "unique-topup-key-1",
+                                                                                                      "type":  "text"
+                                                                                                  }
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"amount\": 1000\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/topup",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "credits",
+                                                                                                            "topup"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 2050,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-80b71c98-d608-4cb0-bc8f-6e5c0badd4ce"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-676fafe6-5249-4d3e-98bb-4a360f5569e9"
+                                  },
+                                  {
+                                      "name":  "Consume Credits (AI Usage)",
+                                      "id":  "1f08a127-6d49-4054-b8e4-e13b271007b6",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Idempotency-Key",
+                                                                         "value":  "unique-usage-key-1",
+                                                                         "type":  "text"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"amount\": 50,\n  \"referenceType\": \"transcription\",\n  \"referenceId\": \"550e8400-e29b-41d4-a716-446655440000\"\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "credits",
+                                                                               "consume"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "1fa6d13a-58e2-414e-9508-b56129ad4b84",
+                                                           "name":  "Usage Consumed Successfully",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+                                                                                                  {
+                                                                                                      "key":  "Idempotency-Key",
+                                                                                                      "value":  "unique-usage-key-1",
+                                                                                                      "type":  "text"
+                                                                                                  }
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"amount\": 50,\n  \"referenceType\": \"transcription\",\n  \"referenceId\": \"550e8400-e29b-41d4-a716-446655440000\"\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "credits",
+                                                                                                            "consume"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n    \"currentCredits\": 2000,\n    \"subscriptionStatus\": \"Active\",\n    \"subscriptionEndDate\": \"2026-06-06T10:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-1fa6d13a-58e2-414e-9508-b56129ad4b84"
+                                                       },
+                                                       {
+                                                           "id":  "a6871b4b-94bd-41ae-a7bc-8b250a8f1f4a",
+                                                           "name":  "Insufficient Credits",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"amount\": 999999,\n  \"referenceType\": \"heavy_computation\"\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/consume",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "credits",
+                                                                                                            "consume"
+                                                                                                        ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "Payment Required",
+                                                           "code":  402,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"code\": \"INSUFFICIENT_CREDITS\",\n    \"message\": \"Insufficient credits for this operation\",\n    \"timestamp\": \"2026-05-06T12:00:00Z\"\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-a6871b4b-94bd-41ae-a7bc-8b250a8f1f4a"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-1f08a127-6d49-4054-b8e4-e13b271007b6"
+                                  },
+                                  {
+                                      "name":  "Get Credit History",
+                                      "id":  "d8537362-130b-48c2-a4ba-dfdbbd1622b8",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/history?pageNumber=1\u0026pageSize=50",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "credits",
+                                                                               "history"
+                                                                           ],
+                                                                  "query":  [
+                                                                                {
+                                                                                    "key":  "pageNumber",
+                                                                                    "value":  "1"
+                                                                                },
+                                                                                {
+                                                                                    "key":  "pageSize",
+                                                                                    "value":  "50"
+                                                                                }
+                                                                            ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "765ed4ad-e333-4870-9b2e-987ffd98c167",
+                                                           "name":  "Paginated Credit History",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/credits/history?pageNumber=1\u0026pageSize=50",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "credits",
+                                                                                                            "history"
+                                                                                                        ],
+                                                                                               "query":  [
+                                                                                                             {
+                                                                                                                 "key":  "pageNumber",
+                                                                                                                 "value":  "1"
+                                                                                                             },
+                                                                                                             {
+                                                                                                                 "key":  "pageSize",
+                                                                                                                 "value":  "50"
+                                                                                                             }
+                                                                                                         ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"items\": [\n        {\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"amount\": 1000,\n            \"type\": \"TopUp\",\n            \"referenceType\": \"manual\",\n            \"createdAt\": \"2026-05-06T12:00:00Z\"\n        },\n        {\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"amount\": -50,\n            \"type\": \"Consumption\",\n            \"referenceType\": \"transcription\",\n            \"createdAt\": \"2026-05-06T12:05:00Z\"\n        }\n    ],\n    \"pageNumber\": 1,\n    \"pageSize\": 50,\n    \"totalCount\": 2,\n    \"totalPages\": 1\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-765ed4ad-e333-4870-9b2e-987ffd98c167"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-d8537362-130b-48c2-a4ba-dfdbbd1622b8"
+                                  },
+                                  {
+                                      "name":  "Get Payment Transactions",
+                                      "id":  "706e7ec6-0c19-4fda-b82a-61ebc677b6a1",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{authToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/transactions?pageNumber=1\u0026pageSize=50",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "Billing",
+                                                                               "workspaces",
+                                                                               "{{workspaceId}}",
+                                                                               "transactions"
+                                                                           ],
+                                                                  "query":  [
+                                                                                {
+                                                                                    "key":  "pageNumber",
+                                                                                    "value":  "1"
+                                                                                },
+                                                                                {
+                                                                                    "key":  "pageSize",
+                                                                                    "value":  "50"
+                                                                                }
+                                                                            ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "b0cd2862-8843-4e78-98ca-5cd2eeb8dddc",
+                                                           "name":  "Payment Transactions History",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/Billing/workspaces/{{workspaceId}}/transactions?pageNumber=1\u0026pageSize=50",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "Billing",
+                                                                                                            "workspaces",
+                                                                                                            "{{workspaceId}}",
+                                                                                                            "transactions"
+                                                                                                        ],
+                                                                                               "query":  [
+                                                                                                             {
+                                                                                                                 "key":  "pageNumber",
+                                                                                                                 "value":  "1"
+                                                                                                             },
+                                                                                                             {
+                                                                                                                 "key":  "pageSize",
+                                                                                                                 "value":  "50"
+                                                                                                             }
+                                                                                                         ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  "json",
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"items\": [\n        {\n            \"id\": \"trans-id-1\",\n            \"workspaceId\": \"550e8400-e29b-41d4-a716-446655440005\",\n            \"planId\": \"771e8400-e29b-41d4-a716-446655441111\",\n            \"status\": \"Completed\",\n            \"amount\": 100000,\n            \"createdAt\": \"2026-05-06T10:00:00Z\"\n        }\n    ],\n    \"pageNumber\": 1,\n    \"pageSize\": 50,\n    \"totalCount\": 1,\n    \"totalPages\": 1\n}",
+                                                           "createdAt":  "2026-05-06T12:32:48.000Z",
+                                                           "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                                           "uid":  "48661879-b0cd2862-8843-4e78-98ca-5cd2eeb8dddc"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:32:48.000Z",
+                                      "uid":  "48661879-706e7ec6-0c19-4fda-b82a-61ebc677b6a1"
+                                  }
+                              ],
+                     "id":  "8487b4f4-cf27-44f8-b65a-7f0249b58f39",
+                     "createdAt":  "2026-05-06T12:32:48.000Z",
+                     "updatedAt":  "2026-05-06T12:32:48.000Z",
+                     "uid":  "48661879-8487b4f4-cf27-44f8-b65a-7f0249b58f39"
+                 },
+                 {
+                     "name":  "4. PayOS Simulation",
+                     "item":  [
+                                  {
+                                      "name":  "Generate PayOS Test Payload",
+                                      "id":  "11b0dd5c-0261-4c00-aaaf-91213b34f3a1",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "method":  "GET",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{baseUrl}}/api/v1/PayOSSimulation/generate-test-payload?amount=50000",
+                                                                  "host":  [
+                                                                               "{{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "PayOSSimulation",
+                                                                               "generate-test-payload"
+                                                                           ],
+                                                                  "query":  [
+                                                                                {
+                                                                                    "key":  "amount",
+                                                                                    "value":  "50000"
+                                                                                }
+                                                                            ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "bbbadc16-6c45-4134-b395-60ca78df3ea4",
+                                                           "name":  "Generate PayOS Test Payload",
+                                                           "originalRequest":  {
+                                                                                   "method":  "GET",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/PayOSSimulation/generate-test-payload?amount=50000",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "PayOSSimulation",
+                                                                                                            "generate-test-payload"
+                                                                                                        ],
+                                                                                               "query":  [
+                                                                                                             {
+                                                                                                                 "key":  "amount",
+                                                                                                                 "value":  "50000"
+                                                                                                             }
+                                                                                                         ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  null,
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json; charset=utf-8"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Date",
+                                                                              "value":  "Wed, 06 May 2026 12:38:23 GMT"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Server",
+                                                                              "value":  "Kestrel"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Transfer-Encoding",
+                                                                              "value":  "chunked"
+                                                                          },
+                                                                          {
+                                                                              "key":  "X-Correlation-Id",
+                                                                              "value":  "2a0a4a94-0e71-4613-ad8d-af9919eaee46"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"code\": \"00\",\n    \"desc\": \"success\",\n    \"data\": {\n        \"orderCode\": 1778071104,\n        \"amount\": 50000,\n        \"description\": \"Thanh toan nap credit WarpTalk\",\n        \"status\": \"PAID\",\n        \"checkoutResponseCode\": \"00\",\n        \"paymentLinkId\": \"PL1c597fdfbf\"\n    },\n    \"signature\": \"SIMULATED_SIGNATURE_HASH\"\n}",
+                                                           "createdAt":  "2026-05-06T12:40:33.000Z",
+                                                           "updatedAt":  "2026-05-06T12:40:33.000Z",
+                                                           "uid":  "48661879-bbbadc16-6c45-4134-b395-60ca78df3ea4"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:40:41.000Z",
+                                      "uid":  "48661879-11b0dd5c-0261-4c00-aaaf-91213b34f3a1"
+                                  },
+                                  {
+                                      "name":  "Simulate Successful Webhook",
+                                      "id":  "299ea47a-e47c-4123-acac-b93159217838",
+                                      "protocolProfileBehavior":  {
+                                                                      "disableBodyPruning":  true
+                                                                  },
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"code\": \"00\",\n  \"desc\": \"Success\",\n  \"data\": {\n    \"orderCode\": 123456,\n    \"amount\": 50000,\n    \"description\": \"WS:550e8400-e29b-41d4-a716-446655440002\",\n    \"status\": \"PAID\",\n    \"checkoutUrl\": \"https://pay.payos.vn/checkout/...\",\n    \"qrCode\": \"...\",\n    \"paymentLinkId\": \"pl_123456\",\n    \"checkoutResponseCode\": \"00\"\n  },\n  \"signature\": \"simulated_signature\"\n}",
+                                                                   "options":  {
+                                                                                   "raw":  {
+                                                                                               "language":  "json"
+                                                                                           }
+                                                                               }
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "POST {{baseUrl}}/api/v1/PayOSSimulation/webhook/simulate-success?workspaceId=550e8400-e29b-41d4-a716-446655440002",
+                                                                  "host":  [
+                                                                               "POST {{baseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "PayOSSimulation",
+                                                                               "webhook",
+                                                                               "simulate-success"
+                                                                           ],
+                                                                  "query":  [
+                                                                                {
+                                                                                    "key":  "workspaceId",
+                                                                                    "value":  "550e8400-e29b-41d4-a716-446655440002"
+                                                                                }
+                                                                            ]
+                                                              }
+                                                  },
+                                      "response":  [
+                                                       {
+                                                           "id":  "816c309f-c6ac-486e-b6fd-2ba008ebad3c",
+                                                           "name":  "Simulate Successful Webhook",
+                                                           "originalRequest":  {
+                                                                                   "method":  "POST",
+                                                                                   "header":  [
+
+                                                                                              ],
+                                                                                   "body":  {
+                                                                                                "mode":  "raw",
+                                                                                                "raw":  "{\n  \"code\": \"00\",\n  \"desc\": \"Success\",\n  \"data\": {\n    \"orderCode\": 123456,\n    \"amount\": 50000,\n    \"description\": \"WS:550e8400-e29b-41d4-a716-446655440002\",\n    \"status\": \"PAID\",\n    \"checkoutUrl\": \"https://pay.payos.vn/checkout/...\",\n    \"qrCode\": \"...\",\n    \"paymentLinkId\": \"pl_123456\",\n    \"checkoutResponseCode\": \"00\"\n  },\n  \"signature\": \"simulated_signature\"\n}",
+                                                                                                "options":  {
+                                                                                                                "raw":  {
+                                                                                                                            "language":  "json"
+                                                                                                                        }
+                                                                                                            }
+                                                                                            },
+                                                                                   "url":  {
+                                                                                               "raw":  "{{baseUrl}}/api/v1/PayOSSimulation/webhook/simulate-success?workspaceId=550e8400-e29b-41d4-a716-446655440002",
+                                                                                               "host":  [
+                                                                                                            "{{baseUrl}}"
+                                                                                                        ],
+                                                                                               "path":  [
+                                                                                                            "api",
+                                                                                                            "v1",
+                                                                                                            "PayOSSimulation",
+                                                                                                            "webhook",
+                                                                                                            "simulate-success"
+                                                                                                        ],
+                                                                                               "query":  [
+                                                                                                             {
+                                                                                                                 "key":  "workspaceId",
+                                                                                                                 "value":  "550e8400-e29b-41d4-a716-446655440002"
+                                                                                                             }
+                                                                                                         ]
+                                                                                           }
+                                                                               },
+                                                           "status":  "OK",
+                                                           "code":  200,
+                                                           "_postman_previewlanguage":  null,
+                                                           "header":  [
+                                                                          {
+                                                                              "key":  "Content-Type",
+                                                                              "value":  "application/json; charset=utf-8"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Date",
+                                                                              "value":  "Wed, 06 May 2026 12:40:05 GMT"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Server",
+                                                                              "value":  "Kestrel"
+                                                                          },
+                                                                          {
+                                                                              "key":  "Transfer-Encoding",
+                                                                              "value":  "chunked"
+                                                                          },
+                                                                          {
+                                                                              "key":  "X-Correlation-Id",
+                                                                              "value":  "af0575ac-9b2c-4dda-9a39-a615532e6356"
+                                                                          }
+                                                                      ],
+                                                           "cookie":  [
+
+                                                                      ],
+                                                           "responseTime":  null,
+                                                           "body":  "{\n    \"message\": \"Simulated payment processed successfully\",\n    \"addedCredits\": 50,\n    \"newBalance\": 1900,\n    \"payosData\": {\n        \"orderCode\": 123456,\n        \"amount\": 50000,\n        \"description\": \"WS:550e8400-e29b-41d4-a716-446655440002\",\n        \"status\": \"PAID\",\n        \"checkoutResponseCode\": \"00\",\n        \"paymentLinkId\": \"pl_123456\"\n    }\n}",
+                                                           "createdAt":  "2026-05-06T12:40:19.000Z",
+                                                           "updatedAt":  "2026-05-06T12:40:19.000Z",
+                                                           "uid":  "48661879-816c309f-c6ac-486e-b6fd-2ba008ebad3c"
+                                                       }
+                                                   ],
+                                      "createdAt":  "2026-05-06T12:32:48.000Z",
+                                      "updatedAt":  "2026-05-06T12:40:19.000Z",
+                                      "uid":  "48661879-299ea47a-e47c-4123-acac-b93159217838"
+                                  }
+                              ],
+                     "id":  "7b0b363d-57ff-4a0d-8a8a-ed1ea1b218a2",
+                     "createdAt":  "2026-05-06T12:32:48.000Z",
+                     "updatedAt":  "2026-05-06T12:32:48.000Z",
+                     "uid":  "48661879-7b0b363d-57ff-4a0d-8a8a-ed1ea1b218a2"
+                 }
+             ],
+    "variable":  [
+                     {
+                         "key":  "baseUrl",
+                         "value":  "http://localhost:5201",
+                         "type":  "string"
+                     },
+                     {
+                         "key":  "workspaceId",
+                         "value":  "550e8400-e29b-41d4-a716-446655440005",
+                         "type":  "string"
+                     },
+                     {
+                         "key":  "planId",
+                         "value":  "771e8400-e29b-41d4-a716-446655441111",
+                         "type":  "string"
+                     },
+                     {
+                         "key":  "authToken",
+                         "value":  "",
+                         "type":  "string"
+                     }
+                 ]
+}
