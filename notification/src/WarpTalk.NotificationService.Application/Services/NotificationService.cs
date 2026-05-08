@@ -4,6 +4,8 @@ using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Entities;
 using Microsoft.Extensions.Logging;
+using WarpTalk.NotificationService.Application.Mappers;
+using WarpTalk.NotificationService.Domain.Constants;
 
 namespace WarpTalk.NotificationService.Application.Services;
 
@@ -24,21 +26,12 @@ public class NotificationService : INotificationService
         
         if (pref == null)
         {
-            pref = new NotificationPreference
-            {
-                Id = Guid.NewGuid(),
-                UserId = userId,
-                NotificationType = "SYSTEM",
-                EmailEnabled = true,
-                PushEnabled = true,
-                InAppEnabled = true,
-                UpdatedAt = DateTime.UtcNow
-            };
+            pref = NotificationPreferenceMapper.CreateDefaultEntity(userId);
             await _unitOfWork.NotificationPreferenceRepository.AddAsync(pref);
             await _unitOfWork.SaveChangesAsync();
         }
 
-        return Result.Success(pref.ToDto());
+        return Result.Success(NotificationPreferenceMapper.ToDto(pref));
     }
 
     public async Task<Result<NotificationPreferenceDto>> UpdatePreferencesAsync(Guid userId, UpdateNotificationPreferenceRequest request, CancellationToken ct = default)
@@ -46,17 +39,13 @@ public class NotificationService : INotificationService
         var pref = await _unitOfWork.NotificationPreferenceRepository.GetByUserIdAsync(userId, ct);
 
         if (pref == null)
-            return Result.Failure<NotificationPreferenceDto>("Preferences not found", ErrorCodes.NotFound);
+            return Result.Failure<NotificationPreferenceDto>(NotificationConstants.ErrorPreferencesNotFound, ErrorCodes.NotFound);
 
-        if (request.EmailEnabled.HasValue) pref.EmailEnabled = request.EmailEnabled.Value;
-        if (request.PushEnabled.HasValue) pref.PushEnabled = request.PushEnabled.Value;
-        if (request.InAppEnabled.HasValue) pref.InAppEnabled = request.InAppEnabled.Value;
-
-        pref.UpdatedAt = DateTime.UtcNow;
+        NotificationPreferenceMapper.ApplyUpdate(pref, request);
         _unitOfWork.NotificationPreferenceRepository.Update(pref);
         await _unitOfWork.SaveChangesAsync();
 
-        return Result.Success(pref.ToDto());
+        return Result.Success(NotificationPreferenceMapper.ToDto(pref));
     }
 
     public async Task<Result> SendNotificationAsync(Guid userId, string templateCode, Dictionary<string, string> variables, CancellationToken ct = default)
@@ -71,9 +60,7 @@ public class NotificationService : INotificationService
         pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
         var (items, count) = await _unitOfWork.NotificationMessageRepository.GetPaginatedByUserIdAsync(userId, page, pageSize, ct);
 
-        var dtoItems = items.Select(n => new NotificationMessageDto(
-            n.Id, n.Type, n.Title, n.Content, n.ActionUrl, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
-        ));
+        var dtoItems = items.Select(NotificationMessageMapper.ToDto);
 
         return Result.Success(new NotificationPaginatedResponse(dtoItems, count, page, pageSize));
     }
@@ -83,7 +70,7 @@ public class NotificationService : INotificationService
         var notification = await _unitOfWork.NotificationMessageRepository.GetByIdAndUserIdAsync(notificationId, userId, ct);
         
         if (notification == null)
-            return Result.Failure("Notification not found", ErrorCodes.NotFound);
+            return Result.Failure(NotificationConstants.ErrorNotificationNotFound, ErrorCodes.NotFound);
             
         if (!notification.IsRead)
         {
@@ -102,24 +89,12 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default)
     {
 
-        var notification = new NotificationMessage
-        {
-            UserId = userId,
-            Type = type,
-            Title = title,
-            Content = content,
-            ActionUrl = actionUrl,
-            PayloadJson = payloadJson,
-            IsRead = false,
-            CreatedAt = DateTime.UtcNow
-        };
+        var notification = NotificationMessageMapper.ToEntity(userId, type, title, content, actionUrl, payloadJson);
         
         await _unitOfWork.NotificationMessageRepository.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
         
-        var dto = new NotificationMessageDto(
-            notification.Id, notification.Type, notification.Title, notification.Content, notification.ActionUrl, notification.PayloadJson, notification.IsRead, notification.ReadAt, notification.CreatedAt
-        );
+        var dto = NotificationMessageMapper.ToDto(notification);
         
         return Result.Success(dto);
     }

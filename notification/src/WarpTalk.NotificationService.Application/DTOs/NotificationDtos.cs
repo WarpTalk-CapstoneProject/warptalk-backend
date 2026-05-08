@@ -12,19 +12,6 @@ public record NotificationPreferenceDto(
     DateTime UpdatedAt
 );
 
-public static class NotificationMappingExtensions
-{
-    public static NotificationPreferenceDto ToDto(this NotificationPreference p) =>
-        new NotificationPreferenceDto(
-            p.Id,
-            p.UserId,
-            p.NotificationType ?? "SYSTEM",
-            p.EmailEnabled,
-            p.PushEnabled,
-            p.InAppEnabled,
-            p.UpdatedAt
-        );
-}
 
 public record UpdateNotificationPreferenceRequest(
     bool? EmailEnabled,

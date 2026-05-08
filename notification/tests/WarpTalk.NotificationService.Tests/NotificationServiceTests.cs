@@ -28,28 +28,20 @@ public class NotificationServiceTests
     }
 
     [Fact]
-    public async Task MarkAsReadAsync_ShouldReturnForbidden_WhenUserIsNotOwner()
+    public async Task MarkAsReadAsync_ShouldReturnNotFound_WhenNotificationDoesNotExistOrNotOwned()
     {
         // Arrange
-        var ownerId = Guid.NewGuid();
         var attackerId = Guid.NewGuid();
         var notificationId = Guid.NewGuid();
 
-        var notification = new NotificationMessage
-        {
-            Id = notificationId,
-            UserId = ownerId,
-            IsRead = false
-        };
-
-        _mockRepo.Setup(r => r.GetByIdAsync(notificationId)).ReturnsAsync(notification);
+        _mockRepo.Setup(r => r.GetByIdAndUserIdAsync(notificationId, attackerId, It.IsAny<CancellationToken>())).ReturnsAsync((NotificationMessage)null);
 
         // Act
         var result = await _sut.MarkAsReadAsync(attackerId, notificationId);
 
         // Assert
         Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
     }
 
     [Fact]
@@ -66,7 +58,7 @@ public class NotificationServiceTests
             IsRead = false
         };
 
-        _mockRepo.Setup(r => r.GetByIdAsync(notificationId)).ReturnsAsync(notification);
+        _mockRepo.Setup(r => r.GetByIdAndUserIdAsync(notificationId, ownerId, It.IsAny<CancellationToken>())).ReturnsAsync(notification);
 
         // Act
         var result = await _sut.MarkAsReadAsync(ownerId, notificationId);
