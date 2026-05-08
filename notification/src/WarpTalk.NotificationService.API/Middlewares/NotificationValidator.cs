@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using WarpTalk.Shared;
+using WarpTalk.NotificationService.Domain.Constants;
 
 namespace WarpTalk.NotificationService.API.Middlewares;
 
@@ -20,12 +21,12 @@ public static class NotificationValidator
     private static readonly Dictionary<string, PayloadSchema> Schemas = new(StringComparer.OrdinalIgnoreCase)
     {
         {
-            "SYSTEM", new PayloadSchema
+            NotificationConstants.DefaultNotificationType, new PayloadSchema
             {
             }
         },
         {
-            "MEETING_INVITE", new PayloadSchema
+            NotificationConstants.TypeMeetingInvite, new PayloadSchema
             {
                 RequiredFields = { { "meeting_id", JsonValueKind.String }, { "inviter_name", JsonValueKind.String } }
             }
@@ -49,7 +50,7 @@ public static class NotificationValidator
         // 1. Check Title and Content for HTML
         if (HasHtml(title) || HasHtml(content) || HasHtml(actionUrl))
         {
-            return Result.Failure("HTML_NOT_ALLOWED", ErrorCodes.ValidationError);
+            return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
         }
 
         // 2. Validate Payload
@@ -58,7 +59,7 @@ public static class NotificationValidator
             // Empty payload might be fine for some types if no required fields exist
             if (Schemas.TryGetValue(type, out var schemaCheck) && schemaCheck.RequiredFields.Any())
             {
-                return Result.Failure("MISSING_REQUIRED_FIELDS", ErrorCodes.ValidationError);
+                return Result.Failure(NotificationConstants.ErrorMissingRequiredFields, ErrorCodes.ValidationError);
             }
             return Result.Success();
         }
@@ -96,11 +97,11 @@ public static class NotificationValidator
                 if (schema.RequiredFields.TryGetValue(key, out var expectedKindRequired))
                 {
                     if (valueKind != expectedKindRequired && valueKind != JsonValueKind.Null)
-                        return Result.Failure("INVALID_FIELD_TYPE", ErrorCodes.ValidationError);
+                        return Result.Failure(NotificationConstants.ErrorInvalidFieldType, ErrorCodes.ValidationError);
                         
                     // Check for HTML in string values
                     if (valueKind == JsonValueKind.String && HasHtml(prop.Value.GetString()!))
-                        return Result.Failure("HTML_NOT_ALLOWED", ErrorCodes.ValidationError);
+                        return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
                         
                     foundRequired.Add(key);
                 }
@@ -108,16 +109,16 @@ public static class NotificationValidator
                 else if (schema.OptionalFields.TryGetValue(key, out var expectedKindOptional))
                 {
                     if (valueKind != expectedKindOptional && valueKind != JsonValueKind.Null)
-                        return Result.Failure("INVALID_FIELD_TYPE", ErrorCodes.ValidationError);
+                        return Result.Failure(NotificationConstants.ErrorInvalidFieldType, ErrorCodes.ValidationError);
 
                     // Check for HTML in string values
                     if (valueKind == JsonValueKind.String && HasHtml(prop.Value.GetString()!))
-                        return Result.Failure("HTML_NOT_ALLOWED", ErrorCodes.ValidationError);
+                        return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
                 }
                 // Key not in either dictionary -> Reject
                 else
                 {
-                    return Result.Failure("UNSUPPORTED_PAYLOAD_FIELD", ErrorCodes.ValidationError);
+                    return Result.Failure(NotificationConstants.ErrorUnsupportedPayloadField, ErrorCodes.ValidationError);
                 }
             }
 
@@ -126,7 +127,7 @@ public static class NotificationValidator
             {
                 if (!foundRequired.Contains(req))
                 {
-                    return Result.Failure("MISSING_REQUIRED_FIELDS", ErrorCodes.ValidationError);
+                    return Result.Failure(NotificationConstants.ErrorMissingRequiredFields, ErrorCodes.ValidationError);
                 }
             }
         }

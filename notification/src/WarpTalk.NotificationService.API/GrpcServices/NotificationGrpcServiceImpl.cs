@@ -5,6 +5,7 @@ using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.API.Middlewares;
+using WarpTalk.NotificationService.Domain.Constants;
 using Microsoft.Extensions.Logging;
 
 namespace WarpTalk.NotificationService.API.GrpcServices;
@@ -96,7 +97,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
                 CreatedAt = result.Value.CreatedAt.ToString("O")
             };
             var json = System.Text.Json.JsonSerializer.Serialize(msg);
-            await _redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal("warptalk:notifications:new"), json);
+            await _redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel), json);
         }
         catch (Exception ex)
         {
@@ -127,7 +128,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             var pref = result.Value;
             response.Preferences.Add(new NotificationChannelPreference
             {
-                Channel = pref.NotificationType ?? "SYSTEM",
+                Channel = pref.NotificationType ?? NotificationConstants.DefaultNotificationType,
                 Enabled = pref.EmailEnabled || pref.PushEnabled || pref.InAppEnabled
             });
         }

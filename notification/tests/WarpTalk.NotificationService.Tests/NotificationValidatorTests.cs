@@ -1,5 +1,6 @@
 using System.Text.Json;
 using WarpTalk.NotificationService.API.Middlewares;
+using WarpTalk.NotificationService.Domain.Constants;
 using WarpTalk.Shared;
 
 namespace WarpTalk.NotificationService.Tests;
@@ -12,7 +13,7 @@ public class NotificationValidatorTests
     [InlineData("Title <", "Content >")] // Not a full tag
     public void Validate_ValidText_ReturnsSuccess(string title, string content)
     {
-        var result = NotificationValidator.Validate("SYSTEM", title, content, null, "{}");
+        var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, title, content, null, "{}");
         Assert.True(result.IsSuccess);
     }
 
@@ -22,20 +23,20 @@ public class NotificationValidatorTests
     [InlineData("Title", "<img src='x' onerror='alert(1)'>")]
     public void Validate_HtmlInText_ReturnsHtmlNotAllowed(string title, string content)
     {
-        var result = NotificationValidator.Validate("SYSTEM", title, content, null, "{}");
+        var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, title, content, null, "{}");
         
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal("HTML_NOT_ALLOWED", result.Error);
+        Assert.Equal(NotificationConstants.ErrorHtmlNotAllowed, result.Error);
     }
 
     [Fact]
     public void Validate_HtmlInPayloadString_ReturnsHtmlNotAllowed()
     {
-        var result = NotificationValidator.Validate("SYSTEM", "Title", "Content", "http://example.com<script>", "{}");
+        var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, "Title", "Content", "http://example.com<script>", "{}");
         
         Assert.False(result.IsSuccess);
-        Assert.Equal("HTML_NOT_ALLOWED", result.Error);
+        Assert.Equal(NotificationConstants.ErrorHtmlNotAllowed, result.Error);
     }
 
     [Fact]
@@ -43,10 +44,10 @@ public class NotificationValidatorTests
     {
         var payload = JsonSerializer.Serialize(new { action_url = "url", secret_key = "123" });
         
-        var result = NotificationValidator.Validate("SYSTEM", "Title", "Content", null, payload);
+        var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, "Title", "Content", null, payload);
         
         Assert.False(result.IsSuccess);
-        Assert.Equal("UNSUPPORTED_PAYLOAD_FIELD", result.Error);
+        Assert.Equal(NotificationConstants.ErrorUnsupportedPayloadField, result.Error);
     }
 
     [Fact]
@@ -55,10 +56,10 @@ public class NotificationValidatorTests
         // meeting_id should be string, passing number
         var payload = JsonSerializer.Serialize(new { meeting_id = 123, inviter_name = "Alice" });
         
-        var result = NotificationValidator.Validate("MEETING_INVITE", "Title", "Content", null, payload);
+        var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, payload);
         
         Assert.False(result.IsSuccess);
-        Assert.Equal("INVALID_FIELD_TYPE", result.Error);
+        Assert.Equal(NotificationConstants.ErrorInvalidFieldType, result.Error);
     }
 
     [Fact]
@@ -67,10 +68,10 @@ public class NotificationValidatorTests
         // missing inviter_name
         var payload = JsonSerializer.Serialize(new { meeting_id = "123" });
         
-        var result = NotificationValidator.Validate("MEETING_INVITE", "Title", "Content", null, payload);
+        var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, payload);
         
         Assert.False(result.IsSuccess);
-        Assert.Equal("MISSING_REQUIRED_FIELDS", result.Error);
+        Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
 
     [Fact]
@@ -81,7 +82,7 @@ public class NotificationValidatorTests
             meeting_id = "123", 
             inviter_name = "Alice"
         });
-        var result = NotificationValidator.Validate("MEETING_INVITE", "Title", "Content", "http://localhost/meet", payload);
+        var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", "http://localhost/meet", payload);
         
         Assert.True(result.IsSuccess);
     }
@@ -89,9 +90,9 @@ public class NotificationValidatorTests
     [Fact]
     public void Validate_EmptyPayloadForRequiredType_ReturnsMissingRequiredFields()
     {
-        var result = NotificationValidator.Validate("MEETING_INVITE", "Title", "Content", null, "{}");
+        var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, "{}");
         
         Assert.False(result.IsSuccess);
-        Assert.Equal("MISSING_REQUIRED_FIELDS", result.Error);
+        Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
 }
