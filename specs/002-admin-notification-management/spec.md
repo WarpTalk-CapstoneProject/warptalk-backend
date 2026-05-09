@@ -1,8 +1,8 @@
 # Feature Specification: Admin Notification Management
 
-**Feature Branch**: `feature/wt-58-bo-sung-notification-management-cho-admin-portal`  
+**Feature Branch**: `feat/admin-notification-management`  
 **Created**: 2026-05-08  
-**Status**: Draft  
+**Status**: Completed  
 **Input**: Linear ticket WT-58
 
 ## Scope Boundary
