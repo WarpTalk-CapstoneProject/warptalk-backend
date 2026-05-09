@@ -40,20 +40,21 @@ public class NotificationPublishTests
             DateTime.UtcNow);
 
         mockNotificationService
-            .Setup(s => s.CreateNotificationAsync(userId, NotificationConstants.TypeSystemAlert, It.IsAny<string>(), "This is a seeded notification for testing.", null, "{}", It.IsAny<CancellationToken>()))
+            .Setup(s => s.CreateNotificationAsync(It.IsAny<CreateNotificationMessageDto>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(dto));
 
         mockRedis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(mockDb.Object);
 
         // Act - Simulating the old controller SeedMockNotification logic
-        var result = await mockNotificationService.Object.CreateNotificationAsync(
+        var createDto = new CreateNotificationMessageDto(
             userId, 
             NotificationConstants.TypeSystemAlert, 
             "Mock Notification", 
             "This is a seeded notification for testing.", 
             null, 
-            "{}", 
-            CancellationToken.None);
+            "{}"
+        );
+        var result = await mockNotificationService.Object.CreateNotificationAsync(createDto, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 

@@ -8,6 +8,9 @@ using WarpTalk.NotificationService.API.GrpcServices;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using System.Text.Json.Serialization;
+using FluentValidation;
+using WarpTalk.NotificationService.API.Validators;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,7 +29,12 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Enforce FR-002: Reject unknown top-level fields
+        options.JsonSerializerOptions.UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow;
+    });
 
 
 builder.Services.AddDbContext<NotificationDbContext>(options =>
@@ -35,6 +43,8 @@ builder.Services.AddDbContext<NotificationDbContext>(options =>
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<INotificationService, NotificationService>();
+builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
+builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
 var rawJwtSecret = builder.Configuration["Jwt:Secret"];
 var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) || 
@@ -76,6 +86,11 @@ builder.Services.AddGrpc(options =>
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
     StackExchange.Redis.ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379"));
 
+builder.Services.AddSingleton<WarpTalk.NotificationService.Domain.Interfaces.IMessagePublisher, WarpTalk.NotificationService.Infrastructure.Messaging.RedisMessagePublisher>();
+
+// Register Downstream Worker for Admin Notifications
+builder.Services.AddHostedService<WarpTalk.NotificationService.API.HostedServices.NotificationStreamConsumerService>();
+
 var app = builder.Build();
 
 
@@ -89,3 +104,5 @@ app.MapGrpcService<NotificationGrpcServiceImpl>();
 
 app.Run();
 
+// Make Program available for integration tests
+public partial class Program { }
