@@ -1,3 +1,5 @@
+using WarpTalk.NotificationService.Domain.Entities;
+
 namespace WarpTalk.NotificationService.Application.DTOs;
 
 public record NotificationPreferenceDto(
@@ -10,8 +12,28 @@ public record NotificationPreferenceDto(
     DateTime UpdatedAt
 );
 
+
 public record UpdateNotificationPreferenceRequest(
     bool? EmailEnabled,
     bool? PushEnabled,
     bool? InAppEnabled
+);
+
+public record NotificationMessageDto(
+    Guid Id,
+    string Type,
+    string Title,
+    string Content,
+    string? ActionUrl,
+    string PayloadJson,
+    bool IsRead,
+    DateTime? ReadAt,
+    DateTime CreatedAt
+);
+
+public record NotificationPaginatedResponse(
+    IEnumerable<NotificationMessageDto> Items,
+    int TotalCount,
+    int Page,
+    int PageSize
 );

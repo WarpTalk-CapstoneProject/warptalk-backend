@@ -94,6 +94,13 @@ builder.Services.AddRateLimiter(options =>
         opt.PermitLimit = 5;
         opt.Window = TimeSpan.FromMinutes(1);
     });
+
+    // Specific policy for inbox
+    options.AddFixedWindowLimiter("InboxPolicy", opt =>
+    {
+        opt.PermitLimit = 30;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
 });
 
 // 4. Configure YARP Reverse Proxy
@@ -139,9 +146,50 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
+builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
+
+// 9. Configure gRPC Clients & Server
+builder.Services.AddGrpc();
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
+})
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    if (builder.Environment.IsDevelopment())
+    {
+        // [Security] Bypass TLS verification ONLY in local development to fix trust certificate issues (T014).
+        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    }
+    return handler;
+})
+.AddCallCredentials((context, metadata, serviceProvider) =>
+{
+    // [Security] Zero-Trust Inter-service Authentication: Inject internal secret to gRPC requests.
+    var config = serviceProvider.GetRequiredService<IConfiguration>();
+    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
+    
+    var rawGrpcSecret = config["Grpc:InternalSecret"];
+    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
+                             rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
+                             rawGrpcSecret.Length < 32;
+
+    if (env.IsProduction() && isDefaultOrInvalid)
+    {
+        throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
+    }
+
+    var secret = isDefaultOrInvalid 
+        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
+        : rawGrpcSecret!;
+        
+    metadata.Add("x-internal-token", secret);
+    return Task.CompletedTask;
+});
 
 var app = builder.Build();
 
@@ -149,6 +197,7 @@ var app = builder.Build();
 app.UseCors();
 
 // Security Headers Middleware
+// [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
 app.Use(async (context, next) => {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
@@ -171,6 +220,8 @@ app.MapHub<TranslationRoomHub>("/hubs/translation-room")
 
 app.MapHub<NotificationHub>("/hubs/notification")
     .RequireAuthorization("RequireAuth");
+
+
 
 // Map Health Checks
 app.MapHealthChecks("/health");

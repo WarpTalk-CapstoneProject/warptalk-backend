@@ -7,12 +7,28 @@ public class UnitOfWork : IUnitOfWork
 {
     private readonly NotificationDbContext _context;
     private readonly Dictionary<Type, object> _repositories;
+    private INotificationMessageRepository? _notificationMessageRepository;
+    private INotificationPreferenceRepository? _notificationPreferenceRepository;
+    private INotificationTemplateRepository? _notificationTemplateRepository;
+    private IPushSubscriptionRepository? _pushSubscriptionRepository;
 
     public UnitOfWork(NotificationDbContext context)
     {
         _context = context;
         _repositories = new Dictionary<Type, object>();
     }
+
+    public INotificationMessageRepository NotificationMessageRepository => 
+        _notificationMessageRepository ??= new NotificationMessageRepository(_context);
+
+    public INotificationPreferenceRepository NotificationPreferenceRepository => 
+        _notificationPreferenceRepository ??= new NotificationPreferenceRepository(_context);
+
+    public INotificationTemplateRepository NotificationTemplateRepository => 
+        _notificationTemplateRepository ??= new NotificationTemplateRepository(_context);
+
+    public IPushSubscriptionRepository PushSubscriptionRepository => 
+        _pushSubscriptionRepository ??= new PushSubscriptionRepository(_context);
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

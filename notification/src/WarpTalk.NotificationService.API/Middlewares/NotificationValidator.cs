@@ -1,0 +1,147 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using WarpTalk.Shared;
+using WarpTalk.NotificationService.Domain.Constants;
+
+namespace WarpTalk.NotificationService.API.Middlewares;
+
+public static class NotificationValidator
+{
+    // Matches specific known HTML tags to distinguish from normal text (e.g., '1 < 2')
+    private static readonly Regex HtmlRegex = new Regex(
+        @"<\/?\s*(?:script|iframe|object|embed|svg|img|base|a|div|span|p|b|i|strong|em|h[1-6]|ul|ol|li|table|tr|td|th|tbody|thead|tfoot|style|link|meta|head|title|body|html|br|hr)(?:\s+[^>]*)?>", 
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private class PayloadSchema
+    {
+        public Dictionary<string, JsonValueKind> RequiredFields { get; set; } = new();
+        public Dictionary<string, JsonValueKind> OptionalFields { get; set; } = new();
+    }
+
+    private static readonly Dictionary<string, PayloadSchema> Schemas = new(StringComparer.OrdinalIgnoreCase)
+    {
+        {
+            NotificationConstants.DefaultNotificationType, new PayloadSchema
+            {
+            }
+        },
+        {
+            NotificationConstants.TypeMeetingInvite, new PayloadSchema
+            {
+                RequiredFields = { { "meeting_id", JsonValueKind.String }, { "inviter_name", JsonValueKind.String } }
+            }
+        },
+        {
+            "TRANSCRIPT_READY", new PayloadSchema
+            {
+                RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }
+            }
+        },
+        {
+            "MESSAGE", new PayloadSchema
+            {
+                RequiredFields = { { "sender_id", JsonValueKind.String }, { "sender_name", JsonValueKind.String }, { "room_id", JsonValueKind.String } }
+            }
+        }
+    };
+
+    public static Result Validate(string type, string title, string content, string? actionUrl, string? payloadJson)
+    {
+        // 1. Check Title and Content for HTML
+        if (HasHtml(title) || HasHtml(content) || HasHtml(actionUrl))
+        {
+            return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
+        }
+
+        // 2. Validate Payload
+        if (string.IsNullOrWhiteSpace(payloadJson) || payloadJson == "{}")
+        {
+            // Empty payload might be fine for some types if no required fields exist
+            if (Schemas.TryGetValue(type, out var schemaCheck) && schemaCheck.RequiredFields.Any())
+            {
+                return Result.Failure(NotificationConstants.ErrorMissingRequiredFields, ErrorCodes.ValidationError);
+            }
+            return Result.Success();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return Result.Failure("INVALID_PAYLOAD_FORMAT", ErrorCodes.ValidationError);
+            }
+
+            if (!Schemas.TryGetValue(type, out var schema))
+            {
+                // If type is unknown, we can either reject or accept with no payload. 
+                // Strict approach: if type is unknown, payload should not contain anything.
+                if (root.EnumerateObject().Any())
+                {
+                    return Result.Failure("UNSUPPORTED_NOTIFICATION_TYPE", ErrorCodes.ValidationError);
+                }
+                return Result.Success();
+            }
+
+            // Track found required fields
+            var foundRequired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var prop in root.EnumerateObject())
+            {
+                var key = prop.Name;
+                var valueKind = prop.Value.ValueKind;
+
+                // Check against Required
+                if (schema.RequiredFields.TryGetValue(key, out var expectedKindRequired))
+                {
+                    if (valueKind != expectedKindRequired && valueKind != JsonValueKind.Null)
+                        return Result.Failure(NotificationConstants.ErrorInvalidFieldType, ErrorCodes.ValidationError);
+                        
+                    // Check for HTML in string values
+                    if (valueKind == JsonValueKind.String && HasHtml(prop.Value.GetString()!))
+                        return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
+                        
+                    foundRequired.Add(key);
+                }
+                // Check against Optional
+                else if (schema.OptionalFields.TryGetValue(key, out var expectedKindOptional))
+                {
+                    if (valueKind != expectedKindOptional && valueKind != JsonValueKind.Null)
+                        return Result.Failure(NotificationConstants.ErrorInvalidFieldType, ErrorCodes.ValidationError);
+
+                    // Check for HTML in string values
+                    if (valueKind == JsonValueKind.String && HasHtml(prop.Value.GetString()!))
+                        return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
+                }
+                // Key not in either dictionary -> Reject
+                else
+                {
+                    return Result.Failure(NotificationConstants.ErrorUnsupportedPayloadField, ErrorCodes.ValidationError);
+                }
+            }
+
+            // Check if all required fields are present
+            foreach (var req in schema.RequiredFields.Keys)
+            {
+                if (!foundRequired.Contains(req))
+                {
+                    return Result.Failure(NotificationConstants.ErrorMissingRequiredFields, ErrorCodes.ValidationError);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return Result.Failure("INVALID_JSON", ErrorCodes.ValidationError);
+        }
+
+        return Result.Success();
+    }
+
+    private static bool HasHtml(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        return HtmlRegex.IsMatch(text);
+    }
+}
