@@ -1,11 +1,11 @@
 {
   "info": {
-    "_postman_id": "7e707999-d306-4a33-ab60-d15393f6c4e6",
-    "name": "WarpTalk Backend - Notification",
+    "_postman_id": "63129334-060c-4f9d-952b-90e83afae9af",
+    "name": "WarpTalk Backend - Notification Copy 2",
     "description": "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "51979719",
-    "_collection_link": "https://go.postman.co/collection/51979719-7e707999-d306-4a33-ab60-d15393f6c4e6?source=collection_link"
+    "_collection_link": "https://go.postman.co/collection/51979719-63129334-060c-4f9d-952b-90e83afae9af?source=collection_link"
   },
   "item": [
     {
@@ -163,7 +163,6 @@
                       "    });",
                       "    if(jsonData.items.length > 0) {",
                       "        pm.collectionVariables.set(\"notificationId\", jsonData.items[0].id);",
-                      "        // XSS Check: Ensure payload does not contain HTML tags",
                       "        jsonData.items.forEach(function(item) {",
                       "            pm.test(\"Payload does not contain HTML\", function () {",
                       "                pm.expect(item.payloadJson).to.not.match(/<[^>]*>/);",
@@ -261,7 +260,6 @@
                       "    var jsonData = pm.response.json();",
                       "    var item = jsonData.items.find(x => x.id === pm.collectionVariables.get(\"notificationId\"));",
                       "    pm.test(\"Item should be read (or excluded from unread)\", function () {",
-                      "        // Depending on backend, it might exclude read items or just set isRead = true",
                       "        if (item) {",
                       "            pm.expect(item.isRead).to.be.true;",
                       "        }",
@@ -426,19 +424,31 @@
                   "listen": "test",
                   "script": {
                     "exec": [
-                      "pm.test(\\\"Status code is 200\\\", function () {",
+                      "pm.test(\"Status code is 200\", function () {",
                       "    pm.response.to.have.status(200);",
                       "});",
+                      "",
                       "if (pm.response.code === 200) {",
-                      "    var json = pm.response.json();",
-                      "    var token = json.accessToken || json.token;",
-                      "    if (token) {",
-                      "        pm.collectionVariables.set(\\\"adminAccessToken\\\", token);",
-                      "        console.log(\\\"Admin Token acquired and saved automatically!\\\");",
+                      "    try {",
+                      "        const responseJson = pm.response.json();",
+                      "        ",
+                      "        const token = responseJson.accessToken || responseJson.token || (responseJson.data && responseJson.data.accessToken);",
+                      "",
+                      "        if (token) {",
+                      "            pm.collectionVariables.set(\"adminAccessToken\", token);",
+                      "            console.log(\"✅ [Auth] Admin Token saved successfully!\");",
+                      "        } else {",
+                      "            console.warn(\"⚠️ [Auth] Login success but no token found in response body.\");",
+                      "            console.log(\"Response Body:\", responseJson);",
+                      "        }",
+                      "    } catch (e) {",
+                      "        console.error(\"❌ [Auth] Failed to parse response JSON:\", e);",
                       "    }",
                       "}"
                     ],
-                    "type": "text/javascript"
+                    "type": "text/javascript",
+                    "packages": {},
+                    "requests": {}
                   }
                 }
               ],
@@ -740,7 +750,6 @@
                       "if (pm.response.code === 200) {",
                       "    var json = pm.response.json();",
                       "    pm.test(\"Should clamp page size to max 100\", function() { ",
-                      "        // Sửa từ json.value.pageSize thành json.pageSize",
                       "        var pageSize = json.pageSize || (json.value ? json.value.pageSize : undefined);",
                       "        ",
                       "        if (pageSize !== undefined) {",
@@ -1086,6 +1095,10 @@
     {
       "key": "adminPassword",
       "value": "Admin@123"
+    },
+    {
+      "key": "adminNotificationId",
+      "value": ""
     }
   ]
 }
