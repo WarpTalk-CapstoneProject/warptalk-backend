@@ -3,29 +3,15 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using Serilog;
-using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
-using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.API.Swagger;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 
-Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Information()
-    .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Application", "BillingService")
-    .CreateLogger();
-
-try
-{
-    Log.Information("Starting WarpTalk Billing Service...");
-
-    var builder = WebApplication.CreateBuilder(args);
-    builder.Host.UseSerilog();
+var builder = WebApplication.CreateBuilder(args);
 
     builder.WebHost.ConfigureKestrel(options =>
     {
@@ -53,9 +39,9 @@ try
             }));
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
-    builder.Services.AddScoped<IBillingService, WarpTalk.BillingService.Application.Services.BillingService>();
-    builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
-    builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationService>();
+    builder.Services.AddScoped<IBillingService, WarpTalk.BillingService.Application.Services.BillingServices>();
+    builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyServices>();
+    builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationServices>();
     builder.Services.AddGrpc();
     builder.Services.AddGrpcReflection();
 
@@ -215,40 +201,19 @@ try
         if (string.IsNullOrWhiteSpace(correlationId))
             correlationId = Guid.NewGuid().ToString();
 
-        using (LogContext.PushProperty("CorrelationId", correlationId))
-        using (LogContext.PushProperty("TraceId", context.TraceIdentifier))
-        {
-            context.Items["CorrelationId"] = correlationId;
-            context.Response.Headers["X-Correlation-Id"] = correlationId;
+        context.Items["CorrelationId"] = correlationId;
+        context.Response.Headers["X-Correlation-Id"] = correlationId;
 
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation(
-                "HTTP {Method} {Path} from {RemoteIP} | User: {User}",
-                context.Request.Method,
-                context.Request.Path,
-                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                context.User?.Identity?.Name ?? "anonymous");
-
-            await next();
-
-            logger.LogInformation(
-                "HTTP {Method} {Path} completed with {StatusCode}",
-                context.Request.Method,
-                context.Request.Path,
-                context.Response.StatusCode);
-        }
+        await next();
     });
+
 
     app.UseExceptionHandler(options =>
     {
         options.Run(async context =>
         {
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
             var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
-            var ex = exceptionHandlerPathFeature?.Error;
             var correlationId = context.Items["CorrelationId"]?.ToString() ?? "unknown";
-
-            logger.LogError(ex, "Unhandled exception in {Path} | CorrelationId: {CorrelationId}", context.Request.Path, correlationId);
 
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
@@ -273,21 +238,9 @@ try
         app.MapGrpcReflectionService();
     }
 
-    using (var scope = app.Services.CreateScope())
-    {
-        scope.ServiceProvider.GetRequiredService<BillingDbContext>();
-        Log.Information("Database connection verified");
-    }
+using (var scope = app.Services.CreateScope())
+{
+    scope.ServiceProvider.GetRequiredService<BillingDbContext>();
+}
 
-    Log.Information("WarpTalk Billing Service started successfully on http://localhost:5201");
-    await app.RunAsync();
-}
-catch (Exception ex)
-{
-    Log.Fatal(ex, "WarpTalk Billing Service terminated unexpectedly");
-    Environment.Exit(1);
-}
-finally
-{
-    await Log.CloseAndFlushAsync();
-}
+await app.RunAsync();

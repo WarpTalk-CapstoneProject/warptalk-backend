@@ -9,9 +9,9 @@ public partial class Plan
 
     public string Name { get; set; } = null!;
 
-    public decimal Price { get; set; }
+    public decimal PricePerMonth { get; set; }
 
-    public int CreditsPerMonth { get; set; }
+    public int TokensPerMonth { get; set; }
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
 }

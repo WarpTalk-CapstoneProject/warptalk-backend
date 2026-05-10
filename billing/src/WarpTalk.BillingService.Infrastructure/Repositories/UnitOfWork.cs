@@ -11,18 +11,18 @@ public class UnitOfWork : IUnitOfWork
     public UnitOfWork(BillingDbContext db)
     {
         _db = db;
-        Plans = new GenericRepository<Plan>(db);
-        Subscriptions = new GenericRepository<Subscription>(db);
-        Transactions = new GenericRepository<Transaction>(db);
-        CreditTransactions = new GenericRepository<CreditTransaction>(db);
-        IdempotencyRecords = new IdempotencyRepository(db);
+        PlansRepository = new GenericRepository<Plan>(db);
+        SubscriptionsRepository = new GenericRepository<Subscription>(db);
+        TransactionsRepository = new GenericRepository<Transaction>(db);
+        TokenTransactionsRepository = new GenericRepository<TokenTransaction>(db);
+        IdempotencyRecordsRepository = new IdempotencyRepository(db);
     }
 
-    public IGenericRepository<Plan> Plans { get; }
-    public IGenericRepository<Subscription> Subscriptions { get; }
-    public IGenericRepository<Transaction> Transactions { get; }
-    public IGenericRepository<CreditTransaction> CreditTransactions { get; }
-    public IIdempotencyRepository IdempotencyRecords { get; }
+    public IGenericRepository<Plan> PlansRepository { get; }
+    public IGenericRepository<Subscription> SubscriptionsRepository { get; }
+    public IGenericRepository<Transaction> TransactionsRepository { get; }
+    public IGenericRepository<TokenTransaction> TokenTransactionsRepository { get; }
+    public IIdempotencyRepository IdempotencyRecordsRepository { get; }
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _db.SaveChangesAsync(ct);

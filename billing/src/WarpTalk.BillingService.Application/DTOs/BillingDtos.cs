@@ -9,8 +9,8 @@ namespace WarpTalk.BillingService.Application.DTOs;
 public record PlanDto(
     Guid Id,
     string Name,
-    decimal Price,
-    int CreditsPerMonth,
+    decimal PricePerMonth,
+    int TokensPerMonth,
     bool IsActive = true,
     DateTime? CreatedAt = null);
 
@@ -19,24 +19,27 @@ public record SubscriptionDto(
     Guid WorkspaceId,
     Guid PlanId,
     string Status,
-    int CurrentCredits,
+    int CurrentTokens,
     DateTime StartDate,
     DateTime? EndDate,
+    string Duration,
+    string Tier,
     DateTime CreatedAt);
 
-public record WorkspaceCreditsDto(
+public record WorkspaceTokensDto(
     Guid WorkspaceId,
-    int CurrentCredits,
+    int CurrentTokens,
     DateTime? SubscriptionEndDate,
     string SubscriptionStatus = "active");
 
-public record CreditTransactionDto(
+public record TokenTransactionDto(
     Guid Id,
     Guid WorkspaceId,
     int Amount,
     string Type,
     Guid? ReferenceId,
     string? ReferenceType,
+    string? CreatedBy,
     DateTime CreatedAt);
 
 public record TransactionDto(
@@ -46,6 +49,7 @@ public record TransactionDto(
     decimal Amount,
     string Status,
     string? ExternalId,
+    string? CreatedBy,
     DateTime CreatedAt);
 
 // ============================================================================
@@ -54,14 +58,18 @@ public record TransactionDto(
 
 public record CreateSubscriptionRequest(
     [Required(ErrorMessage = "Plan ID is required")]
-    Guid PlanId);
+    Guid PlanId,
+    
+    string? Duration = "1mo",
+    
+    string? Tier = "Premium");
 
-public record TopUpCreditsRequest(
+public record TopUpTokensRequest(
     [Required(ErrorMessage = "Amount is required")]
     [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
     int Amount);
 
-public record ConsumeCreditsRequest(
+public record ConsumeTokensRequest(
     [Required(ErrorMessage = "Amount is required")]
     [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
     int Amount,

@@ -1,4 +1,4 @@
-namespace WarpTalk.BillingService.API.Services;
+namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IIdempotencyService
 {

@@ -1,6 +1,6 @@
 using System.Security.Claims;
 
-namespace WarpTalk.BillingService.API.Services;
+namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IWorkspaceValidationService
 {

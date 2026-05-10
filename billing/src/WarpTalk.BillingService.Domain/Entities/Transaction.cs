@@ -17,6 +17,8 @@ public partial class Transaction
 
     public string? ExternalId { get; set; }
 
+    public string? CreatedBy { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public virtual Subscription? Subscription { get; set; }

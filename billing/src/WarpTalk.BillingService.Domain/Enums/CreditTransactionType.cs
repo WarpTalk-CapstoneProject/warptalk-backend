@@ -1,6 +1,6 @@
 namespace WarpTalk.BillingService.Domain.Enums;
 
-public enum CreditTransactionType
+public enum TokenTransactionType
 {
     TopUp = 0,
     Consume = 1,

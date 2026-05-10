@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Entities;
@@ -10,19 +9,16 @@ using WarpTalk.Shared;
 namespace WarpTalk.BillingService.Application.Services;
 
 /// <summary>
-/// Billing service implementation with subscription, credit, and transaction management.
-/// Includes structured logging, concurrency handling, and business rule enforcement.
+/// Billing service implementation with subscription, token, and transaction management.
+/// Includes try-catch-result pattern, parameter validation, and subscription tier support.
 /// </summary>
-public class BillingService : IBillingService
+public class BillingServices : IBillingService
 {
     private readonly IUnitOfWork _uow;
-    private readonly ILogger<BillingService> _logger;
-    private const int MaxRetries = 3;
 
-    public BillingService(IUnitOfWork uow, ILogger<BillingService> logger)
+    public BillingServices(IUnitOfWork uow)
     {
         _uow = uow;
-        _logger = logger;
     }
 
     /// <summary>Get all active billing plans</summary>
@@ -30,58 +26,56 @@ public class BillingService : IBillingService
     {
         try
         {
-            _logger.LogInformation("Fetching all active plans");
-            
-            var plans = await _uow.Plans
-                 .FindAsync(p => p.Name != null, "", ct);
+            var plans = await _uow.PlansRepository.FindAsync(p => p.Name != null, "", ct);
             
             var payload = plans
-                .Select(p => new PlanDto(p.Id, p.Name, p.Price, p.CreditsPerMonth, true, null))
-                .OrderBy(p => p.Price)
+                .Select(p => new PlanDto(p.Id, p.Name, p.PricePerMonth, p.TokensPerMonth, true, null))
+                .OrderBy(p => p.PricePerMonth)
                 .ToList();
 
-            _logger.LogInformation("Successfully fetched {PlanCount} plans", payload.Count);
             return Result.Success<IReadOnlyList<PlanDto>>(payload);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error fetching plans");
             return Result.Failure<IReadOnlyList<PlanDto>>("Failed to fetch plans", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Create a new subscription for workspace</summary>
-    public async Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default)
+    /// <summary>Create a new subscription for workspace with plan validation</summary>
+    public async Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, string duration = "1mo", string tier = "Premium", CancellationToken ct = default)
     {
+        // Parameter validation
         if (workspaceId == Guid.Empty)
             return Result.Failure<SubscriptionDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+        if (planId == Guid.Empty)
+            return Result.Failure<SubscriptionDto>("Plan ID cannot be empty", BillingErrorCodes.PLAN_NOT_FOUND);
+        if (!new[] { "1mo", "6mo", "1yr" }.Contains(duration))
+            return Result.Failure<SubscriptionDto>("Invalid duration. Allowed: 1mo, 6mo, 1yr", BillingErrorCodes.VALIDATION_FAILED);
+        if (!new[] { "Premium", "Enterprise" }.Contains(tier))
+            return Result.Failure<SubscriptionDto>("Invalid tier. Allowed: Premium, Enterprise", BillingErrorCodes.VALIDATION_FAILED);
 
         try
         {
-            _logger.LogInformation("Creating subscription for workspace {WorkspaceId} with plan {PlanId}", workspaceId, planId);
-
             // Check for existing active subscription
-            var existingActive = await _uow.Subscriptions
-                    .FirstOrDefaultAsync(
-                        s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                        "",
-                        ct);
+            var existingActive = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (existingActive is not null)
-            {
-                _logger.LogWarning("Subscription already exists for workspace {WorkspaceId}", workspaceId);
-                return Result.Failure<SubscriptionDto>(
-                    "Workspace already has an active subscription",
-                    BillingErrorCodes.SUBSCRIPTION_ALREADY_ACTIVE);
-            }
+                return Result.Failure<SubscriptionDto>("Workspace already has an active subscription", BillingErrorCodes.SUBSCRIPTION_ALREADY_ACTIVE);
 
-            // Verify plan exists and is active
-            var plan = await _uow.Plans.GetByIdAsync(planId, ct);
+            // Verify plan exists
+            var plan = await _uow.PlansRepository.GetByIdAsync(planId, ct);
             if (plan is null)
-            {
-                _logger.LogWarning("Plan not found: {PlanId}", planId);
                 return Result.Failure<SubscriptionDto>("Plan not found", BillingErrorCodes.PLAN_NOT_FOUND);
-            }
+
+            // Calculate end date based on duration
+            var endDate = duration switch
+            {
+                "1mo" => DateTime.UtcNow.AddMonths(1),
+                "6mo" => DateTime.UtcNow.AddMonths(6),
+                "1yr" => DateTime.UtcNow.AddYears(1),
+                _ => DateTime.UtcNow.AddMonths(1)
+            };
 
             // Create subscription
             var subscription = new Subscription
@@ -90,35 +84,26 @@ public class BillingService : IBillingService
                 WorkspaceId = workspaceId,
                 PlanId = planId,
                 Status = SubscriptionStatus.Active,
-                CurrentCredits = plan.CreditsPerMonth,
+                CurrentTokens = plan.TokensPerMonth,
                 StartDate = DateTime.UtcNow,
-                EndDate = DateTime.UtcNow.AddMonths(1),
+                EndDate = endDate,
+                Duration = duration,
+                Tier = tier,
                 CreatedAt = DateTime.UtcNow
             };
 
-            await _uow.Subscriptions.AddAsync(subscription, ct);
+            await _uow.SubscriptionsRepository.AddAsync(subscription, ct);
             await _uow.SaveChangesAsync(ct);
-
-            _logger.LogInformation("Subscription created successfully: {SubscriptionId} for workspace {WorkspaceId}", 
-                subscription.Id, workspaceId);
 
             return Result.Success(MapToDto(subscription));
         }
-        catch (DbUpdateException ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Database error creating subscription for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<SubscriptionDto>(
-                "Failed to create subscription due to database error",
-                BillingErrorCodes.SUBSCRIPTION_CONFLICT);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error creating subscription for workspace {WorkspaceId}", workspaceId);
             return Result.Failure<SubscriptionDto>("Failed to create subscription", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Get active subscription for workspace</summary>
+    /// <summary>Get active subscription for workspace with null check</summary>
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(Guid workspaceId, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
@@ -126,408 +111,250 @@ public class BillingService : IBillingService
 
         try
         {
-            _logger.LogInformation("Fetching active subscription for workspace {WorkspaceId}", workspaceId);
-
-            var subscription = await _uow.Subscriptions
-                .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                    "Plan",
-                    ct);
+            var subscription = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (subscription is null)
-            {
-                _logger.LogInformation("No active subscription found for workspace {WorkspaceId}", workspaceId);
-                return Result.Failure<SubscriptionDto>(
-                    "No active subscription found",
-                    BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
-            }
+                return Result.Failure<SubscriptionDto>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
             return Result.Success(MapToDto(subscription));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error fetching subscription for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<SubscriptionDto>("Failed to fetch subscription", BillingErrorCodes.SERVICE_UNAVAILABLE);
+            return Result.Failure<SubscriptionDto>("Failed to fetch active subscription", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Get current workspace credits balance</summary>
-    public async Task<Result<WorkspaceCreditsDto>> GetWorkspaceCreditsAsync(Guid workspaceId, CancellationToken ct = default)
+    /// <summary>Get current token balance - returns tokens available for workspace</summary>
+    public async Task<Result<WorkspaceTokensDto>> GetWorkspaceTokensAsync(Guid workspaceId, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
-            return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+            return Result.Failure<WorkspaceTokensDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
 
         try
         {
-            _logger.LogInformation("Fetching credits for workspace {WorkspaceId}", workspaceId);
-
-            var activeSubscription = await _uow.Subscriptions
-                .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                        "",
-                        ct);
+            var activeSubscription = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (activeSubscription is null)
-            {
-                _logger.LogInformation("No active subscription for workspace {WorkspaceId}", workspaceId);
-                return Result.Failure<WorkspaceCreditsDto>(
-                    "No active subscription found",
-                    BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
-            }
+                return Result.Failure<WorkspaceTokensDto>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
-            var payload = new WorkspaceCreditsDto(
+            var payload = new WorkspaceTokensDto(
                 activeSubscription.WorkspaceId,
-                activeSubscription.CurrentCredits,
+                activeSubscription.CurrentTokens,
                 activeSubscription.EndDate,
-                activeSubscription.Status.ToString());
+                activeSubscription.Status.ToString().ToLowerInvariant());
 
-            _logger.LogInformation("Credits retrieved for workspace {WorkspaceId}: {Credits}", workspaceId, activeSubscription.CurrentCredits);
             return Result.Success(payload);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error fetching credits for workspace {WorkspaceId}: {Message}", workspaceId, ex.Message);
-            return Result.Failure<WorkspaceCreditsDto>($"Failed to fetch credits: {ex.Message}", BillingErrorCodes.SERVICE_UNAVAILABLE);
+            return Result.Failure<WorkspaceTokensDto>("Failed to fetch workspace tokens", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Cancel workspace subscription</summary>
-    public async Task<Result<WorkspaceCreditsDto>> CancelSubscriptionAsync(Guid workspaceId, string? reason = null, CancellationToken ct = default)
+    /// <summary>Cancel active subscription for workspace</summary>
+    public async Task<Result<string>> CancelSubscriptionAsync(Guid workspaceId, string? reason = null, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
-            return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+            return Result.Failure<string>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
 
         try
         {
-            _logger.LogInformation("Cancelling subscription for workspace {WorkspaceId}, reason: {Reason}", workspaceId, reason ?? "not provided");
-
-            var subscription = await _uow.Subscriptions
-                .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                        "",
-                        ct);
+            var subscription = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (subscription is null)
-            {
-                _logger.LogWarning("No active subscription to cancel for workspace {WorkspaceId}", workspaceId);
-                return Result.Failure<WorkspaceCreditsDto>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
-            }
+                return Result.Failure<string>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
             subscription.Status = SubscriptionStatus.Cancelled;
             subscription.EndDate = DateTime.UtcNow;
 
-            _uow.Subscriptions.Update(subscription);
+            _uow.SubscriptionsRepository.Update(subscription);
             await _uow.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Subscription cancelled for workspace {WorkspaceId}", workspaceId);
-            return Result.Success(new WorkspaceCreditsDto(
-                subscription.WorkspaceId,
-                subscription.CurrentCredits,
-                subscription.EndDate,
-                subscription.Status.ToString()));
+            return Result.Success("SUBSCRIPTION_CANCELLED");
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error cancelling subscription for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<WorkspaceCreditsDto>("Failed to cancel subscription", BillingErrorCodes.SERVICE_UNAVAILABLE);
+            return Result.Failure<string>("Failed to cancel subscription", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Top-up credits for workspace</summary>
-    public async Task<Result<WorkspaceCreditsDto>> TopUpCreditsAsync(
-        Guid workspaceId,
-        int amount,
-        string referenceType = "topup",
-        Guid? referenceId = null,
-        CancellationToken ct = default)
+    /// <summary>Top-up tokens for active subscription - returns updated token count</summary>
+    public async Task<Result<int>> TopUpTokensAsync(Guid workspaceId, int amount, string? referenceType = null, Guid? referenceId = null, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
-            return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+            return Result.Failure<int>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
         if (amount <= 0)
-            return Result.Failure<WorkspaceCreditsDto>("Amount must be greater than 0", BillingErrorCodes.INVALID_AMOUNT);
+            return Result.Failure<int>("Amount must be greater than 0", BillingErrorCodes.INVALID_AMOUNT);
 
         try
         {
-            _logger.LogInformation("Top-upping credits for workspace {WorkspaceId}: {Amount}", workspaceId, amount);
-
-            var subscription = await _uow.Subscriptions
-                .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                        "",
-                        ct);
+            var subscription = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (subscription is null)
-                return Result.Failure<WorkspaceCreditsDto>(
-                    "No active subscription found",
-                    BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
+                return Result.Failure<int>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
-            subscription.CurrentCredits += amount;
-            _uow.Subscriptions.Update(subscription);
+            subscription.CurrentTokens += amount;
+            _uow.SubscriptionsRepository.Update(subscription);
 
-            // Log credit transaction
-            var creditTx = new CreditTransaction
+            // Record token transaction
+            var tokenTx = new TokenTransaction
             {
                 Id = Guid.NewGuid(),
                 WorkspaceId = workspaceId,
                 Amount = amount,
-                Type = CreditTransactionType.TopUp,
+                Type = TokenTransactionType.TopUp,
                 ReferenceId = referenceId,
-                ReferenceType = referenceType != null ? Enum.Parse<CreditReferenceType>(referenceType, true) : null,
+                ReferenceType = referenceType ?? "topup",
+                CreatedBy = "system",
                 CreatedAt = DateTime.UtcNow
             };
 
-            await _uow.CreditTransactions.AddAsync(creditTx, ct);
+            await _uow.TokenTransactionsRepository.AddAsync(tokenTx, ct);
             await _uow.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Credits topped up for workspace {WorkspaceId}: {Amount} (total: {NewTotal})",
-                workspaceId, amount, subscription.CurrentCredits);
-
-            return Result.Success(new WorkspaceCreditsDto(
-                subscription.WorkspaceId,
-                subscription.CurrentCredits,
-                subscription.EndDate,
-                subscription.Status.ToString()));
+            return Result.Success(subscription.CurrentTokens);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error topping up credits for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<WorkspaceCreditsDto>($"Failed to top-up credits: {ex.Message}", BillingErrorCodes.CREDITS_OPERATION_FAILED);
+            return Result.Failure<int>("Failed to top-up tokens", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Consume credits for service usage</summary>
-    public async Task<Result<WorkspaceCreditsDto>> ConsumeCreditsAsync(
-        Guid workspaceId,
-        int amount,
-        string referenceType,
-        Guid? referenceId = null,
-        CancellationToken ct = default)
+    /// <summary>Consume tokens for service usage - returns remaining tokens</summary>
+    public async Task<Result<int>> ConsumeTokensAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
-            return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+            return Result.Failure<int>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
         if (amount <= 0)
-            return Result.Failure<WorkspaceCreditsDto>("Amount must be greater than 0", BillingErrorCodes.INVALID_AMOUNT);
+            return Result.Failure<int>("Amount must be greater than 0", BillingErrorCodes.INVALID_AMOUNT);
         if (string.IsNullOrWhiteSpace(referenceType))
-            return Result.Failure<WorkspaceCreditsDto>("Reference type is required", BillingErrorCodes.VALIDATION_FAILED);
+            return Result.Failure<int>("Reference type is required", BillingErrorCodes.VALIDATION_FAILED);
 
         try
         {
-            _logger.LogInformation("Consuming {Amount} credits for workspace {WorkspaceId} (reference: {ReferenceType})",
-                amount, workspaceId, referenceType);
-
-            var subscription = await _uow.Subscriptions
-                .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
-                        "",
-                        ct);
+            var subscription = await _uow.SubscriptionsRepository
+                .FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active, "", ct);
 
             if (subscription is null)
-                return Result.Failure<WorkspaceCreditsDto>(
-                    "No active subscription found",
-                    BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
+                return Result.Failure<int>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
-            if (subscription.CurrentCredits < amount)
-            {
-                _logger.LogWarning("Insufficient credits for workspace {WorkspaceId}: has {Available}, needs {Required}",
-                    workspaceId, subscription.CurrentCredits, amount);
-                return Result.Failure<WorkspaceCreditsDto>(
-                    $"Insufficient credits. Available: {subscription.CurrentCredits}, Required: {amount}",
-                    BillingErrorCodes.INSUFFICIENT_CREDITS);
-            }
+            if (subscription.CurrentTokens < amount)
+                return Result.Failure<int>($"Insufficient tokens. Available: {subscription.CurrentTokens}, Required: {amount}", BillingErrorCodes.INSUFFICIENT_CREDITS);
 
-            subscription.CurrentCredits -= amount;
-            _uow.Subscriptions.Update(subscription);
+            subscription.CurrentTokens -= amount;
+            _uow.SubscriptionsRepository.Update(subscription);
 
-            // Log credit transaction
-            var creditTx = new CreditTransaction
+            // Record token transaction
+            var tokenTx = new TokenTransaction
             {
                 Id = Guid.NewGuid(),
                 WorkspaceId = workspaceId,
                 Amount = -amount,
-                Type = CreditTransactionType.Consume,
+                Type = TokenTransactionType.Consume,
                 ReferenceId = referenceId,
-                ReferenceType = Enum.Parse<CreditReferenceType>(referenceType, true),
+                ReferenceType = referenceType,
+                CreatedBy = "system",
                 CreatedAt = DateTime.UtcNow
             };
 
-            await _uow.CreditTransactions.AddAsync(creditTx, ct);
+            await _uow.TokenTransactionsRepository.AddAsync(tokenTx, ct);
             await _uow.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Credits consumed for workspace {WorkspaceId}: -{Amount} (remaining: {NewBalance})",
-                workspaceId, amount, subscription.CurrentCredits);
-
-            return Result.Success(new WorkspaceCreditsDto(
-                subscription.WorkspaceId,
-                subscription.CurrentCredits,
-                subscription.EndDate,
-                subscription.Status.ToString()));
+            return Result.Success(subscription.CurrentTokens);
         }
-        catch (DbUpdateConcurrencyException ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Concurrency conflict consuming credits for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<WorkspaceCreditsDto>("Concurrent update detected", BillingErrorCodes.CONCURRENCY_CONFLICT);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error consuming credits for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<WorkspaceCreditsDto>($"Failed to consume credits: {ex.Message}", BillingErrorCodes.CREDITS_OPERATION_FAILED);
+            return Result.Failure<int>("Failed to consume tokens", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    /// <summary>Get credit transaction history</summary>
-    public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(
-        Guid workspaceId,
-        int pageNumber = 1,
-        int pageSize = 50,
-        CancellationToken ct = default)
+    /// <summary>Get token transaction history with pagination</summary>
+    public async Task<Result<PaginatedResponse<TokenTransactionDto>>> GetTokenHistoryAsync(Guid workspaceId, int pageNumber = 1, int pageSize = 50, CancellationToken ct = default)
     {
         if (workspaceId == Guid.Empty)
-            return Result.Failure<PaginatedResponse<CreditTransactionDto>>(
-                "Workspace ID cannot be empty",
-                BillingErrorCodes.INVALID_WORKSPACE_ID);
+            return Result.Failure<PaginatedResponse<TokenTransactionDto>>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
         if (pageNumber < 1 || pageSize < 1 || pageSize > 200)
-            return Result.Failure<PaginatedResponse<CreditTransactionDto>>(
-                "Invalid pagination parameters",
-                BillingErrorCodes.VALIDATION_FAILED);
+            return Result.Failure<PaginatedResponse<TokenTransactionDto>>("Invalid pagination parameters", BillingErrorCodes.VALIDATION_FAILED);
 
         try
         {
-            _logger.LogInformation(
-                "Fetching credit history for workspace {WorkspaceId}: page {PageNumber}, size {PageSize}",
-                workspaceId, pageNumber, pageSize);
-
-            var query = _uow.CreditTransactions
-                .Query()
-                .Where(ct => ct.WorkspaceId == workspaceId)
-                .OrderByDescending(ct => ct.CreatedAt);
-
-            var totalCount = await query.CountAsync(ct);
-            var totalPages = (totalCount + pageSize - 1) / pageSize;
-
-            var transactions = await query
-                .Skip((pageNumber - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync(ct);
-
-            var items = transactions.Select(MapToDto).ToList();
-
-            var response = new PaginatedResponse<CreditTransactionDto>(
-                items,
-                pageNumber,
-                pageSize,
-                totalCount,
-                totalPages);
-
-            _logger.LogInformation(
-                "Retrieved {ItemCount} credit transactions for workspace {WorkspaceId}",
-                items.Count, workspaceId);
-
-            return Result.Success(response);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching credit history for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<PaginatedResponse<CreditTransactionDto>>(
-                "Failed to fetch credit history",
-                BillingErrorCodes.SERVICE_UNAVAILABLE);
-        }
-    }
-
-    /// <summary>Get payment transaction history</summary>
-    public async Task<Result<PaginatedResponse<TransactionDto>>> GetTransactionHistoryAsync(
-        Guid workspaceId,
-        int pageNumber = 1,
-        int pageSize = 50,
-        CancellationToken ct = default)
-    {
-        if (workspaceId == Guid.Empty)
-            return Result.Failure<PaginatedResponse<TransactionDto>>(
-                "Workspace ID cannot be empty",
-                BillingErrorCodes.INVALID_WORKSPACE_ID);
-        if (pageNumber < 1 || pageSize < 1 || pageSize > 200)
-            return Result.Failure<PaginatedResponse<TransactionDto>>(
-                "Invalid pagination parameters",
-                BillingErrorCodes.VALIDATION_FAILED);
-
-        try
-        {
-            _logger.LogInformation(
-                "Fetching transaction history for workspace {WorkspaceId}: page {PageNumber}, size {PageSize}",
-                workspaceId, pageNumber, pageSize);
-
-            var query = _uow.Transactions
-                .Query()
+            var query = _uow.TokenTransactionsRepository.Query()
                 .Where(t => t.WorkspaceId == workspaceId)
                 .OrderByDescending(t => t.CreatedAt);
 
             var totalCount = await query.CountAsync(ct);
-            var totalPages = (totalCount + pageSize - 1) / pageSize;
-
-            var transactions = await query
+            var items = await query
                 .Skip((pageNumber - 1) * pageSize)
                 .Take(pageSize)
+                .Select(t => new TokenTransactionDto(
+                    t.Id, t.WorkspaceId, t.Amount, t.Type.ToString(),
+                    t.ReferenceId, t.ReferenceType, t.CreatedBy, t.CreatedAt))
                 .ToListAsync(ct);
 
-            var items = transactions.Select(MapToDto).ToList();
-
-            var response = new PaginatedResponse<TransactionDto>(
-                items,
-                pageNumber,
-                pageSize,
-                totalCount,
-                totalPages);
-
-            _logger.LogInformation(
-                "Retrieved {ItemCount} payment transactions for workspace {WorkspaceId}",
-                items.Count, workspaceId);
-
+            var totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
+            var response = new PaginatedResponse<TokenTransactionDto>(items, pageNumber, pageSize, totalCount, totalPages);
             return Result.Success(response);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _logger.LogError(ex, "Error fetching transaction history for workspace {WorkspaceId}", workspaceId);
-            return Result.Failure<PaginatedResponse<TransactionDto>>(
-                "Failed to fetch transaction history",
-                BillingErrorCodes.SERVICE_UNAVAILABLE);
+            return Result.Failure<PaginatedResponse<TokenTransactionDto>>("Failed to fetch token history", BillingErrorCodes.SERVICE_UNAVAILABLE);
         }
     }
 
-    // ===== PRIVATE HELPERS =====
-
-    private SubscriptionDto MapToDto(Subscription subscription)
+    /// <summary>Get transaction history with pagination</summary>
+    public async Task<Result<PaginatedResponse<TransactionDto>>> GetTransactionHistoryAsync(Guid workspaceId, int pageNumber = 1, int pageSize = 50, CancellationToken ct = default)
     {
-        return new SubscriptionDto(
-            subscription.Id,
-            subscription.WorkspaceId,
-            subscription.PlanId,
-            subscription.Status.ToString(),
-            subscription.CurrentCredits,
-            subscription.StartDate,
-            subscription.EndDate,
-            subscription.CreatedAt);
+        if (workspaceId == Guid.Empty)
+            return Result.Failure<PaginatedResponse<TransactionDto>>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
+        if (pageNumber < 1 || pageSize < 1 || pageSize > 200)
+            return Result.Failure<PaginatedResponse<TransactionDto>>("Invalid pagination parameters", BillingErrorCodes.VALIDATION_FAILED);
+
+        try
+        {
+            var query = _uow.TransactionsRepository.Query()
+                .Where(t => t.WorkspaceId == workspaceId)
+                .OrderByDescending(t => t.CreatedAt);
+
+            var totalCount = await query.CountAsync(ct);
+            var items = await query
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .Select(t => new TransactionDto(
+                    t.Id, t.WorkspaceId, t.SubscriptionId, t.Amount,
+                    t.Status.ToString(), t.ExternalId, t.CreatedBy, t.CreatedAt))
+                .ToListAsync(ct);
+
+            var totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
+            var response = new PaginatedResponse<TransactionDto>(items, pageNumber, pageSize, totalCount, totalPages);
+            return Result.Success(response);
+        }
+        catch (Exception)
+        {
+            return Result.Failure<PaginatedResponse<TransactionDto>>("Failed to fetch transaction history", BillingErrorCodes.SERVICE_UNAVAILABLE);
+        }
     }
 
-    private CreditTransactionDto MapToDto(CreditTransaction tx)
-    {
-        return new CreditTransactionDto(
-            tx.Id,
-            tx.WorkspaceId,
-            tx.Amount,
-            tx.Type.ToString(),
-            tx.ReferenceId,
-            tx.ReferenceType?.ToString(),
-            tx.CreatedAt);
-    }
+    /// <summary>Map subscription entity to DTO</summary>
+    private SubscriptionDto MapToDto(Subscription subscription) =>
+        new(subscription.Id, subscription.WorkspaceId, subscription.PlanId,
+            subscription.Status.ToString(), subscription.CurrentTokens,
+            subscription.StartDate, subscription.EndDate,
+            subscription.Duration, subscription.Tier, subscription.CreatedAt);
+}
 
-    private TransactionDto MapToDto(Transaction tx)
-    {
-        return new TransactionDto(
-            tx.Id,
-            tx.WorkspaceId,
-            tx.SubscriptionId,
-            tx.Amount,
-            tx.Status.ToString(),
-            tx.ExternalId,
-            tx.CreatedAt);
-    }
+// Backward-compatibility adapter while centralizing real values in WarpTalk.Shared.ErrorCodes.
+internal static class BillingErrorCodes
+{
+    public const string SUBSCRIPTION_NOT_FOUND = ErrorCodes.BillingSubscriptionNotFound;
+    public const string INSUFFICIENT_CREDITS = ErrorCodes.BillingInsufficientCredits;
+    public const string SUBSCRIPTION_ALREADY_ACTIVE = ErrorCodes.BillingSubscriptionAlreadyActive;
+    public const string PLAN_NOT_FOUND = ErrorCodes.BillingPlanNotFound;
+    public const string VALIDATION_FAILED = ErrorCodes.BillingValidationFailed;
+    public const string SERVICE_UNAVAILABLE = ErrorCodes.BillingServiceUnavailable;
+    public const string INVALID_WORKSPACE_ID = ErrorCodes.BillingValidationFailed;
+    public const string INVALID_AMOUNT = ErrorCodes.BillingValidationFailed;
 }

@@ -18,7 +18,7 @@ public partial class BillingDbContext : DbContext
 
     public virtual DbSet<Transaction> Transactions { get; set; }
 
-    public virtual DbSet<CreditTransaction> CreditTransactions { get; set; }
+    public virtual DbSet<TokenTransaction> TokenTransactions { get; set; }
 
     public virtual DbSet<IdempotencyRecord> IdempotencyRecords { get; set; }
 
@@ -37,14 +37,14 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v7()")
                 .HasColumnName("id");
-            entity.Property(e => e.CreditsPerMonth)
-                .HasColumnName("credits_per_month");
+            entity.Property(e => e.TokensPerMonth)
+                .HasColumnName("tokens_per_month");
             entity.Property(e => e.Name)
                 .HasMaxLength(50)
                 .HasColumnName("name");
-            entity.Property(e => e.Price)
+            entity.Property(e => e.PricePerMonth)
                 .HasPrecision(18, 2)
-                .HasColumnName("price");
+                .HasColumnName("price_per_month");
         });
 
         modelBuilder.Entity<Subscription>(entity =>
@@ -67,15 +67,20 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v7()")
                 .HasColumnName("id");
-            entity.Property(e => e.CurrentCredits)
+            entity.Property(e => e.CurrentTokens)
                 .HasDefaultValue(0)
-                .HasColumnName("current_credits");
+                .HasColumnName("current_tokens");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
             entity.Property(e => e.EndDate).HasColumnName("end_date");
             entity.Property(e => e.PlanId).HasColumnName("plan_id");
-
+            entity.Property(e => e.Duration)
+                .HasMaxLength(10)
+                .HasColumnName("duration");
+            entity.Property(e => e.Tier)
+                .HasMaxLength(20)
+                .HasColumnName("tier");
             entity.Property(e => e.StartDate)
                 .IsRequired()
                 .HasColumnName("start_date");
@@ -115,6 +120,9 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy)
+                .HasMaxLength(255)
+                .HasColumnName("created_by");
             entity.Property(e => e.ExternalId)
                 .HasMaxLength(255)
                 .HasColumnName("external_id");
@@ -132,20 +140,20 @@ public partial class BillingDbContext : DbContext
                 .HasConstraintName("transactions_subscription_id_fkey");
         });
 
-        modelBuilder.Entity<CreditTransaction>(entity =>
+        modelBuilder.Entity<TokenTransaction>(entity =>
         {
-            entity.HasKey(e => e.Id).HasName("credit_transactions_pkey");
+            entity.HasKey(e => e.Id).HasName("token_transactions_pkey");
 
-            entity.ToTable("credit_transactions", "billing", t => t.HasCheckConstraint(
-                "chk_credit_transactions_reference_type",
-                "reference_type IS NULL OR reference_type IN ('Subscription', 'Transaction', 'Session', 'Manual')"));
+            entity.ToTable("token_transactions", "billing", t => t.HasCheckConstraint(
+                "chk_token_transactions_type",
+                "type IN ('TopUp', 'Consume', 'Adjustment', 'Expire', 'Refund')"));
 
-            entity.HasIndex(e => e.WorkspaceId, "idx_credit_transactions_workspace");
+            entity.HasIndex(e => e.WorkspaceId, "idx_token_transactions_workspace");
 
             entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt })
-                .HasDatabaseName("idx_credit_transactions_workspace_created");
+                .HasDatabaseName("idx_token_transactions_workspace_created");
 
-            entity.HasIndex(e => e.ReferenceId, "idx_credit_transactions_reference");
+            entity.HasIndex(e => e.ReferenceId, "idx_token_transactions_reference");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v7()")
@@ -155,11 +163,13 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy)
+                .HasMaxLength(255)
+                .HasColumnName("created_by");
             entity.Property(e => e.ReferenceId)
                 .HasColumnName("reference_id");
             entity.Property(e => e.ReferenceType)
                 .HasMaxLength(50)
-                .HasConversion<string>()
                 .HasColumnName("reference_type");
             entity.Property(e => e.Type)
                 .HasMaxLength(20)

@@ -4,10 +4,10 @@ namespace WarpTalk.BillingService.Domain.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
-    IGenericRepository<Plan> Plans { get; }
-    IGenericRepository<Subscription> Subscriptions { get; }
-    IGenericRepository<Transaction> Transactions { get; }
-    IGenericRepository<CreditTransaction> CreditTransactions { get; }
-    IIdempotencyRepository IdempotencyRecords { get; }
+    IGenericRepository<Plan> PlansRepository { get; }
+    IGenericRepository<Subscription> SubscriptionsRepository { get; }
+    IGenericRepository<Transaction> TransactionsRepository { get; }
+    IGenericRepository<TokenTransaction> TokenTransactionsRepository { get; }
+    IIdempotencyRepository IdempotencyRecordsRepository { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

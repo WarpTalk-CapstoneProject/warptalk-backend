@@ -4,7 +4,7 @@ using WarpTalk.Shared;
 namespace WarpTalk.BillingService.Application.Interfaces;
 
 /// <summary>
-/// Billing service interface for subscription, credit, and transaction management.
+/// Billing service interface for subscription, token, and transaction management.
 /// </summary>
 public interface IBillingService
 {
@@ -14,26 +14,26 @@ public interface IBillingService
 
     // --- SUBSCRIPTIONS ---
     /// <summary>Create a new subscription for workspace</summary>
-    Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default);
+    Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, string duration = "1mo", string tier = "Premium", CancellationToken ct = default);
 
     /// <summary>Get active subscription for workspace</summary>
     Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(Guid workspaceId, CancellationToken ct = default);
 
-    /// <summary>Get current credits balance for workspace</summary>
-    Task<Result<WorkspaceCreditsDto>> GetWorkspaceCreditsAsync(Guid workspaceId, CancellationToken ct = default);
+    /// <summary>Get current token balance for workspace</summary>
+    Task<Result<WorkspaceTokensDto>> GetWorkspaceTokensAsync(Guid workspaceId, CancellationToken ct = default);
 
-    /// <summary>Cancel workspace subscription</summary>
-    Task<Result<WorkspaceCreditsDto>> CancelSubscriptionAsync(Guid workspaceId, string? reason = null, CancellationToken ct = default);
+    /// <summary>Cancel workspace subscription - returns only status code</summary>
+    Task<Result<string>> CancelSubscriptionAsync(Guid workspaceId, string? reason = null, CancellationToken ct = default);
 
-    // --- CREDIT MANAGEMENT ---
-    /// <summary>Top-up credits (admin only or via payment)</summary>
-    Task<Result<WorkspaceCreditsDto>> TopUpCreditsAsync(Guid workspaceId, int amount, string referenceType = "topup", Guid? referenceId = null, CancellationToken ct = default);
+    // --- TOKEN MANAGEMENT ---
+    /// <summary>Top-up tokens - returns new token count</summary>
+    Task<Result<int>> TopUpTokensAsync(Guid workspaceId, int amount, string? referenceType = null, Guid? referenceId = null, CancellationToken ct = default);
 
-    /// <summary>Consume credits for service usage</summary>
-    Task<Result<WorkspaceCreditsDto>> ConsumeCreditsAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default);
+    /// <summary>Consume tokens for service usage</summary>
+    Task<Result<int>> ConsumeTokensAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default);
 
-    /// <summary>Get credit transaction history</summary>
-    Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(Guid workspaceId, int pageNumber = 1, int pageSize = 50, CancellationToken ct = default);
+    /// <summary>Get token transaction history</summary>
+    Task<Result<PaginatedResponse<TokenTransactionDto>>> GetTokenHistoryAsync(Guid workspaceId, int pageNumber = 1, int pageSize = 50, CancellationToken ct = default);
 
     // --- TRANSACTIONS ---
     /// <summary>Get payment transaction history</summary>

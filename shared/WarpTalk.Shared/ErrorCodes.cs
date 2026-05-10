@@ -27,4 +27,13 @@ public static class ErrorCodes
 
     // ── Notification ─────────────────────────────────────
     public const string PreferencesNotFound = "PREFERENCES_NOT_FOUND";
+
+    // ── Billing ───────────────────────────────────────────
+    public const string BillingSubscriptionNotFound = "BILLING_SUBSCRIPTION_NOT_FOUND";
+    public const string BillingInsufficientCredits = "BILLING_INSUFFICIENT_CREDITS";
+    public const string BillingSubscriptionAlreadyActive = "BILLING_SUBSCRIPTION_ALREADY_ACTIVE";
+    public const string BillingPlanNotFound = "BILLING_PLAN_NOT_FOUND";
+    public const string BillingConcurrencyConflict = "BILLING_CONCURRENCY_CONFLICT";
+    public const string BillingValidationFailed = "BILLING_VALIDATION_FAILED";
+    public const string BillingServiceUnavailable = "BILLING_SERVICE_UNAVAILABLE";
 }

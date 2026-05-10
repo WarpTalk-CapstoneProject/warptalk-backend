@@ -1,22 +1,23 @@
 using System.Security.Cryptography;
 using System.Text;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 
-namespace WarpTalk.BillingService.API.Services;
+namespace WarpTalk.BillingService.Application.Services;
 
-public class PersistentIdempotencyService : IIdempotencyService
+public class PersistentIdempotencyServices : IIdempotencyService
 {
     private readonly IUnitOfWork _unitOfWork;
 
-    public PersistentIdempotencyService(IUnitOfWork unitOfWork)
+    public PersistentIdempotencyServices(IUnitOfWork unitOfWork)
     {
         _unitOfWork = unitOfWork;
     }
 
     public async Task<string?> GetResponseJsonAsync(string key, string operation, string requestHash, CancellationToken ct = default)
     {
-        var record = await _unitOfWork.IdempotencyRecords.GetAsync(key, operation, ct);
+        var record = await _unitOfWork.IdempotencyRecordsRepository.GetAsync(key, operation, ct);
         if (record is null || record.ExpiresAt <= DateTime.UtcNow)
             return null;
 
@@ -28,7 +29,7 @@ public class PersistentIdempotencyService : IIdempotencyService
 
     public async Task StoreResponseJsonAsync(string key, string operation, string requestHash, string responseJson, Guid? workspaceId = null, CancellationToken ct = default)
     {
-        var existing = await _unitOfWork.IdempotencyRecords.GetAsync(key, operation, ct);
+        var existing = await _unitOfWork.IdempotencyRecordsRepository.GetAsync(key, operation, ct);
         if (existing is not null)
         {
             if (!string.Equals(existing.RequestHash, requestHash, StringComparison.OrdinalIgnoreCase))
@@ -49,7 +50,7 @@ public class PersistentIdempotencyService : IIdempotencyService
             ExpiresAt = DateTime.UtcNow.AddDays(7)
         };
 
-        await _unitOfWork.IdempotencyRecords.AddAsync(record, ct);
+        await _unitOfWork.IdempotencyRecordsRepository.AddAsync(record, ct);
         await _unitOfWork.SaveChangesAsync(ct);
     }
 

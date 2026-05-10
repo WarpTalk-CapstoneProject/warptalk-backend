@@ -1,15 +1,16 @@
 using System.Security.Claims;
-using Grpc.Core;
-using Grpc.Net.Client;
+using WarpTalk.BillingService.Application.Interfaces;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
-namespace WarpTalk.BillingService.API.Services;
+namespace WarpTalk.BillingService.Application.Services;
 
-public class WorkspaceValidationService : IWorkspaceValidationService, IDisposable
+public class WorkspaceValidationServices : IWorkspaceValidationService
 {
     private readonly IConfiguration _config;
-    private readonly ILogger<WorkspaceValidationService> _logger;
+    private readonly ILogger<WorkspaceValidationServices> _logger;
 
-    public WorkspaceValidationService(IConfiguration config, ILogger<WorkspaceValidationService> logger)
+    public WorkspaceValidationServices(IConfiguration config, ILogger<WorkspaceValidationServices> logger)
     {
         _config = config;
         _logger = logger;
@@ -21,18 +22,18 @@ public class WorkspaceValidationService : IWorkspaceValidationService, IDisposab
             throw new ArgumentException("Workspace ID cannot be empty", nameof(workspaceId));
 
         // Skip validation if configured (e.g., for local dev/testing)
-        if (_config.GetValue<bool>("BILLING_SKIP_WORKSPACE_VALIDATION", false))
+        if (bool.TryParse(_config["BILLING_SKIP_WORKSPACE_VALIDATION"], out var skipValidation) && skipValidation)
         {
             _logger.LogInformation("Workspace validation skipped for {WorkspaceId}", workspaceId);
             return;
         }
 
-        var userId = user?.FindFirstValue(ClaimTypes.NameIdentifier) ?? user?.FindFirstValue("sub");
+        var userId = user?.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user?.FindFirst("sub")?.Value;
         if (user?.Identity?.IsAuthenticated != true || string.IsNullOrWhiteSpace(userId))
             throw new UnauthorizedAccessException("User not authenticated");
 
         // For local development: if gRPC endpoint not configured, allow all authenticated users
-        var grpcEndpoint = _config.GetValue<string>("Auth:GrpcEndpoint");
+        var grpcEndpoint = _config["Auth:GrpcEndpoint"];
         if (string.IsNullOrWhiteSpace(grpcEndpoint))
         {
             _logger.LogWarning("Auth:GrpcEndpoint not configured, allowing all authenticated users for workspace {WorkspaceId}", workspaceId);
@@ -42,10 +43,5 @@ public class WorkspaceValidationService : IWorkspaceValidationService, IDisposab
         // In production, validate via gRPC (TODO: implement when protos available)
         _logger.LogInformation("User {UserId} accessing workspace {WorkspaceId}", userId, workspaceId);
         await Task.CompletedTask; // Placeholder for actual gRPC call
-    }
-
-    public void Dispose()
-    {
-        // No resources to dispose
     }
 }
