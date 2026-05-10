@@ -9,7 +9,7 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
 {
     public CreateAdminNotificationValidator()
     {
-        // Title & Content
+       
         RuleFor(x => x.Title)
             .NotEmpty()
             .MaximumLength(255);
@@ -20,7 +20,7 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
             .WithErrorCode(NotificationConstants.ErrorHtmlNotAllowed)
             .WithMessage("HTML tags are not allowed in notification content.");
 
-        // Type
+        
         RuleFor(x => x.Type)
             .NotEmpty()
             .Must(type => type == NotificationConstants.TypePromotion || 
@@ -29,7 +29,7 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
                           type == NotificationConstants.TypeMaintenance)
             .WithMessage("Invalid notification type.");
 
-        // Target Audience Mode
+        
         RuleFor(x => x.TargetAudienceMode)
             .NotEmpty()
             .Must(mode => mode == NotificationConstants.TargetModeBroadcast || 

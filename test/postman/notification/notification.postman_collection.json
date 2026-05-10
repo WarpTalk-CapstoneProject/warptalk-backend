@@ -15,6 +15,40 @@
           "name": "1. Happy Path",
           "item": [
             {
+              "name": "Register Account",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"fullName\": \"Test User\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/auth/register",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "register"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
               "name": "Login & Auto-Set Token",
               "event": [
                 {
@@ -47,7 +81,12 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+                  "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
                 },
                 "url": {
                   "raw": "{{gatewayBaseUrl}}/api/v1/auth/login",
@@ -336,6 +375,236 @@
                     "api",
                     "v1",
                     "notifications"
+                  ]
+                }
+              },
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Admin Happy Path",
+          "item": [
+            {
+              "name": "Register Admin Account",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\",\n  \"fullName\": \"Admin User\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/auth/register",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "register"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Login Admin & Auto-Set Token",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\\\"Status code is 200\\\", function () {",
+                      "    pm.response.to.have.status(200);",
+                      "});",
+                      "if (pm.response.code === 200) {",
+                      "    var json = pm.response.json();",
+                      "    var token = json.accessToken || json.token;",
+                      "    if (token) {",
+                      "        pm.collectionVariables.set(\\\"adminAccessToken\\\", token);",
+                      "        console.log(\\\"Admin Token acquired and saved automatically!\\\");",
+                      "    }",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/auth/login",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "login"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Admin - Create Notification (Happy Path)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 201\", function () { pm.response.to.have.status(201); });",
+                      "if (pm.response.code === 201) {",
+                      "    var jsonData = pm.response.json();",
+                      "    pm.collectionVariables.set(\"adminNotificationId\", jsonData.id);",
+                      "}"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminAccessToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Postman E2E Test\",\n  \"content\": \"Testing from Postman!\",\n  \"type\": \"PROMOTION\",\n  \"targetAudienceMode\": \"SPECIFIC_USERS\",\n  \"specificUserIds\": [\"00000000-0000-0000-0000-000000000001\"],\n  \"imageUrl\": \"https://warptalk.vn/images/postman.png\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/admin/notifications",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "admin",
+                    "notifications"
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Admin - Get Notifications List",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminAccessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/admin/notifications?page=1&pageSize=10",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "admin",
+                    "notifications"
+                  ],
+                  "query": [
+                    {
+                      "key": "page",
+                      "value": "1"
+                    },
+                    {
+                      "key": "pageSize",
+                      "value": "10"
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Admin - Get Notification Detail",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "exec": [
+                      "pm.test(\"Status code is 200\", function () { pm.response.to.have.status(200); });"
+                    ],
+                    "type": "text/javascript"
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{adminAccessToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{gatewayBaseUrl}}/api/v1/admin/notifications/{{adminNotificationId}}",
+                  "host": [
+                    "{{gatewayBaseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "v1",
+                    "admin",
+                    "notifications",
+                    "{{adminNotificationId}}"
                   ]
                 }
               },
@@ -805,6 +1074,18 @@
     {
       "key": "notificationId",
       "value": ""
+    },
+    {
+      "key": "adminAccessToken",
+      "value": ""
+    },
+    {
+      "key": "adminEmail",
+      "value": "admin@warptalk.vn"
+    },
+    {
+      "key": "adminPassword",
+      "value": "Admin@123"
     }
   ]
 }
