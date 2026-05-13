@@ -1,7 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
-namespace WarpTalk.TranslationRoomService.Infrastructure;
+namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
 public partial class TranslationRoomAudioRoute
 {
@@ -25,9 +25,10 @@ public partial class TranslationRoomAudioRoute
 
     public DateTime CreatedAt { get; set; }
 
-    public virtual TranslationRoom TranslationRoom { get; set; } = null!;
-
     public virtual TranslationRoomParticipant SourceParticipant { get; set; } = null!;
 
     public virtual TranslationRoomParticipant TargetParticipant { get; set; } = null!;
+
+    public virtual TranslationRoom TranslationRoom { get; set; } = null!;
 }
+

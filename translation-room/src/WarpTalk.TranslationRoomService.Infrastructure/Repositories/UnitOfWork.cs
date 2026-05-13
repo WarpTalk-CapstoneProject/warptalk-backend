@@ -8,7 +8,18 @@ public class UnitOfWork : IUnitOfWork
     private readonly TranslationRoomDbContext _context;
     private readonly Dictionary<Type, object> _repositories = new();
 
-    public UnitOfWork(TranslationRoomDbContext context) => _context = context;
+    public ITranslationRoomRepository TranslationRoomRepository { get; }
+    public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
+
+    public UnitOfWork(
+        TranslationRoomDbContext context, 
+        ITranslationRoomRepository translationRoomRepository,
+        ITranslationRoomParticipantRepository translationRoomParticipantRepository)
+    {
+        _context = context;
+        TranslationRoomRepository = translationRoomRepository;
+        TranslationRoomParticipantRepository = translationRoomParticipantRepository;
+    }
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

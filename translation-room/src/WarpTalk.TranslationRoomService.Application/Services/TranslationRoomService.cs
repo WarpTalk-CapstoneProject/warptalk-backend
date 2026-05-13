@@ -1,150 +1,97 @@
-using WarpTalk.TranslationRoomService.Application.DTOs;
-using WarpTalk.TranslationRoomService.Application.Interfaces;
-using WarpTalk.TranslationRoomService.Domain.Interfaces;
-using WarpTalk.TranslationRoomService.Infrastructure;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Helpers;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
 
 public class TranslationRoomService : ITranslationRoomService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ITranslationRoomRepository _translationRoomRepository;
+    private readonly ITranslationRoomParticipantRepository _participantRepository;
 
     public TranslationRoomService(IUnitOfWork unitOfWork)
     {
         _unitOfWork = unitOfWork;
+        _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
+        _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
     }
 
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
     {
-        var targetLangsJson = string.IsNullOrWhiteSpace(request.TargetLanguages) 
-            ? "[]" 
-            : (request.TargetLanguages.Trim().StartsWith("[") 
-                ? request.TargetLanguages 
-                : System.Text.Json.JsonSerializer.Serialize(request.TargetLanguages.Split(new[] {','}, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim())));
+        // 1. Determine initial status
+        var status = request.ScheduledAt.HasValue ? RoomStatus.Scheduled : RoomStatus.Waiting;
 
-        var translationRoom = new TranslationRoom
+        // 2. Generate unique 12-char alphanumeric TranslationRoomCode
+        string roomCode;
+        bool exists;
+        do
         {
-            Id = Guid.NewGuid(),
-            WorkspaceId = request.WorkspaceId ?? Guid.Empty,
-            HostId = hostId,
-            Title = request.Title,
-            Description = request.Description,
-            TranslationRoomCode = GenerateTranslationRoomCode(),
-            Status = "scheduled",
-            TranslationRoomType = request.TranslationRoomType.ToString(),
-            MaxParticipants = request.MaxParticipants,
-            SourceLanguage = request.SourceLanguage,
-            TargetLanguages = targetLangsJson,
-            Settings = "{}",
-            ScheduledAt = request.ScheduledAt,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
+            roomCode = RoomCodeGenerator.GenerateCode();
+            exists = await _translationRoomRepository.ExistsByCodeAsync(roomCode, ct);
+        } while (exists);
 
-        var repo = _unitOfWork.Repository<TranslationRoom>();
-        await repo.AddAsync(translationRoom);
-        await _unitOfWork.SaveChangesAsync(); // Assumes IUnitOfWork SaveChangesAsync doesn't strictly require CT, or we pass nothing if not implemented
+        // 3. Create entity
+        var room = TranslationRoomMapper.ToEntity(request, hostId, roomCode, status);
 
-        return Result.Success(MapToDto(translationRoom));
+        // 4. Save via repository and UnitOfWork
+        await _translationRoomRepository.AddAsync(room, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // 5. Return mapped response
+        return Result.Success(TranslationRoomMapper.ToResponseDto(room));
     }
 
     public async Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<TranslationRoom>();
-        var translationRoom = await repo.GetByIdAsync(translationRoomId);
+        var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         
         if (translationRoom == null)
-            return Result.Failure<TranslationRoomDto>("TranslationRoom not found", ErrorCodes.NotFound);
+            return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorMessages.RoomNotFound, ErrorCodes.NotFound);
 
-        return Result.Success(MapToDto(translationRoom));
+        return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom));
     }
 
     public async Task<Result<TranslationRoomParticipantDto>> JoinTranslationRoomAsync(Guid translationRoomId, Guid userId, JoinTranslationRoomRequest request, CancellationToken ct = default)
     {
-        var translationRoomRepo = _unitOfWork.Repository<TranslationRoom>();
-        var translationRoom = await translationRoomRepo.GetByIdAsync(translationRoomId);
-        if (translationRoom == null || translationRoom.Status == "ended")
-            return Result.Failure<TranslationRoomParticipantDto>("TranslationRoom not active or found", ErrorCodes.NotFound);
+        var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (translationRoom == null || translationRoom.Status == RoomStatus.Ended)
+            return Result.Failure<TranslationRoomParticipantDto>(TranslationRoomConstants.ErrorMessages.RoomNotActive, ErrorCodes.TranslationRoomNotActive);
 
-        var participant = new TranslationRoomParticipant
-        {
-            Id = Guid.NewGuid(),
-            TranslationRoomId = translationRoomId,
-            UserId = userId,
-            DisplayName = request.DisplayName,
-            Role = "participant",
-            ListenLanguage = request.ListenLanguage,
-            SpeakLanguage = request.SpeakLanguage,
-            Status = "connected",
-            JoinedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
+        var participant = TranslationRoomMapper.ToParticipantEntity(translationRoomId, userId, request);
 
-        var participantRepo = _unitOfWork.Repository<TranslationRoomParticipant>();
-        await participantRepo.AddAsync(participant);
-        await _unitOfWork.SaveChangesAsync();
+        await _participantRepository.AddAsync(participant, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
 
-        return Result.Success(new TranslationRoomParticipantDto(
-            participant.Id,
-            participant.TranslationRoomId,
-            participant.UserId,
-            participant.DisplayName,
-            participant.Role,
-            participant.ListenLanguage,
-            participant.SpeakLanguage,
-            participant.Status,
-            participant.JoinedAt
-        ));
+        return Result.Success(TranslationRoomMapper.ToParticipantDto(participant));
     }
 
     public async Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<TranslationRoom>();
-        var translationRoom = await repo.GetByIdAsync(translationRoomId);
+        var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         
         if (translationRoom == null)
-            return Result.Failure("TranslationRoom not found", ErrorCodes.NotFound);
+            return Result.Failure(TranslationRoomConstants.ErrorMessages.RoomNotFound, ErrorCodes.NotFound);
 
         if (translationRoom.HostId != hostId)
-            return Result.Failure("Unauthorized. Only host can end translationRoom.", ErrorCodes.Unauthorized);
+            return Result.Failure(TranslationRoomConstants.ErrorMessages.UnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
-        translationRoom.Status = "ended";
+        translationRoom.Status = RoomStatus.Ended;
         translationRoom.EndedAt = DateTime.UtcNow;
         translationRoom.UpdatedAt = DateTime.UtcNow;
 
-        repo.Update(translationRoom);
-        await _unitOfWork.SaveChangesAsync();
+        _translationRoomRepository.Update(translationRoom);
+        await _unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success();
-    }
-
-    private string GenerateTranslationRoomCode()
-    {
-        var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        var random = new Random();
-        var code = new string(Enumerable.Repeat(chars, 9)
-            .Select(s => s[random.Next(s.Length)]).ToArray());
-        return $"{code.Substring(0, 3)}-{code.Substring(3, 3)}-{code.Substring(6, 3)}";
-    }
-
-    private TranslationRoomDto MapToDto(TranslationRoom translationRoom)
-    {
-        return new TranslationRoomDto(
-            translationRoom.Id,
-            translationRoom.WorkspaceId,
-            translationRoom.HostId,
-            translationRoom.Title,
-            translationRoom.Description,
-            translationRoom.TranslationRoomCode,
-            translationRoom.Status,
-            Enum.Parse<TranslationRoomType>(translationRoom.TranslationRoomType, true),
-            translationRoom.MaxParticipants,
-            translationRoom.ScheduledAt,
-            translationRoom.StartedAt,
-            translationRoom.EndedAt,
-            translationRoom.CreatedAt
-        );
     }
 }

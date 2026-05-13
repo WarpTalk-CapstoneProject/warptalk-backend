@@ -2,29 +2,29 @@ using Grpc.Core;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
-using WarpTalk.TranslationRoomService.Infrastructure;
+using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.API.GrpcServices;
 
 public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.TranslationRoomServiceBase
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly ITranslationRoomRepository _repository;
 
-    public TranslationRoomGrpcService(IUnitOfWork unitOfWork)
+    public TranslationRoomGrpcService(ITranslationRoomRepository repository)
     {
-        _unitOfWork = unitOfWork;
+        _repository = repository;
     }
 
     public override async Task<GetTranslationRoomResponse> GetTranslationRoomById(GetTranslationRoomRequest request, ServerCallContext context)
     {
         if (!Guid.TryParse(request.Id, out var parsedId))
-            throw GrpcErrors.InvalidId("TranslationRoom");
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.ErrorMessages.EntityTranslationRoom);
 
-        var repo = _unitOfWork.Repository<TranslationRoom>();
-        var translationRoom = await repo.GetByIdAsync(parsedId);
+        var translationRoom = await _repository.GetByIdAsync(parsedId);
 
         if (translationRoom is null)
-            throw GrpcErrors.NotFound("TranslationRoom", request.Id);
+            throw GrpcErrors.NotFound(TranslationRoomConstants.ErrorMessages.EntityTranslationRoom, request.Id);
 
         return new GetTranslationRoomResponse
         {

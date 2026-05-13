@@ -1,7 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
-namespace WarpTalk.TranslationRoomService.Infrastructure;
+namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
 public partial class TranslationRoomRecording
 {
@@ -27,3 +27,4 @@ public partial class TranslationRoomRecording
 
     public virtual TranslationRoom TranslationRoom { get; set; } = null!;
 }
+
