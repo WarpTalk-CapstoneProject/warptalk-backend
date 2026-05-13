@@ -15,7 +15,7 @@ using WarpTalk.Shared.Models;
 using WarpTalk.NotificationService.Application.Mappers;
 
 namespace WarpTalk.NotificationService.API.HostedServices;
-
+//Background worker to connect to redis streams as a consumer group/
 public class NotificationStreamConsumerService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
@@ -40,7 +40,7 @@ public class NotificationStreamConsumerService : BackgroundService
     {
         var db = _redis.GetDatabase();
 
-        // Create Consumer Group if it doesn't exist
+       
         try
         {
             await db.StreamCreateConsumerGroupAsync(StreamName, ConsumerGroupName, "0-0", createStream: true);
@@ -57,7 +57,7 @@ public class NotificationStreamConsumerService : BackgroundService
         {
             try
             {
-                // Read new messages for the consumer group. ">" means read undelivered messages.
+                // 2. Read new messages for the consumer group. ">" means read undelivered messages.
                 var messages = await db.StreamReadGroupAsync(
                     StreamName, 
                     ConsumerGroupName, 
@@ -81,7 +81,7 @@ public class NotificationStreamConsumerService : BackgroundService
 
                     await ProcessChunkAsync(payload, db, stoppingToken);
 
-                    // Acknowledge the message
+                    // 3. Acknowledge the message
                     await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, message.Id);
                     _logger.LogInformation("Acknowledged message {MessageId}.", message.Id);
                 }
@@ -103,6 +103,7 @@ public class NotificationStreamConsumerService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
+        // 1. Get the admin notification
         var adminNotif = await unitOfWork.AdminNotificationRepository.GetByIdAsync(payload.NotificationId, ct);
         if (adminNotif == null)
         {
@@ -110,6 +111,7 @@ public class NotificationStreamConsumerService : BackgroundService
             return;
         }
 
+        // 2. Resolve users
         Guid[] targetUserIds = Array.Empty<Guid>();
 
         if (payload.TargetAudienceMode == NotificationConstants.TargetModeSpecificUsers && payload.SpecificUserIds != null)
@@ -131,14 +133,16 @@ public class NotificationStreamConsumerService : BackgroundService
 
         if (!targetUserIds.Any()) return;
 
+        // 3. Create NotificationMessage entities
         var messagesToInsert = targetUserIds.Select(userId => NotificationMessageMapper.ToEntity(adminNotif, userId)).ToList();
 
+        // 4. Bulk Insert
         await unitOfWork.NotificationMessageRepository.AddRangeAsync(messagesToInsert);
         await unitOfWork.SaveChangesAsync();
         
         _logger.LogInformation("Saved {Count} notification messages to inbox for Notification {AdminNotifId}.", messagesToInsert.Count, adminNotif.Id);
 
-        // Fan-out via Redis Pub/Sub for Realtime Delivery
+        // 5. Fan-out via Redis Pub/Sub for Realtime Delivery
         foreach (var msg in messagesToInsert)
         {
             var realtimeMsg = NotificationMessageMapper.ToRealtimeDto(msg);
