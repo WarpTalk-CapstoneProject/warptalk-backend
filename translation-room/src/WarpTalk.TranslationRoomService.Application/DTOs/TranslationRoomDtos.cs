@@ -1,10 +1,11 @@
+using System.ComponentModel.DataAnnotations;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Application.DTOs;
 
 public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
-    string Title,
+    [MaxLength(255)] string Title,
     string? Description,
     TranslationRoomType TranslationRoomType, // e.g., Instant, Scheduled
     int MaxParticipants,
@@ -23,9 +24,9 @@ public record TranslationRoomDto(
     Guid Id,
     Guid WorkspaceId,
     Guid HostId,
-    string Title,
+    [MaxLength(255)] string Title,
     string? Description,
-    string TranslationRoomCode,
+    [StringLength(12)] string TranslationRoomCode,
     string Status,
     TranslationRoomType TranslationRoomType,
     int MaxParticipants,
@@ -40,9 +41,9 @@ public record TranslationRoomParticipantDto(
     Guid TranslationRoomId,
     Guid UserId,
     string DisplayName,
-    string Role,
+    TranslationRoomParticipantRole Role,
     string ListenLanguage,
     string SpeakLanguage,
-    string Status,
+    TranslationRoomParticipantStatus Status,
     DateTime? JoinedAt
 );

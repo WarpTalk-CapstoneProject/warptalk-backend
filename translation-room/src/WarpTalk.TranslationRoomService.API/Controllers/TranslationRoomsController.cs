@@ -7,6 +7,7 @@ using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using FluentValidation;
+using WarpTalk.Shared;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -33,7 +34,7 @@ public class TranslationRoomsController : ControllerBase
         if (!validationResult.IsValid)
         {
             var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
-            return BadRequest(new WarpTalk.Shared.ApiErrorResponse(string.Join(" ", errors), WarpTalk.Shared.ErrorCodes.ValidationError));
+            return BadRequest(new ApiErrorResponse(string.Join(" ", errors), ErrorCodes.ValidationError));
         }
 
         // Extract HostId from JWT claims (Assuming NameIdentifier or sub)
@@ -42,18 +43,18 @@ public class TranslationRoomsController : ControllerBase
 
         if (!Guid.TryParse(userIdClaim, out var hostId))
         {
-            return Unauthorized(new WarpTalk.Shared.ApiErrorResponse(
-                WarpTalk.Shared.ApiMessageConstants.ErrorMessages.UnauthorizedTokenDetail, 
-                WarpTalk.Shared.ErrorCodes.Unauthorized));
+            return Unauthorized(new ApiErrorResponse(
+                ApiMessageConstants.ErrorMessages.UnauthorizedTokenDetail, 
+                ErrorCodes.Unauthorized));
         }
 
         
         var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId);
 
         if (!result.IsSuccess)
-            return BadRequest(new WarpTalk.Shared.ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value.Id }, result.Value);
+        return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value!.Id }, result.Value);
     }
 
     [HttpGet("{id}")]
@@ -61,9 +62,9 @@ public class TranslationRoomsController : ControllerBase
     {
         var result = await _translationRoomService.GetTranslationRoomAsync(id, ct);
         if (!result.IsSuccess)
-            return NotFound(new WarpTalk.Shared.ApiErrorResponse(result.Error, result.ErrorCode));
+            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return Ok(result.Value);
+        return Ok(result.Value!);
     }
 
     [HttpPost("{id}/join")]
@@ -77,9 +78,9 @@ public class TranslationRoomsController : ControllerBase
 
         var result = await _translationRoomService.JoinTranslationRoomAsync(id, userId, request, ct);
         if (!result.IsSuccess)
-            return BadRequest(new WarpTalk.Shared.ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return Ok(result.Value);
+        return Ok(result.Value!);
     }
 
     [HttpPost("{id}/end")]
@@ -93,7 +94,7 @@ public class TranslationRoomsController : ControllerBase
 
         var result = await _translationRoomService.EndTranslationRoomAsync(id, hostId, ct);
         if (!result.IsSuccess)
-            return BadRequest(new WarpTalk.Shared.ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
         return NoContent();
     }

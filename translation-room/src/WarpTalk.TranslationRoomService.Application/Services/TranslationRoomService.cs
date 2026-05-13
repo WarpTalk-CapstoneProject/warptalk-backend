@@ -56,7 +56,7 @@ public class TranslationRoomService : ITranslationRoomService
         var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         
         if (translationRoom == null)
-            return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorMessages.RoomNotFound, ErrorCodes.NotFound);
+            return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
         return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom));
     }
@@ -65,7 +65,7 @@ public class TranslationRoomService : ITranslationRoomService
     {
         var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         if (translationRoom == null || translationRoom.Status == RoomStatus.Ended)
-            return Result.Failure<TranslationRoomParticipantDto>(TranslationRoomConstants.ErrorMessages.RoomNotActive, ErrorCodes.TranslationRoomNotActive);
+            return Result.Failure<TranslationRoomParticipantDto>(TranslationRoomConstants.ErrorRoomNotActive, ErrorCodes.TranslationRoomNotActive);
 
         var participant = TranslationRoomMapper.ToParticipantEntity(translationRoomId, userId, request);
 
@@ -80,10 +80,10 @@ public class TranslationRoomService : ITranslationRoomService
         var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
         
         if (translationRoom == null)
-            return Result.Failure(TranslationRoomConstants.ErrorMessages.RoomNotFound, ErrorCodes.NotFound);
+            return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
         if (translationRoom.HostId != hostId)
-            return Result.Failure(TranslationRoomConstants.ErrorMessages.UnauthorizedEndRoom, ErrorCodes.Unauthorized);
+            return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
         translationRoom.Status = RoomStatus.Ended;
         translationRoom.EndedAt = DateTime.UtcNow;

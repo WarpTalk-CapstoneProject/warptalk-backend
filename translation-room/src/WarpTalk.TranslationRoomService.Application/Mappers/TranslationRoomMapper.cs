@@ -52,10 +52,10 @@ public static class TranslationRoomMapper
             TranslationRoomId = translationRoomId,
             UserId = userId,
             DisplayName = request.DisplayName,
-            Role = TranslationRoomConstants.Roles.Participant,
+            Role = TranslationRoomParticipantRole.PARTICIPANT,
             ListenLanguage = request.ListenLanguage,
             SpeakLanguage = request.SpeakLanguage,
-            Status = TranslationRoomConstants.ParticipantStatus.Connected,
+            Status = TranslationRoomParticipantStatus.CONNECTED,
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

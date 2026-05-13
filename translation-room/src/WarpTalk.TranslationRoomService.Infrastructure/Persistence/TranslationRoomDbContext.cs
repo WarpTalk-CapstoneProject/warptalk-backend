@@ -244,6 +244,9 @@ public partial class TranslationRoomDbContext : DbContext
                 .IsFixedLength()
                 .HasColumnName("listen_language");
             entity.Property(e => e.Role)
+                .HasConversion(
+                    v => v.ToString().ToLowerInvariant(),
+                    v => Enum.Parse<WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomParticipantRole>(v, true))
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'participant'::character varying")
                 .HasColumnName("role");
@@ -252,6 +255,9 @@ public partial class TranslationRoomDbContext : DbContext
                 .IsFixedLength()
                 .HasColumnName("speak_language");
             entity.Property(e => e.Status)
+                .HasConversion(
+                    v => v.ToString().ToLowerInvariant(),
+                    v => Enum.Parse<WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomParticipantStatus>(v, true))
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'invited'::character varying")
                 .HasColumnName("status");

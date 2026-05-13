@@ -2,42 +2,22 @@ namespace WarpTalk.TranslationRoomService.Domain.Constants;
 
 public static class TranslationRoomConstants
 {
-    public const int MaxTitleLength = 255;
-    public const int TranslationRoomCodeLength = 12;
 
-    public static class ErrorMessages
-    {
-        public const string RoomNotFound = "TranslationRoom not found";
-        public const string RoomNotActive = "TranslationRoom not active or found";
-        public const string UnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
+    // Error Messages
+    public const string ErrorRoomNotFound = "TranslationRoom not found";
+    public const string ErrorRoomNotActive = "TranslationRoom not active or found";
+    public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
         
-        public const string FailedToCreateRoomTitle = "Failed to create room";
-        public const string FailedToJoinRoomTitle = "Failed to join translation room";
-        public const string FailedToEndRoomTitle = "Failed to end translation room";
+    public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
+    public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
+    public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
 
-        // gRPC
-        public const string EntityTranslationRoom = "TranslationRoom";
-    }
+    // gRPC
+    public const string EntityTranslationRoom = "TranslationRoom";
 
-    public static class ValidationMessages
-    {
-        public const string TitleRequired = "Title is required.";
-        public const string TitleMaxLength = "Title cannot exceed 255 characters.";
-        public const string SourceLanguageRequired = "Source language is required.";
-        public const string TargetLanguagesRequired = "Target languages are required.";
-        public const string MaxParticipantsGreaterThanZero = "Max participants must be strictly greater than 0.";
-        public const string ScheduledTimeMustBeFuture = "Scheduled time must be strictly greater than the current time.";
-    }
-
-    public static class Roles
-    {
-        public const string Participant = "participant";
-        public const string Host = "host";
-    }
-
-    public static class ParticipantStatus
-    {
-        public const string Connected = "connected";
-        public const string Disconnected = "disconnected";
-    }
+    // Validation Messages
+    public const string ValidationSourceLanguageRequired = "Source language is required.";
+    public const string ValidationTargetLanguagesRequired = "Target languages are required.";
+    public const string ValidationMaxParticipantsGreaterThanZero = "Max participants must be strictly greater than 0.";
+    public const string ValidationScheduledTimeMustBeFuture = "Scheduled time must be strictly greater than the current time.";
 }
