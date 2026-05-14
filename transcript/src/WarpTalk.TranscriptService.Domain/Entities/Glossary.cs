@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace WarpTalk.TranscriptService.Domain.Entities;
 
-public partial class Transcript
+public partial class Glossary
 {
     public Guid Id { get; set; }
 
@@ -12,18 +12,15 @@ public partial class Transcript
     /// </summary>
     public Guid WorkspaceId { get; set; }
 
-    /// <summary>
-    /// External TranslationRoomService room id. No physical FK.
-    /// </summary>
-    public Guid TranslationRoomId { get; set; }
+    public string Name { get; set; } = null!;
 
-    public int Version { get; set; }
+    public string? Description { get; set; }
 
     public string SourceLanguage { get; set; } = null!;
 
-    public int TotalSegments { get; set; }
+    public string TargetLanguage { get; set; } = null!;
 
-    public int TotalDurationMs { get; set; }
+    public int TermCount { get; set; }
 
     public bool IsActive { get; set; }
 
@@ -41,8 +38,6 @@ public partial class Transcript
     /// </summary>
     public Guid? UpdatedBy { get; set; }
 
-    public DateTime? FinalizedAt { get; set; }
-
     public DateTime? DeletedAt { get; set; }
 
     /// <summary>
@@ -50,7 +45,5 @@ public partial class Transcript
     /// </summary>
     public Guid? DeletedBy { get; set; }
 
-    public virtual ICollection<TranscriptExport> TranscriptExports { get; set; } = new List<TranscriptExport>();
-
-    public virtual ICollection<TranscriptSegment> TranscriptSegments { get; set; } = new List<TranscriptSegment>();
+    public virtual ICollection<GlossaryTerm> GlossaryTerms { get; set; } = new List<GlossaryTerm>();
 }

@@ -1,29 +1,32 @@
+using System;
+using System.Collections.Generic;
+
 namespace WarpTalk.TranscriptService.Application.DTOs;
 
-public record CreateTranscriptRequest(
-    Guid TranslationRoomId,
-    string SourceLanguage
+public record PagedResult<T>(
+    int TotalCount,
+    IEnumerable<T> Items
 );
 
-public record UpdateTranscriptStatusRequest(
-    string Status,
-    int TotalSegments,
-    int TotalDurationMs
-);
-
-public record ProcessAudioChunkRequest(
-    string Base64AudioData
-);
-
-public record TranscriptDto(
+public record TranscriptSegmentDto(
     Guid Id,
-    Guid TranslationRoomId,
-    int Version,
-    string Status,
-    string SourceLanguage,
-    int TotalSegments,
-    int TotalDurationMs,
-    DateTime CreatedAt,
-    DateTime UpdatedAt,
-    DateTime? FinalizedAt
+    Guid? SpeakerParticipantId,
+    string SpeakerName,
+    string OriginalText,
+    string OriginalLanguage,
+    decimal? Confidence,
+    long StartTimeMs,
+    long EndTimeMs,
+    int SequenceOrder
+);
+
+public record TranscriptTranslationDto(
+    Guid Id,
+    Guid SegmentId,
+    string TargetLanguage,
+    string TranslatedText,
+    string TranslatorModel,
+    decimal? Confidence,
+    bool IsRetranslated,
+    int? LatencyMs
 );
