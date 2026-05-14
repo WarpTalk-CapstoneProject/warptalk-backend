@@ -1,4 +1,4 @@
-# Implementation Plan: 1.1 Build Room Creation and Scheduling Flow
+# Implementation Plan: 1.1 & 1.2 Build Room Creation and Access Flow
 
 ## Phase -1: Constitution Gates Verification
 
@@ -15,7 +15,7 @@
 ### 1. Domain Layer (`WarpTalk.TranslationRoomService.Domain`)
 
 #### [NEW] `Enums/RoomStatus.cs`
-- Define `RoomStatus` enum with values: `Scheduled`, `Waiting`, `InProgress`, `Paused`, `Ended`, `Cancelled`, `Failed`, `Expired`.
+- Define `RoomStatus` enum with values: `Scheduled`, `Waiting`, `InProgress`, `Paused`, `Ended`, `Cancelled`, `Expired`.
 
 #### [NEW] `Enums/TranslationRoomType.cs`
 - Define `TranslationRoomType` enum with values: `Group`, `P2P`.
@@ -60,6 +60,22 @@
 #### [NEW] `Helpers/RoomCodeGenerator.cs`
 - Utility to generate 12-character alphanumeric strings.
 
+#### [NEW] `Commands/JoinTranslationRoom/JoinTranslationRoomCommand.cs`
+- MediatR Command containing the request and `UserId` (for member/host auth).
+
+#### [NEW] `Commands/JoinTranslationRoom/JoinTranslationRoomCommandValidator.cs`
+- FluentValidation rules for join payloads (e.g. valid DisplayName, required language options).
+
+#### [NEW] `Commands/JoinTranslationRoom/JoinTranslationRoomCommandHandler.cs`
+- Logic:
+  1. Receive `JoinTranslationRoomCommand` and check if `translation_room_code` is valid (**BR-001**).
+  2. Retrieve room via repository using the code. If `RoomStatus` is `Ended`, `Cancelled`, or `Expired`, return Validation error and reject (**BR-002**, **BR-003**).
+  3. Validate access permissions for the user (**BR-004**). If permissions fail, throw/return `REJECTED` status (**BR-005**).
+  4. If valid, check if `TranslationRoomParticipant` exists for this user. If yes, update it. If not, create a new record (**BR-006**).
+  5. Set the participant status in flow (e.g., `INVITED` -> `WAITING` -> `CONNECTED`) using `TranslationRoomParticipantStatus` Enum (**BR-007**).
+  6. Save changes via UnitOfWork.
+  7. Return a DTO containing the full room and participant context (**BR-008**).
+
 ---
 
 ### 3. Infrastructure Layer (`WarpTalk.TranslationRoomService.Infrastructure`)
@@ -80,6 +96,10 @@
 - Extracts `HostId` from the authenticated user's JWT claims.
 - Sends `CreateTranslationRoomCommand` via MediatR.
 - Returns `201 Created` with the room details or `400 Bad Request` (ProblemDetails) on validation errors.
+- `[HttpPost("join")]` endpoint mapped to `/api/v1/translation-rooms/join`.
+- Extracts `UserId` from the JWT claims.
+- Sends `JoinTranslationRoomCommand` via MediatR with `TranslationRoomCode` from body.
+- Returns `200 OK` with participant and room context, or `400/401/403` appropriately.
 
 ---
 
@@ -92,6 +112,7 @@
    - `RoomCodeGeneratorTests`: Verify the generated string length and format.
 2. **Integration Tests**:
    - `TranslationRoomsControllerTests`: Test the `POST /api/v1/translation-rooms` endpoint with valid payloads (should return 201 and persist to PostgreSQL via Testcontainers) and invalid payloads (should return 400 ProblemDetails).
+   - `TranslationRoomsController_Join_Tests`: Test the `POST /api/v1/translation-rooms/join` endpoint to verify state checks, permissions, and correctly returned context.
 
 ### Manual Verification
 - Run the API locally via Docker Compose.

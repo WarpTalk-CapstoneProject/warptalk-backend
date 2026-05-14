@@ -15,9 +15,10 @@ public record CreateTranslationRoomRequest(
 );
 
 public record JoinTranslationRoomRequest(
-    string DisplayName,
-    string ListenLanguage,
-    string SpeakLanguage
+    [Required] [StringLength(12)] string TranslationRoomCode,
+    [Required] [MaxLength(100)] string DisplayName,
+    [Required] string ListenLanguage,
+    [Required] string SpeakLanguage
 );
 
 public record TranslationRoomDto(
@@ -30,10 +31,17 @@ public record TranslationRoomDto(
     string Status,
     TranslationRoomType TranslationRoomType,
     int MaxParticipants,
+    string SourceLanguage,
+    string TargetLanguages,
     DateTime? ScheduledAt,
     DateTime? StartedAt,
     DateTime? EndedAt,
     DateTime CreatedAt
+);
+
+public record JoinTranslationRoomResponse(
+    TranslationRoomDto Room,
+    TranslationRoomParticipantDto Participant
 );
 
 public record TranslationRoomParticipantDto(

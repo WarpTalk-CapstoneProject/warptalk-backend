@@ -5,7 +5,7 @@ namespace WarpTalk.TranslationRoomService.Application.Helpers;
 
 public static class RoomCodeGenerator
 {
-    private const string Chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    private const string Chars = "abcdefghijklmnopqrstuvwxyz";
     private static readonly Random Random = new Random();
 
     public static string GenerateCode()

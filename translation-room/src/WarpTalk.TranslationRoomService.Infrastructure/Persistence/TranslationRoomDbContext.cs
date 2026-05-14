@@ -40,7 +40,7 @@ public partial class TranslationRoomDbContext : DbContext
             .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
             .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
             .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
-            .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
+            .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED" })
             .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
             .HasPostgresExtension("pg_trgm")
             .HasPostgresExtension("pgcrypto")
@@ -50,7 +50,7 @@ public partial class TranslationRoomDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("translation_rooms_pkey");
 
-            entity.ToTable("translation_rooms", "translation_room", tb => tb.HasComment("Room lifecycle:\r\nSCHEDULED -> WAITING\r\nSCHEDULED -> CANCELLED\r\nSCHEDULED -> EXPIRED\r\nWAITING -> IN_PROGRESS\r\nWAITING -> CANCELLED\r\nWAITING -> EXPIRED\r\nIN_PROGRESS -> PAUSED\r\nPAUSED -> IN_PROGRESS\r\nIN_PROGRESS -> ENDED\r\nIN_PROGRESS -> FAILED\r\n\r\nDraft room is not persisted. If the user discards a draft, no room record is created.\r\n"));
+            entity.ToTable("translation_rooms", "translation_room", tb => tb.HasComment("Room lifecycle:\r\nSCHEDULED -> WAITING\r\nSCHEDULED -> CANCELLED\r\nSCHEDULED -> EXPIRED\r\nWAITING -> IN_PROGRESS\r\nWAITING -> CANCELLED\r\nWAITING -> EXPIRED\r\nIN_PROGRESS -> PAUSED\r\nPAUSED -> IN_PROGRESS\r\nIN_PROGRESS -> ENDED\r\n\r\nDraft room is not persisted. If the user discards a draft, no room record is created.\r\n"));
 
             entity.HasIndex(e => e.HostId, "idx_translation_rooms_host");
 
@@ -71,7 +71,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt }, "translation_rooms_workspace_id_created_at_idx");
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -137,7 +137,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => new { e.TranslationRoomId, e.Status }, "translation_room_audio_routes_translation_room_id_status_idx");
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -188,7 +188,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => new { e.TranslationRoomId, e.UserId }, "translation_room_feedback_translation_room_id_user_id_key").IsUnique();
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.AudioQuality).HasColumnName("audio_quality");
             entity.Property(e => e.Comments).HasColumnName("comments");
@@ -226,7 +226,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => new { e.TranslationRoomId, e.UserId }, "translation_room_participants_translation_room_id_user_id_idx");
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.ConnectionType)
                 .HasMaxLength(20)
@@ -283,7 +283,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => e.TranslationRoomId, "idx_recordings_translation_room");
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -323,7 +323,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasIndex(e => e.TranslationRoomId, "translation_room_summaries_translation_room_id_key").IsUnique();
 
             entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasDefaultValueSql("gen_random_uuid()")
                 .HasColumnName("id");
             entity.Property(e => e.ActionItems)
                 .HasDefaultValueSql("'[]'::jsonb")

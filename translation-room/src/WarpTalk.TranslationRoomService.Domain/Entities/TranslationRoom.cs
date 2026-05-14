@@ -15,7 +15,6 @@ namespace WarpTalk.TranslationRoomService.Domain.Entities;
 /// IN_PROGRESS -&gt; PAUSED
 /// PAUSED -&gt; IN_PROGRESS
 /// IN_PROGRESS -&gt; ENDED
-/// IN_PROGRESS -&gt; FAILED
 /// 
 /// Draft room is not persisted. If the user discards a draft, no room record is created.
 /// 

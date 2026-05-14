@@ -19,6 +19,8 @@ public static class TranslationRoomMapper
             room.Status.ToString(),
             room.TranslationRoomType,
             room.MaxParticipants,
+            room.SourceLanguage,
+            room.TargetLanguages,
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
@@ -30,6 +32,7 @@ public static class TranslationRoomMapper
     {
         return new TranslationRoom
         {
+            Id = Guid.CreateVersion7(),
             WorkspaceId = request.WorkspaceId ?? Guid.Empty,
             HostId = hostId,
             Title = request.Title,
@@ -40,6 +43,7 @@ public static class TranslationRoomMapper
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = request.SourceLanguage,
             TargetLanguages = request.TargetLanguages,
+            Settings = "{}",
             ScheduledAt = request.ScheduledAt
         };
     }

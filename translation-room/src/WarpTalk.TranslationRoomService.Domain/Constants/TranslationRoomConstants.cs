@@ -1,7 +1,16 @@
+using WarpTalk.TranslationRoomService.Domain.Enums;
+
 namespace WarpTalk.TranslationRoomService.Domain.Constants;
 
 public static class TranslationRoomConstants
 {
+    // Terminal Statuses
+    public static readonly RoomStatus[] TerminalStatuses = new[] 
+    { 
+        RoomStatus.ENDED, 
+        RoomStatus.CANCELLED, 
+        RoomStatus.EXPIRED 
+    };
 
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
@@ -20,4 +29,11 @@ public static class TranslationRoomConstants
     public const string ValidationTargetLanguagesRequired = "Target languages are required.";
     public const string ValidationMaxParticipantsGreaterThanZero = "Max participants must be strictly greater than 0.";
     public const string ValidationScheduledTimeMustBeFuture = "Scheduled time must be strictly greater than the current time.";
+    public const string ValidationTranslationRoomCodeRequired = "Translation room code is required.";
+    public const string ValidationTranslationRoomCodeLength = "Translation room code must be exactly 12 characters.";
+    public const string ValidationListenLanguageRequired = "Listen language is required.";
+    public const string ValidationSpeakLanguageRequired = "Speak language is required.";
+    public const string ValidationDisplayNameRequired = "Display name is required.";
+    public const string ValidationDisplayNameMaxLength = "Display name cannot exceed 100 characters.";
+    public const string ValidationTranslationRoomCodeFormat = "Translation room code format must be xxx-yyyy-zzz using only lowercase letters (e.g., abc-defg-hij).";
 }

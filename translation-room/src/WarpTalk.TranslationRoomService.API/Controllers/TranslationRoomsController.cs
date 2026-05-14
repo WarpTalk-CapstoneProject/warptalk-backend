@@ -18,13 +18,16 @@ public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
     private readonly IValidator<CreateTranslationRoomRequest> _createValidator;
+    private readonly IValidator<JoinTranslationRoomRequest> _joinValidator;
 
     public TranslationRoomsController(
         ITranslationRoomService translationRoomService,
-        IValidator<CreateTranslationRoomRequest> createValidator)
+        IValidator<CreateTranslationRoomRequest> createValidator,
+        IValidator<JoinTranslationRoomRequest> joinValidator)
     {
         _translationRoomService = translationRoomService;
         _createValidator = createValidator;
+        _joinValidator = joinValidator;
     }
 
     [HttpPost]
@@ -67,18 +70,29 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
-    [HttpPost("{id}/join")]
-    public async Task<IActionResult> JoinTranslationRoom(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    [HttpPost("join")]
+    public async Task<IActionResult> JoinTranslationRoom([FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
     {
+        var validationResult = await _joinValidator.ValidateAsync(request);
+        if (!validationResult.IsValid)
+        {
+            var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
+            return BadRequest(new ApiErrorResponse(string.Join(" ", errors), ErrorCodes.ValidationError));
+        }
+
         var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                           ?? User.FindFirst("sub")?.Value;
 
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
             return Unauthorized();
 
-        var result = await _translationRoomService.JoinTranslationRoomAsync(id, userId, request, ct);
+        var result = await _translationRoomService.JoinTranslationRoomAsync(request, userId, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value!);
     }

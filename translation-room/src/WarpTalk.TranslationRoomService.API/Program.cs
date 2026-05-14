@@ -81,3 +81,5 @@ app.MapControllers();
 app.MapGrpcService<TranslationRoomGrpcService>();
 
 app.Run();
+//for integration tests
+// public partial class Program { }
