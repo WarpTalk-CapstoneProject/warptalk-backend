@@ -7,6 +7,7 @@ using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.Shared;
 using FluentAssertions;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 using Xunit;
 
 namespace WarpTalk.TranslationRoomService.Tests.Application.Services;
@@ -16,6 +17,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<IUnitOfWork> _mockUow;
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
+    private readonly Mock<ILanguageService> _mockLanguageService;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
@@ -24,12 +26,16 @@ public class TranslationRoomServiceTests
         _mockUow = new Mock<IUnitOfWork>();
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
+        _mockLanguageService = new Mock<ILanguageService>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLogger.Object);
+        _mockLanguageService.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
+        _mockLanguageService.Setup(v => v.IsAllowedByPolicy(It.IsAny<string>(), It.IsAny<TranslationRoom>())).Returns(true);
+
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguageService.Object, _mockLogger.Object);
     }
 
     [Fact]

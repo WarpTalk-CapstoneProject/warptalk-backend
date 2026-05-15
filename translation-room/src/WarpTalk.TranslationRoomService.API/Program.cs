@@ -42,6 +42,10 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository>();
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
+builder.Services.AddScoped<ITranslationRoomParticipantService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomParticipantService>();
+builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
+builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.LanguagePolicy.ILanguagePolicy, WarpTalk.TranslationRoomService.Application.LanguagePolicy.LanguagePolicy>();
+builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
 
 // Register FluentValidation Validators
 builder.Services.AddValidatorsFromAssemblyContaining<CreateTranslationRoomRequestValidator>();
@@ -89,5 +93,5 @@ app.MapControllers();
 app.MapGrpcService<TranslationRoomGrpcService>();
 
 app.Run();
-//for integration tests
-// public partial class Program { }
+//for integration test only
+public partial class Program { }

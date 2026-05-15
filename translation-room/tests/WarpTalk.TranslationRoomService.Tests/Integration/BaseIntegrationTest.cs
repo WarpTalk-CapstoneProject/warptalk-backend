@@ -55,6 +55,10 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
         db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS translation_room;");
+        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS platform;");
+        db.Database.ExecuteSqlRaw("CREATE TABLE platform.supported_languages (code CHAR(5) PRIMARY KEY, name VARCHAR(100) NOT NULL, is_active BOOLEAN DEFAULT TRUE);");
+        db.Database.ExecuteSqlRaw("INSERT INTO platform.supported_languages (code, name) VALUES ('en', 'English'), ('vi', 'Vietnamese'), ('fr', 'French'), ('es', 'Spanish');");
+        
         await db.Database.EnsureCreatedAsync();
     }
 

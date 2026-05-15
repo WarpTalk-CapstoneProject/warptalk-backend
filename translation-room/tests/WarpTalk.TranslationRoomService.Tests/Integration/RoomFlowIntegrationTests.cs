@@ -21,7 +21,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             TranslationRoomType: TranslationRoomType.INSTANT,
             MaxParticipants: 10,
             SourceLanguage: "en",
-            TargetLanguages: "[\"vi\", \"fr\"]",
+            TargetLanguages: new List<string> { "vi", "fr" },
             ScheduledAt: null
         );
 
@@ -76,7 +76,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             TranslationRoomType: TranslationRoomType.SCHEDULED,
             MaxParticipants: 5,
             SourceLanguage: "en",
-            TargetLanguages: "[\"vi\"]",
+            TargetLanguages: new List<string> { "vi" },
             ScheduledAt: scheduledTime
         );
 

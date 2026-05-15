@@ -1,11 +1,13 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -20,11 +22,13 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
+    private readonly ILanguagePolicy _languagePolicy;
     private readonly ILogger<TranslationRoomService> _logger;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILogger<TranslationRoomService> logger)
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, ILogger<TranslationRoomService> logger)
     {
         _unitOfWork = unitOfWork;
+        _languagePolicy = languagePolicy;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _logger = logger;
@@ -34,6 +38,40 @@ public class TranslationRoomService : ITranslationRoomService
     {
         try
         {
+            // WT-65: Fallback to user settings if languages are missing
+            var sourceLang = request.SourceLanguage;
+            var targetLangs = request.TargetLanguages;
+
+            if (string.IsNullOrWhiteSpace(sourceLang) || targetLangs == null || !targetLangs.Any())
+            {
+                var userDefaults = await _unitOfWork.UserSettingsRepository.GetDefaultsAsync(hostId, ct);
+                if (userDefaults != null)
+                {
+                    sourceLang ??= userDefaults.Value.DefaultSpeakLanguage;
+                    if (targetLangs == null || !targetLangs.Any())
+                    {
+                        targetLangs = new List<string> { userDefaults.Value.DefaultListenLanguage };
+                    }
+                }
+            }
+
+            // WT-65: Validate Source Language
+            if (string.IsNullOrWhiteSpace(sourceLang))
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationSourceLanguageRequired, ErrorCodes.ValidationError);
+
+            if (!await _languagePolicy.IsSupportedAsync(sourceLang))
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
+
+            // WT-65: Validate Target Languages
+            if (targetLangs == null || !targetLangs.Any())
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationTargetLanguagesRequired, ErrorCodes.ValidationError);
+
+            foreach (var lang in targetLangs)
+            {
+                if (!await _languagePolicy.IsSupportedAsync(lang))
+                    return Result.Failure<TranslationRoomDto>(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
+            }
+
             // 1. Determine initial status
             var status = request.ScheduledAt.HasValue ? RoomStatus.SCHEDULED : RoomStatus.WAITING;
 
@@ -47,7 +85,7 @@ public class TranslationRoomService : ITranslationRoomService
             } while (exists);
 
             // 3. Create entity
-            var room = TranslationRoomMapper.ToEntity(request, hostId, roomCode, status);
+            var room = TranslationRoomMapper.ToEntity(request, hostId, roomCode, status, sourceLang, targetLangs);
 
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
@@ -89,8 +127,31 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
+            // WT-65: Fallback to user settings for Join
+            var speakLang = request.SpeakLanguage;
+            var listenLang = request.ListenLanguage;
+
+            if (string.IsNullOrWhiteSpace(speakLang) || string.IsNullOrWhiteSpace(listenLang))
+            {
+                var userDefaults = await _unitOfWork.UserSettingsRepository.GetDefaultsAsync(userId, ct);
+                if (userDefaults != null)
+                {
+                    speakLang ??= userDefaults.Value.DefaultSpeakLanguage;
+                    listenLang ??= userDefaults.Value.DefaultListenLanguage;
+                }
+            }
+
+            // WT-65: Validate Speak/Listen languages via Policy Engine
+            string? validationError = await _languagePolicy.ValidateParticipantLanguagesAsync(speakLang, listenLang, translationRoom);
+
             // BR-006: Upsert participant record
             var participant = await _participantRepository.GetByRoomAndUserAsync(translationRoom.Id, userId, ct);
+
+            // FR-1.4-007: Rejected participant language input MUST NOT be saved or applied to room participation state.
+            if (validationError != null)
+            {
+                return Result.Failure<JoinTranslationRoomResponse>(validationError, ErrorCodes.ValidationError);
+            }
 
             // BR-010: Block KICKED participants
             if (participant != null && participant.Status == TranslationRoomParticipantStatus.KICKED.ToString())
@@ -106,38 +167,33 @@ public class TranslationRoomService : ITranslationRoomService
                 requiresApproval = settings?.RequiresApproval ?? true;
             }
 
+            var isHost = translationRoom.HostId == userId;
+
             if (participant == null)
             {
-                var initialStatus = requiresApproval ? TranslationRoomParticipantStatus.WAITING : TranslationRoomParticipantStatus.CONNECTED;
-                participant = TranslationRoomMapper.ToParticipantEntity(translationRoom.Id, userId, request, initialStatus);
-                
-                // BR-004: Host check
-                if (translationRoom.HostId == userId)
-                {
-                    participant.Role = TranslationRoomParticipantRole.HOST.ToString();
-                    participant.Status = TranslationRoomParticipantStatus.CONNECTED.ToString();
-                }
+                participant = TranslationRoomParticipantMapper.ToParticipantEntity(
+                    translationRoom.Id, 
+                    userId, 
+                    request, 
+                    speakLang!, 
+                    listenLang!, 
+                    requiresApproval,
+                    isHost
+                );
                 
                 await _participantRepository.AddAsync(participant, ct);
             }
             else
             {
-                // Update existing participant context
-                participant.DisplayName = request.DisplayName;
-                participant.ListenLanguage = request.ListenLanguage;
-                participant.SpeakLanguage = request.SpeakLanguage;
+                TranslationRoomParticipantMapper.UpdateParticipantEntity(
+                    participant, 
+                    request, 
+                    speakLang!, 
+                    listenLang!, 
+                    requiresApproval, 
+                    isHost
+                );
                 
-                if (translationRoom.HostId == userId)
-                {
-                    participant.Status = TranslationRoomParticipantStatus.CONNECTED.ToString();
-                }
-                else
-                {
-                    // BR-009, BR-012: REJECTED, DISCONNECTED, or LEFT re-enters based on requires_approval
-                    participant.Status = (requiresApproval ? TranslationRoomParticipantStatus.WAITING : TranslationRoomParticipantStatus.CONNECTED).ToString();
-                }
-
-                participant.UpdatedAt = DateTime.UtcNow;
                 _participantRepository.Update(participant);
             }
 
@@ -146,7 +202,7 @@ public class TranslationRoomService : ITranslationRoomService
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 TranslationRoomMapper.ToResponseDto(translationRoom),
-                TranslationRoomMapper.ToParticipantDto(participant)
+                TranslationRoomParticipantMapper.ToParticipantDto(participant)
             ));
         }
         catch (Exception ex)
@@ -199,12 +255,37 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != RoomStatus.SCHEDULED.ToString() && translationRoom.Status != RoomStatus.WAITING.ToString())
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
-            var newSettings = new TranslationRoomSettings 
-            { 
-                RequiresApproval = request.Settings.RequiresApproval 
-            };
+            // WT-65: Update and Validate Source Language
+            if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
+            {
+                if (!await _languagePolicy.IsSupportedAsync(request.SourceLanguage))
+                    return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
+                
+                translationRoom.SourceLanguage = request.SourceLanguage;
+            }
 
-            translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(newSettings);
+            // WT-65: Update and Validate Target Languages
+            if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
+            {
+                foreach (var lang in request.TargetLanguages)
+                {
+                    if (!await _languagePolicy.IsSupportedAsync(lang))
+                        return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
+                }
+                
+                translationRoom.TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+            }
+
+            // Update Settings (RequiresApproval)
+            if (request.Settings != null)
+            {
+                var newSettings = new TranslationRoomSettings 
+                { 
+                    RequiresApproval = request.Settings.RequiresApproval 
+                };
+                translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(newSettings);
+            }
+
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -218,4 +299,5 @@ public class TranslationRoomService : ITranslationRoomService
             return Result.Failure("An unexpected error occurred while updating the room settings.", ErrorCodes.InternalServerError);
         }
     }
+        
 }

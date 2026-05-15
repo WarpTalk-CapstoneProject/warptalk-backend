@@ -35,6 +35,9 @@ public static class TranslationRoomConstants
     public const string ValidationScheduledTimeMustBeFuture = "Scheduled time must be strictly greater than the current time.";
     public const string ValidationTranslationRoomCodeRequired = "Translation room code is required.";
     public const string ValidationTranslationRoomCodeLength = "Translation room code must be exactly 12 characters.";
+    public const string ValidationLanguageUnsupported = "Language '{0}' is not supported by the platform.";
+    public const string ValidationLanguageNotAllowedByPolicy = "{0} language '{1}' is not allowed by room policy. It must be the source language or one of the target languages.";
+    public const string ValidationSourceLanguageUnsupported = "Source language is not supported.";
     public const string ValidationListenLanguageRequired = "Listen language is required.";
     public const string ValidationSpeakLanguageRequired = "Speak language is required.";
     public const string ValidationDisplayNameRequired = "Display name is required.";

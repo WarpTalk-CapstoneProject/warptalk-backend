@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -14,26 +15,28 @@ public record RoomSettingsResponse(
 );
 
 public record UpdateRoomSettingsRequest(
-    [Required] RoomSettingsRequest Settings
+    RoomSettingsRequest? Settings,
+    string? SourceLanguage,
+    List<string>? TargetLanguages
 );
 
 public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
-    [MaxLength(255)] string Title,
+    [Required] string Title,
     string? Description,
     TranslationRoomType TranslationRoomType, // e.g., Instant, Scheduled
     int MaxParticipants,
-    string SourceLanguage,
-    string TargetLanguages,
-    RoomSettingsRequest? Settings = null,
-    DateTime? ScheduledAt = null
+    string? SourceLanguage,
+    List<string>? TargetLanguages,
+    RoomSettingsRequest? Settings,
+    DateTime? ScheduledAt
 );
 
 public record JoinTranslationRoomRequest(
-    [Required] [StringLength(12)] string TranslationRoomCode,
-    [Required] [MaxLength(100)] string DisplayName,
-    [Required] string ListenLanguage,
-    [Required] string SpeakLanguage
+    [Required] string TranslationRoomCode,
+    [Required] string DisplayName,
+    string? SpeakLanguage,
+    string? ListenLanguage
 );
 
 public record TranslationRoomDto(
@@ -47,7 +50,7 @@ public record TranslationRoomDto(
     TranslationRoomType TranslationRoomType,
     int MaxParticipants,
     string SourceLanguage,
-    string TargetLanguages,
+    List<string> TargetLanguages,
     DateTime? ScheduledAt,
     DateTime? StartedAt,
     DateTime? EndedAt,
@@ -58,16 +61,4 @@ public record TranslationRoomDto(
 public record JoinTranslationRoomResponse(
     TranslationRoomDto Room,
     TranslationRoomParticipantDto Participant
-);
-
-public record TranslationRoomParticipantDto(
-    Guid Id,
-    Guid TranslationRoomId,
-    Guid UserId,
-    string DisplayName,
-    TranslationRoomParticipantRole Role,
-    string ListenLanguage,
-    string SpeakLanguage,
-    TranslationRoomParticipantStatus Status,
-    DateTime? JoinedAt
 );
