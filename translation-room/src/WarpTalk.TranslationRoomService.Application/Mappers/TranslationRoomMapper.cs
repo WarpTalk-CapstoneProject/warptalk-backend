@@ -2,6 +2,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.TranslationRoomService.Domain.ValueObjects;
 
 namespace WarpTalk.TranslationRoomService.Application.Mappers;
 
@@ -9,6 +10,10 @@ public static class TranslationRoomMapper
 {
     public static TranslationRoomDto ToResponseDto(TranslationRoom room)
     {
+        var settings = !string.IsNullOrEmpty(room.Settings) 
+            ? System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings) 
+            : new RoomSettingsResponse(true);
+
         return new TranslationRoomDto(
             room.Id,
             room.WorkspaceId,
@@ -16,15 +21,16 @@ public static class TranslationRoomMapper
             room.Title,
             room.Description,
             room.TranslationRoomCode,
-            room.Status.ToString(),
-            room.TranslationRoomType,
+            room.Status,
+            Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,
             room.TargetLanguages,
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
-            room.CreatedAt
+            room.CreatedAt,
+            settings!
         );
     }
 
@@ -38,28 +44,28 @@ public static class TranslationRoomMapper
             Title = request.Title,
             Description = request.Description,
             TranslationRoomCode = roomCode,
-            Status = status,
-            TranslationRoomType = request.TranslationRoomType,
+            Status = status.ToString(),
+            TranslationRoomType = request.TranslationRoomType.ToString(),
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = request.SourceLanguage,
             TargetLanguages = request.TargetLanguages,
-            Settings = "{}",
+            Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval }) : "{\"requires_approval\":true}",
             ScheduledAt = request.ScheduledAt
         };
     }
 
-    public static TranslationRoomParticipant ToParticipantEntity(Guid translationRoomId, Guid userId, JoinTranslationRoomRequest request)
+    public static TranslationRoomParticipant ToParticipantEntity(Guid translationRoomId, Guid userId, JoinTranslationRoomRequest request, TranslationRoomParticipantStatus initialStatus)
     {
         return new TranslationRoomParticipant
         {
-            Id = Guid.NewGuid(),
+            Id = Guid.CreateVersion7(),
             TranslationRoomId = translationRoomId,
             UserId = userId,
             DisplayName = request.DisplayName,
-            Role = TranslationRoomParticipantRole.PARTICIPANT,
+            Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
             ListenLanguage = request.ListenLanguage,
             SpeakLanguage = request.SpeakLanguage,
-            Status = TranslationRoomParticipantStatus.CONNECTED,
+            Status = initialStatus.ToString(),
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -72,10 +78,10 @@ public static class TranslationRoomMapper
             participant.TranslationRoomId,
             participant.UserId,
             participant.DisplayName,
-            participant.Role,
+            Enum.Parse<TranslationRoomParticipantRole>(participant.Role, true),
             participant.ListenLanguage,
             participant.SpeakLanguage,
-            participant.Status,
+            Enum.Parse<TranslationRoomParticipantStatus>(participant.Status, true),
             participant.JoinedAt
         );
     }

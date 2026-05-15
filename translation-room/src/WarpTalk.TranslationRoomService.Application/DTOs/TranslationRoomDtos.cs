@@ -1,7 +1,21 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Application.DTOs;
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public record RoomSettingsRequest(
+    bool RequiresApproval = true
+);
+
+public record RoomSettingsResponse(
+    bool RequiresApproval
+);
+
+public record UpdateRoomSettingsRequest(
+    [Required] RoomSettingsRequest Settings
+);
 
 public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
@@ -11,7 +25,8 @@ public record CreateTranslationRoomRequest(
     int MaxParticipants,
     string SourceLanguage,
     string TargetLanguages,
-    DateTime? ScheduledAt
+    RoomSettingsRequest? Settings = null,
+    DateTime? ScheduledAt = null
 );
 
 public record JoinTranslationRoomRequest(
@@ -36,7 +51,8 @@ public record TranslationRoomDto(
     DateTime? ScheduledAt,
     DateTime? StartedAt,
     DateTime? EndedAt,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    RoomSettingsResponse Settings
 );
 
 public record JoinTranslationRoomResponse(

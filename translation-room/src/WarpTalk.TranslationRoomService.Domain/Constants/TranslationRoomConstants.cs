@@ -16,15 +16,19 @@ public static class TranslationRoomConstants
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";
     public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
+    public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
+    public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
         
     public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
+    public const string ErrorParticipantKicked = "You have been permanently removed from this room and cannot rejoin.";
 
     // gRPC
     public const string EntityTranslationRoom = "TranslationRoom";
 
     // Validation Messages
+    public const string ValidationSettingsRequired = "Room settings are required.";
     public const string ValidationSourceLanguageRequired = "Source language is required.";
     public const string ValidationTargetLanguagesRequired = "Target languages are required.";
     public const string ValidationMaxParticipantsGreaterThanZero = "Max participants must be strictly greater than 0.";

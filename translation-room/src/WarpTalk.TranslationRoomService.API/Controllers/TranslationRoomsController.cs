@@ -17,38 +17,23 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
-    private readonly IValidator<CreateTranslationRoomRequest> _createValidator;
-    private readonly IValidator<JoinTranslationRoomRequest> _joinValidator;
 
     public TranslationRoomsController(
-        ITranslationRoomService translationRoomService,
-        IValidator<CreateTranslationRoomRequest> createValidator,
-        IValidator<JoinTranslationRoomRequest> joinValidator)
+        ITranslationRoomService translationRoomService)
     {
         _translationRoomService = translationRoomService;
-        _createValidator = createValidator;
-        _joinValidator = joinValidator;
     }
 
     [HttpPost]
     public async Task<IActionResult> CreateTranslationRoom([FromBody] CreateTranslationRoomRequest request)
     {
-        var validationResult = await _createValidator.ValidateAsync(request);
-        if (!validationResult.IsValid)
-        {
-            var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
-            return BadRequest(new ApiErrorResponse(string.Join(" ", errors), ErrorCodes.ValidationError));
-        }
-
         // Extract HostId from JWT claims (Assuming NameIdentifier or sub)
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                           ?? User.FindFirst("sub")?.Value;
 
         if (!Guid.TryParse(userIdClaim, out var hostId))
         {
-            return Unauthorized(new ApiErrorResponse(
-                ApiMessageConstants.ErrorMessages.UnauthorizedTokenDetail, 
-                ErrorCodes.Unauthorized));
+            return Unauthorized();
         }
 
         
@@ -73,13 +58,6 @@ public class TranslationRoomsController : ControllerBase
     [HttpPost("join")]
     public async Task<IActionResult> JoinTranslationRoom([FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
     {
-        var validationResult = await _joinValidator.ValidateAsync(request);
-        if (!validationResult.IsValid)
-        {
-            var errors = validationResult.Errors.Select(e => e.ErrorMessage).ToList();
-            return BadRequest(new ApiErrorResponse(string.Join(" ", errors), ErrorCodes.ValidationError));
-        }
-
         var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                           ?? User.FindFirst("sub")?.Value;
 
@@ -109,6 +87,26 @@ public class TranslationRoomsController : ControllerBase
         var result = await _translationRoomService.EndTranslationRoomAsync(id, hostId, ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+//Chua co enpoint PATCH nen tach rieng settings
+    [HttpPut("{id}/settings")]
+    public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)
+    {
+        var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                          ?? User.FindFirst("sub")?.Value;
+
+        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var hostId))
+            return Unauthorized();
+
+        var result = await _translationRoomService.UpdateTranslationRoomSettingsAsync(id, hostId, request, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return NoContent();
     }

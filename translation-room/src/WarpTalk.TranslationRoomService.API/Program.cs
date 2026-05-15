@@ -8,7 +8,13 @@ using WarpTalk.Shared.Protos;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using FluentValidation;
+using FluentValidation.AspNetCore;
 using System.Text;
+using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.API.Extensions;
+using WarpTalk.TranslationRoomService.API.Validators;
+using TranslationRoomAppService = WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService;
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 var builder = WebApplication.CreateBuilder(args);
@@ -35,10 +41,11 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository>();
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
-builder.Services.AddScoped<ITranslationRoomService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>();
+builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 
 // Register FluentValidation Validators
-builder.Services.AddValidatorsFromAssemblyContaining<WarpTalk.TranslationRoomService.API.Validators.CreateTranslationRoomRequestValidator>();
+builder.Services.AddValidatorsFromAssemblyContaining<CreateTranslationRoomRequestValidator>();
+builder.Services.AddFluentValidationAutoValidation();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -61,6 +68,7 @@ builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 });
 
 builder.Services.AddControllers();
+builder.Services.AddCustomApiBehavior();
 builder.Services.AddOpenApi();
 
 builder.Services.AddGrpc();

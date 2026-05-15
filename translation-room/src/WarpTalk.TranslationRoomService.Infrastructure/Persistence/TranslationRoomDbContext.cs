@@ -28,9 +28,7 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomSummary> TranslationRoomSummaries { get; set; }
 
-    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-    {
-    }
+    
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,7 +95,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("source_language");
             entity.Property(e => e.StartedAt).HasColumnName("started_at");
             entity.Property(e => e.Status)
-                .HasConversion<string>()
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'scheduled'::character varying")
                 .HasColumnName("status");
@@ -112,7 +109,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasMaxLength(12)
                 .HasColumnName("translation_room_code");
             entity.Property(e => e.TranslationRoomType)
-                .HasConversion<string>()
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'GROUP'::character varying")
                 .HasColumnName("translation_room_type");
@@ -244,9 +240,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .IsFixedLength()
                 .HasColumnName("listen_language");
             entity.Property(e => e.Role)
-                .HasConversion(
-                    v => v.ToString().ToLowerInvariant(),
-                    v => Enum.Parse<WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomParticipantRole>(v, true))
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'participant'::character varying")
                 .HasColumnName("role");
@@ -255,9 +248,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .IsFixedLength()
                 .HasColumnName("speak_language");
             entity.Property(e => e.Status)
-                .HasConversion(
-                    v => v.ToString().ToLowerInvariant(),
-                    v => Enum.Parse<WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomParticipantStatus>(v, true))
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'invited'::character varying")
                 .HasColumnName("status");

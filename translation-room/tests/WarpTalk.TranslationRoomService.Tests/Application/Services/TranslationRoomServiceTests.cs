@@ -16,6 +16,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<IUnitOfWork> _mockUow;
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
+    private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
     public TranslationRoomServiceTests()
@@ -23,11 +24,12 @@ public class TranslationRoomServiceTests
         _mockUow = new Mock<IUnitOfWork>();
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
+        _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object);
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -41,7 +43,8 @@ public class TranslationRoomServiceTests
             Id = Guid.NewGuid(), 
             HostId = hostId, 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.WAITING 
+            Status = RoomStatus.WAITING.ToString(),
+            TranslationRoomType = TranslationRoomType.INSTANT.ToString()
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "Host User", "en", "vi");
@@ -57,7 +60,7 @@ public class TranslationRoomServiceTests
         // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value!.Participant.Role.Should().Be(TranslationRoomParticipantRole.HOST);
-        _mockParticipantRepo.Verify(p => p.AddAsync(It.Is<TranslationRoomParticipant>(pt => pt.Role == TranslationRoomParticipantRole.HOST), It.IsAny<CancellationToken>()), Times.Once);
+        _mockParticipantRepo.Verify(p => p.AddAsync(It.Is<TranslationRoomParticipant>(pt => pt.Role == TranslationRoomParticipantRole.HOST.ToString()), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -70,7 +73,8 @@ public class TranslationRoomServiceTests
         { 
             Id = Guid.NewGuid(), 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.ENDED 
+            Status = RoomStatus.ENDED.ToString(),
+            TranslationRoomType = TranslationRoomType.INSTANT.ToString()
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "User", "en", "vi");
@@ -97,8 +101,10 @@ public class TranslationRoomServiceTests
         { 
             Id = roomId, 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.WAITING,
-            HostId = Guid.NewGuid()
+            Status = RoomStatus.WAITING.ToString(),
+            HostId = Guid.NewGuid(),
+            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            Settings = "{\"requires_approval\":false}"
         };
 
         var existingParticipant = new TranslationRoomParticipant
@@ -106,7 +112,9 @@ public class TranslationRoomServiceTests
             Id = Guid.NewGuid(),
             TranslationRoomId = roomId,
             UserId = userId,
-            DisplayName = "Old Name"
+            DisplayName = "Old Name",
+            Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
+            Status = TranslationRoomParticipantStatus.INVITED.ToString()
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "New Name", "fr", "es");
@@ -123,7 +131,7 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue();
         existingParticipant.DisplayName.Should().Be("New Name");
         existingParticipant.ListenLanguage.Should().Be("fr");
-        existingParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED);
+        existingParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED.ToString());
         _mockParticipantRepo.Verify(p => p.Update(existingParticipant), Times.Once);
     }
 }

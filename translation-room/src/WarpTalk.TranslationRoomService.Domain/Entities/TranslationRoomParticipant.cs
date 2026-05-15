@@ -30,13 +30,13 @@ public partial class TranslationRoomParticipant
 
     public string DisplayName { get; set; } = null!;
 
-    public TranslationRoomParticipantRole Role { get; set; }
+    public string Role { get; set; } = null!;
 
     public string ListenLanguage { get; set; } = null!;
 
     public string SpeakLanguage { get; set; } = null!;
 
-    public TranslationRoomParticipantStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
     public string? ConnectionType { get; set; }
 

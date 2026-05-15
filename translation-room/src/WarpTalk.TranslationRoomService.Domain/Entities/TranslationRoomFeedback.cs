@@ -22,6 +22,8 @@ public partial class TranslationRoomFeedback
 
     public int? VoiceCloneQuality { get; set; }
 
+    public int? AiSummaryQuality { get; set; }
+
     public string? Comments { get; set; }
 
     public string? CommunicationInsights { get; set; }
@@ -30,4 +32,3 @@ public partial class TranslationRoomFeedback
 
     public virtual TranslationRoom TranslationRoom { get; set; } = null!;
 }
-

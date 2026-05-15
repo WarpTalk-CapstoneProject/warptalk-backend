@@ -22,7 +22,8 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         
         if (excludedStatuses != null && excludedStatuses.Any())
         {
-            query = query.Where(r => !excludedStatuses.Contains(r.Status));
+            var stringStatuses = excludedStatuses.Select(s => s.ToString()).ToList();
+            query = query.Where(r => !stringStatuses.Contains(r.Status));
         }
 
         return await query.AnyAsync(cancellationToken);
@@ -34,7 +35,8 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         
         if (excludedStatuses != null && excludedStatuses.Any())
         {
-            query = query.Where(r => !excludedStatuses.Contains(r.Status));
+            var stringStatuses = excludedStatuses.Select(s => s.ToString()).ToList();
+            query = query.Where(r => !stringStatuses.Contains(r.Status));
         }
 
         return await query.FirstOrDefaultAsync(cancellationToken);

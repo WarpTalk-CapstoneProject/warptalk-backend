@@ -65,7 +65,7 @@ public class CreateTranslationRoomRequestValidatorTests
     public void Should_Have_Error_When_ScheduledAt_Is_In_The_Past()
     {
         var pastDate = DateTime.UtcNow.AddMinutes(-5);
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.SCHEDULED, 10, "vi", "en", pastDate);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.SCHEDULED, 10, "vi", "en", null, pastDate);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.ScheduledAt)
               .WithErrorMessage(TranslationRoomConstants.ValidationScheduledTimeMustBeFuture);
