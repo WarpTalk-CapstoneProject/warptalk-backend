@@ -27,7 +27,7 @@ public class LanguagePolicy : ILanguagePolicy
         if (string.IsNullOrWhiteSpace(language) || room == null) return false;
 
         // Allowed to speak Source Language
-        if (language.Equals(room.SourceLanguage, StringComparison.OrdinalIgnoreCase))
+        if (language.Equals(room.SourceLanguage?.Trim(), StringComparison.OrdinalIgnoreCase))
             return true;
 
         // Or any of the Target Languages
@@ -39,7 +39,9 @@ public class LanguagePolicy : ILanguagePolicy
     {
         if (string.IsNullOrWhiteSpace(language) || room == null) return false;
 
-        // MUST be one of the Target Languages per practical rule
+        if (language.Equals(room.SourceLanguage?.Trim(), StringComparison.OrdinalIgnoreCase))
+            return true;
+
         var targets = Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
         return targets.Any(t => t.Equals(language, StringComparison.OrdinalIgnoreCase));
     }

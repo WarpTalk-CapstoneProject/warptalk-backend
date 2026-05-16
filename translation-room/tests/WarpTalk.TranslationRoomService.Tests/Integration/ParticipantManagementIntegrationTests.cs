@@ -20,7 +20,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var memberId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 
@@ -49,13 +49,15 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var hackerId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 
         Client.DefaultRequestHeaders.Remove(TestAuthHandler.UserIdHeader);
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, memberId.ToString());
         var joinResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms/join", new JoinTranslationRoomRequest(createdRoom!.TranslationRoomCode, "Member", "vi", "en"));
+        var joinBody = await joinResponse.Content.ReadAsStringAsync();
+        joinResponse.StatusCode.Should().Be(HttpStatusCode.OK, joinBody);
         var joinData = await joinResponse.Content.ReadFromJsonAsync<JoinTranslationRoomResponse>();
 
         // 2. Act: Try to update audio as a different user
@@ -76,7 +78,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var memberId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", TranslationRoomType.INSTANT, 10, "en", new List<string> { "vi" }, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 

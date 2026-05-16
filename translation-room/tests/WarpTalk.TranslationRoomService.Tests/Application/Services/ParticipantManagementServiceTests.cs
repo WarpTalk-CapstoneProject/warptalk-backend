@@ -91,7 +91,7 @@ public class ParticipantManagementServiceTests
         { 
             Id = targetParticipantId,
             TranslationRoomId = roomId,
-            Status = TranslationRoomParticipantStatus.CONNECTED.ToString(),
+            Status = TranslationRoomParticipantStatus.CONNECTED,
             Role = TranslationRoomParticipantRole.PARTICIPANT.ToString()
         };
 
@@ -103,7 +103,7 @@ public class ParticipantManagementServiceTests
         var result = await _sut.KickParticipantAsync(roomId, targetParticipantId, hostId);
 
         result.IsSuccess.Should().BeTrue();
-        participant.Status.Should().Be(TranslationRoomParticipantStatus.KICKED.ToString());
+        participant.Status.Should().Be(TranslationRoomParticipantStatus.KICKED);
         _participantRepositoryMock.Verify(repo => repo.Update(participant), Times.Once);
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -120,7 +120,7 @@ public class ParticipantManagementServiceTests
             Id = participantId, 
             UserId = userId,
             TranslationRoomId = roomId,
-            Status = TranslationRoomParticipantStatus.CONNECTED.ToString()
+            Status = TranslationRoomParticipantStatus.CONNECTED
         };
 
         _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, userId, It.IsAny<CancellationToken>()))
@@ -129,7 +129,7 @@ public class ParticipantManagementServiceTests
         var result = await _sut.LeaveRoomAsync(roomId, userId);
 
         result.IsSuccess.Should().BeTrue();
-        participant.Status.Should().Be(TranslationRoomParticipantStatus.LEFT.ToString());
+        participant.Status.Should().Be(TranslationRoomParticipantStatus.LEFT);
         _participantRepositoryMock.Verify(repo => repo.Update(participant), Times.Once);
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -143,9 +143,9 @@ public class ParticipantManagementServiceTests
         
         var participants = new List<TranslationRoomParticipant>
         {
-            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Alice", Status = "CONNECTED", Role = "PARTICIPANT", JoinedAt = DateTime.UtcNow.AddMinutes(-5), ListenLanguage = "en", SpeakLanguage = "en" },
-            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Bob", Status = "LEFT", Role = "PARTICIPANT", JoinedAt = DateTime.UtcNow.AddMinutes(-10), ListenLanguage = "vi", SpeakLanguage = "vi" },
-            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Charlie", Status = "CONNECTED", Role = "PARTICIPANT", JoinedAt = DateTime.UtcNow.AddMinutes(-2), ListenLanguage = "fr", SpeakLanguage = "fr" }
+            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Alice", Status = TranslationRoomParticipantStatus.CONNECTED, Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow.AddMinutes(-5), ListenLanguage = "en", SpeakLanguage = "en" },
+            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Bob", Status = TranslationRoomParticipantStatus.LEFT, Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow.AddMinutes(-10), ListenLanguage = "vi", SpeakLanguage = "vi" },
+            new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Charlie", Status = TranslationRoomParticipantStatus.CONNECTED, Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow.AddMinutes(-2), ListenLanguage = "fr", SpeakLanguage = "fr" }
         };
 
         _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))

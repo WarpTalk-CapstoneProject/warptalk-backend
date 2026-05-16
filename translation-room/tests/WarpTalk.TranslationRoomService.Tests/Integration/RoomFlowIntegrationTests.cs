@@ -22,6 +22,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             MaxParticipants: 10,
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi", "fr" },
+            Settings: null,
             ScheduledAt: null
         );
 
@@ -30,7 +31,8 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
 
         // 2. Act: Create Room
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
-        createResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await createResponse.Content.ReadAsStringAsync();
+        createResponse.StatusCode.Should().Be(HttpStatusCode.Created, body);
         
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
         createdRoom.Should().NotBeNull();
@@ -51,9 +53,10 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, memberId.ToString());
 
         var joinResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms/join", joinRequest);
+        var joinBody = await joinResponse.Content.ReadAsStringAsync();
         
         // 4. Assert: Join Success
-        joinResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        joinResponse.StatusCode.Should().Be(HttpStatusCode.OK, joinBody);
         var joinData = await joinResponse.Content.ReadFromJsonAsync<JoinTranslationRoomResponse>();
         
         joinData.Should().NotBeNull();
@@ -77,6 +80,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             MaxParticipants: 5,
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi" },
+            Settings: null,
             ScheduledAt: scheduledTime
         );
 
@@ -108,6 +112,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         var response = await Client.PostAsJsonAsync("/api/v1/translation-rooms/join", joinRequest);
 
         // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound, body);
     }
 }

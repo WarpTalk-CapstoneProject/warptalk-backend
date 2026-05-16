@@ -6,7 +6,9 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -21,7 +23,7 @@ public class LanguageConfigurationTests
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
-    private readonly Mock<ILanguageService> _mockLanguageService;
+    private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
 
@@ -30,13 +32,13 @@ public class LanguageConfigurationTests
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
-        _mockLanguageService = new Mock<ILanguageService>();
+        _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
-        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguageService.Object, _mockLogger.Object);
+        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -46,10 +48,11 @@ public class LanguageConfigurationTests
         var request = new CreateTranslationRoomRequest(
             null, "Test Room", null, TranslationRoomType.GROUP, 10,
             "xx-XX", // Unsupported
-            new List<string> { "en-US" }
+            new List<string> { "en-US" },
+            null, null
         );
 
-        _mockLanguageService.Setup(v => v.IsSupportedAsync("xx-XX")).ReturnsAsync(false);
+        _mockLanguagePolicy.Setup(v => v.IsSupportedAsync("xx-XX")).ReturnsAsync(false);
 
         // Act
         var result = await _roomService.CreateTranslationRoomAsync(request, Guid.NewGuid());
@@ -66,11 +69,12 @@ public class LanguageConfigurationTests
         var request = new CreateTranslationRoomRequest(
             null, "Test Room", null, TranslationRoomType.GROUP, 10,
             "vi-VN",
-            new List<string> { "xx-XX" } // Unsupported
+            new List<string> { "xx-XX" }, // Unsupported
+            null, null
         );
 
-        _mockLanguageService.Setup(v => v.IsSupportedAsync("vi-VN")).ReturnsAsync(true);
-        _mockLanguageService.Setup(v => v.IsSupportedAsync("xx-XX")).ReturnsAsync(false);
+        _mockLanguagePolicy.Setup(v => v.IsSupportedAsync("vi-VN")).ReturnsAsync(true);
+        _mockLanguagePolicy.Setup(v => v.IsSupportedAsync("xx-XX")).ReturnsAsync(false);
 
         // Act
         var result = await _roomService.CreateTranslationRoomAsync(request, Guid.NewGuid());
@@ -89,16 +93,16 @@ public class LanguageConfigurationTests
             Id = Guid.NewGuid(),
             TranslationRoomCode = "abc-defg-hij",
             SourceLanguage = "vi-VN",
-            TargetLanguages = new List<string> { "en-US" },
-            Status = RoomStatus.WAITING.ToString()
+            TargetLanguages = LanguageHelper.SerializeTargetLanguages(new List<string> { "en-US" }),
+            Status = RoomStatus.WAITING
         };
 
         _mockRoomRepo.Setup(r => r.GetByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<RoomStatus>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
 
-        _mockLanguageService.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
-        _mockLanguageService.Setup(v => v.IsAllowedByPolicy("ja-JP", room)).Returns(false);
-        _mockLanguageService.Setup(v => v.IsAllowedByPolicy("vi-VN", room)).Returns(true);
+        _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
+        _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync("ja-JP", "vi-VN", room)).ReturnsAsync("must be the source language or one of the target languages");
+        _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync("vi-VN", "en-US", room)).ReturnsAsync((string?)null);
 
         var request = new JoinTranslationRoomRequest(
             "abc-defg-hij", "User", 
@@ -124,7 +128,7 @@ public class LanguageConfigurationTests
         {
             Id = roomId,
             HostId = hostId,
-            Status = RoomStatus.IN_PROGRESS.ToString()
+            Status = RoomStatus.IN_PROGRESS
         };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))

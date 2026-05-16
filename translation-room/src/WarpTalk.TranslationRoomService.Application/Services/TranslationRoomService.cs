@@ -97,7 +97,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while creating translation room for HostId: {HostId}", hostId);
-            return Result.Failure<TranslationRoomDto>("An unexpected error occurred while creating the room.", ErrorCodes.InternalServerError);
+            return Result.Failure<TranslationRoomDto>($"Error: {ex.Message} Inner: {ex.InnerException?.Message}", ErrorCodes.InternalServerError);
         }
     }
 

@@ -18,7 +18,7 @@ public class CreateTranslationRoomRequestValidatorTests
     [Fact]
     public void Should_Have_Error_When_Title_Is_Null()
     {
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), null!, "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", new List<string> { "en" }, null);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), null!, "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", new List<string> { "en" }, null, null);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.Title)
               .WithErrorMessage(ApiMessageConstants.ValidationMessages.TitleRequired);
@@ -28,7 +28,7 @@ public class CreateTranslationRoomRequestValidatorTests
     public void Should_Have_Error_When_Title_Exceeds_MaxLength()
     {
         var longTitle = new string('A', 256);
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), longTitle, "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", new List<string> { "en" }, null);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), longTitle, "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", new List<string> { "en" }, null, null);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.Title)
               .WithErrorMessage(ApiMessageConstants.ValidationMessages.TitleMaxLength);
@@ -37,7 +37,7 @@ public class CreateTranslationRoomRequestValidatorTests
     [Fact]
     public void Should_Have_Error_When_SourceLanguage_Is_Null()
     {
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, null!, new List<string> { "en" }, null);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, null!, new List<string> { "en" }, null, null);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.SourceLanguage)
               .WithErrorMessage(TranslationRoomConstants.ValidationSourceLanguageRequired);
@@ -46,7 +46,7 @@ public class CreateTranslationRoomRequestValidatorTests
     [Fact]
     public void Should_Have_Error_When_TargetLanguages_Is_Null()
     {
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", null!, null);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 10, "vi", null!, null, null);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.TargetLanguages)
               .WithErrorMessage(TranslationRoomConstants.ValidationTargetLanguagesRequired);
@@ -55,7 +55,7 @@ public class CreateTranslationRoomRequestValidatorTests
     [Fact]
     public void Should_Have_Error_When_MaxParticipants_Is_Zero()
     {
-        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 0, "vi", new List<string> { "en" }, null);
+        var model = new CreateTranslationRoomRequest(Guid.NewGuid(), "Valid Title", "Description", WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomType.INSTANT, 0, "vi", new List<string> { "en" }, null, null);
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.MaxParticipants)
               .WithErrorMessage(TranslationRoomConstants.ValidationMaxParticipantsGreaterThanZero);

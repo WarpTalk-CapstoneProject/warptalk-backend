@@ -49,7 +49,8 @@ public static class TranslationRoomParticipantMapper
         
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
         if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED ||
-            participant.Status == TranslationRoomParticipantStatus.LEFT)
+            participant.Status == TranslationRoomParticipantStatus.LEFT ||
+            participant.Status == TranslationRoomParticipantStatus.INVITED)
         {
             participant.Status = (requiresApproval && !isHost) 
                 ? TranslationRoomParticipantStatus.WAITING 
