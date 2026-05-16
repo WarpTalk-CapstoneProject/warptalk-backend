@@ -154,7 +154,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // BR-010: Block KICKED participants
-            if (participant != null && participant.Status == TranslationRoomParticipantStatus.KICKED.ToString())
+            if (participant != null && participant.Status == TranslationRoomParticipantStatus.KICKED)
             {
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantKicked, ErrorCodes.Forbidden);
             }
@@ -224,7 +224,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
-            translationRoom.Status = RoomStatus.ENDED.ToString();
+            translationRoom.Status = RoomStatus.ENDED;
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
@@ -252,7 +252,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != RoomStatus.SCHEDULED.ToString() && translationRoom.Status != RoomStatus.WAITING.ToString())
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
             // WT-65: Update and Validate Source Language

@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Threading.Tasks;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -43,26 +44,36 @@ public class LanguagePolicy : ILanguagePolicy
         return targets.Any(t => t.Equals(language, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// Validates the participant's requested languages before joining a room.
+    /// This includes 3 levels of validation:
+    /// 1. Basic validation (Not null/empty)
+    /// 2. System validation (Check if language is globally supported in the database)
+    /// 3. Policy validation (Check if language is allowed in this specific room's configuration)
+    /// </summary>
     public async Task<string?> ValidateParticipantLanguagesAsync(string? speakLanguage, string? listenLanguage, TranslationRoom room)
     {
+        // 1. Basic format validation
         if (string.IsNullOrWhiteSpace(speakLanguage))
-            return Domain.Constants.TranslationRoomConstants.ValidationSpeakLanguageRequired;
+            return TranslationRoomConstants.ValidationSpeakLanguageRequired;
         
         if (string.IsNullOrWhiteSpace(listenLanguage))
-            return Domain.Constants.TranslationRoomConstants.ValidationListenLanguageRequired;
+            return TranslationRoomConstants.ValidationListenLanguageRequired;
             
+        // 2. System-level validation: Ensure languages are supported by the platform
         if (!await IsSupportedAsync(speakLanguage))
-            return string.Format(Domain.Constants.TranslationRoomConstants.ValidationLanguageUnsupported, speakLanguage);
+            return string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, speakLanguage);
             
         if (!await IsSupportedAsync(listenLanguage))
-            return string.Format(Domain.Constants.TranslationRoomConstants.ValidationLanguageUnsupported, listenLanguage);
+            return string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, listenLanguage);
             
+        // 3. Room-level policy validation: Ensure languages match the room's source/target config
         if (!IsAllowedToSpeak(speakLanguage, room))
-            return string.Format(Domain.Constants.TranslationRoomConstants.ValidationLanguageNotAllowedByPolicy, "Speak", speakLanguage);
+            return string.Format(TranslationRoomConstants.ValidationLanguageNotAllowedByPolicy, "Speak", speakLanguage);
             
         if (!IsAllowedToListen(listenLanguage, room))
-            return string.Format(Domain.Constants.TranslationRoomConstants.ValidationLanguageNotAllowedByPolicy, "Listen", listenLanguage);
+            return string.Format(TranslationRoomConstants.ValidationLanguageNotAllowedByPolicy, "Listen", listenLanguage);
 
-        return null;
+        return null; // Null means no validation errors (Success)
     }
 }

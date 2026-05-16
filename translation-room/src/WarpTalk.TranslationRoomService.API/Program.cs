@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.API.GrpcServices;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 using WarpTalk.TranslationRoomService.Infrastructure.Repositories;

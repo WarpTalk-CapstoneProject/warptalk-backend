@@ -29,7 +29,7 @@ public static class TranslationRoomParticipantMapper
             Role = role.ToString(),
             ListenLanguage = listenLanguage,
             SpeakLanguage = speakLanguage,
-            Status = initialStatus.ToString(),
+            Status = initialStatus,
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -48,19 +48,19 @@ public static class TranslationRoomParticipantMapper
         participant.SpeakLanguage = speakLanguage;
         
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
-        if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED.ToString() ||
-            participant.Status == TranslationRoomParticipantStatus.LEFT.ToString())
+        if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED ||
+            participant.Status == TranslationRoomParticipantStatus.LEFT)
         {
             participant.Status = (requiresApproval && !isHost) 
-                ? TranslationRoomParticipantStatus.WAITING.ToString() 
-                : TranslationRoomParticipantStatus.CONNECTED.ToString();
+                ? TranslationRoomParticipantStatus.WAITING 
+                : TranslationRoomParticipantStatus.CONNECTED;
         }
 
         // BR-004: Host check overrides approval
         if (isHost)
         {
             participant.Role = TranslationRoomParticipantRole.HOST.ToString();
-            participant.Status = TranslationRoomParticipantStatus.CONNECTED.ToString();
+            participant.Status = TranslationRoomParticipantStatus.CONNECTED;
         }
         
         participant.UpdatedAt = DateTime.UtcNow;
@@ -71,12 +71,12 @@ public static class TranslationRoomParticipantMapper
         return new TranslationRoomParticipantDto(
             participant.Id,
             participant.TranslationRoomId,
-            participant.UserId,
+            participant.UserId.GetValueOrDefault(),
             participant.DisplayName,
             Enum.Parse<TranslationRoomParticipantRole>(participant.Role, true),
             participant.ListenLanguage,
             participant.SpeakLanguage,
-            Enum.Parse<TranslationRoomParticipantStatus>(participant.Status, true),
+            participant.Status,
             participant.IsTranslationAudioEnabled,
             participant.JoinedAt
         );
