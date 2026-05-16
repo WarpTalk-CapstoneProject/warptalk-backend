@@ -23,12 +23,14 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
     private readonly ILanguagePolicy _languagePolicy;
+    private readonly IAudioRouteEventProcessorService _audioRouteEventProcessor;
     private readonly ILogger<TranslationRoomService> _logger;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, ILogger<TranslationRoomService> logger)
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessorService audioRouteEventProcessor, ILogger<TranslationRoomService> logger)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
+        _audioRouteEventProcessor = audioRouteEventProcessor;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _logger = logger;
@@ -212,6 +214,147 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    public async Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            
+            if (translationRoom.Status != RoomStatus.SCHEDULED)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToWaiting, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.WAITING;
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error opening waiting room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            
+            if (translationRoom.Status != RoomStatus.WAITING && translationRoom.Status != RoomStatus.PAUSED)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.IN_PROGRESS;
+            
+            if (!translationRoom.StartedAt.HasValue)
+                translationRoom.StartedAt = DateTime.UtcNow;
+                
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-67: Trigger Audio Routing State Machine
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_started.ToString(), "{}", ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> PauseTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            
+            if (translationRoom.Status != RoomStatus.IN_PROGRESS)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.PAUSED;
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error pausing translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        return await StartTranslationRoomAsync(translationRoomId, hostId, ct);
+    }
+
+    public async Task<Result> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToCancelled, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.CANCELLED;
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error cancelling translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            
+            // Idempotent check
+            if (translationRoom.Status == RoomStatus.EXPIRED)
+                return Result.Success();
+
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToExpired, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.EXPIRED;
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error expiring translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -224,12 +367,23 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
+            if (translationRoom.Status != RoomStatus.IN_PROGRESS && translationRoom.Status != RoomStatus.PAUSED)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
+
             translationRoom.Status = RoomStatus.ENDED;
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
+            if (translationRoom.StartedAt.HasValue)
+            {
+                translationRoom.DurationSeconds = (int)(translationRoom.EndedAt.Value - translationRoom.StartedAt.Value).TotalSeconds;
+            }
+
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-67: Trigger Audio Routing State Machine
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_ended_session.ToString(), "{}", ct);
 
             return Result.Success();
         }
@@ -273,7 +427,7 @@ public class TranslationRoomService : ITranslationRoomService
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
                 
-                translationRoom.TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
             }
 
             // Update Settings (RequiresApproval)

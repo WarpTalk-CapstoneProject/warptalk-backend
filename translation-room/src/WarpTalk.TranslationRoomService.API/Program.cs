@@ -42,11 +42,23 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository>();
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
+builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomParticipantService>();
+builder.Services.AddScoped<ITranslationRoomAudioRouteService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomAudioRouteService>();
+builder.Services.AddSingleton<WarpTalk.TranslationRoomService.Domain.StateMachines.IAudioRouteStateMachine, WarpTalk.TranslationRoomService.Domain.StateMachines.AudioRouteStateMachine>();
+builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.Interfaces.IAudioRouteEventProcessorService, WarpTalk.TranslationRoomService.Application.Services.AudioRouteEventProcessorService>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.LanguagePolicy.ILanguagePolicy, WarpTalk.TranslationRoomService.Application.LanguagePolicy.LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
+
+// Redis Configuration
+var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+var multiplexer = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString);
+builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(multiplexer);
+
+// Hosted Services
+builder.Services.AddHostedService<WarpTalk.TranslationRoomService.API.HostedServices.TranslationRoomEventConsumerService>();
 
 // Register FluentValidation Validators
 builder.Services.AddValidatorsFromAssemblyContaining<CreateTranslationRoomRequestValidator>();

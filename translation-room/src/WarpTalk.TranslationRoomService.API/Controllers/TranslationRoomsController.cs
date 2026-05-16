@@ -70,6 +70,66 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    [HttpPost("{id}/waiting")]
+    public async Task<IActionResult> OpenWaitingRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.OpenWaitingRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+
+    [HttpPost("{id}/start")]
+    public async Task<IActionResult> StartTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.StartTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+
+    [HttpPost("{id}/pause")]
+    public async Task<IActionResult> PauseTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.PauseTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+
+    [HttpPost("{id}/resume")]
+    public async Task<IActionResult> ResumeTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.ResumeTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+
+    [HttpPost("{id}/cancel")]
+    public async Task<IActionResult> CancelTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.CancelTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+
     [HttpPost("{id}/end")]
     public async Task<IActionResult> EndTranslationRoom(Guid id, CancellationToken ct)
     {

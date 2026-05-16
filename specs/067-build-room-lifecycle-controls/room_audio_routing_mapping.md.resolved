@@ -1,0 +1,81 @@
+# Room lifecycle status ↔ Audio routing realtime status
+
+## Mục tiêu
+
+Tài liệu này mô tả mối liên hệ giữa **room lifecycle status** và **audio routing realtime status** để thống nhất cách thiết kế giữa luồng quản lý phòng và luồng runtime audio routing.
+
+## Nguyên tắc chung
+
+- **Room lifecycle status** là trạng thái nghiệp vụ của phòng.
+- **Audio routing realtime status** là trạng thái runtime của pipeline audio/translation.
+- Không nên map cứng theo kiểu **1 room status = 1 audio routing status** trong mọi trường hợp.
+- Audio routing realtime chỉ nên được khởi tạo khi room đã đạt điều kiện vận hành runtime.
+
+## Bảng mapping đề xuất
+
+| Room status | Audio routing realtime status phù hợp | Điều kiện / ghi chú |
+|---|---|---|
+| `DRAFT` | `IDLE` | Room mới ở mức bản nháp, chưa có phiên runtime thực tế. Có thể validation cấu hình, nhưng chưa khởi tạo audio routing realtime. |
+| `SCHEDULED` | `IDLE` | Room đã được lên lịch nhưng chưa mở phiên chờ. Chưa nên chạy realtime audio routing. |
+| `WAITING` | `IDLE` hoặc `ROUTING_READY` | Nếu chưa đủ participants / language preferences / routing policy thì vẫn `IDLE`. Nếu đã đủ dữ liệu để xác định route một cách deterministic thì có thể chuyển `ROUTING_READY`. |
+| `IN_PROGRESS` | `AUDIO_ROUTING_ACTIVE` | Session đang chạy và audio routing hoạt động bình thường. |
+| `IN_PROGRESS` | `TRANSLATION_DEGRADED` | Session đang chạy nhưng translation path gặp lỗi hoặc latency cao. |
+| `IN_PROGRESS` | `VOICE_QUALITY_DEGRADED` | Session đang chạy nhưng voice output / voice clone bị suy giảm. |
+| `IN_PROGRESS` | `TEXT_ONLY_MODE` | Session vẫn chạy nhưng audio output không khả dụng, hệ thống fallback về text. |
+| `PAUSED` | `ROUTING_READY` hoặc state tạm dừng riêng nếu sau này bổ sung | Nếu pause chỉ là tạm dừng session/media flow, route context có thể vẫn được giữ để resume nhanh. Nếu chưa có paused-state riêng cho runtime thì giữ `ROUTING_READY` là phương án đơn giản. |
+| `ENDED` | `STOPPING` → `FINALIZING_ARTIFACTS` → `COMPLETED` | Khi host kết thúc room, runtime dừng routing, flush dữ liệu, link artifacts, rồi hoàn tất. |
+| `CANCELLED` | `COMPLETED` hoặc bỏ qua runtime states | Nếu room bị hủy trước khi start, thông thường không cần đi qua runtime chain đầy đủ. |
+| `EXPIRED` | `COMPLETED` hoặc bỏ qua runtime states | Tương tự `CANCELLED`, thường không có session runtime thực sự diễn ra. |
+
+## Diễn giải ngắn theo từng mốc
+
+### 1. Draft
+- `DRAFT` nên map về `IDLE`.
+- Đây là trạng thái chuẩn bị dữ liệu, chưa phải runtime session.
+- Không nên trigger route generation/runtime flow chỉ vì room đang ở draft.
+
+### 2. Scheduled
+- `SCHEDULED` thông thường vẫn là `IDLE`.
+- Room đã tồn tại về mặt nghiệp vụ nhưng chưa bước vào giai đoạn vận hành realtime.
+
+### 3. Waiting
+- `WAITING` là thời điểm đầu tiên có thể cân nhắc `ROUTING_READY`.
+- Chỉ nên vào `ROUTING_READY` khi đã có đủ dữ liệu như:
+  - participants cần thiết
+  - source/listen language
+  - routing policy hợp lệ
+  - route context có thể generate ổn định
+- Nếu chưa đủ dữ liệu thì vẫn giữ `IDLE`.
+
+### 4. In progress
+- Khi room vào `IN_PROGRESS`, audio routing realtime nên vào `AUDIO_ROUTING_ACTIVE` nếu pipeline hoạt động bình thường.
+- Nếu runtime có sự cố một phần thì chuyển sang các degraded states thay vì làm thay đổi room lifecycle status.
+
+### 5. Paused
+- `PAUSED` không nhất thiết đồng nghĩa với việc runtime bị hủy.
+- Nếu mục tiêu là resume nhanh, có thể giữ route context ở trạng thái gần sẵn sàng (`ROUTING_READY`).
+
+### 6. Ended / Cancelled / Expired
+- `ENDED` thường đi qua chuỗi shutdown rõ ràng: `STOPPING` → `FINALIZING_ARTIFACTS` → `COMPLETED`.
+- `CANCELLED` và `EXPIRED` nếu chưa từng start thì có thể kết thúc trực tiếp mà không cần runtime chain đầy đủ.
+
+## Rule gọn để áp dụng thiết kế
+
+| Điều kiện | Routing status |
+|---|---|
+| Room chỉ là bản nháp hoặc chưa mở session | `IDLE` |
+| Room đã mở chờ bắt đầu nhưng chưa đủ dữ liệu route | `IDLE` |
+| Room ở `WAITING` và đủ dữ liệu route | `ROUTING_READY` |
+| Room đang chạy bình thường | `AUDIO_ROUTING_ACTIVE` |
+| Room đang chạy nhưng translation/audio lỗi một phần | degraded states |
+| Room đang kết thúc | `STOPPING` |
+| Đang flush/link artifacts | `FINALIZING_ARTIFACTS` |
+| Runtime kết thúc hẳn | `COMPLETED` |
+
+## Kết luận đề xuất
+
+- `DRAFT` **không** nên kích hoạt audio routing realtime; mapping an toàn là `IDLE`.
+- `SCHEDULED` cũng nên giữ `IDLE`.
+- `WAITING` mới là trạng thái phù hợp để xét chuyển sang `ROUTING_READY` nếu đủ dữ liệu.
+- `IN_PROGRESS` mới là mốc chính để vào `AUDIO_ROUTING_ACTIVE`.
+- Các degraded states nên là trạng thái con của runtime trong lúc room vẫn đang `IN_PROGRESS`, không phải lifecycle state của room.

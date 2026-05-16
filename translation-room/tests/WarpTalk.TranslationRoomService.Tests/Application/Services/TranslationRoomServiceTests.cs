@@ -19,6 +19,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
+    private readonly Mock<IAudioRouteEventProcessorService> _mockAudioRouteEventProcessor;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
@@ -28,6 +29,7 @@ public class TranslationRoomServiceTests
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
+        _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessorService>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
@@ -36,7 +38,7 @@ public class TranslationRoomServiceTests
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockLogger.Object);
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -141,5 +143,71 @@ public class TranslationRoomServiceTests
         existingParticipant.ListenLanguage.Should().Be("es");
         existingParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED);
         _mockParticipantRepo.Verify(p => p.Update(existingParticipant), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_ValidState_UpdatesStatusAndFiresEvent()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = RoomStatus.WAITING };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be(RoomStatus.IN_PROGRESS);
+        room.StartedAt.Should().NotBeNull();
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_started.ToString(), "{}", default), Times.Once);
+    }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_InvalidState_ReturnsError()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = RoomStatus.SCHEDULED };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToInProgress);
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
+    }
+
+    [Fact]
+    public async Task EndTranslationRoomAsync_CalculatesDurationAndFiresEvent()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var startedAt = DateTime.UtcNow.AddMinutes(-30);
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = RoomStatus.IN_PROGRESS, StartedAt = startedAt };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be(RoomStatus.ENDED);
+        room.EndedAt.Should().NotBeNull();
+        room.DurationSeconds.Should().BeGreaterOrEqualTo(1800); // 30 mins = 1800s
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.host_ended_session.ToString(), "{}", default), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExpireTranslationRoomAsync_Idempotent_ReturnsSuccess()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, Status = RoomStatus.EXPIRED };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ExpireTranslationRoomAsync(roomId);
+
+        result.IsSuccess.Should().BeTrue();
+        _mockRoomRepo.Verify(r => r.Update(It.IsAny<TranslationRoom>()), Times.Never);
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -59,7 +60,7 @@ public partial class TranslationRoom
 
     public bool IsActive { get; set; }
 
-    public WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus Status { get; set; }
+    public RoomStatus Status { get; set; }
 
     public DateTime CreatedAt { get; set; }
 

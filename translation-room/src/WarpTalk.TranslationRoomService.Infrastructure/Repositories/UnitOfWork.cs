@@ -10,6 +10,7 @@ public class UnitOfWork : IUnitOfWork
 
     public ITranslationRoomRepository TranslationRoomRepository { get; }
     public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
+    public ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
     public ILanguageRepository LanguageRepository { get; }
     public IUserSettingsRepository UserSettingsRepository { get; }
 
@@ -17,12 +18,14 @@ public class UnitOfWork : IUnitOfWork
         TranslationRoomDbContext context, 
         ITranslationRoomRepository translationRoomRepository,
         ITranslationRoomParticipantRepository translationRoomParticipantRepository,
+        ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
         ILanguageRepository languageRepository,
         IUserSettingsRepository userSettingsRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
         TranslationRoomParticipantRepository = translationRoomParticipantRepository;
+        TranslationRoomAudioRouteRepository = translationRoomAudioRouteRepository;
         LanguageRepository = languageRepository;
         UserSettingsRepository = userSettingsRepository;
     }

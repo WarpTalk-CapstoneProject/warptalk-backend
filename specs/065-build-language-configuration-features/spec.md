@@ -71,7 +71,8 @@ Implement language configuration and validation for Translation Rooms and Partic
 - **Validate Platform Support**: Check `source_language` and every item in `target_languages` against `platform.supported_languages`.
 - **Status Check**: Reject updates if room status is `IN_PROGRESS`.
 - **Reject** if `source_language` is null or empty.
-- **Reject** if `target_languages` is empty or contains duplicates.
+- **Reject** if `target_languages` is empty.
+- **Allow Circular Support**: `source_language` is allowed to be the same as any language in `target_languages`. Duplicate languages within `target_languages` will be ignored or accepted based on current code behavior.
 
 ### Participant-level Logic
 - **On Join/Update Preferences**:
@@ -81,7 +82,11 @@ Implement language configuration and validation for Translation Rooms and Partic
 ## Implementation Plan
 
 ### 1. Validator/Helper
-- Create `ILanguageValidator` to centralize platform support and policy checks.
+- [x] Tách validator/helper dùng chung (`ILanguagePolicy`, `LanguageHelper`)
+- [x] check supported language
+- [x] normalize/compare language code nếu cần
+- [x] validate room policy
+- [x] validate participant language config
 
 ### 2. Service Integration
 - Update `TranslationRoomService.JoinTranslationRoomAsync` to perform the policy check after fetching the room entity.

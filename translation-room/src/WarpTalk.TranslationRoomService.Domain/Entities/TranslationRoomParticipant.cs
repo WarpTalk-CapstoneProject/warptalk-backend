@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -37,7 +38,7 @@ public partial class TranslationRoomParticipant
 
     public string ConnectionType { get; set; } = null!;
 
-    public WarpTalk.TranslationRoomService.Domain.Enums.TranslationRoomParticipantStatus Status { get; set; }
+    public TranslationRoomParticipantStatus Status { get; set; }
 
     public bool IsTranslationAudioEnabled { get; set; }
 
