@@ -18,6 +18,7 @@ public class UnitOfWork : IUnitOfWork
     private IGenericRepository<TranscriptCorrection>? _transcriptCorrections;
     private IGenericRepository<Glossary>? _glossaries;
     private IGenericRepository<GlossaryTerm>? _glossaryTerms;
+    private IGenericRepository<TranscriptExport>? _transcriptExports;
 
     public UnitOfWork(TranscriptDbContext context)
     {
@@ -41,6 +42,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IGenericRepository<GlossaryTerm> GlossaryTerms => 
         _glossaryTerms ??= new GenericRepository<GlossaryTerm>(_context);
+
+    public IGenericRepository<TranscriptExport> TranscriptExports => 
+        _transcriptExports ??= new GenericRepository<TranscriptExport>(_context);
 
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

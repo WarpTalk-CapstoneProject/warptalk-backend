@@ -13,6 +13,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<TranscriptCorrection> TranscriptCorrections { get; }
     IGenericRepository<Glossary> Glossaries { get; }
     IGenericRepository<GlossaryTerm> GlossaryTerms { get; }
+    IGenericRepository<TranscriptExport> TranscriptExports { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

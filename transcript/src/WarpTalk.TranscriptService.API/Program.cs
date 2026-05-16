@@ -49,6 +49,7 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();
 builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
+builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
