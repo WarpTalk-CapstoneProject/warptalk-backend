@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.NotificationService.Application.DTOs;
+using WarpTalk.NotificationService.Application.DTOs.AdminNotifications;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.Shared;
 
@@ -13,11 +14,16 @@ namespace WarpTalk.NotificationService.API.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly INotificationService _notificationService;
+    private readonly IAdminNotificationService _adminNotificationService;
     private readonly ILogger<NotificationsController> _logger;
 
-    public NotificationsController(INotificationService notificationService, ILogger<NotificationsController> logger)
+    public NotificationsController(
+        INotificationService notificationService, 
+        IAdminNotificationService adminNotificationService,
+        ILogger<NotificationsController> logger)
     {
         _notificationService = notificationService;
+        _adminNotificationService = adminNotificationService;
         _logger = logger;
     }
 
@@ -115,14 +121,16 @@ public class NotificationsController : ControllerBase
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
             return Unauthorized();
 
-        var result = await _notificationService.CreateNotificationAsync(
+        var dto = new WarpTalk.NotificationService.Application.DTOs.CreateNotificationMessageDto(
             userId,
             "SYSTEM_ALERT",
             "Mock Notification",
             "This is a seeded notification for testing purposes.",
             null,
-            "{}",
-            ct);
+            "{}"
+        );
+
+        var result = await _notificationService.CreateNotificationAsync(dto, ct);
 
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -130,4 +138,57 @@ public class NotificationsController : ControllerBase
         return Ok(new { id = result.Value.Id });
     }
 
+    [HttpPost("~/api/v1/admin/notifications")]
+    [Authorize(Roles = "admin")]
+    public async Task<IActionResult> CreateAdminNotification([FromBody] CreateAdminNotificationDto request, CancellationToken ct)
+    {
+        var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(adminIdString) || !Guid.TryParse(adminIdString, out var adminId))
+            return Unauthorized();
+
+        var result = await _adminNotificationService.CreateAdminNotificationAsync(adminId, request, ct);
+
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Created($"/api/v1/admin/notifications/{result.Value!.Id}", result.Value);
+    }
+
+    [HttpGet("~/api/v1/admin/notifications")]
+    [Authorize(Roles = "admin")]
+    public async Task<IActionResult> GetAdminNotifications([FromQuery] GetAdminNotificationsQuery query, CancellationToken ct)
+    {
+        var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(adminIdString) || !Guid.TryParse(adminIdString, out _))
+            return Unauthorized();
+
+        var result = await _adminNotificationService.GetAdminNotificationsAsync(query, ct);
+        
+        if (!result.IsSuccess)
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return Ok(result.Value);
+    }
+
+    [HttpGet("~/api/v1/admin/notifications/{id}")]
+    [Authorize(Roles = "admin")]
+    public async Task<IActionResult> GetAdminNotificationDetail(Guid id, CancellationToken ct)
+    {
+        var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (string.IsNullOrEmpty(adminIdString) || !Guid.TryParse(adminIdString, out _))
+            return Unauthorized();
+
+        var result = await _adminNotificationService.GetAdminNotificationDetailAsync(id, ct);
+        
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) 
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
 }

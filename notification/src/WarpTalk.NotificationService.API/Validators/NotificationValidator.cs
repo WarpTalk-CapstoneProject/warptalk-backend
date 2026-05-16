@@ -47,13 +47,13 @@ public static class NotificationValidator
 
     public static Result Validate(string type, string title, string content, string? actionUrl, string? payloadJson)
     {
-        // 1. Check Title and Content for HTML
+        // Check Title and Content for HTML
         if (HasHtml(title) || HasHtml(content) || HasHtml(actionUrl))
         {
             return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
         }
 
-        // 2. Validate Payload
+        // Validate Payload
         if (string.IsNullOrWhiteSpace(payloadJson) || payloadJson == "{}")
         {
             // Empty payload might be fine for some types if no required fields exist

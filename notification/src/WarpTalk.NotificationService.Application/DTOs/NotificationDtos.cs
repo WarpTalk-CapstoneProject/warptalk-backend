@@ -19,6 +19,15 @@ public record UpdateNotificationPreferenceRequest(
     bool? InAppEnabled
 );
 
+public record CreateNotificationMessageDto(
+    Guid UserId,
+    string Type,
+    string Title,
+    string Content,
+    string? ActionUrl,
+    string PayloadJson
+);
+
 public record NotificationMessageDto(
     Guid Id,
     string Type,

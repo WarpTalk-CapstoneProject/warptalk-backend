@@ -6,6 +6,7 @@ using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.NotificationService.API.Middlewares;
 using WarpTalk.NotificationService.Domain.Constants;
+using WarpTalk.NotificationService.Application.Mappers;
 using Microsoft.Extensions.Logging;
 
 namespace WarpTalk.NotificationService.API.GrpcServices;
@@ -46,7 +47,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             foreach (var kvp in request.Metadata) meta[kvp.Key] = kvp.Value;
         }
 
-        // ActionUrl is now passed as a dedicated column, not in meta
+        
 
         var payloadJson = "{}";
         if (meta.Count > 0)
@@ -65,14 +66,8 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             };
         }
 
-        var result = await _notificationService.CreateNotificationAsync(
-            parsedUserId, 
-            request.Type, 
-            request.Title, 
-            request.Body, 
-            string.IsNullOrEmpty(request.ActionUrl) ? null : request.ActionUrl,
-            payloadJson, 
-            context.CancellationToken);
+        var dto = NotificationMessageMapper.ToCreateDto(request, parsedUserId, payloadJson);
+        var result = await _notificationService.CreateNotificationAsync(dto, context.CancellationToken);
 
         if (!result.IsSuccess || result.Value == null)
         {
@@ -85,17 +80,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
 
         try
         {
-            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
-            {
-                Id = result.Value.Id.ToString(),
-                UserId = request.UserId,
-                Type = result.Value.Type,
-                Title = result.Value.Title,
-                Content = result.Value.Content,
-                ActionUrl = result.Value.ActionUrl ?? string.Empty,
-                PayloadJson = result.Value.PayloadJson,
-                CreatedAt = result.Value.CreatedAt.ToString("O")
-            };
+            var msg = WarpTalk.NotificationService.Application.Mappers.NotificationMessageMapper.ToRealtimeDto(result.Value, request.UserId);
             var json = System.Text.Json.JsonSerializer.Serialize(msg);
             await _redis.GetDatabase().PublishAsync(StackExchange.Redis.RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel), json);
         }

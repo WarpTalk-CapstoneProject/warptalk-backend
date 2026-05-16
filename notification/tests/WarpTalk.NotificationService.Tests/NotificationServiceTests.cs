@@ -14,7 +14,7 @@ public class NotificationServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<INotificationMessageRepository> _mockRepo;
-    private readonly Application.Services.NotificationService _sut;
+    private readonly global::WarpTalk.NotificationService.Application.Services.NotificationService _sut;
 
     public NotificationServiceTests()
     {
@@ -23,8 +23,8 @@ public class NotificationServiceTests
 
         _mockUnitOfWork.Setup(u => u.NotificationMessageRepository).Returns(_mockRepo.Object);
 
-        var mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<Application.Services.NotificationService>>();
-        _sut = new Application.Services.NotificationService(_mockUnitOfWork.Object, mockLogger.Object);
+        var mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<global::WarpTalk.NotificationService.Application.Services.NotificationService>>();
+        _sut = new global::WarpTalk.NotificationService.Application.Services.NotificationService(_mockUnitOfWork.Object, mockLogger.Object);
     }
 
     [Fact]

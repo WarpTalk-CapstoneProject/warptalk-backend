@@ -1,7 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
-namespace WarpTalk.TranslationRoomService.Infrastructure;
+namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
 public partial class TranslationRoomFeedback
 {
@@ -9,6 +9,9 @@ public partial class TranslationRoomFeedback
 
     public Guid TranslationRoomId { get; set; }
 
+    /// <summary>
+    /// External AuthService user id. No physical FK.
+    /// </summary>
     public Guid UserId { get; set; }
 
     public int OverallRating { get; set; }
@@ -18,6 +21,8 @@ public partial class TranslationRoomFeedback
     public int? AudioQuality { get; set; }
 
     public int? VoiceCloneQuality { get; set; }
+
+    public int? AiSummaryQuality { get; set; }
 
     public string? Comments { get; set; }
 

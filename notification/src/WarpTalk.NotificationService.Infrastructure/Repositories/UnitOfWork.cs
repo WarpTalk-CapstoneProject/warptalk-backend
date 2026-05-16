@@ -11,6 +11,7 @@ public class UnitOfWork : IUnitOfWork
     private INotificationPreferenceRepository? _notificationPreferenceRepository;
     private INotificationTemplateRepository? _notificationTemplateRepository;
     private IPushSubscriptionRepository? _pushSubscriptionRepository;
+    private IAdminNotificationRepository? _adminNotificationRepository;
 
     public UnitOfWork(NotificationDbContext context)
     {
@@ -29,6 +30,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IPushSubscriptionRepository PushSubscriptionRepository => 
         _pushSubscriptionRepository ??= new PushSubscriptionRepository(_context);
+
+    public IAdminNotificationRepository AdminNotificationRepository => 
+        _adminNotificationRepository ??= new AdminNotificationRepository(_context);
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

@@ -1,36 +1,45 @@
+using System;
 using System.Security.Claims;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Domain.Constants;
+using FluentValidation;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
 [ApiController]
-[Route("api/v1/[controller]")]
+[Route("api/v1/translation-rooms")]
 [Authorize]
 public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
 
-    public TranslationRoomsController(ITranslationRoomService translationRoomService)
+    public TranslationRoomsController(
+        ITranslationRoomService translationRoomService)
     {
         _translationRoomService = translationRoomService;
     }
 
     [HttpPost]
-    public async Task<IActionResult> CreateTranslationRoom([FromBody] CreateTranslationRoomRequest request, CancellationToken ct)
+    public async Task<IActionResult> CreateTranslationRoom([FromBody] CreateTranslationRoomRequest request)
     {
-        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var hostId))
+        var hostId = User.GetUserId();
+        if (hostId == null)
+        {
             return Unauthorized();
+        }
 
-        var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId, ct);
+        var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value);
+
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return Ok(result.Value);
+        return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value!.Id }, result.Value);
     }
 
     [HttpGet("{id}")]
@@ -40,33 +49,55 @@ public class TranslationRoomsController : ControllerBase
         if (!result.IsSuccess)
             return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return Ok(result.Value);
+        return Ok(result.Value!);
     }
 
-    [HttpPost("{id}/join")]
-    public async Task<IActionResult> JoinTranslationRoom(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    [HttpPost("join")]
+    public async Task<IActionResult> JoinTranslationRoom([FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
     {
-        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
+        var userId = User.GetUserId();
+        if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.JoinTranslationRoomAsync(id, userId, request, ct);
+        var result = await _translationRoomService.JoinTranslationRoomAsync(request, userId.Value, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
-        return Ok(result.Value);
+        return Ok(result.Value!);
     }
 
     [HttpPost("{id}/end")]
     public async Task<IActionResult> EndTranslationRoom(Guid id, CancellationToken ct)
     {
-        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var hostId))
+        var hostId = User.GetUserId();
+        if (hostId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.EndTranslationRoomAsync(id, hostId, ct);
+        var result = await _translationRoomService.EndTranslationRoomAsync(id, hostId.Value, ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return NoContent();
+    }
+//Chua co enpoint PATCH nen tach rieng settings
+    [HttpPut("{id}/settings")]
+    public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.UpdateTranslationRoomSettingsAsync(id, hostId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return NoContent();
     }
