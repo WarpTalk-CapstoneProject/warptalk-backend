@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
-using WarpTalk.TranslationRoomService.Infrastructure;
+using WarpTalk.TranslationRoomService.Domain.Entities;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -23,10 +23,6 @@ public partial class TranslationRoomDbContext : DbContext
     public virtual DbSet<TranslationRoomFeedback> TranslationRoomFeedbacks { get; set; }
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
-
-    public virtual DbSet<TranslationRoomRecording> TranslationRoomRecordings { get; set; }
-
-    public virtual DbSet<TranslationRoomSummary> TranslationRoomSummaries { get; set; }
 
 
 
@@ -84,8 +80,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("source_language");
             entity.Property(e => e.StartedAt).HasColumnName("started_at");
             entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'scheduled'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.TargetLanguages)
                 .HasDefaultValueSql("'[]'::jsonb")
@@ -199,7 +193,10 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.DisplayName)
                 .HasMaxLength(100)
                 .HasColumnName("display_name");
-            entity.Property(e => e.IsMuted).HasColumnName("is_muted");
+            
+            
+            entity.Property(e => e.IsTranslationAudioEnabled).HasColumnName("is_translation_audio_enabled");
+            
             entity.Property(e => e.IsUsingVoiceClone).HasColumnName("is_using_voice_clone");
             entity.Property(e => e.JoinedAt).HasColumnName("joined_at");
             entity.Property(e => e.LeftAt).HasColumnName("left_at");
@@ -217,8 +214,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .IsFixedLength()
                 .HasColumnName("speak_language");
             entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'invited'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
@@ -230,83 +225,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasConstraintName("translation_room_participants_translation_room_id_fkey");
         });
 
-        modelBuilder.Entity<TranslationRoomRecording>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("translation_room_recordings_pkey");
-
-            entity.ToTable("translation_room_recordings", "translation_room");
-
-            entity.HasIndex(e => e.TranslationRoomId, "idx_recordings_translation_room");
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("public.uuid_generate_v7()")
-                .HasColumnName("id");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.DurationSeconds).HasColumnName("duration_seconds");
-            entity.Property(e => e.FileFormat)
-                .HasMaxLength(10)
-                .HasColumnName("file_format");
-            entity.Property(e => e.FileSizeBytes).HasColumnName("file_size_bytes");
-            entity.Property(e => e.FileUrl)
-                .HasMaxLength(500)
-                .HasColumnName("file_url");
-            entity.Property(e => e.Language)
-                .HasMaxLength(5)
-                .IsFixedLength()
-                .HasColumnName("language");
-            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
-            entity.Property(e => e.RecordingType)
-                .HasMaxLength(20)
-                .HasColumnName("recording_type");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'processing'::character varying")
-                .HasColumnName("status");
-
-            entity.HasOne(d => d.TranslationRoom).WithMany(p => p.TranslationRoomRecordings)
-                .HasForeignKey(d => d.TranslationRoomId)
-                .HasConstraintName("translation_room_recordings_translation_room_id_fkey");
-        });
-
-        modelBuilder.Entity<TranslationRoomSummary>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("translation_room_summaries_pkey");
-
-            entity.ToTable("translation_room_summaries", "translation_room");
-
-            entity.HasIndex(e => e.TranslationRoomId, "translation_room_summaries_translation_room_id_key").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("public.uuid_generate_v7()")
-                .HasColumnName("id");
-            entity.Property(e => e.ActionItems)
-                .HasDefaultValueSql("'[]'::jsonb")
-                .HasColumnType("jsonb")
-                .HasColumnName("action_items");
-            entity.Property(e => e.Decisions)
-                .HasDefaultValueSql("'[]'::jsonb")
-                .HasColumnType("jsonb")
-                .HasColumnName("decisions");
-            entity.Property(e => e.GeneratedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("generated_at");
-            entity.Property(e => e.KeyPoints)
-                .HasDefaultValueSql("'[]'::jsonb")
-                .HasColumnType("jsonb")
-                .HasColumnName("key_points");
-            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
-            entity.Property(e => e.ModelUsed)
-                .HasMaxLength(50)
-                .HasColumnName("model_used");
-            entity.Property(e => e.ProcessingTimeMs).HasColumnName("processing_time_ms");
-            entity.Property(e => e.Summary).HasColumnName("summary");
-
-            entity.HasOne(d => d.TranslationRoom).WithOne(p => p.TranslationRoomSummary)
-                .HasForeignKey<TranslationRoomSummary>(d => d.TranslationRoomId)
-                .HasConstraintName("translation_room_summaries_translation_room_id_fkey");
-        });
 
         OnModelCreatingPartial(modelBuilder);
     }

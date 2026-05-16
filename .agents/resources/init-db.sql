@@ -6,6 +6,8 @@
 
 -- Enable crypto extension for random bytes (used in UUID v7)
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- Enable trigram extension for fast keyword searching (ILIKE support)
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
 -- ============================================
 -- 0. UUID V7 GENERATOR (Polyfill for < PG 17)
@@ -698,6 +700,21 @@ CREATE TABLE notification.email_delivery_logs_y2026 PARTITION OF notification.em
 CREATE TABLE notification.email_delivery_logs_y2027 PARTITION OF notification.email_delivery_logs
     FOR VALUES FROM ('2027-01-01') TO ('2028-01-01');
 CREATE TABLE notification.email_delivery_logs_default PARTITION OF notification.email_delivery_logs DEFAULT;
+CREATE TABLE notification.admin_notifications (
+    id uuid NOT NULL DEFAULT (uuid_generate_v7()),
+    title character varying(255) NOT NULL,
+    content text NOT NULL,
+    type character varying(50) NOT NULL,
+    payload jsonb NOT NULL DEFAULT ('{}'::jsonb),
+    target_audience_mode character varying(50) NOT NULL,
+    target_audience_data jsonb NOT NULL DEFAULT ('{}'::jsonb),
+    status character varying(50) NOT NULL,
+    created_by uuid NOT NULL,
+    updated_by uuid,
+    created_at timestamp with time zone NOT NULL DEFAULT (now()),
+    updated_at timestamp with time zone NOT NULL DEFAULT (now()),
+    PRIMARY KEY (id)
+);
 
 CREATE TABLE notification.push_subscriptions (
     id           UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
@@ -723,6 +740,10 @@ CREATE TABLE notification.notification_preferences (
 );
 
 -- Indexes for Notification
+CREATE INDEX idx_admin_notifications_created_at ON notification.admin_notifications (created_at DESC);
+CREATE INDEX idx_admin_notifications_created_by ON notification.admin_notifications (created_by);
+CREATE INDEX idx_admin_notif_list_opt ON notification.admin_notifications (type, status, created_at DESC);
+CREATE INDEX idx_admin_notif_title_trgm ON notification.admin_notifications USING gin (title gin_trgm_ops);
 CREATE INDEX idx_notifications_user ON notification.notifications(user_id);
 CREATE INDEX idx_notifications_type ON notification.notifications(type);
 CREATE INDEX idx_notifications_status ON notification.notifications(status);

@@ -86,17 +86,16 @@ public class NotificationService : INotificationService
         return Result.Success();
     }
 
-    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default)
+    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(CreateNotificationMessageDto dto, CancellationToken ct = default)
     {
-
-        var notification = NotificationMessageMapper.ToEntity(userId, type, title, content, actionUrl, payloadJson);
+        var notification = NotificationMessageMapper.ToEntity(dto);
         
         await _unitOfWork.NotificationMessageRepository.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
         
-        var dto = NotificationMessageMapper.ToDto(notification);
+        var resultDto = NotificationMessageMapper.ToDto(notification);
         
-        return Result.Success(dto);
+        return Result.Success(resultDto);
     }
 
 }
