@@ -68,7 +68,6 @@ public class TranslationRoomsController : ControllerBase
         }
 
         return Ok(result.Value!);
-<<<<<<< HEAD
     }
 
     [HttpPost("{id}/waiting")]
@@ -129,8 +128,6 @@ public class TranslationRoomsController : ControllerBase
         if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
         return NoContent();
-=======
->>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     }
 
     [HttpPost("{id}/end")]

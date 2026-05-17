@@ -10,10 +10,7 @@ public class UnitOfWork : IUnitOfWork
 
     public ITranslationRoomRepository TranslationRoomRepository { get; }
     public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
-<<<<<<< HEAD
     public ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
-=======
->>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     public ILanguageRepository LanguageRepository { get; }
     public IUserSettingsRepository UserSettingsRepository { get; }
 
@@ -21,20 +18,14 @@ public class UnitOfWork : IUnitOfWork
         TranslationRoomDbContext context, 
         ITranslationRoomRepository translationRoomRepository,
         ITranslationRoomParticipantRepository translationRoomParticipantRepository,
-<<<<<<< HEAD
         ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
-=======
->>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         ILanguageRepository languageRepository,
         IUserSettingsRepository userSettingsRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
         TranslationRoomParticipantRepository = translationRoomParticipantRepository;
-<<<<<<< HEAD
         TranslationRoomAudioRouteRepository = translationRoomAudioRouteRepository;
-=======
->>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         LanguageRepository = languageRepository;
         UserSettingsRepository = userSettingsRepository;
     }
