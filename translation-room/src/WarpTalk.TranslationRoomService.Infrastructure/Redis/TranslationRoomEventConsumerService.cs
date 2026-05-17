@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
-namespace WarpTalk.TranslationRoomService.API.HostedServices;
+namespace WarpTalk.TranslationRoomService.Infrastructure.Redis;
 
 public class TranslationRoomEventConsumerService : BackgroundService
 {
@@ -51,6 +51,9 @@ public class TranslationRoomEventConsumerService : BackgroundService
             // Other exceptions (e.g., network, auth) will bubble up and crash the app for fail-fast recovery.
         }
 
+        var consumerName = $"worker_{Environment.MachineName}_{Guid.NewGuid():N}";
+        _logger.LogInformation("Starting Redis stream consumer with name: {ConsumerName}", consumerName);
+        
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -58,7 +61,7 @@ public class TranslationRoomEventConsumerService : BackgroundService
                 var messages = await db.StreamReadGroupAsync(
                     streamName, 
                     groupName, 
-                    "worker_1", 
+                    consumerName, 
                     ">", 
                     count: 10);
 

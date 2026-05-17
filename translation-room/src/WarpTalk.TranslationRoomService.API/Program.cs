@@ -16,6 +16,15 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.API.Extensions;
 using WarpTalk.TranslationRoomService.API.Validators;
 using TranslationRoomAppService = WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService;
+using WarpTalk.TranslationRoomService.Application.Services;
+using WarpTalk.TranslationRoomService.Domain.StateMachines;
+using WarpTalk.TranslationRoomService.Application.EventHandlers;
+using WarpTalk.TranslationRoomService.Application.BackgroundProcessors;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
+using WarpTalk.TranslationRoomService.API.Workers;
+using WarpTalk.TranslationRoomService.Infrastructure.Redis;
+using StackExchange.Redis;
+
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 var builder = WebApplication.CreateBuilder(args);
@@ -44,21 +53,28 @@ builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
-builder.Services.AddScoped<ITranslationRoomParticipantService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomParticipantService>();
-builder.Services.AddScoped<ITranslationRoomAudioRouteService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomAudioRouteService>();
-builder.Services.AddSingleton<WarpTalk.TranslationRoomService.Domain.StateMachines.IAudioRouteStateMachine, WarpTalk.TranslationRoomService.Domain.StateMachines.AudioRouteStateMachine>();
-builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.Interfaces.IAudioRouteEventProcessorService, WarpTalk.TranslationRoomService.Application.Services.AudioRouteEventProcessorService>();
+builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
+builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
+builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
+builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
+builder.Services.AddScoped<IAudioRouteEventProcessorService, AudioRouteEventProcessorService>();
+builder.Services.AddScoped<ITelemetryProcessorService, TelemetryProcessorService>();
+builder.Services.AddScoped<IArtifactsFinalizationService, ArtifactsFinalizationService>();
+builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
+builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
-builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.LanguagePolicy.ILanguagePolicy, WarpTalk.TranslationRoomService.Application.LanguagePolicy.LanguagePolicy>();
+builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
 
-// Redis Configuration
-var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
-var multiplexer = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString);
-builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(multiplexer);
+// --- Redis ---
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
+                          ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+    ConnectionMultiplexer.Connect(redisConnectionString));
 
 // Hosted Services
-builder.Services.AddHostedService<WarpTalk.TranslationRoomService.API.HostedServices.TranslationRoomEventConsumerService>();
+builder.Services.AddHostedService<TranslationRoomEventConsumerService>();
+builder.Services.AddHostedService<TelemetryRedisSubscriber>();
 
 // Register FluentValidation Validators
 builder.Services.AddValidatorsFromAssemblyContaining<CreateTranslationRoomRequestValidator>();
