@@ -1,0 +1,36 @@
+# Audio Routing State Machine
+
+Below is the state machine diagram representing the lifecycle and status transitions of the Audio Routing mechanism, particularly highlighting how degradation (STT/TTS latency) and recovery events are handled.
+
+```mermaid
+flowchart LR
+    START(("Start")) --> IDLE["IDLE<br/>Room not started"]
+    IDLE -->|participants and languages configured| ROUTING_READY["ROUTING_READY"]
+    ROUTING_READY -->|session starts| AUDIO_ROUTING_ACTIVE["AUDIO_ROUTING_ACTIVE<br/>Audio routing is active"]
+
+    AUDIO_ROUTING_ACTIVE -->|STT or translation latency high| TRANSLATION_DEGRADED["TRANSLATION_DEGRADED"]
+    AUDIO_ROUTING_ACTIVE -->|TTS latency high| VOICE_OUTPUT_DEGRADED["VOICE_OUTPUT_DEGRADED"]
+    AUDIO_ROUTING_ACTIVE -->|voice clone unavailable| VOICE_OUTPUT_DEGRADED
+    AUDIO_ROUTING_ACTIVE -->|TTS unavailable| TEXT_ONLY_MODE["TEXT_ONLY_MODE"]
+    AUDIO_ROUTING_ACTIVE -->|audio output unavailable| TEXT_ONLY_MODE
+
+    TRANSLATION_DEGRADED -->|pipeline recovered| AUDIO_ROUTING_ACTIVE
+    VOICE_OUTPUT_DEGRADED -->|voice recovered| AUDIO_ROUTING_ACTIVE
+    TEXT_ONLY_MODE -->|audio recovered| AUDIO_ROUTING_ACTIVE
+
+    AUDIO_ROUTING_ACTIVE -->|host pauses session| PAUSED["PAUSED"]
+    TRANSLATION_DEGRADED -->|host pauses session| PAUSED
+    VOICE_OUTPUT_DEGRADED -->|host pauses session| PAUSED
+    TEXT_ONLY_MODE -->|host pauses session| PAUSED
+    PAUSED -->|host resumes session| AUDIO_ROUTING_ACTIVE
+
+    AUDIO_ROUTING_ACTIVE -->|host ends session| STOPPING["STOPPING"]
+    TRANSLATION_DEGRADED -->|host ends session| STOPPING
+    VOICE_OUTPUT_DEGRADED -->|host ends session| STOPPING
+    TEXT_ONLY_MODE -->|host ends session| STOPPING
+    PAUSED -->|host ends session| STOPPING
+
+    STOPPING -->|stop routing and flush data| FINALIZING_ARTIFACTS["FINALIZING_ARTIFACTS"]
+    FINALIZING_ARTIFACTS -->|transcript, recording, summary linked| COMPLETED["COMPLETED"]
+    COMPLETED --> END(("End"))
+```

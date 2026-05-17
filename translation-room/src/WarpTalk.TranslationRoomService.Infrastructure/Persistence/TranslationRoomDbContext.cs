@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -23,6 +24,9 @@ public partial class TranslationRoomDbContext : DbContext
     public virtual DbSet<TranslationRoomFeedback> TranslationRoomFeedbacks { get; set; }
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
+
+    public virtual DbSet<TranslationRoomArtifact> TranslationRoomArtifacts { get; set; }
+
 
 
 
@@ -225,9 +229,74 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasConstraintName("translation_room_participants_translation_room_id_fkey");
         });
 
+        modelBuilder.HasPostgresEnum<RoomStatus>("translation_room", "room_status");
+        modelBuilder.HasPostgresEnum<TranslationRoomParticipantStatus>("translation_room", "participant_status");
+        modelBuilder.HasPostgresEnum<ArtifactType>("translation_room", "artifact_type");
 
-        OnModelCreatingPartial(modelBuilder);
+        modelBuilder.Entity<TranslationRoomArtifact>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_artifacts_pkey");
+
+            entity.ToTable("translation_room_artifacts", "translation_room");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("public.uuid_generate_v7()")
+                .HasColumnName("id");
+
+            entity.Property(e => e.TranslationRoomId)
+                .HasColumnName("translation_room_id");
+
+            entity.Property(e => e.ArtifactType)
+                .HasColumnName("artifact_type");
+
+            entity.Property(e => e.FileUrl)
+                .HasMaxLength(500)
+                .HasColumnName("file_url");
+
+            entity.Property(e => e.FileFormat)
+                .HasMaxLength(20)
+                .HasColumnName("file_format");
+
+            entity.Property(e => e.FileSizeBytes)
+                .HasColumnName("file_size_bytes");
+
+            entity.Property(e => e.ContainsRawAudio)
+                .HasDefaultValue(false)
+                .HasColumnName("contains_raw_audio");
+
+            entity.Property(e => e.ContainsRawVideo)
+                .HasDefaultValue(false)
+                .HasColumnName("contains_raw_video");
+
+            entity.Property(e => e.ConsentRequired)
+                .HasDefaultValue(false)
+                .HasColumnName("consent_required");
+
+            entity.Property(e => e.RetentionUntil)
+                .HasColumnName("retention_until");
+
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.Property(e => e.CreatedBy)
+                .HasColumnName("created_by");
+
+            entity.Property(e => e.DeletedAt)
+                .HasColumnName("deleted_at");
+
+            entity.Property(e => e.DeletedBy)
+                .HasColumnName("deleted_by");
+
+            entity.HasOne(d => d.TranslationRoom)
+                .WithMany(p => p.TranslationRoomArtifacts)
+                .HasForeignKey(d => d.TranslationRoomId)
+                .HasConstraintName("translation_room_artifacts_translation_room_id_fkey");
+        });
     }
-
-    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
 }

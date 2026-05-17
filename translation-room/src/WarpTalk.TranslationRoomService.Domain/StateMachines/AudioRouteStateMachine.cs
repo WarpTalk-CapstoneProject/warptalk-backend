@@ -14,14 +14,14 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
         }
 
         // Priority Override: If host ends session, immediately transition to STOPPING
-        if (eventType == AudioRoutingEventType.host_ended_session)
+        if (eventType == AudioRoutingEventType.host_ends_session)
         {
             // Even if degraded or active, force shutdown
             if (currentState != AudioRouteStatus.FINALIZING_ARTIFACTS && currentState != AudioRouteStatus.COMPLETED)
                 return Result.Success(AudioRouteStatus.STOPPING);
         }
 
-        if (eventType == AudioRoutingEventType.artifacts_finalized)
+        if (eventType == AudioRoutingEventType.transcript_recording_summary_linked)
         {
             return Result.Success(AudioRouteStatus.COMPLETED);
         }
@@ -30,53 +30,40 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
         {
             AudioRouteStatus.IDLE => eventType switch
             {
-                AudioRoutingEventType.participants_configured => Result.Success(AudioRouteStatus.ROUTING_READY),
+                AudioRoutingEventType.participants_and_languages_configured => Result.Success(AudioRouteStatus.ROUTING_READY),
                 _ => InvalidTransition(currentState, eventType)
             },
 
             AudioRouteStatus.ROUTING_READY => eventType switch
             {
-                AudioRoutingEventType.session_started => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+                AudioRoutingEventType.session_starts => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
                 _ => InvalidTransition(currentState, eventType)
             },
 
             AudioRouteStatus.AUDIO_ROUTING_ACTIVE => eventType switch
             {
-                AudioRoutingEventType.translation_latency_high => Result.Success(AudioRouteStatus.TRANSLATION_DEGRADED),
-                AudioRoutingEventType.voice_quality_degraded => Result.Success(AudioRouteStatus.VOICE_QUALITY_DEGRADED),
-                AudioRoutingEventType.audio_output_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
+                AudioRoutingEventType.host_pauses_session => Result.Success(AudioRouteStatus.PAUSED),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.TRANSLATION_DEGRADED => eventType switch
-            {
-                AudioRoutingEventType.translation_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                _ => InvalidTransition(currentState, eventType)
-            },
 
-            AudioRouteStatus.VOICE_QUALITY_DEGRADED => eventType switch
+            AudioRouteStatus.PAUSED => eventType switch
             {
-                AudioRoutingEventType.voice_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                _ => InvalidTransition(currentState, eventType)
-            },
-
-            AudioRouteStatus.TEXT_ONLY_MODE => eventType switch
-            {
-                AudioRoutingEventType.audio_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+                AudioRoutingEventType.host_resumes_session => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
                 _ => InvalidTransition(currentState, eventType)
             },
 
             AudioRouteStatus.STOPPING => eventType switch
             {
                 // Internal auto-transition trigger
-                AudioRoutingEventType.routing_stopped_and_flushed => Result.Success(AudioRouteStatus.FINALIZING_ARTIFACTS),
+                AudioRoutingEventType.stop_routing_and_flush_data => Result.Success(AudioRouteStatus.FINALIZING_ARTIFACTS),
                 _ => InvalidTransition(currentState, eventType)
             },
 
             AudioRouteStatus.FINALIZING_ARTIFACTS => eventType switch
             {
                 // The worker explicitly sends this when artifacts are uploaded
-                AudioRoutingEventType.artifacts_finalized => Result.Success(AudioRouteStatus.COMPLETED),
+                AudioRoutingEventType.transcript_recording_summary_linked => Result.Success(AudioRouteStatus.COMPLETED),
                 _ => InvalidTransition(currentState, eventType)
             },
 

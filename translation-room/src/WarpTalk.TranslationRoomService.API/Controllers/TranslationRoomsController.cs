@@ -18,11 +18,14 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
+    private readonly ITranslationRoomArtifactService _artifactService;
 
     public TranslationRoomsController(
-        ITranslationRoomService translationRoomService)
+        ITranslationRoomService translationRoomService,
+        ITranslationRoomArtifactService artifactService)
     {
         _translationRoomService = translationRoomService;
+        _artifactService = artifactService;
     }
 
     [HttpPost]
@@ -160,5 +163,38 @@ public class TranslationRoomsController : ControllerBase
         }
 
         return NoContent();
+    }
+
+    [HttpGet("history")]
+    public async Task<IActionResult> GetRoomHistory([FromQuery] int limit = 50, [FromQuery] int offset = 0, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _translationRoomService.GetRoomHistoryAsync(userId.Value, limit, offset, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        
+        return Ok(result.Value);
+    }
+
+    [HttpGet("{id}/artifacts")]
+    public async Task<IActionResult> GetRoomArtifacts(Guid id, CancellationToken ct = default)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _artifactService.GetRoomArtifactsAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
     }
 }

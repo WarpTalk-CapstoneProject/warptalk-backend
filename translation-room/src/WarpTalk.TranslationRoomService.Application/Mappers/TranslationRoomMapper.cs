@@ -7,12 +7,8 @@ namespace WarpTalk.TranslationRoomService.Application.Mappers;
 
 public static class TranslationRoomMapper
 {
-    public static TranslationRoomDto ToResponseDto(TranslationRoom room)
+    public static TranslationRoomDto ToResponseDto(TranslationRoom room, RoomSettingsResponse settings)
     {
-        var settings = !string.IsNullOrEmpty(room.Settings) 
-            ? System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings) 
-            : new RoomSettingsResponse(true);
-
         return new TranslationRoomDto(
             room.Id,
             room.WorkspaceId,
@@ -29,7 +25,7 @@ public static class TranslationRoomMapper
             room.StartedAt,
             room.EndedAt,
             room.CreatedAt,
-            settings!
+            settings
         );
     }
 
@@ -48,8 +44,31 @@ public static class TranslationRoomMapper
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
-            Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval }) : "{\"requires_approval\":true}",
+            Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval, HistoryAccess = request.Settings.HistoryAccess }) : "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}",
             ScheduledAt = request.ScheduledAt
         };
+    }
+
+    public static TranslationRoomDto ToHistoryDto(TranslationRoom room, RoomSettingsResponse settings, List<RoomArtifactDto> artifacts)
+    {
+        return new TranslationRoomDto(
+            room.Id,
+            room.WorkspaceId,
+            room.HostId,
+            room.Title,
+            room.Description,
+            room.TranslationRoomCode,
+            room.Status.ToString(),
+            Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
+            room.MaxParticipants,
+            room.SourceLanguage,
+            Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
+            room.ScheduledAt,
+            room.StartedAt,
+            room.EndedAt,
+            room.CreatedAt,
+            settings,
+            artifacts
+        );
     }
 }

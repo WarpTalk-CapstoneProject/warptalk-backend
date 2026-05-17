@@ -7,6 +7,7 @@ public interface IUnitOfWork : IDisposable
     ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
     ILanguageRepository LanguageRepository { get; }
     IUserSettingsRepository UserSettingsRepository { get; }
+    ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

@@ -12,6 +12,7 @@ public static class TranslationRoomConstants
         RoomStatus.EXPIRED 
     };
 
+
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";

@@ -2,6 +2,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
+using System.Collections.Generic;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
@@ -94,7 +96,11 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // 5. Return mapped response
-            return Result.Success(TranslationRoomMapper.ToResponseDto(room));
+            var settingsResponse = request.Settings != null 
+                ? new RoomSettingsResponse(request.Settings.RequiresApproval, request.Settings.HistoryAccess) 
+                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
+
+            return Result.Success(TranslationRoomMapper.ToResponseDto(room, settingsResponse));
         }
         catch (Exception ex)
         {
@@ -112,7 +118,11 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom));
+            var settings = !string.IsNullOrEmpty(translationRoom.Settings) 
+                ? JsonSerializer.Deserialize<RoomSettingsResponse>(translationRoom.Settings) 
+                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
+
+            return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom, settings!));
         }
         catch (Exception ex)
         {
@@ -201,9 +211,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
+            var settingsResponse = !string.IsNullOrEmpty(translationRoom.Settings) 
+                ? JsonSerializer.Deserialize<RoomSettingsResponse>(translationRoom.Settings) 
+                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                TranslationRoomMapper.ToResponseDto(translationRoom),
+                TranslationRoomMapper.ToResponseDto(translationRoom, settingsResponse!),
                 TranslationRoomParticipantMapper.ToParticipantDto(participant)
             ));
         }
@@ -261,7 +275,8 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_started.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.participants_and_languages_configured.ToString(), "{}", ct);
 
             return Result.Success();
         }
@@ -288,6 +303,10 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-67: Trigger Audio Routing State Machine to Pause
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_pauses_session.ToString(), "{}", ct);
+
             return Result.Success();
         }
         catch (Exception ex)
@@ -299,7 +318,31 @@ public class TranslationRoomService : ITranslationRoomService
 
     public async Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
-        return await StartTranslationRoomAsync(translationRoomId, hostId, ct);
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            
+            if (translationRoom.Status != RoomStatus.PAUSED)
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
+
+            translationRoom.Status = RoomStatus.IN_PROGRESS;
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-67: Trigger Audio Routing State Machine to Resume
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_resumes_session.ToString(), "{}", ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error resuming translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -383,7 +426,7 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_ended_session.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_ends_session.ToString(), "{}", ct);
 
             return Result.Success();
         }
@@ -453,5 +496,46 @@ public class TranslationRoomService : ITranslationRoomService
             return Result.Failure("An unexpected error occurred while updating the room settings.", ErrorCodes.InternalServerError);
         }
     }
-        
+
+    public async Task<Result<List<TranslationRoomDto>>> GetRoomHistoryAsync(Guid userId, int limit = 50, int offset = 0, CancellationToken ct = default)
+    {
+        try
+        {
+            var userRooms = await _translationRoomRepository.GetHistoryByUserIdAsync(userId, limit, offset, ct);
+                
+            var visibleRooms = new List<TranslationRoom>();
+            foreach(var room in userRooms)
+            {
+                if (room.HostId == userId)
+                {
+                    visibleRooms.Add(room);
+                    continue;
+                }
+                
+                var settings = !string.IsNullOrEmpty(room.Settings) ? JsonSerializer.Deserialize<TranslationRoomSettings>(room.Settings) : null;
+                if (settings?.HistoryAccess == ArtifactAccessLevel.Participants || settings?.HistoryAccess == ArtifactAccessLevel.Workspace)
+                {
+                    visibleRooms.Add(room);
+                }
+            }
+
+            var dtos = visibleRooms.Select(room =>
+            {
+                var settings = !string.IsNullOrEmpty(room.Settings) 
+                    ? JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings) 
+                    : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
+
+                var artifacts = room.TranslationRoomArtifacts?.Select(ArtifactMapper.ToArtifactDto).ToList() ?? new List<RoomArtifactDto>();
+
+                return TranslationRoomMapper.ToHistoryDto(room, settings!, artifacts);
+            }).ToList();
+            
+            return Result<List<TranslationRoomDto>>.Success(dtos);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting room history for user {UserId}", userId);
+            return Result.Failure<List<TranslationRoomDto>>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+        }
+    }
 }

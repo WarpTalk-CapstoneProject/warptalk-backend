@@ -159,7 +159,7 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue();
         room.Status.Should().Be(RoomStatus.IN_PROGRESS);
         room.StartedAt.Should().NotBeNull();
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_started.ToString(), "{}", default), Times.Once);
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]
@@ -194,7 +194,7 @@ public class TranslationRoomServiceTests
         room.Status.Should().Be(RoomStatus.ENDED);
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeGreaterOrEqualTo(1800); // 30 mins = 1800s
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.host_ended_session.ToString(), "{}", default), Times.Once);
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.host_ends_session.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]

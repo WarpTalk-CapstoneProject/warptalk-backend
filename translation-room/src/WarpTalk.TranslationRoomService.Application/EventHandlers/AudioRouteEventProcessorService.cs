@@ -13,12 +13,8 @@ using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.StateMachines;
-using WarpTalk.TranslationRoomService.Domain.Enums;
-using WarpTalk.TranslationRoomService.Domain.Interfaces;
-using StackExchange.Redis;
-using System.Text.Json;
 
-namespace WarpTalk.TranslationRoomService.Application.Services;
+namespace WarpTalk.TranslationRoomService.Application.EventHandlers;
 
 public class AudioRouteEventProcessorService : IAudioRouteEventProcessorService
 {
@@ -27,19 +23,22 @@ public class AudioRouteEventProcessorService : IAudioRouteEventProcessorService
     private readonly ITranslationRoomAudioRouteRepository _routeRepository;
     private readonly ITranslationRoomRepository _roomRepository;
     private readonly IConnectionMultiplexer _redisConnection;
+    private readonly IArtifactsFinalizationQueue _finalizationQueue;
     private readonly ILogger<AudioRouteEventProcessorService> _logger;
 
     public AudioRouteEventProcessorService(
         IAudioRouteStateMachine stateMachine,
         IUnitOfWork unitOfWork,
         IConnectionMultiplexer redisConnection,
+        IArtifactsFinalizationQueue finalizationQueue,
         ILogger<AudioRouteEventProcessorService> logger)
     {
         _stateMachine = stateMachine;
         _unitOfWork = unitOfWork;
-        _routeRepository = unitOfWork.TranslationRoomAudioRouteRepository;
-        _roomRepository = unitOfWork.TranslationRoomRepository;
+        _routeRepository = _unitOfWork.TranslationRoomAudioRouteRepository;
+        _roomRepository = _unitOfWork.TranslationRoomRepository;
         _redisConnection = redisConnection;
+        _finalizationQueue = finalizationQueue;
         _logger = logger;
     }
 
@@ -85,6 +84,11 @@ public class AudioRouteEventProcessorService : IAudioRouteEventProcessorService
                 await _unitOfWork.SaveChangesAsync(ct);
 
                 await AudioRouteCacheHelper.PublishRoutesUpdateAsync(roomId, _routeRepository, _roomRepository, _redisConnection, ct);
+
+                if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.STOPPING.ToString()))
+                {
+                    _finalizationQueue.QueueFinalization(roomId);
+                }
             }
 
             return Result.Success();

@@ -21,5 +21,7 @@ public interface ITranslationRoomService
     Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
-
+    
+    // History
+    Task<Result<List<TranslationRoomDto>>> GetRoomHistoryAsync(Guid userId, int limit = 50, int offset = 0, CancellationToken ct = default);
 }
