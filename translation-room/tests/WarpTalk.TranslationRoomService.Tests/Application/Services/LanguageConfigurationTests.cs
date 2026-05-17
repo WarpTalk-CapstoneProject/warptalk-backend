@@ -24,7 +24,10 @@ public class LanguageConfigurationTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
+<<<<<<< HEAD
     private readonly Mock<IAudioRouteEventProcessorService> _mockAudioRouteEventProcessor;
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
 
@@ -34,13 +37,20 @@ public class LanguageConfigurationTests
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
+<<<<<<< HEAD
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessorService>();
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
+<<<<<<< HEAD
         _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockLogger.Object);
+=======
+        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockLogger.Object);
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     }
 
     [Fact]

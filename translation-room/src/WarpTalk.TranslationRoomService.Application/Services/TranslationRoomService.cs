@@ -23,6 +23,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
     private readonly ILanguagePolicy _languagePolicy;
+<<<<<<< HEAD
     private readonly IAudioRouteEventProcessorService _audioRouteEventProcessor;
     private readonly ILogger<TranslationRoomService> _logger;
 
@@ -31,6 +32,14 @@ public class TranslationRoomService : ITranslationRoomService
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
         _audioRouteEventProcessor = audioRouteEventProcessor;
+=======
+    private readonly ILogger<TranslationRoomService> _logger;
+
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, ILogger<TranslationRoomService> logger)
+    {
+        _unitOfWork = unitOfWork;
+        _languagePolicy = languagePolicy;
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _logger = logger;
@@ -212,6 +221,7 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
         }
+<<<<<<< HEAD
     }
 
     public async Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -353,6 +363,8 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error expiring translation room. RoomId: {RoomId}", translationRoomId);
             return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     }
 
     public async Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -367,13 +379,17 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
+<<<<<<< HEAD
             if (translationRoom.Status != RoomStatus.IN_PROGRESS && translationRoom.Status != RoomStatus.PAUSED)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
             translationRoom.Status = RoomStatus.ENDED;
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
+<<<<<<< HEAD
             if (translationRoom.StartedAt.HasValue)
             {
                 translationRoom.DurationSeconds = (int)(translationRoom.EndedAt.Value - translationRoom.StartedAt.Value).TotalSeconds;
@@ -385,6 +401,11 @@ public class TranslationRoomService : ITranslationRoomService
             // WT-67: Trigger Audio Routing State Machine
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_ended_session.ToString(), "{}", ct);
 
+=======
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
             return Result.Success();
         }
         catch (Exception ex)
@@ -427,7 +448,11 @@ public class TranslationRoomService : ITranslationRoomService
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
                 
+<<<<<<< HEAD
                 translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+=======
+                translationRoom.TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
             }
 
             // Update Settings (RequiresApproval)

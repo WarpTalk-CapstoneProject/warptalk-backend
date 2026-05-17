@@ -17,9 +17,12 @@ public class TranslationRoomParticipantRepository : GenericRepository<Translatio
     {
         return await _dbSet.FirstOrDefaultAsync(p => p.TranslationRoomId == roomId && p.UserId == userId, cancellationToken);
     }
+<<<<<<< HEAD
 
     public async Task<List<TranslationRoomParticipant>> GetByRoomIdAsync(Guid roomId, CancellationToken ct = default)
     {
         return await _dbSet.Where(p => p.TranslationRoomId == roomId).ToListAsync(ct);
     }
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
 }

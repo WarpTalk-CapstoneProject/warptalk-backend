@@ -18,6 +18,7 @@ public static class TranslationRoomConstants
     public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
     public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
+<<<<<<< HEAD
     
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";
@@ -26,6 +27,8 @@ public static class TranslationRoomConstants
     public const string ErrorInvalidTransitionToEnded = "Room must be IN_PROGRESS or PAUSED to end.";
     public const string ErrorInvalidTransitionToCancelled = "Room must be SCHEDULED or WAITING to cancel.";
     public const string ErrorInvalidTransitionToExpired = "Room must be SCHEDULED or WAITING to expire.";
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         
     public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
@@ -51,8 +54,11 @@ public static class TranslationRoomConstants
     public const string ValidationDisplayNameRequired = "Display name is required.";
     public const string ValidationDisplayNameMaxLength = "Display name cannot exceed 100 characters.";
     public const string ValidationTranslationRoomCodeFormat = "Translation room code format must be xxx-yyyy-zzz using only lowercase letters (e.g., abc-defg-hij).";
+<<<<<<< HEAD
     public const string ValidationSearchTermMaxLength = "Search term cannot exceed 100 characters.";
     public const string ValidationInvalidParticipantStatus = "Status must be a valid TranslationRoomParticipantStatus.";
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";
     public const string ValidationInvalidSortBy = "SortBy must be one of: displayname, status, role, joinedat.";
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
 }

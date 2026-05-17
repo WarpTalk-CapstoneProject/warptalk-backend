@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS billing;
 
 -- 2. Plans table: Stores available subscription tiers (Free, Basic, Pro, etc.)
 CREATE TABLE IF NOT EXISTS billing.plans (
-    id                UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     name              VARCHAR(50) NOT NULL UNIQUE,
     price             DECIMAL(18, 2) NOT NULL,
     credits_per_month INTEGER NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS billing.plans (
 
 -- 3. Subscriptions table: Tracks workspace subscription status and current credits
 CREATE TABLE IF NOT EXISTS billing.subscriptions (
-    id                UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     workspace_id      UUID NOT NULL,
     plan_id           UUID NOT NULL REFERENCES billing.plans(id) ON DELETE RESTRICT,
     status            VARCHAR(20) NOT NULL DEFAULT 'Pending',
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS billing.subscriptions (
 
 -- 4. Transactions table: Payment records for auditing and history
 CREATE TABLE IF NOT EXISTS billing.transactions (
-    id                UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     workspace_id      UUID NOT NULL,
     subscription_id   UUID REFERENCES billing.subscriptions(id) ON DELETE SET NULL,
     amount            DECIMAL(18, 2),
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS billing.transactions (
 
 -- 5. Credit Transactions table: Ledger tracking all credit changes (TopUp/Consume)
 CREATE TABLE IF NOT EXISTS billing.credit_transactions (
-    id                UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id                UUID PRIMARY KEY DEFAULT uuidv7(),
     workspace_id      UUID NOT NULL,
     amount            INTEGER NOT NULL,
     type              VARCHAR(20) NOT NULL,

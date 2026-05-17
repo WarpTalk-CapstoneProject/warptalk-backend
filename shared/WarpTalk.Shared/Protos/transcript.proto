@@ -7,6 +7,53 @@ package transcript;
 service TranscriptService {
   rpc GetTranscriptById (GetTranscriptRequest) returns (GetTranscriptResponse);
   rpc GetTranscriptsByTranslationRoomId (GetTranscriptsByTranslationRoomRequest) returns (GetTranscriptsByTranslationRoomResponse);
+  rpc GetTranscriptSegments (GetTranscriptSegmentsRequest) returns (GetTranscriptSegmentsResponse);
+  rpc GetTranscriptTranslations (GetTranscriptTranslationsRequest) returns (GetTranscriptTranslationsResponse);
+}
+
+message GetTranscriptTranslationsRequest {
+  string transcript_id = 1;
+  int32 skip = 2;
+  int32 take = 3;
+}
+
+message TranscriptTranslationDto {
+  string id = 1;
+  string segment_id = 2;
+  string target_language = 3;
+  string translated_text = 4;
+  string translator_model = 5;
+  double confidence = 6;
+  bool is_retranslated = 7;
+  int32 latency_ms = 8;
+}
+
+message GetTranscriptTranslationsResponse {
+  repeated TranscriptTranslationDto translations = 1;
+  int32 total_count = 2;
+}
+
+message GetTranscriptSegmentsRequest {
+  string transcript_id = 1;
+  int32 skip = 2;
+  int32 take = 3;
+}
+
+message TranscriptSegmentDto {
+  string id = 1;
+  string speaker_participant_id = 2;
+  string speaker_name = 3;
+  string original_text = 4;
+  string original_language = 5;
+  double confidence = 6;
+  int32 start_time_ms = 7;
+  int32 end_time_ms = 8;
+  int32 sequence_order = 9;
+}
+
+message GetTranscriptSegmentsResponse {
+  repeated TranscriptSegmentDto segments = 1;
+  int32 total_count = 2;
 }
 
 message GetTranscriptRequest {

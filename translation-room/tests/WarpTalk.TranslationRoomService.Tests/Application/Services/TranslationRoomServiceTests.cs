@@ -19,7 +19,10 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
+<<<<<<< HEAD
     private readonly Mock<IAudioRouteEventProcessorService> _mockAudioRouteEventProcessor;
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
@@ -29,7 +32,10 @@ public class TranslationRoomServiceTests
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
+<<<<<<< HEAD
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessorService>();
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
@@ -38,7 +44,11 @@ public class TranslationRoomServiceTests
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
+<<<<<<< HEAD
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockLogger.Object);
+=======
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockLogger.Object);
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
     }
 
     [Fact]
@@ -144,6 +154,7 @@ public class TranslationRoomServiceTests
         existingParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED);
         _mockParticipantRepo.Verify(p => p.Update(existingParticipant), Times.Once);
     }
+<<<<<<< HEAD
 
     [Fact]
     public async Task StartTranslationRoomAsync_ValidState_UpdatesStatusAndFiresEvent()
@@ -210,4 +221,6 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue();
         _mockRoomRepo.Verify(r => r.Update(It.IsAny<TranslationRoom>()), Times.Never);
     }
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
 }

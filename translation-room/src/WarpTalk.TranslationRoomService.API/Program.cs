@@ -42,16 +42,22 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository>();
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
+<<<<<<< HEAD
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomParticipantService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomAudioRouteService>();
 builder.Services.AddSingleton<WarpTalk.TranslationRoomService.Domain.StateMachines.IAudioRouteStateMachine, WarpTalk.TranslationRoomService.Domain.StateMachines.AudioRouteStateMachine>();
 builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.Interfaces.IAudioRouteEventProcessorService, WarpTalk.TranslationRoomService.Application.Services.AudioRouteEventProcessorService>();
+=======
+builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
+builder.Services.AddScoped<ITranslationRoomParticipantService, WarpTalk.TranslationRoomService.Application.Services.TranslationRoomParticipantService>();
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<WarpTalk.TranslationRoomService.Application.LanguagePolicy.ILanguagePolicy, WarpTalk.TranslationRoomService.Application.LanguagePolicy.LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
 
+<<<<<<< HEAD
 // Redis Configuration
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 var multiplexer = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString);
@@ -60,6 +66,8 @@ builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(multip
 // Hosted Services
 builder.Services.AddHostedService<WarpTalk.TranslationRoomService.API.HostedServices.TranslationRoomEventConsumerService>();
 
+=======
+>>>>>>> 80e45ad1325ea4819c4e38a4a5b6fa5c95549e8d
 // Register FluentValidation Validators
 builder.Services.AddValidatorsFromAssemblyContaining<CreateTranslationRoomRequestValidator>();
 builder.Services.AddFluentValidationAutoValidation();
