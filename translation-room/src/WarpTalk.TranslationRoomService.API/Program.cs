@@ -40,25 +40,6 @@ builder.WebHost.ConfigureKestrel(options =>
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranslationRoomDb"));
 var dataSource = dataSourceBuilder.Build();
 
-try {
-    using var conn = dataSource.OpenConnection();
-    using var cmd = conn.CreateCommand();
-    cmd.CommandText = @"
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='translation_room' AND table_name='translation_rooms' AND data_type='USER-DEFINED') THEN
-                ALTER TABLE translation_room.translation_rooms ALTER COLUMN status TYPE VARCHAR(20) USING status::text;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='translation_room' AND table_name='translation_room_participants' AND data_type='USER-DEFINED') THEN
-                ALTER TABLE translation_room.translation_room_participants ALTER COLUMN status TYPE VARCHAR(20) USING status::text;
-            END IF;
-        END $$;
-    ";
-    cmd.ExecuteNonQuery();
-    Console.WriteLine("[DEBUG] Successfully altered ENUM to VARCHAR in database!");
-} catch (Exception ex) {
-    Console.WriteLine($"[DEBUG] Alter ENUM ERROR: {ex.Message}");
-}
 
 builder.Services.AddDbContext<TranslationRoomDbContext>(options =>
 {

@@ -40,7 +40,7 @@ try
         });
 
         // HTTP/2 for gRPC
-        options.ListenAnyIP(50051, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
+        options.ListenAnyIP(50056, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
     builder.Services.AddDbContext<BillingDbContext>(options =>

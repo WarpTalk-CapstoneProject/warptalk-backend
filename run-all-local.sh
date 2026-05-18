@@ -16,6 +16,25 @@ NC='\033[0m'
 
 PIDS=()
 
+kill_ports() {
+    echo -e "${YELLOW}🧹 Cleaning up occupied ports...${NC}"
+    for port in 5001 5242 5214 5209 5201 5105 5200 50051 50052 50053 50054 50055 50056; do
+        local pids
+        pids=$(lsof -ti :"$port" 2>/dev/null || true)
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+            echo -e "   Killed process(es) on port $port"
+        fi
+    done
+    
+    echo -e "${YELLOW}🧹 Cleaning up lingering dotnet processes...${NC}"
+    pids=$(pgrep -f "dotnet run" || true)
+    if [[ -n "$pids" ]]; then
+        echo "$pids" | xargs kill -9 2>/dev/null || true
+    fi
+    dotnet build-server shutdown > /dev/null 2>&1 || true
+}
+
 cleanup() {
     echo ""
     echo -e "${YELLOW}Stopping all services...${NC}"
@@ -34,6 +53,9 @@ echo -e "${CYAN}║   WarpTalk Backend — All Services Local  ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
+kill_ports
+echo ""
+
 declare -a SERVICES=(
     "auth/src/WarpTalk.AuthService.API|Auth|5001"
     "translation-room/src/WarpTalk.TranslationRoomService.API|TranslationRoom|5242"
@@ -44,6 +66,10 @@ declare -a SERVICES=(
     "gateway/src/WarpTalk.Gateway|Gateway|5200"
 )
 
+echo -e "${YELLOW}🔨 Building all projects before starting...${NC}"
+dotnet build warptalk-backend.slnx -v m
+echo -e "${GREEN}✅ Build completed.${NC}"
+echo ""
 for entry in "${SERVICES[@]}"; do
     IFS='|' read -r project name port <<< "$entry"
     
@@ -53,7 +79,7 @@ for entry in "${SERVICES[@]}"; do
     fi
 
     echo -e "  ${GREEN}▶${NC} $name → http://localhost:$port"
-    dotnet run --project "$SCRIPT_DIR/$project" --launch-profile "http" &
+    dotnet run --no-build --launch-profile "http" --project "$SCRIPT_DIR/$project" &
     PIDS+=($!)
 done
 

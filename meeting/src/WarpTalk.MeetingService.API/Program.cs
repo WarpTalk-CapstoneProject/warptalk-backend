@@ -40,24 +40,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("DefaultConnection"));
 var dataSource = dataSourceBuilder.Build();
 
-try {
-    using var conn = dataSource.OpenConnection();
-    using var cmd = conn.CreateCommand();
-    cmd.CommandText = @"
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='meeting' AND table_name='meeting_rooms' AND data_type='USER-DEFINED') THEN
-                ALTER TABLE meeting.meeting_rooms ALTER COLUMN status TYPE VARCHAR(20) USING status::text;
-            END IF;
-            IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='meeting' AND table_name='meeting_tracks' AND data_type='USER-DEFINED') THEN
-                ALTER TABLE meeting.meeting_tracks ALTER COLUMN media_type TYPE VARCHAR(20) USING media_type::text;
-            END IF;
-        END $$;
-    ";
-    cmd.ExecuteNonQuery();
-} catch (Exception ex) {
-    Console.WriteLine($"[DEBUG] Alter ENUM ERROR: {ex.Message}");
-}
+
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(dataSource));
