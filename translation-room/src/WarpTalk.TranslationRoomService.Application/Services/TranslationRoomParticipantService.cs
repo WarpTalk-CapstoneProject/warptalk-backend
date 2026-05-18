@@ -39,7 +39,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
             
-            if (room.HostId != requestedByUserId && (requester == null || requester.Status != TranslationRoomParticipantStatus.CONNECTED))
+            if (room.HostId != requestedByUserId && (requester == null || requester.Status != nameof(TranslationRoomParticipantStatus.CONNECTED)))
             {
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
             }
@@ -71,7 +71,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 _ => request.IsDescending ? query.OrderByDescending(p => p.JoinedAt) : query.OrderBy(p => p.JoinedAt)
             };
 
-            var dtos = query.Select(TranslationRoomParticipantMapper.ToParticipantDto).ToList();
+            var dtos = query.Select(p => p.ToDto()).ToList();
 
             return Result.Success(dtos);
         }
@@ -113,6 +113,39 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         }
     }
 
+    public async Task<Result> AdmitParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (room == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (room.HostId != requestedByUserId)
+                return Result.Failure("Only the host can admit participants.", ErrorCodes.Forbidden);
+
+            var participant = await _participantRepository.GetByIdAsync(participantId, ct);
+            if (participant == null || participant.TranslationRoomId != translationRoomId)
+                return Result.Failure("Participant not found.", ErrorCodes.NotFound);
+
+            if (participant.Status != nameof(TranslationRoomParticipantStatus.WAITING))
+                return Result.Failure("Participant is not in the waiting room.", ErrorCodes.ValidationError);
+
+            participant.Status = nameof(TranslationRoomParticipantStatus.CONNECTED);
+            participant.UpdatedAt = DateTime.UtcNow;
+
+            _participantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while admitting participant. RoomId: {RoomId}, ParticipantId: {ParticipantId}", translationRoomId, participantId);
+            return Result.Failure("An unexpected error occurred while admitting participant.", ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result> KickParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default)
     {
         try
@@ -131,7 +164,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant.UserId == room.HostId)
                 return Result.Failure("Cannot kick the host.", ErrorCodes.ValidationError);
 
-            participant.Status = TranslationRoomParticipantStatus.KICKED;
+            participant.Status = nameof(TranslationRoomParticipantStatus.KICKED);
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
@@ -154,7 +187,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant == null)
                 return Result.Failure("Participant not found.", ErrorCodes.NotFound);
 
-            participant.Status = TranslationRoomParticipantStatus.LEFT;
+            participant.Status = nameof(TranslationRoomParticipantStatus.LEFT);
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);

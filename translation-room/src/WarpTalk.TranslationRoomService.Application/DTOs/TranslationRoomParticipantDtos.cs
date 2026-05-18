@@ -24,7 +24,7 @@ public record TranslationRoomParticipantDto(
     TranslationRoomParticipantRole Role,
     string ListenLanguage,
     string SpeakLanguage,
-    TranslationRoomParticipantStatus Status,
+    string Status,
     bool IsTranslationAudioEnabled,
     DateTime? JoinedAt
 );

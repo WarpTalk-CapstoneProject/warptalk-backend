@@ -100,6 +100,6 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var participants = await getParticipants.Content.ReadFromJsonAsync<List<TranslationRoomParticipantDto>>();
         
         var kickedMember = participants!.Find(p => p.Id == joinData.Participant.Id);
-        kickedMember!.Status.Should().Be(TranslationRoomParticipantStatus.KICKED);
+        kickedMember!.Status.Should().Be(nameof(TranslationRoomParticipantStatus.KICKED));
     }
 }

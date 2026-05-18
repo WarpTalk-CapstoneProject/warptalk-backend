@@ -1,0 +1,51 @@
+<Solution>
+  <Folder Name="/auth/" />
+  <Folder Name="/auth/src/">
+    <Project Path="auth/src/WarpTalk.AuthService.API/WarpTalk.AuthService.API.csproj" />
+    <Project Path="auth/src/WarpTalk.AuthService.Application/WarpTalk.AuthService.Application.csproj" />
+    <Project Path="auth/src/WarpTalk.AuthService.Domain/WarpTalk.AuthService.Domain.csproj" />
+    <Project Path="auth/src/WarpTalk.AuthService.Infrastructure/WarpTalk.AuthService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/billing/" />
+  <Folder Name="/billing/src/">
+    <Project Path="billing/src/WarpTalk.BillingService.API/WarpTalk.BillingService.API.csproj" />
+    <Project Path="billing/src/WarpTalk.BillingService.Application/WarpTalk.BillingService.Application.csproj" />
+    <Project Path="billing/src/WarpTalk.BillingService.Domain/WarpTalk.BillingService.Domain.csproj" />
+    <Project Path="billing/src/WarpTalk.BillingService.Infrastructure/WarpTalk.BillingService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/gateway/" />
+  <Folder Name="/gateway/src/">
+    <Project Path="gateway/src/WarpTalk.Gateway/WarpTalk.Gateway.csproj" />
+  </Folder>
+  <Folder Name="/meeting/" />
+  <Folder Name="/meeting/src/">
+    <Project Path="meeting/src/WarpTalk.MeetingService.API/WarpTalk.MeetingService.API.csproj" />
+    <Project Path="meeting/src/WarpTalk.MeetingService.Application/WarpTalk.MeetingService.Application.csproj" />
+    <Project Path="meeting/src/WarpTalk.MeetingService.Domain/WarpTalk.MeetingService.Domain.csproj" />
+    <Project Path="meeting/src/WarpTalk.MeetingService.Infrastructure/WarpTalk.MeetingService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/notification/" />
+  <Folder Name="/notification/src/">
+    <Project Path="notification/src/WarpTalk.NotificationService.API/WarpTalk.NotificationService.API.csproj" />
+    <Project Path="notification/src/WarpTalk.NotificationService.Application/WarpTalk.NotificationService.Application.csproj" />
+    <Project Path="notification/src/WarpTalk.NotificationService.Domain/WarpTalk.NotificationService.Domain.csproj" />
+    <Project Path="notification/src/WarpTalk.NotificationService.Infrastructure/WarpTalk.NotificationService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/shared/">
+    <Project Path="shared/WarpTalk.Shared/WarpTalk.Shared.csproj" />
+  </Folder>
+  <Folder Name="/transcript/" />
+  <Folder Name="/transcript/src/">
+    <Project Path="transcript/src/WarpTalk.TranscriptService.API/WarpTalk.TranscriptService.API.csproj" />
+    <Project Path="transcript/src/WarpTalk.TranscriptService.Application/WarpTalk.TranscriptService.Application.csproj" />
+    <Project Path="transcript/src/WarpTalk.TranscriptService.Domain/WarpTalk.TranscriptService.Domain.csproj" />
+    <Project Path="transcript/src/WarpTalk.TranscriptService.Infrastructure/WarpTalk.TranscriptService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/translation-room/" />
+  <Folder Name="/translation-room/src/">
+    <Project Path="translation-room/src/WarpTalk.TranslationRoomService.API/WarpTalk.TranslationRoomService.API.csproj" />
+    <Project Path="translation-room/src/WarpTalk.TranslationRoomService.Application/WarpTalk.TranslationRoomService.Application.csproj" />
+    <Project Path="translation-room/src/WarpTalk.TranslationRoomService.Domain/WarpTalk.TranslationRoomService.Domain.csproj" />
+    <Project Path="translation-room/src/WarpTalk.TranslationRoomService.Infrastructure/WarpTalk.TranslationRoomService.Infrastructure.csproj" />
+  </Folder>
+</Solution>

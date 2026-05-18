@@ -59,7 +59,7 @@ public partial class TranslationRoom
 
     public bool IsActive { get; set; }
 
-    public WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
     public DateTime CreatedAt { get; set; }
 

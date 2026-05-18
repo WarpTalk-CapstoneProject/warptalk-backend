@@ -1,3 +1,5 @@
+using Npgsql;
+using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.API.GrpcServices;
@@ -35,8 +37,16 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
+var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranslationRoomDb"));
+var dataSource = dataSourceBuilder.Build();
+
+
 builder.Services.AddDbContext<TranslationRoomDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("TranslationRoomDb")));
+{
+    options.UseNpgsql(dataSource);
+    options.EnableSensitiveDataLogging();
+    options.EnableDetailedErrors();
+});
 
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));

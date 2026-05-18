@@ -1,15 +1,13 @@
-using WarpTalk.TranslationRoomService.Domain.Enums;
-
 namespace WarpTalk.TranslationRoomService.Domain.Constants;
 
 public static class TranslationRoomConstants
 {
     // Terminal Statuses
-    public static readonly RoomStatus[] TerminalStatuses = new[] 
+    public static readonly string[] TerminalStatuses = new[] 
     { 
-        RoomStatus.ENDED, 
-        RoomStatus.CANCELLED, 
-        RoomStatus.EXPIRED 
+        "ENDED", 
+        "CANCELLED", 
+        "EXPIRED" 
     };
 
     // Error Messages
