@@ -18,25 +18,23 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
 
     public async Task<bool> ExistsByCodeAsync(string roomCode, IEnumerable<RoomStatus>? excludedStatuses = null, CancellationToken cancellationToken = default)
     {
-        var query = _dbSet.Where(r => r.TranslationRoomCode == roomCode);
-        
-        if (excludedStatuses != null && excludedStatuses.Any())
-        {
-            query = query.Where(r => !excludedStatuses.Contains(r.Status));
-        }
+        var room = await _dbSet.FirstOrDefaultAsync(r => r.TranslationRoomCode == roomCode, cancellationToken);
+        if (room == null) return false;
 
-        return await query.AnyAsync(cancellationToken);
+        if (excludedStatuses != null && excludedStatuses.Contains(room.Status))
+            return false;
+
+        return true;
     }
 
     public async Task<TranslationRoom?> GetByCodeAsync(string roomCode, IEnumerable<RoomStatus>? excludedStatuses = null, CancellationToken cancellationToken = default)
     {
-        var query = _dbSet.Where(r => r.TranslationRoomCode == roomCode);
-        
-        if (excludedStatuses != null && excludedStatuses.Any())
-        {
-            query = query.Where(r => !excludedStatuses.Contains(r.Status));
-        }
+        var room = await _dbSet.FirstOrDefaultAsync(r => r.TranslationRoomCode == roomCode, cancellationToken);
+        if (room == null) return null;
 
-        return await query.FirstOrDefaultAsync(cancellationToken);
+        if (excludedStatuses != null && excludedStatuses.Contains(room.Status))
+            return null;
+
+        return room;
     }
 }

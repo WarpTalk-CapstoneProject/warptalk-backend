@@ -19,13 +19,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
     // HTTP/1-only port for REST API Gateway
-    options.ListenAnyIP(5105, listenOptions =>
+    options.ListenAnyIP(5103, listenOptions =>
     {
         listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1;
     });
 
     // HTTP/2-only port for gRPC
-    options.ListenAnyIP(50055, listenOptions =>
+    options.ListenAnyIP(50053, listenOptions =>
     {
         listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
     });

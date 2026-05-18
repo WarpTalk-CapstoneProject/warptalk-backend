@@ -113,6 +113,39 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         }
     }
 
+    public async Task<Result> AdmitParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (room == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (room.HostId != requestedByUserId)
+                return Result.Failure("Only the host can admit participants.", ErrorCodes.Forbidden);
+
+            var participant = await _participantRepository.GetByIdAsync(participantId, ct);
+            if (participant == null || participant.TranslationRoomId != translationRoomId)
+                return Result.Failure("Participant not found.", ErrorCodes.NotFound);
+
+            if (participant.Status != TranslationRoomParticipantStatus.WAITING)
+                return Result.Failure("Participant is not in the waiting room.", ErrorCodes.ValidationError);
+
+            participant.Status = TranslationRoomParticipantStatus.CONNECTED;
+            participant.UpdatedAt = DateTime.UtcNow;
+
+            _participantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while admitting participant. RoomId: {RoomId}, ParticipantId: {ParticipantId}", translationRoomId, participantId);
+            return Result.Failure("An unexpected error occurred while admitting participant.", ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result> KickParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default)
     {
         try
