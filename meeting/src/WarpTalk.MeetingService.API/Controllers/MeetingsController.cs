@@ -5,6 +5,8 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Infrastructure.Data;
@@ -20,29 +22,29 @@ public class MeetingsController : ControllerBase
     private readonly ITranslationRoomGrpcService _grpcService;
     private readonly MeetingDbContext _dbContext;
     private readonly IRedisService _redisService;
+    private readonly ILogger<MeetingsController> _logger;
 
     public MeetingsController(
         ILiveKitTokenService tokenService, 
         ITranslationRoomGrpcService grpcService, 
         MeetingDbContext dbContext,
-        IRedisService redisService)
+        IRedisService redisService,
+        ILogger<MeetingsController> logger)
     {
         _tokenService = tokenService;
         _grpcService = grpcService;
         _dbContext = dbContext;
         _redisService = redisService;
+        _logger = logger;
     }
 
-    [AllowAnonymous]
     [HttpPost("rooms/{translationRoomId}/join")]
     public async Task<IActionResult> JoinMeeting(Guid translationRoomId)
     {
         var userIdString = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
         {
-            // TEMPORARY FIX: Bypass authentication completely for testing
-            userId = Guid.NewGuid();
-            userIdString = userId.ToString();
+            return Unauthorized(new { message = "Invalid or missing user identity." });
         }
 
         // 1. Verify Room Exists via gRPC & Cache
@@ -79,13 +81,12 @@ public class MeetingsController : ControllerBase
                 if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
                 {
                     participantsResponse = grpcPartsResult.Value;
-                    await _redisService.SetCacheAsync(participantsCacheKey, participantsResponse, TimeSpan.FromMinutes(1)); // 1 min cache for participants to react faster to admit
+                    await _redisService.SetCacheAsync(participantsCacheKey, participantsResponse, TimeSpan.FromMinutes(1));
                 }
             }
             
             if (participantsResponse != null)
             {
-                // Check if user is in the list and IsActive (CONNECTED)
                 var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
                 if (p != null && p.IsActive)
                 {
@@ -96,12 +97,10 @@ public class MeetingsController : ControllerBase
 
         if (!isAuthorized)
         {
-            // TEMPORARY FIX FOR TESTING: Allow anyone to join 
-            isAuthorized = true;
-            // return StatusCode(403, new { message = "You are not authorized to join this meeting or are still in the waiting room." });
+            return StatusCode(403, new { message = "You are not authorized to join this meeting or are still in the waiting room." });
         }
 
-        // 2. Provision / Get Meeting Room
+        // 3. Provision / Get Meeting Room
         var meetingRoom = await _dbContext.MeetingRooms
             .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
 
@@ -110,13 +109,13 @@ public class MeetingsController : ControllerBase
             meetingRoom = new MeetingRoom
             {
                 TranslationRoomId = translationRoomId,
-                ProviderRoomName = translationRoomId.ToString() // Use TR ID as LK Room Name
+                ProviderRoomName = translationRoomId.ToString()
             };
             _dbContext.MeetingRooms.Add(meetingRoom);
             await _dbContext.SaveChangesAsync();
         }
 
-        // 3. Register Participant
+        // 4. Register Participant
         var providerIdentity = userId.ToString();
         var participant = await _dbContext.MeetingParticipants
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
@@ -133,11 +132,11 @@ public class MeetingsController : ControllerBase
             await _dbContext.SaveChangesAsync();
         }
 
-        // 4. Generate Token
+        // 5. Generate Token
         var tokenResult = _tokenService.GenerateToken(
             roomName: meetingRoom.ProviderRoomName,
             participantIdentity: providerIdentity,
-            participantName: "User " + userId.ToString().Substring(0, 5), // Basic fallback name
+            participantName: "User " + userId.ToString().Substring(0, 5),
             canPublish: true,
             canSubscribe: true);
 
@@ -146,19 +145,19 @@ public class MeetingsController : ControllerBase
             return StatusCode(500, new { message = tokenResult.Error });
         }
 
-        // AUTOMATICALLY TRIGGER AI WORKER
+        // 6. Notify AI Worker via Redis Pub/Sub
         try
         {
             await _redisService.PublishEventAsync("meeting.track_published", new
             {
                 room_name = meetingRoom.ProviderRoomName,
                 participant_identity = providerIdentity,
-                track_sid = "audio_track_1" // Dummy track id
+                track_sid = "audio_track_1"
             });
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to auto-trigger AI worker: {ex.Message}");
+            _logger.LogWarning(ex, "Failed to auto-trigger AI worker for room {RoomName}", meetingRoom.ProviderRoomName);
         }
 
         return Ok(new 
@@ -169,7 +168,6 @@ public class MeetingsController : ControllerBase
         });
     }
 
-    [AllowAnonymous]
     [HttpPost("rooms/{translationRoomId}/trigger-ai")]
     public async Task<IActionResult> TriggerAi(Guid translationRoomId, [FromBody] TriggerAiRequest req)
     {
@@ -177,13 +175,8 @@ public class MeetingsController : ControllerBase
         {
             RoomName = translationRoomId.ToString(),
             ParticipantIdentity = req.ParticipantIdentity,
-            TrackId = "audio_track_1" // Dummy track id
+            TrackId = "audio_track_1"
         });
         return Ok(new { message = "AI Triggered" });
     }
-}
-
-public class TriggerAiRequest
-{
-    public string ParticipantIdentity { get; set; } = string.Empty;
 }

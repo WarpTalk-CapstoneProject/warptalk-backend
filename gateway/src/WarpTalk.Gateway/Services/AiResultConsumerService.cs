@@ -67,15 +67,7 @@ public sealed class AiResultConsumerService : BackgroundService
         }
     }
 
-    private void OnTranslationRoomDeactivated(string translationRoomId)
-    {
-        if (_translationRoomCts.TryRemove(translationRoomId, out var cts))
-        {
-            _logger.LogInformation("Stopping AI result consumers for translationRoom {TranslationRoomId}", translationRoomId);
-            cts.Cancel();
-            cts.Dispose();
-        }
-    }
+
 
     // ── STT Results → TranscriptSegmentReceived ──────────────
 
@@ -230,11 +222,7 @@ public sealed class AiResultConsumerService : BackgroundService
 
     private async Task ConsumeAiAssistantResultsAsync(CancellationToken ct)
     {
-        var streamKey = "ai_assistantresults:results";
-        if (streamKey == "translate:results:results") streamKey = "translate:results";
-        if (streamKey == "stt:results:results") streamKey = "stt:results";
-        if (streamKey == "tts:results:results") streamKey = "tts:results";
-        if (streamKey == "ai_assistant:results:results") streamKey = "ai_assistant:results";
+        var streamKey = "ai_assistant:results";
 
         await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
 

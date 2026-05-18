@@ -26,51 +26,50 @@ public class LiveKitTokenService : ILiveKitTokenService
         try
         {
             var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_apiSecret));
-        var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
+            var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
 
-        var claims = new List<Claim>
-        {
-            new Claim("name", participantName)
-        };
-
-        // LiveKit Video Grant structure
-        // { "video": { "roomJoin": true, "room": "roomName", "canPublish": true, "canSubscribe": true } }
-        var videoGrant = new Dictionary<string, object>
-        {
-            { "roomJoin", true },
-            { "room", roomName },
-            { "canPublish", canPublish },
-            { "canSubscribe", canSubscribe }
-        };
-
-        var payloadDict = new Dictionary<string, object>
-        {
-            { "iss", _apiKey },
-            { "sub", participantIdentity },
-            { "video", videoGrant }
-        };
-
-        var header = new JwtHeader(credentials);
-        var payload = new JwtPayload(
-            issuer: _apiKey,
-            audience: null,
-            claims: claims,
-            notBefore: null,
-            expires: DateTime.UtcNow.AddHours(4) // Token expires in 4 hours
-        );
-
-        // Add custom grants including 'sub' if not already added by JwtPayload
-        foreach (var kvp in payloadDict)
-        {
-            if (kvp.Key != "iss") // iss is already added by JwtPayload constructor
+            var claims = new List<Claim>
             {
-                payload.Add(kvp.Key, kvp.Value);
-            }
-        }
+                new Claim("name", participantName)
+            };
 
-        var token = new JwtSecurityToken(header, payload);
-        var handler = new JwtSecurityTokenHandler();
-        return Result.Success(handler.WriteToken(token));
+            // LiveKit Video Grant structure
+            var videoGrant = new Dictionary<string, object>
+            {
+                { "roomJoin", true },
+                { "room", roomName },
+                { "canPublish", canPublish },
+                { "canSubscribe", canSubscribe }
+            };
+
+            var payloadDict = new Dictionary<string, object>
+            {
+                { "iss", _apiKey },
+                { "sub", participantIdentity },
+                { "video", videoGrant }
+            };
+
+            var header = new JwtHeader(credentials);
+            var payload = new JwtPayload(
+                issuer: _apiKey,
+                audience: null,
+                claims: claims,
+                notBefore: null,
+                expires: DateTime.UtcNow.AddHours(4)
+            );
+
+            // Add custom grants including 'sub' if not already added by JwtPayload
+            foreach (var kvp in payloadDict)
+            {
+                if (kvp.Key != "iss") // iss is already added by JwtPayload constructor
+                {
+                    payload.Add(kvp.Key, kvp.Value);
+                }
+            }
+
+            var token = new JwtSecurityToken(header, payload);
+            var handler = new JwtSecurityTokenHandler();
+            return Result.Success(handler.WriteToken(token));
         }
         catch (Exception ex)
         {

@@ -18,8 +18,6 @@ public class MeetingDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("uuid-ossp");
-        
-        modelBuilder.HasPostgresExtension("uuid-ossp");
 
         modelBuilder.Entity<MeetingRoom>(entity =>
         {
