@@ -123,17 +123,19 @@ To handle the complexity of realtime audio routing (including degraded states an
 - It **never** writes to the PostgreSQL Database directly.
 - Upon encountering a runtime signal (e.g., latency, disconnect), it wraps the signal into a standard event envelope and publishes it to Redis Streams.
 
-### 3. State Machine Engine (9-State Model)
-The routing context follows a strict 9-state deterministic engine applied to individual routes:
-- **Allowed States**: `IDLE`, `ROUTING_READY`, `AUDIO_ROUTING_ACTIVE`, `TRANSLATION_DEGRADED`, `VOICE_QUALITY_DEGRADED`, `TEXT_ONLY_MODE`, `STOPPING`, `FINALIZING_ARTIFACTS`, `COMPLETED`.
-- **Transitions**: Governed by explicit events (e.g., `participants_configured`, `translation_latency_high`, `host_ended_session`).
-- **Priority Engine**: Terminal events (like `host_ended_session`) override all other recovery or degraded events.
-- **Locks**: `COMPLETED` is terminal. `STOPPING` and `FINALIZING_ARTIFACTS` cannot revert to active states.
-- **Room-Wide Events**: When a room-wide event occurs (e.g., `host_ended_session`), the orchestrator applies the transition to *all* routes within that room simultaneously.
+### 3. State Machine Engine (13-State Deterministic Model)
+The routing context follows a strict 13-state deterministic engine applied to individual routes:
+- **Allowed States**: `IDLE`, `ROUTING_READY`, `AUDIO_ROUTING_ACTIVE`, `AUDIO_ROUTING_PAUSED`, `STT_DEGRADED`, `TRANSLATION_DEGRADED`, `TTS_DEGRADED`, `VOICE_CLONE_FALLBACK`, `TEXT_ONLY_MODE`, `STOPPING`, `FINALIZING_ARTIFACTS`, `FINALIZING_ARTIFACTS_FAILED`, `COMPLETED`.
+- **Telemetry Priority Resolution**: A background telemetry sweep evaluates granular volatile latency and availability flags stored in Redis (e.g. `stt_degraded`, `translation_degraded`, `tts_degraded`, `voice_clone_status`, `delivery_mode`). It uses `AudioRoutePriorityResolver` to compute the effective status on a strict priority scale:
+  `TEXT_ONLY_MODE` > `VOICE_CLONE_FALLBACK` > `TTS_DEGRADED` > `TRANSLATION_DEGRADED` > `STT_DEGRADED` > `AUDIO_ROUTING_ACTIVE`.
+  A single event `telemetry_state_updated` transitions PostgreSQL and Redis cache atomically.
+- **Update Protection Rule**: During `AUDIO_ROUTING_PAUSED` state, background telemetry updates are **prevented** from modifying the PostgreSQL canonical state. When `room_resume` is triggered, the database state resets to `AUDIO_ROUTING_ACTIVE`, allowing subsequent telemetry updates to evaluate the state.
+- **Locks & Sweeper Recovery**: `COMPLETED` is a terminal sink state. `FINALIZING_ARTIFACTS_FAILED` routes are automatically scanned by a recovery sweeper to retry or trigger `finalization_abandoned` if recovery limits (dynamic sweeps) are exhausted.
+- **Immediate RAM Cache Cleanup**: Upon entering `COMPLETED` or aborting via `finalization_abandoned`, the system executes **Unified Redis Cache Cleanup**, deleting both telemetry and transcript keys immediately from memory, avoiding any TTL leakage.
 
 ### 4. Data Model Strategy
-- **`translation_room_audio_routes.status`**: Repurposed to store the 9 state machine statuses.
-- **Optimistic Concurrency**: Managed via `updated_at` timestamps or guaranteed sequential stream processing (Single Consumer Group).
+- **`translation_room_audio_routes.status`**: Repurposed to store the 13 state machine statuses.
+- **Optimistic Concurrency**: Managed via `updated_at` timestamps or guaranteed sequential event execution.
 - **Redis Snapshot**: A hot-read JSON cache containing `status`, `version` (timestamp-based), `updated_at`, and the array of `routes`.
 
 ## Implementation Plan

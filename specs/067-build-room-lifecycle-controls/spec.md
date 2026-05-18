@@ -5,9 +5,9 @@ Implement actual room lifecycle actions and legal state transitions.
 
 ## 2. Implementation Scope
 * Add start room action (MUST activate runtime audio routing by transitioning related routes to `AUDIO_ROUTING_ACTIVE`).
-* Add pause room action.
-* Add resume room action.
-* Add end room action.
+* Add pause room action (MUST transition routes to `AUDIO_ROUTING_PAUSED` and activate telemetry update protection on database writes to safeguard paused status).
+* Add resume room action (MUST transition routes back to `AUDIO_ROUTING_ACTIVE`, resuming telemetry evaluation).
+* Add end room action (MUST wind down streams via `STOPPING` -> `FINALIZING_ARTIFACTS` -> `COMPLETED` and invoke **Unified Redis Cache Cleanup** immediately to free RAM).
 * Add cancel room action.
 * Add expire room handling.
 * Update timestamps: `started_at`, `ended_at`, `duration_seconds`.

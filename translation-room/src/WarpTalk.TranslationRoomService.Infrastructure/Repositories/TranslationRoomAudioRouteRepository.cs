@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 
@@ -20,6 +21,14 @@ public class TranslationRoomAudioRouteRepository : GenericRepository<Translation
     {
         return await _dbSet
             .Where(r => r.TranslationRoomId == roomId)
+            .ToListAsync(ct);
+    }
+
+    public async Task<List<TranslationRoomAudioRoute>> GetRoutesByStatusAsync(AudioRouteStatus status, CancellationToken ct = default)
+    {
+        var statusStr = status.ToString();
+        return await _dbSet
+            .Where(r => r.Status == statusStr)
             .ToListAsync(ct);
     }
 

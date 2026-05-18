@@ -50,7 +50,6 @@ public class ArtifactsFinalizationWorker : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            // Graceful shutdown
         }
         catch (Exception ex)
         {

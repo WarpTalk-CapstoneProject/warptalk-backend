@@ -30,56 +30,64 @@ public class TelemetryRedisSubscriber : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("TelemetryRedisSubscriber starting, subscribing to: {Channel}", TelemetryChannel);
-
-        var subscriber = _redis.GetSubscriber();
-
-        await subscriber.SubscribeAsync(RedisChannel.Literal(TelemetryChannel), async (channel, val) =>
-        {
-            try
-            {
-                var payloadStr = val.ToString();
-                _logger.LogDebug("Received telemetry payload: {Payload}", payloadStr);
-
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var dto = JsonSerializer.Deserialize<TelemetryPayload>(payloadStr, options);
-
-                if (dto != null && dto.RoomId != Guid.Empty)
-                {
-                    if (dto.Timestamp <= 0)
-                    {
-                        dto.Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    }
-
-                    using var scope = _scopeFactory.CreateScope();
-                    var telemetryProcessor = scope.ServiceProvider.GetRequiredService<ITelemetryProcessorService>();
-
-                    var result = await telemetryProcessor.ProcessTelemetryAsync(dto, stoppingToken);
-                    if (!result.IsSuccess)
-                    {
-                        _logger.LogWarning("Failed to process telemetry: {Error}", result.Error);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error processing incoming telemetry message from Redis");
-            }
-        });
-
-        // Loop until cancelled to keep the background service alive
         try
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            _logger.LogInformation("TelemetryRedisSubscriber starting, subscribing to: {Channel}", TelemetryChannel);
+
+            var subscriber = _redis.GetSubscriber();
+
+            await subscriber.SubscribeAsync(RedisChannel.Literal(TelemetryChannel), async (channel, val) =>
+            {
+                try
+                {
+                    var payloadStr = val.ToString();
+                    _logger.LogDebug("Received telemetry payload: {Payload}", payloadStr);
+
+                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var dto = JsonSerializer.Deserialize<TelemetryPayload>(payloadStr, options);
+
+                    if (dto != null && dto.RoomId != Guid.Empty)
+                    {
+                        if (dto.Timestamp <= 0)
+                        {
+                            dto.Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        }
+
+                        using var scope = _scopeFactory.CreateScope();
+                        var telemetryProcessor = scope.ServiceProvider.GetRequiredService<ITelemetryProcessorService>();
+
+                        var result = await telemetryProcessor.ProcessTelemetryAsync(dto, stoppingToken);
+                        if (!result.IsSuccess)
+                        {
+                            _logger.LogWarning("Failed to process telemetry: {Error}", result.Error);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing incoming telemetry message from Redis");
+                }
+            });
+
+            // Loop until cancelled to keep the background service alive
+            try
+            {
+                await Task.Delay(Timeout.Infinite, stoppingToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown
+            }
+            finally
+            {
+                await subscriber.UnsubscribeAsync(RedisChannel.Literal(TelemetryChannel));
+                _logger.LogInformation("TelemetryRedisSubscriber unsubscribed from {Channel} and stopped.", TelemetryChannel);
+            }
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
-            // Normal shutdown
-        }
-        finally
-        {
-            await subscriber.UnsubscribeAsync(RedisChannel.Literal(TelemetryChannel));
-            _logger.LogInformation("TelemetryRedisSubscriber unsubscribed from {Channel} and stopped.", TelemetryChannel);
+            _logger.LogCritical(ex, "TelemetryRedisSubscriber background service crashed!");
+            throw;
         }
     }
 }

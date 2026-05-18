@@ -48,7 +48,7 @@ public class LanguageConfigurationTests
     {
         // Arrange
         var request = new CreateTranslationRoomRequest(
-            null, "Test Room", null, TranslationRoomType.GROUP, 10,
+            null, "Test Room", null, TranslationRoomType.INSTANT, 10,
             "xx-XX", // Unsupported
             new List<string> { "en-US" },
             null, null
@@ -69,7 +69,7 @@ public class LanguageConfigurationTests
     {
         // Arrange
         var request = new CreateTranslationRoomRequest(
-            null, "Test Room", null, TranslationRoomType.GROUP, 10,
+            null, "Test Room", null, TranslationRoomType.INSTANT, 10,
             "vi-VN",
             new List<string> { "xx-XX" }, // Unsupported
             null, null

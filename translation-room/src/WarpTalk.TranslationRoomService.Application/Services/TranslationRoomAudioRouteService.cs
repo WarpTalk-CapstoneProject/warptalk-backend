@@ -25,11 +25,13 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly ITranslationRoomParticipantRepository _translationRoomParticipantRepository;
     private readonly ITranslationRoomAudioRouteRepository _translationRoomAudioRouteRepository;
     private readonly IConnectionMultiplexer _redisConnection;
+    private readonly IAudioRouteEventProcessorService _eventProcessor;
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
 
     public TranslationRoomAudioRouteService(
         IUnitOfWork unitOfWork, 
         IConnectionMultiplexer redisConnection,
+        IAudioRouteEventProcessorService eventProcessor,
         ILogger<TranslationRoomAudioRouteService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -37,6 +39,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         _translationRoomParticipantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _translationRoomAudioRouteRepository = _unitOfWork.TranslationRoomAudioRouteRepository;
         _redisConnection = redisConnection;
+        _eventProcessor = eventProcessor;
         _logger = logger;
     }
 
@@ -145,7 +148,24 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var activeOrPendingRoutes = await AudioRouteCacheHelper.PublishRoutesUpdateAsync(roomId, _translationRoomAudioRouteRepository, _translationRoomRepository, _redisConnection, ct);
+            var transitionResult = await _eventProcessor.ProcessEventAsync(
+                roomId, 
+                null, 
+                AudioRoutingEventType.config_ready.ToString(), 
+                "{}", 
+                ct);
+
+            if (!transitionResult.IsSuccess)
+            {
+                _logger.LogError("Failed to transition generated routes to ROUTING_READY for room {RoomId}. Error: {Error}", roomId, transitionResult.Error);
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(transitionResult.Error ?? "Failed to transition generated routes to ROUTING_READY", transitionResult.ErrorCode);
+            }
+
+            var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            var activeOrPendingRoutes = allRoutes
+                .Where(r => r.Status != AudioRouteStatus.COMPLETED.ToString())
+                .Select(TranslationRoomAudioRouteMapper.ToDto)
+                .ToList();
 
             return Result.Success(activeOrPendingRoutes);
         }
@@ -177,7 +197,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     {
         try
         {
-            // _translationRoomAudioRouteRepository lacks GetByIdAsync in its explicit interface but inherits from IGenericRepository
+            
             var route = await _translationRoomAudioRouteRepository.GetByIdAsync(routeId, ct);
             if (route == null)
             {

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using StackExchange.Redis;
 using System;
@@ -8,8 +9,8 @@ using System.Threading.Tasks;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
-using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Application.BackgroundProcessors;
+using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using Xunit;
 
@@ -21,6 +22,7 @@ public class TelemetryProcessorServiceTests
     private readonly Mock<IDatabase> _mockDb;
     private readonly Mock<IAudioRouteEventProcessorService> _mockEventProcessor;
     private readonly Mock<ILogger<TelemetryProcessorService>> _mockLogger;
+    private readonly Mock<IOptionsMonitor<TelemetrySettings>> _mockOptions;
     private readonly TelemetryProcessorService _service;
 
     public TelemetryProcessorServiceTests()
@@ -29,13 +31,27 @@ public class TelemetryProcessorServiceTests
         _mockDb = new Mock<IDatabase>();
         _mockEventProcessor = new Mock<IAudioRouteEventProcessorService>();
         _mockLogger = new Mock<ILogger<TelemetryProcessorService>>();
+        _mockOptions = new Mock<IOptionsMonitor<TelemetrySettings>>();
 
         _mockRedis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(_mockDb.Object);
 
+        // Setup standard options
+        _mockOptions.Setup(o => o.CurrentValue).Returns(new TelemetrySettings
+        {
+            SttDegradedMs = 3000.0,
+            SttRecoveryMs = 1500.0,
+            TranslationDegradedMs = 2500.0,
+            TranslationRecoveryMs = 1200.0,
+            TtsDegradedMs = 6000.0,
+            TtsRecoveryMs = 3000.0,
+            WarmupCount = 3
+        });
+
         _service = new TelemetryProcessorService(
             _mockRedis.Object,
+            _mockLogger.Object,
             _mockEventProcessor.Object,
-            _mockLogger.Object);
+            _mockOptions.Object);
     }
 
     [Fact]
@@ -110,7 +126,7 @@ public class TelemetryProcessorServiceTests
         _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(hashEntries);
 
-        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.stt_or_translation_latency_high.ToString(), "{}", It.IsAny<CancellationToken>()))
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
@@ -122,7 +138,7 @@ public class TelemetryProcessorServiceTests
         // EMA computation check:
         // alpha = 0.1 + (0.2 * 1.0) = 0.3
         // New EMA = (4000.0 * 0.3) + (2000.0 * 0.7) = 1200 + 1400 = 2600.
-        // Wait, is 2600 > 3000? No! So it should update EMA but NOT degrade yet.
+        // 2600 is below 3000 degraded threshold, so no event should fire
         _mockDb.Verify(d => d.HashSetAsync(
             It.IsAny<RedisKey>(),
             It.Is<HashEntry[]>(entries => 
@@ -131,7 +147,7 @@ public class TelemetryProcessorServiceTests
             It.IsAny<CommandFlags>()), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            roomId, routeId, AudioRoutingEventType.stt_or_translation_latency_high.ToString(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -162,6 +178,9 @@ public class TelemetryProcessorServiceTests
         _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(hashEntries);
 
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"STT_DEGRADED\"}", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         // Act
         var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
@@ -179,7 +198,7 @@ public class TelemetryProcessorServiceTests
             It.IsAny<CommandFlags>()), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            roomId, routeId, AudioRoutingEventType.stt_or_translation_latency_high.ToString(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"STT_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -211,6 +230,9 @@ public class TelemetryProcessorServiceTests
         _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(hashEntries);
 
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         // Act
         var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
@@ -228,7 +250,7 @@ public class TelemetryProcessorServiceTests
             It.IsAny<CommandFlags>()), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            roomId, routeId, AudioRoutingEventType.pipeline_recovered.ToString(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -259,6 +281,9 @@ public class TelemetryProcessorServiceTests
         _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(hashEntries);
 
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TTS_DEGRADED\"}", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         // Act
         var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
@@ -276,7 +301,7 @@ public class TelemetryProcessorServiceTests
             It.IsAny<CommandFlags>()), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            roomId, routeId, AudioRoutingEventType.tts_latency_high.ToString(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TTS_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -308,6 +333,9 @@ public class TelemetryProcessorServiceTests
         _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(hashEntries);
 
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         // Act
         var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
@@ -325,7 +353,58 @@ public class TelemetryProcessorServiceTests
             It.IsAny<CommandFlags>()), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            roomId, routeId, AudioRoutingEventType.voice_recovered.ToString(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessTelemetryAsync_ShouldDegradeTranslationRoute_WhenTranslationEmaCrossesDegradedThreshold()
+    {
+        // Arrange
+        var roomId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var payload = new TelemetryPayload
+        {
+            RoomId = roomId,
+            RouteId = routeId,
+            WorkerType = "translation",
+            LatencyMs = 4000.0, // High translation latency
+            Timestamp = timestamp
+        };
+
+        var hashEntries = new HashEntry[]
+        {
+            new HashEntry("warmup_count", 3),
+            new HashEntry("translation_ema", 2000.0),
+            new HashEntry("is_translation_degraded", false),
+            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+        };
+
+        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+            .ReturnsAsync(hashEntries);
+
+        _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TRANSLATION_DEGRADED\"}", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        // Act
+        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+
+        // EMA calculation:
+        // New EMA = (4000 * 0.3) + (2000 * 0.7) = 1200 + 1400 = 2600.
+        // 2600 > 2500 (Translation degraded threshold). So it degrades!
+        _mockDb.Verify(d => d.HashSetAsync(
+            It.IsAny<RedisKey>(),
+            It.Is<HashEntry[]>(entries => 
+                HasEntryWithNameAndValue(entries, "translation_ema", 2600.0) &&
+                HasEntryWithNameAndValue(entries, "is_translation_degraded", true)),
+            It.IsAny<CommandFlags>()), Times.Once);
+
+        _mockEventProcessor.Verify(e => e.ProcessEventAsync(
+            roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TRANSLATION_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private static bool HasEntryWithNameAndValue(HashEntry[] entries, string name, RedisValue value)

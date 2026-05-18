@@ -194,7 +194,7 @@ public class TranslationRoomServiceTests
         room.Status.Should().Be(RoomStatus.ENDED);
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeGreaterOrEqualTo(1800); // 30 mins = 1800s
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.host_ends_session.ToString(), "{}", default), Times.Once);
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]

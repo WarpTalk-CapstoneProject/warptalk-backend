@@ -12,6 +12,7 @@ public static class AudioRouteConstants
     public const string ErrorUnexpected = "Unexpected error occurred.";
     public const string ErrorUnknownEventType = "Unknown event type.";
     public const string ErrorInternalProcessingEvent = "Internal error processing event.";
+    public const string ErrorFailedToProcessTelemetry = "Failed to process telemetry";
 
     // Validation Messages
     public const string ValidationSelfRoutingNotAllowed = "Self-routing is not allowed.";

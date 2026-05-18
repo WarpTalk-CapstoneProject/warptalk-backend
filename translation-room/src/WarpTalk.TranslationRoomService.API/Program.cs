@@ -52,6 +52,7 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository>();
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
+builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
@@ -60,11 +61,19 @@ builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>()
 builder.Services.AddScoped<IAudioRouteEventProcessorService, AudioRouteEventProcessorService>();
 builder.Services.AddScoped<ITelemetryProcessorService, TelemetryProcessorService>();
 builder.Services.AddScoped<IArtifactsFinalizationService, ArtifactsFinalizationService>();
+builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();
 builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
+builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
+
+builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.TelemetrySettings>(
+    builder.Configuration.GetSection("Telemetry"));
+
+builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.ArtifactFinalizationSettings>(
+    builder.Configuration.GetSection("ArtifactFinalization"));
 
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
@@ -98,6 +107,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcSettings:AuthServiceUrl"] ?? "http://localhost:5101");
+});
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.TranscriptServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcSettings:TranscriptServiceUrl"] ?? "http://localhost:50055");
 });
 
 builder.Services.AddControllers();

@@ -33,6 +33,24 @@ public static class TranslationRoomConstants
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
     public const string ErrorParticipantKicked = "You have been permanently removed from this room and cannot rejoin.";
 
+    // Participant Errors
+    public const string ErrorOnlyHostCanManageAudio = "Only the host can manage participant audio.";
+    public const string ErrorParticipantNotFound = "Participant not found.";
+    public const string ErrorUnexpectedUpdateParticipantAudio = "An unexpected error occurred while updating participant audio.";
+    public const string ErrorOnlyHostCanKick = "Only the host can kick participants.";
+    public const string ErrorCannotKickHost = "Cannot kick the host.";
+    public const string ErrorUnexpectedKickParticipant = "An unexpected error occurred while kicking participant.";
+    public const string ErrorUnexpectedLeaveRoom = "An unexpected error occurred while leaving room.";
+
+    // Artifact Errors
+    public const string ErrorArtifactNotFound = "Artifact not found.";
+    public const string ErrorUnauthorizedConsentArtifact = "Unauthorized to approve consent for this artifact.";
+
+    // Unexpected General Errors
+    public const string ErrorUnexpected = "An unexpected error occurred.";
+    public const string ErrorUnexpectedEndRoom = "An unexpected error occurred while ending the room.";
+    public const string ErrorUnexpectedUpdateRoomSettings = "An unexpected error occurred while updating the room settings.";
+
     // gRPC
     public const string EntityTranslationRoom = "TranslationRoom";
 

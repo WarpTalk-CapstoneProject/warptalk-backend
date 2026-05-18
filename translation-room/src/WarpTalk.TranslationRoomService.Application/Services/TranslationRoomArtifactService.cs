@@ -98,10 +98,10 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         {
             var artifact = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactWithRoomAsync(artifactId, ct);
 
-            if (artifact == null) return Result.Failure("Artifact not found.", ErrorCodes.NotFound);
+            if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId)) 
-                return Result.Failure("Unauthorized to approve consent for this artifact.", ErrorCodes.Unauthorized);
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;
             _unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
@@ -112,7 +112,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error approving consent for artifact {ArtifactId}", artifactId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 }

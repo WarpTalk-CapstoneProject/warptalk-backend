@@ -12,5 +12,5 @@ public interface IAudioRouteStateMachine
     /// <param name="currentState">The current status of the audio route</param>
     /// <param name="eventType">The event that occurred</param>
     /// <returns>A Result containing the next AudioRouteStatus if transition is allowed, or a Failure if transition is invalid.</returns>
-    Result<AudioRouteStatus> GetNextState(AudioRouteStatus currentState, AudioRoutingEventType eventType);
+    Result<AudioRouteStatus> GetNextState(AudioRouteStatus currentState, AudioRoutingEventType eventType, string? payloadJson = null);
 }

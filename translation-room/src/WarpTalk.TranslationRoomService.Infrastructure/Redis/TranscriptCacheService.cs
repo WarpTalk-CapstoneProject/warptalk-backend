@@ -2,13 +2,22 @@ using System;
 using System.Text;
 using System.Threading.Tasks;
 using StackExchange.Redis;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 
-namespace WarpTalk.TranslationRoomService.Application.Helpers;
+namespace WarpTalk.TranslationRoomService.Infrastructure.Redis;
 
-public static class TranscriptHelper
+public class TranscriptCacheService : ITranscriptCacheService
 {
-    public static async Task<string> AssembleTranscriptAsync(Guid roomId, IDatabase db, string redisKey)
+    private readonly IConnectionMultiplexer _redis;
+
+    public TranscriptCacheService(IConnectionMultiplexer redis)
     {
+        _redis = redis;
+    }
+
+    public async Task<string> AssembleTranscriptAsync(Guid roomId, string redisKey)
+    {
+        var db = _redis.GetDatabase();
         var transcriptCount = await db.ListLengthAsync(redisKey);
         
         var sb = new StringBuilder();

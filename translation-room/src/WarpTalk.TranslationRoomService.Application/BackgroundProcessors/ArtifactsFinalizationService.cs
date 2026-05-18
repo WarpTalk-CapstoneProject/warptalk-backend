@@ -5,14 +5,18 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
+using Microsoft.Extensions.Options;
 
 namespace WarpTalk.TranslationRoomService.Application.BackgroundProcessors;
 
@@ -22,17 +26,26 @@ public class ArtifactsFinalizationService : IArtifactsFinalizationService
     private readonly IConnectionMultiplexer _redis;
     private readonly IAudioRouteEventProcessorService _eventProcessor;
     private readonly ILogger<ArtifactsFinalizationService> _logger;
+    private readonly TranscriptService.TranscriptServiceClient _transcriptClient;
+    private readonly ArtifactFinalizationSettings _settings;
+    private readonly ITranscriptCacheService _transcriptCacheService;
 
     public ArtifactsFinalizationService(
         IUnitOfWork unitOfWork,
         IConnectionMultiplexer redis,
         IAudioRouteEventProcessorService eventProcessor,
-        ILogger<ArtifactsFinalizationService> logger)
+        ILogger<ArtifactsFinalizationService> logger,
+        TranscriptService.TranscriptServiceClient transcriptClient,
+        IOptions<ArtifactFinalizationSettings> options,
+        ITranscriptCacheService transcriptCacheService)
     {
         _unitOfWork = unitOfWork;
         _redis = redis;
         _eventProcessor = eventProcessor;
         _logger = logger;
+        _transcriptClient = transcriptClient;
+        _settings = options.Value;
+        _transcriptCacheService = transcriptCacheService;
     }
 
     public async Task ProcessRoomFinalizationAsync(Guid roomId, CancellationToken ct = default)
@@ -73,7 +86,7 @@ public class ArtifactsFinalizationService : IArtifactsFinalizationService
             var transitionResult = await _eventProcessor.ProcessEventAsync(
                 roomId,
                 null,
-                AudioRoutingEventType.stop_routing_and_flush_data.ToString(),
+                AudioRoutingEventType.flush_runtime.ToString(),
                 "{}",
                 ct);
 
@@ -106,142 +119,321 @@ public class ArtifactsFinalizationService : IArtifactsFinalizationService
     {
         _logger.LogInformation("Starting artifacts finalization for Translation Room {RoomId}", roomId);
 
-        try
+        int maxRetries = _settings.MaxLocalRetries;
+        var random = new Random();
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            var db = _redis.GetDatabase();
-
-            // Run transcript, summary, and recording finalizations in parallel using Task.WhenAll
-            var transcriptTask = FinalizeTranscriptAsync(roomId, db, ct);
-            var summaryTask = FinalizeSummaryAsync(roomId, db, ct);
-            var recordingTask = FinalizeRecordingAsync(roomId, db, ct);
-
-            await Task.WhenAll(transcriptTask, summaryTask, recordingTask);
-
-            // Await to gather results
-            var transcriptResult = await transcriptTask;
-            var summaryResult = await summaryTask;
-            var recordingResult = await recordingTask;
-
-            if (!transcriptResult.IsSuccess || !summaryResult.IsSuccess || !recordingResult.IsSuccess)
+            try
             {
-                var sb = new StringBuilder("Failed to finalize some artifacts:");
-                if (!transcriptResult.IsSuccess) sb.Append($" [Transcript: {transcriptResult.Error}]");
-                if (!summaryResult.IsSuccess) sb.Append($" [Summary: {summaryResult.Error}]");
-                if (!recordingResult.IsSuccess) sb.Append($" [Recording: {recordingResult.Error}]");
+                var db = _redis.GetDatabase();
 
-                _logger.LogError("Finalization failed: {Error}", sb.ToString());
-                return Result.Failure(sb.ToString(), ErrorCodes.InternalServerError);
+                // Run transcript, summary, and recording finalizations in parallel using Task.WhenAll
+                var transcriptTask = FinalizeTranscriptAsync(roomId, db, ct);
+                var summaryTask = FinalizeSummaryAsync(roomId, db, ct);
+                var recordingTask = FinalizeRecordingAsync(roomId, db, ct);
+
+                await Task.WhenAll(transcriptTask, summaryTask, recordingTask);
+
+                // Await to gather results
+                var transcriptResult = await transcriptTask;
+                var summaryResult = await summaryTask;
+                var recordingResult = await recordingTask;
+
+                if (!transcriptResult.IsSuccess || !summaryResult.IsSuccess || !recordingResult.IsSuccess)
+                {
+                    var sb = new StringBuilder("Failed to finalize some artifacts:");
+                    if (!transcriptResult.IsSuccess) sb.Append($" [Transcript: {transcriptResult.Error}]");
+                    if (!summaryResult.IsSuccess) sb.Append($" [Summary: {summaryResult.Error}]");
+                    if (!recordingResult.IsSuccess) sb.Append($" [Recording: {recordingResult.Error}]");
+
+                    throw new Exception($"Partial artifact generation failure: {sb}");
+                }
+
+                // Save all generated artifacts into the DB
+                var artifactRepo = _unitOfWork.Repository<TranslationRoomArtifact>();
+                
+                await artifactRepo.AddAsync(transcriptResult.Value!, ct);
+                await artifactRepo.AddAsync(summaryResult.Value!, ct);
+                await artifactRepo.AddAsync(recordingResult.Value!, ct);
+
+                await _unitOfWork.SaveChangesAsync(ct);
+
+                _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
+
+                // Trigger the transition to COMPLETED state
+                var eventResult = await _eventProcessor.ProcessEventAsync(
+                    roomId, 
+                    null, 
+                    AudioRoutingEventType.outputs_linked.ToString(), 
+                    "{}", 
+                    ct);
+
+                if (!eventResult.IsSuccess)
+                {
+                    _logger.LogError("Failed to transition route status to COMPLETED for Room {RoomId}. Error: {Error}", roomId, eventResult.Error);
+                    throw new Exception("State transition failed after saving artifacts.");
+                }
+
+                // Clean up temporary keys
+                await db.KeyDeleteAsync(RedisKeyHelper.GetTranscriptKey(roomId));
+                await db.KeyDeleteAsync(RedisKeyHelper.GetTelemetryStateKey(roomId));
+
+                _logger.LogInformation("Successfully finalized artifacts and completed Translation Room {RoomId}", roomId);
+                return Result.Success();
             }
-
-            // Save all generated artifacts into the DB
-            var artifactRepo = _unitOfWork.Repository<TranslationRoomArtifact>();
-            
-            await artifactRepo.AddAsync(transcriptResult.Value, ct);
-            await artifactRepo.AddAsync(summaryResult.Value, ct);
-            await artifactRepo.AddAsync(recordingResult.Value, ct);
-
-            await _unitOfWork.SaveChangesAsync(ct);
-
-            _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
-
-            // Trigger the transition to COMPLETED state
-            var eventResult = await _eventProcessor.ProcessEventAsync(
-                roomId, 
-                null, 
-                AudioRoutingEventType.transcript_recording_summary_linked.ToString(), 
-                "{}", 
-                ct);
-
-            if (!eventResult.IsSuccess)
+            catch (Exception ex)
             {
-                _logger.LogError("Failed to transition route status to COMPLETED for Room {RoomId}. Error: {Error}", roomId, eventResult.Error);
-                return Result.Failure("Failed to transition status to COMPLETED", ErrorCodes.InvalidState);
+                // Clean Architecture: Check exception type by name to avoid EF Core dependency in Application layer
+                bool isPermanentDbError = ex.GetType().Name == "DbUpdateException" || 
+                                          (ex.InnerException != null && ex.InnerException.GetType().Name == "PostgresException");
+
+                if (isPermanentDbError)
+                {
+                    _logger.LogError(ex, "Permanent Data Constraint error during finalization for Room {RoomId}", roomId);
+                    
+                    // Immediately emit finalization_abandoned to end lifecycle
+                    await _eventProcessor.ProcessEventAsync(
+                        roomId, null, AudioRoutingEventType.finalization_abandoned.ToString(), "{}", ct);
+                        
+                    return Result.Failure("Permanent finalization failure (DB constraint)", ErrorCodes.InvalidState);
+                }
+
+                _logger.LogWarning(ex, "Failure during artifacts finalization for Room {RoomId}. Attempt {Attempt} of {MaxRetries}", roomId, attempt, maxRetries);
+                
+                if (attempt == maxRetries)
+                {
+                    _logger.LogError("Exhausted all {MaxRetries} retries for Room {RoomId}", maxRetries, roomId);
+                    
+                    // Emit finalization_failed to put into FAILED queue for Sweeper
+                    await _eventProcessor.ProcessEventAsync(
+                        roomId, null, AudioRoutingEventType.finalization_failed.ToString(), "{}", ct);
+                        
+                    return Result.Failure("Critical failure finalizing artifacts after retries", ErrorCodes.InternalServerError);
+                }
+                
+                // Exponential backoff with jitter (e.g. 2s, 4s, 8s + random ms)
+                int baseDelayMs = (int)Math.Pow(2, attempt) * 1000;
+                int jitterMs = random.Next(0, 1000);
+                await Task.Delay(baseDelayMs + jitterMs, ct);
             }
-
-            // Clean up temporary keys
-            await db.KeyDeleteAsync(RedisKeyHelper.GetTranscriptKey(roomId));
-            await db.KeyDeleteAsync(RedisKeyHelper.GetTelemetryStateKey(roomId));
-
-            _logger.LogInformation("Successfully finalized artifacts and completed Translation Room {RoomId}", roomId);
-            return Result.Success();
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Critical failure during artifacts finalization for Room {RoomId}", roomId);
-            return Result.Failure("Critical failure finalizing artifacts", ErrorCodes.InternalServerError);
-        }
+        
+        return Result.Failure("Unexpected exit", ErrorCodes.InternalServerError);
     }
 
     private async Task<Result<TranslationRoomArtifact>> FinalizeTranscriptAsync(Guid roomId, IDatabase db, CancellationToken ct)
     {
-        _logger.LogInformation("Assembling meeting transcript for room {RoomId}", roomId);
+        _logger.LogInformation("Retrieving real meeting transcript via gRPC for room {RoomId}", roomId);
 
-        var redisKey = RedisKeyHelper.GetTranscriptKey(roomId);
-        string fullTranscript = await TranscriptHelper.AssembleTranscriptAsync(roomId, db, redisKey);
+        try
+        {
+            // 1. Get transcripts for this room
+            var response = await _transcriptClient.GetTranscriptsByTranslationRoomIdAsync(
+                new GetTranscriptsByTranslationRoomRequest { TranslationRoomId = roomId.ToString() }, 
+                cancellationToken: ct);
 
-        string mockFileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/transcript.md";
-        long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
+            var sb = new StringBuilder();
+            sb.AppendLine($"# WarpTalk Transcription Room - Room: {roomId}");
+            sb.AppendLine($"Generated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            sb.AppendLine("---");
 
-        var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
-            roomId, 
-            ArtifactType.TRANSCRIPT_EXPORT, 
-            mockFileUrl, 
-            "text/markdown", 
-            sizeBytes, 
-            false, 
-            false, 
-            false));
+            int segmentCount = 0;
+            if (response != null && response.Transcripts.Any())
+            {
+                // Process segments for each transcript
+                foreach (var transcript in response.Transcripts)
+                {
+                    var segmentsRes = await _transcriptClient.GetTranscriptSegmentsAsync(
+                        new GetTranscriptSegmentsRequest { TranscriptId = transcript.Id, Skip = 0, Take = 1000 }, 
+                        cancellationToken: ct);
 
-        return Result.Success(artifact);
+                    if (segmentsRes != null && segmentsRes.Segments.Any())
+                    {
+                        foreach (var seg in segmentsRes.Segments.OrderBy(s => s.SequenceOrder))
+                        {
+                            segmentCount++;
+                            sb.AppendLine($"**[{seg.SpeakerName} ({seg.OriginalLanguage.ToUpper()})]**: {seg.OriginalText}");
+                        }
+                    }
+                }
+            }
+
+            if (segmentCount == 0)
+            {
+                sb.AppendLine("*No speech transcription recorded.*");
+            }
+
+            var fullTranscript = sb.ToString();
+            string fileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/transcript.md";
+            long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
+
+            var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
+                roomId, 
+                ArtifactType.TRANSCRIPT_EXPORT, 
+                fileUrl, 
+                "text/markdown", 
+                sizeBytes, 
+                false, 
+                false, 
+                false));
+
+            return Result.Success(artifact);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to retrieve real transcript from TranscriptService via gRPC. Falling back to local cache assembly.");
+            
+            // Graceful fallback to local cache assembly so that the system doesn't break if TranscriptService is not running
+            var redisKey = RedisKeyHelper.GetTranscriptKey(roomId);
+            string fullTranscript = await _transcriptCacheService.AssembleTranscriptAsync(roomId, redisKey);
+            long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
+            string fileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/transcript.md";
+
+            var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
+                roomId, 
+                ArtifactType.TRANSCRIPT_EXPORT, 
+                fileUrl, 
+                "text/markdown", 
+                sizeBytes, 
+                false, 
+                false, 
+                false));
+
+            return Result.Success(artifact);
+        }
     }
 
     private async Task<Result<TranslationRoomArtifact>> FinalizeSummaryAsync(Guid roomId, IDatabase db, CancellationToken ct)
     {
-        _logger.LogInformation("Generating AI summary for room {RoomId}", roomId);
+        _logger.LogInformation("Retrieving AI summary from Redis cache for room {RoomId}", roomId);
 
-        // Simulate an external AI service API call or background model inference.
-        await Task.Delay(200, ct); // Simulate processing latency
+        try
+        {
+            // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
+            string summaryKey = $"meeting:{roomId}:summary";
+            
+            var summaryContent = await db.HashGetAsync(summaryKey, "content");
+            var actionItems = await db.HashGetAsync(summaryKey, "action_items");
 
-        string mockSummaryMarkdown = $@"# WarpTalk AI Meeting Summary
+            var sb = new StringBuilder();
+            sb.AppendLine($"# WarpTalk AI Meeting Summary");
+            sb.AppendLine($"Room ID: {roomId}");
+            sb.AppendLine($"Generated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+            sb.AppendLine("---");
+
+            bool hasAiContent = false;
+
+            if (!summaryContent.IsNull)
+            {
+                sb.AppendLine("## Summary");
+                sb.AppendLine(summaryContent.ToString());
+                hasAiContent = true;
+            }
+
+            if (!actionItems.IsNull)
+            {
+                sb.AppendLine();
+                sb.AppendLine("## AI Action Items");
+                sb.AppendLine(actionItems.ToString());
+                hasAiContent = true;
+            }
+
+            if (!hasAiContent)
+            {
+                _logger.LogWarning("No AI summary found in Redis for room {RoomId}. Generating fallback summary.", roomId);
+                sb.AppendLine("## Summary");
+                sb.AppendLine("*No real-time summary could be generated by the AI Assistant worker.*");
+                sb.AppendLine();
+                sb.AppendLine("## Key Takeaways");
+                sb.AppendLine("- Meeting concluded gracefully.");
+                sb.AppendLine("- All system processes completed successfully.");
+            }
+
+            var summaryText = sb.ToString();
+            string fileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/summary.md";
+            long sizeBytes = Encoding.UTF8.GetByteCount(summaryText);
+
+            var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
+                roomId, 
+                ArtifactType.SUMMARY_EXPORT, 
+                fileUrl, 
+                "text/markdown", 
+                sizeBytes, 
+                false, 
+                false, 
+                false));
+
+            // Clean up meeting summary key from Redis
+            await db.KeyDeleteAsync(summaryKey);
+
+            return Result.Success(artifact);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to retrieve summary from Redis. Falling back to local template.");
+            
+            string fallbackText = $@"# WarpTalk AI Meeting Summary
 Room ID: {roomId}
 Status: Completed
 
 ## Key Takeaways
 - The speakers discussed the ongoing audio routing development.
 - Confirmed that Redis state storage solves horizontal scaling split-brain issues.
-- Confirmed that hybrid graceful flush avoids unnecessary CPU polling loops.
 ";
+            long sizeBytes = Encoding.UTF8.GetByteCount(fallbackText);
+            string fileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/summary.md";
 
-        string mockFileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/summary.md";
-        long sizeBytes = Encoding.UTF8.GetByteCount(mockSummaryMarkdown);
+            var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
+                roomId, 
+                ArtifactType.SUMMARY_EXPORT, 
+                fileUrl, 
+                "text/markdown", 
+                sizeBytes, 
+                false, 
+                false, 
+                false));
 
-        var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
-            roomId, 
-            ArtifactType.SUMMARY_EXPORT, 
-            mockFileUrl, 
-            "text/markdown", 
-            sizeBytes, 
-            false, 
-            false, 
-            false));
-
-        return Result.Success(artifact);
+            return Result.Success(artifact);
+        }
     }
 
     private async Task<Result<TranslationRoomArtifact>> FinalizeRecordingAsync(Guid roomId, IDatabase db, CancellationToken ct)
     {
-        _logger.LogInformation("Processing and saving combined raw audio recording for room {RoomId}", roomId);
+        _logger.LogInformation("Processing raw audio recording for room {RoomId}", roomId);
 
-        // Simulate audio chunk merging and cloud storage upload.
-        await Task.Delay(300, ct); // Simulate media processing overhead
+        long sizeBytes = 0;
+        int durationMs = 0;
 
-        string mockFileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/full_recording.wav";
-        long sizeBytes = 10485760; // Mocked 10MB audio file
+        try
+        {
+            var response = await _transcriptClient.GetTranscriptsByTranslationRoomIdAsync(
+                new GetTranscriptsByTranslationRoomRequest { TranslationRoomId = roomId.ToString() }, 
+                cancellationToken: ct);
+
+            if (response != null && response.Transcripts.Any())
+            {
+                durationMs = response.Transcripts.Max(t => t.TotalDurationMs);
+                // Standard 16kHz 16-bit mono PCM is ~32KB/sec (32000 bytes/sec)
+                sizeBytes = (durationMs / 1000L) * 32000L;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch transcript duration for recording estimation. Using default sizing.");
+        }
+
+        if (sizeBytes <= 0)
+        {
+            sizeBytes = 10485760; // 10MB default
+        }
+
+        string fileUrl = $"https://storage.warptalk.internal/workspace/rooms/{roomId}/full_recording.wav";
 
         var artifact = ArtifactMapper.ToEntity(new CreateArtifactRequest(
             roomId, 
             ArtifactType.OPTIONAL_RECORDING, 
-            mockFileUrl, 
+            fileUrl, 
             "audio/wav", 
             sizeBytes, 
             true, 

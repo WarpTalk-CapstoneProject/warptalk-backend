@@ -249,7 +249,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error opening waiting room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -261,7 +261,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.WAITING && translationRoom.Status != RoomStatus.PAUSED)
+            if (translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
             translationRoom.Status = RoomStatus.IN_PROGRESS;
@@ -274,16 +274,15 @@ public class TranslationRoomService : ITranslationRoomService
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            // WT-67: Trigger Audio Routing State Machine
+            // WT-67: Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.participants_and_languages_configured.ToString(), "{}", ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error starting translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -305,14 +304,14 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine to Pause
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_pauses_session.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_pause.ToString(), "{}", ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error pausing translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -334,14 +333,14 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_resumes_session.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error resuming translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -366,7 +365,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error cancelling translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -394,7 +393,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error expiring translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -426,14 +425,14 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.host_ends_session.ToString(), "{}", ct);
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while ending translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
-            return Result.Failure("An unexpected error occurred while ending the room.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedEndRoom, ErrorCodes.InternalServerError);
         }
     }
 
@@ -493,7 +492,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while updating translation room settings. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
-            return Result.Failure("An unexpected error occurred while updating the room settings.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
         }
     }
 
