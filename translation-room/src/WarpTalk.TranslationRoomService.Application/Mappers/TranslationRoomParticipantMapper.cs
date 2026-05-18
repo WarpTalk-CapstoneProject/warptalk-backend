@@ -18,7 +18,9 @@ public static class TranslationRoomParticipantMapper
         bool isHost)
     {
         var role = isHost ? TranslationRoomParticipantRole.HOST : TranslationRoomParticipantRole.PARTICIPANT;
-        var initialStatus = (requiresApproval && !isHost) ? TranslationRoomParticipantStatus.WAITING : TranslationRoomParticipantStatus.CONNECTED;
+        var initialStatus = (requiresApproval && !isHost) 
+            ? TranslationRoomParticipantStatus.WAITING.ToString() 
+            : TranslationRoomParticipantStatus.CONNECTED.ToString();
 
         return new TranslationRoomParticipant
         {
@@ -48,20 +50,20 @@ public static class TranslationRoomParticipantMapper
         participant.SpeakLanguage = speakLanguage;
         
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
-        if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED ||
-            participant.Status == TranslationRoomParticipantStatus.LEFT ||
-            participant.Status == TranslationRoomParticipantStatus.INVITED)
+        if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED.ToString() ||
+            participant.Status == TranslationRoomParticipantStatus.LEFT.ToString() ||
+            participant.Status == TranslationRoomParticipantStatus.INVITED.ToString())
         {
             participant.Status = (requiresApproval && !isHost) 
-                ? TranslationRoomParticipantStatus.WAITING 
-                : TranslationRoomParticipantStatus.CONNECTED;
+                ? TranslationRoomParticipantStatus.WAITING.ToString() 
+                : TranslationRoomParticipantStatus.CONNECTED.ToString();
         }
 
         // BR-004: Host check overrides approval
         if (isHost)
         {
             participant.Role = TranslationRoomParticipantRole.HOST.ToString();
-            participant.Status = TranslationRoomParticipantStatus.CONNECTED;
+            participant.Status = TranslationRoomParticipantStatus.CONNECTED.ToString();
         }
         
         participant.UpdatedAt = DateTime.UtcNow;

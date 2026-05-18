@@ -56,7 +56,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
                 DisplayName = p.DisplayName ?? string.Empty,
                 Role = p.Role ?? string.Empty,
                 Language = p.SpeakLanguage ?? string.Empty,
-                IsActive = p.Status == Domain.Enums.TranslationRoomParticipantStatus.CONNECTED
+                IsActive = p.Status == nameof(Domain.Enums.TranslationRoomParticipantStatus.CONNECTED)
             });
         }
 

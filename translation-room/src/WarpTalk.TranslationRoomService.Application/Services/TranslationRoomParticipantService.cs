@@ -39,7 +39,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
             
-            if (room.HostId != requestedByUserId && (requester == null || requester.Status != TranslationRoomParticipantStatus.CONNECTED))
+            if (room.HostId != requestedByUserId && (requester == null || requester.Status != nameof(TranslationRoomParticipantStatus.CONNECTED)))
             {
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
             }
@@ -128,10 +128,10 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant == null || participant.TranslationRoomId != translationRoomId)
                 return Result.Failure("Participant not found.", ErrorCodes.NotFound);
 
-            if (participant.Status != TranslationRoomParticipantStatus.WAITING)
+            if (participant.Status != nameof(TranslationRoomParticipantStatus.WAITING))
                 return Result.Failure("Participant is not in the waiting room.", ErrorCodes.ValidationError);
 
-            participant.Status = TranslationRoomParticipantStatus.CONNECTED;
+            participant.Status = nameof(TranslationRoomParticipantStatus.CONNECTED);
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
@@ -164,7 +164,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant.UserId == room.HostId)
                 return Result.Failure("Cannot kick the host.", ErrorCodes.ValidationError);
 
-            participant.Status = TranslationRoomParticipantStatus.KICKED;
+            participant.Status = nameof(TranslationRoomParticipantStatus.KICKED);
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
@@ -187,7 +187,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant == null)
                 return Result.Failure("Participant not found.", ErrorCodes.NotFound);
 
-            participant.Status = TranslationRoomParticipantStatus.LEFT;
+            participant.Status = nameof(TranslationRoomParticipantStatus.LEFT);
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
