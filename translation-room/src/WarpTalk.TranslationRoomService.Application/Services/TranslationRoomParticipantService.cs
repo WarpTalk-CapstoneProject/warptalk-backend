@@ -71,7 +71,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 _ => request.IsDescending ? query.OrderByDescending(p => p.JoinedAt) : query.OrderBy(p => p.JoinedAt)
             };
 
-            var dtos = query.Select(TranslationRoomParticipantMapper.ToParticipantDto).ToList();
+            var dtos = query.Select(p => p.ToDto()).ToList();
 
             return Result.Success(dtos);
         }

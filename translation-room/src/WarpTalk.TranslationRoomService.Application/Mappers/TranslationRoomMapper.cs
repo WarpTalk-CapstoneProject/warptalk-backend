@@ -7,7 +7,7 @@ namespace WarpTalk.TranslationRoomService.Application.Mappers;
 
 public static class TranslationRoomMapper
 {
-    public static TranslationRoomDto ToResponseDto(TranslationRoom room)
+    public static TranslationRoomDto ToResponseDto(this TranslationRoom room)
     {
         var settings = !string.IsNullOrEmpty(room.Settings) 
             ? System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings) 
@@ -33,7 +33,7 @@ public static class TranslationRoomMapper
         );
     }
 
-    public static TranslationRoom ToEntity(CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
+    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
     {
         return new TranslationRoom
         {

@@ -85,14 +85,14 @@ public class TranslationRoomService : ITranslationRoomService
             } while (exists);
 
             // 3. Create entity
-            var room = TranslationRoomMapper.ToEntity(request, hostId, roomCode, status, sourceLang, targetLangs);
+            var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);
 
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
             // 5. Return mapped response
-            return Result.Success(TranslationRoomMapper.ToResponseDto(room));
+            return Result.Success(room.ToResponseDto());
         }
         catch (Exception ex)
         {
@@ -110,7 +110,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom));
+            return Result.Success(translationRoom.ToResponseDto());
         }
         catch (Exception ex)
         {
@@ -171,10 +171,9 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (participant == null)
             {
-                participant = TranslationRoomParticipantMapper.ToParticipantEntity(
+                participant = request.ToParticipantEntity(
                     translationRoom.Id, 
                     userId, 
-                    request, 
                     speakLang!, 
                     listenLang!, 
                     requiresApproval,
@@ -185,8 +184,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
             else
             {
-                TranslationRoomParticipantMapper.UpdateParticipantEntity(
-                    participant, 
+                participant.UpdateFrom(
                     request, 
                     speakLang!, 
                     listenLang!, 
@@ -201,8 +199,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                TranslationRoomMapper.ToResponseDto(translationRoom),
-                TranslationRoomParticipantMapper.ToParticipantDto(participant)
+                translationRoom.ToResponseDto(),
+                participant.ToDto()
             ));
         }
         catch (Exception ex)
