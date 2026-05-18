@@ -2,7 +2,10 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.MeetingService.Application.Services;
+using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
+using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
 using WarpTalk.Shared.Protos;
 
@@ -62,8 +65,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
+builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
+builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
