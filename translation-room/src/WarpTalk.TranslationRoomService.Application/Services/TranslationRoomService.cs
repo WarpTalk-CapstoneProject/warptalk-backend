@@ -428,25 +428,33 @@ public class TranslationRoomService : ITranslationRoomService
 
             var total = query.Count();
             
-            var projected = query
+            var roomEntities = query
                 .OrderByDescending(r => r.EndedAt ?? r.StartedAt ?? r.CreatedAt)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(r => new {
-                    Room = r,
-                    Participants = r.TranslationRoomParticipants,
-                    Artifacts = r.TranslationRoomArtifacts
-                })
                 .ToList();
 
-            var rooms = projected.Select(x => new TranslationRoomHistoryItemDto(
-                    ToListItemDto(x.Room, userId),
-                    x.Participants.Select(p => p.ToDto()).ToList(),
-                    x.Artifacts
-                        .Where(a => a.DeletedAt == null)
-                        .OrderByDescending(a => a.CreatedAt)
-                        .Select(ToArtifactDto)
-                        .ToList()
+            var roomIds = roomEntities.Select(r => r.Id).ToList();
+
+            var participantsByRoom = _unitOfWork.Repository<TranslationRoomParticipant>()
+                .Query()
+                .Where(p => roomIds.Contains(p.TranslationRoomId))
+                .ToList()
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
+
+            var artifactsByRoom = _unitOfWork.Repository<TranslationRoomArtifact>()
+                .Query()
+                .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
+                .OrderByDescending(a => a.CreatedAt)
+                .ToList()
+                .GroupBy(a => a.TranslationRoomId)
+                .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
+
+            var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
+                    ToListItemDto(room, userId),
+                    participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
+                    artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
                 ))
                 .ToList();
 
