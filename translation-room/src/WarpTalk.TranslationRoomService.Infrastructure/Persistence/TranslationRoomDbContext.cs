@@ -92,6 +92,12 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
         });
 
         modelBuilder.Entity<TranslationRoomAudioRoute>(entity =>
@@ -215,6 +221,9 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("speak_language");
             entity.Property(e => e.Status)
                 .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
