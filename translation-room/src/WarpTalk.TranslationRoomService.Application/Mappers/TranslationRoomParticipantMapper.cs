@@ -1,6 +1,5 @@
 using System;
 using WarpTalk.TranslationRoomService.Application.DTOs;
-using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 
@@ -9,16 +8,18 @@ namespace WarpTalk.TranslationRoomService.Application.Mappers;
 public static class TranslationRoomParticipantMapper
 {
     public static TranslationRoomParticipant ToParticipantEntity(
+        this JoinTranslationRoomRequest request,
         Guid translationRoomId, 
         Guid userId, 
-        JoinTranslationRoomRequest request, 
         string speakLanguage,
         string listenLanguage,
         bool requiresApproval,
         bool isHost)
     {
-        var role = isHost ? TranslationRoomParticipantRole.HOST : TranslationRoomParticipantRole.PARTICIPANT;
-        var initialStatus = (requiresApproval && !isHost) ? TranslationRoomParticipantStatus.WAITING : TranslationRoomParticipantStatus.CONNECTED;
+        var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
+        var initialStatus = (requiresApproval && !isHost) 
+            ? nameof(TranslationRoomParticipantStatus.WAITING) 
+            : nameof(TranslationRoomParticipantStatus.CONNECTED);
 
         return new TranslationRoomParticipant
         {
@@ -26,7 +27,7 @@ public static class TranslationRoomParticipantMapper
             TranslationRoomId = translationRoomId,
             UserId = userId,
             DisplayName = request.DisplayName,
-            Role = role.ToString(),
+            Role = role,
             ListenLanguage = listenLanguage,
             SpeakLanguage = speakLanguage,
             Status = initialStatus,
@@ -35,8 +36,8 @@ public static class TranslationRoomParticipantMapper
         };
     }
 
-    public static void UpdateParticipantEntity(
-        TranslationRoomParticipant participant, 
+    public static void UpdateFrom(
+        this TranslationRoomParticipant participant, 
         JoinTranslationRoomRequest request, 
         string speakLanguage, 
         string listenLanguage, 
@@ -48,26 +49,26 @@ public static class TranslationRoomParticipantMapper
         participant.SpeakLanguage = speakLanguage;
         
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
-        if (participant.Status == TranslationRoomParticipantStatus.DISCONNECTED ||
-            participant.Status == TranslationRoomParticipantStatus.LEFT ||
-            participant.Status == TranslationRoomParticipantStatus.INVITED)
+        if (participant.Status == nameof(TranslationRoomParticipantStatus.DISCONNECTED) ||
+            participant.Status == nameof(TranslationRoomParticipantStatus.LEFT) ||
+            participant.Status == nameof(TranslationRoomParticipantStatus.INVITED))
         {
             participant.Status = (requiresApproval && !isHost) 
-                ? TranslationRoomParticipantStatus.WAITING 
-                : TranslationRoomParticipantStatus.CONNECTED;
+                ? nameof(TranslationRoomParticipantStatus.WAITING) 
+                : nameof(TranslationRoomParticipantStatus.CONNECTED);
         }
 
         // BR-004: Host check overrides approval
         if (isHost)
         {
-            participant.Role = TranslationRoomParticipantRole.HOST.ToString();
-            participant.Status = TranslationRoomParticipantStatus.CONNECTED;
+            participant.Role = nameof(TranslationRoomParticipantRole.HOST);
+            participant.Status = nameof(TranslationRoomParticipantStatus.CONNECTED);
         }
         
         participant.UpdatedAt = DateTime.UtcNow;
     }
 
-    public static TranslationRoomParticipantDto ToParticipantDto(TranslationRoomParticipant participant)
+    public static TranslationRoomParticipantDto ToDto(this TranslationRoomParticipant participant)
     {
         return new TranslationRoomParticipantDto(
             participant.Id,

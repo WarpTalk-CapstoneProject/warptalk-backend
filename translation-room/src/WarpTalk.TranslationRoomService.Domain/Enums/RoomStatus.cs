@@ -8,5 +8,6 @@ public enum RoomStatus
     PAUSED,
     ENDED,
     CANCELLED,
-    EXPIRED
+    EXPIRED,
+    FAILED
 }

@@ -52,13 +52,13 @@ public class TranslationRoomServiceTests
             Id = Guid.NewGuid(), 
             HostId = hostId, 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.WAITING,
+            Status = nameof(RoomStatus.WAITING),
             TranslationRoomType = TranslationRoomType.INSTANT.ToString()
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "Host User", "en", "vi");
 
-        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<RoomStatus>>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
         _mockParticipantRepo.Setup(p => p.GetByRoomAndUserAsync(room.Id, hostId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((TranslationRoomParticipant?)null);
@@ -82,13 +82,13 @@ public class TranslationRoomServiceTests
         { 
             Id = Guid.NewGuid(), 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.ENDED,
+            Status = nameof(RoomStatus.ENDED),
             TranslationRoomType = TranslationRoomType.INSTANT.ToString()
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "User", "en", "vi");
 
-        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<RoomStatus>>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TranslationRoom?)null);
 
         // Act
@@ -110,7 +110,7 @@ public class TranslationRoomServiceTests
         { 
             Id = roomId, 
             TranslationRoomCode = roomCode,
-            Status = RoomStatus.WAITING,
+            Status = nameof(RoomStatus.WAITING),
             HostId = Guid.NewGuid(),
             TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
             Settings = "{\"requires_approval\":false}"
@@ -123,12 +123,12 @@ public class TranslationRoomServiceTests
             UserId = userId,
             DisplayName = "Old Name",
             Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
-            Status = TranslationRoomParticipantStatus.INVITED
+            Status = nameof(TranslationRoomParticipantStatus.INVITED)
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "New Name", "fr", "es");
 
-        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<RoomStatus>>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
         _mockParticipantRepo.Setup(p => p.GetByRoomAndUserAsync(roomId, userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(existingParticipant);
@@ -141,7 +141,7 @@ public class TranslationRoomServiceTests
         existingParticipant.DisplayName.Should().Be("New Name");
         existingParticipant.SpeakLanguage.Should().Be("fr");
         existingParticipant.ListenLanguage.Should().Be("es");
-        existingParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED);
+        existingParticipant.Status.Should().Be(nameof(TranslationRoomParticipantStatus.CONNECTED));
         _mockParticipantRepo.Verify(p => p.Update(existingParticipant), Times.Once);
     }
 

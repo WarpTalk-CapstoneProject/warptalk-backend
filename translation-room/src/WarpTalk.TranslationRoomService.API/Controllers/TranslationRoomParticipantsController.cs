@@ -63,6 +63,26 @@ public class TranslationRoomParticipantsController : ControllerBase
         return NoContent();
     }
 
+    [HttpPut("{id}/participants/{participantId}/admit")]
+    public async Task<IActionResult> AdmitParticipant(Guid id, Guid participantId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _participantService.AdmitParticipantAsync(id, participantId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return NoContent();
+    }
+
     [HttpPut("{id}/participants/{participantId}/kick")]
     public async Task<IActionResult> KickParticipant(Guid id, Guid participantId, CancellationToken ct)
     {

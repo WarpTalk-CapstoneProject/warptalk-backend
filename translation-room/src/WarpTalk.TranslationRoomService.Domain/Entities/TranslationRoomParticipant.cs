@@ -38,7 +38,7 @@ public partial class TranslationRoomParticipant
 
     public string ConnectionType { get; set; } = null!;
 
-    public TranslationRoomParticipantStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
     public bool IsTranslationAudioEnabled { get; set; }
 

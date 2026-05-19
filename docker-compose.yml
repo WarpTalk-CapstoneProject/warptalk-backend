@@ -144,6 +144,35 @@ services:
     networks:
       - warptalk-net
 
+  # ── Meeting Service ─────────────────────────────────────────────────
+  meeting-service:
+    build:
+      context: .
+      dockerfile: meeting/Dockerfile
+    container_name: warptalk-meeting
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=meeting,public"
+      GrpcUrls__TranslationRoomService: "http://translation-room-service:50052"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+      LiveKit__ApiKey: "APIBVnfFo9PzzoQ"
+      LiveKit__ApiSecret: "wbB6j98H2jfF5nLTZYhaiYXQM8hM6nB3KoVoXfMNTPA"
+      Redis__ConnectionString: "redis:6379"
+    ports:
+      - "5105:5105"
+      - "50055:50055"
+    volumes:
+      - meeting_dataprotection:/root/.aspnet/DataProtection-Keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+      translation-room-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
   # ── API Gateway (YARP + SignalR) ────────────────────────────────────
   gateway:
     build:
@@ -164,6 +193,7 @@ services:
       ReverseProxy__Clusters__translation-room-cluster__Destinations__translation-room-service__Address: "http://translation-room-service:5102"
       ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
+      ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5105"
       AllowedOrigins__0: "http://localhost:3000"
       AllowedOrigins__1: "http://localhost:5173"
       AllowedOrigins__2: "https://warptalk.vn"
@@ -182,6 +212,8 @@ services:
         condition: service_started
       notification-service:
         condition: service_started
+      meeting-service:
+        condition: service_started
     networks:
       - warptalk-net
 
@@ -192,6 +224,7 @@ volumes:
   translation_room_dataprotection:
   transcript_dataprotection:
   notification_dataprotection:
+  meeting_dataprotection:
   gateway_dataprotection:
 
 networks:

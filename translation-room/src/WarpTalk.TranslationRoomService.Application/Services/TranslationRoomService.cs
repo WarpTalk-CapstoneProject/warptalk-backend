@@ -77,7 +77,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // 1. Determine initial status
-            var status = request.ScheduledAt.HasValue ? RoomStatus.SCHEDULED : RoomStatus.WAITING;
+            var status = request.ScheduledAt.HasValue ? nameof(RoomStatus.SCHEDULED) : nameof(RoomStatus.WAITING);
 
             // 2. Generate unique 12-char alphanumeric TranslationRoomCode
             string roomCode;
@@ -89,7 +89,7 @@ public class TranslationRoomService : ITranslationRoomService
             } while (exists);
 
             // 3. Create entity
-            var room = TranslationRoomMapper.ToEntity(request, hostId, roomCode, status, sourceLang, targetLangs);
+            var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);
 
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
@@ -166,7 +166,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // BR-010: Block KICKED participants
-            if (participant != null && participant.Status == TranslationRoomParticipantStatus.KICKED)
+            if (participant != null && participant.Status == nameof(TranslationRoomParticipantStatus.KICKED))
             {
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantKicked, ErrorCodes.Forbidden);
             }
@@ -183,10 +183,9 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (participant == null)
             {
-                participant = TranslationRoomParticipantMapper.ToParticipantEntity(
+                participant = request.ToParticipantEntity(
                     translationRoom.Id, 
                     userId, 
-                    request, 
                     speakLang!, 
                     listenLang!, 
                     requiresApproval,
@@ -197,8 +196,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
             else
             {
-                TranslationRoomParticipantMapper.UpdateParticipantEntity(
-                    participant, 
+                participant.UpdateFrom(
                     request, 
                     speakLang!, 
                     listenLang!, 
@@ -448,7 +446,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
+            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
             // WT-65: Update and Validate Source Language

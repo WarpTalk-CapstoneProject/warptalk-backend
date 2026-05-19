@@ -96,10 +96,10 @@ public class LanguageConfigurationTests
             TranslationRoomCode = "abc-defg-hij",
             SourceLanguage = "vi-VN",
             TargetLanguages = LanguageHelper.SerializeTargetLanguages(new List<string> { "en-US" }),
-            Status = RoomStatus.WAITING
+            Status = nameof(RoomStatus.WAITING)
         };
 
-        _mockRoomRepo.Setup(r => r.GetByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<RoomStatus>>(), It.IsAny<CancellationToken>()))
+        _mockRoomRepo.Setup(r => r.GetByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
 
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
@@ -130,7 +130,7 @@ public class LanguageConfigurationTests
         {
             Id = roomId,
             HostId = hostId,
-            Status = RoomStatus.IN_PROGRESS
+            Status = nameof(RoomStatus.IN_PROGRESS)
         };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
