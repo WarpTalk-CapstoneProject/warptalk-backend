@@ -35,7 +35,7 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
                             }
                         }
                     }
-                    catch
+                    catch (System.Text.Json.JsonException)
                     {
                         // Fall through to failure
                     }

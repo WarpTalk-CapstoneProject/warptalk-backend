@@ -9,4 +9,5 @@ public interface ILanguagePolicy
     bool IsAllowedToSpeak(string language, TranslationRoom room);
     bool IsAllowedToListen(string language, TranslationRoom room);
     Task<string?> ValidateParticipantLanguagesAsync(string? speakLanguage, string? listenLanguage, TranslationRoom room);
+    bool IsTranslationRequired(string speakLanguage, string listenLanguage);
 }

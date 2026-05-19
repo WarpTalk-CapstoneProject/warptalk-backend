@@ -2,38 +2,34 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
-using StackExchange.Redis;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
-using WarpTalk.TranslationRoomService.Application.BackgroundProcessors;
+using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.Shared;
 using Xunit;
 
 namespace WarpTalk.TranslationRoomService.Tests.Application.Services;
 
-public class TelemetryProcessorServiceTests
+public class TelemetryProcessorTests
 {
-    private readonly Mock<IConnectionMultiplexer> _mockRedis;
-    private readonly Mock<IDatabase> _mockDb;
-    private readonly Mock<IAudioRouteEventProcessorService> _mockEventProcessor;
-    private readonly Mock<ILogger<TelemetryProcessorService>> _mockLogger;
+    private readonly Mock<IRedisStateRepository> _mockRedisStateRepo;
+    private readonly Mock<IAudioRouteEventProcessor> _mockEventProcessor;
+    private readonly Mock<ILogger<TelemetryProcessor>> _mockLogger;
     private readonly Mock<IOptionsMonitor<TelemetrySettings>> _mockOptions;
-    private readonly TelemetryProcessorService _service;
+    private readonly TelemetryProcessor _service;
 
-    public TelemetryProcessorServiceTests()
+    public TelemetryProcessorTests()
     {
-        _mockRedis = new Mock<IConnectionMultiplexer>();
-        _mockDb = new Mock<IDatabase>();
-        _mockEventProcessor = new Mock<IAudioRouteEventProcessorService>();
-        _mockLogger = new Mock<ILogger<TelemetryProcessorService>>();
+        _mockRedisStateRepo = new Mock<IRedisStateRepository>();
+        _mockEventProcessor = new Mock<IAudioRouteEventProcessor>();
+        _mockLogger = new Mock<ILogger<TelemetryProcessor>>();
         _mockOptions = new Mock<IOptionsMonitor<TelemetrySettings>>();
-
-        _mockRedis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(_mockDb.Object);
 
         // Setup standard options
         _mockOptions.Setup(o => o.CurrentValue).Returns(new TelemetrySettings
@@ -47,8 +43,8 @@ public class TelemetryProcessorServiceTests
             WarmupCount = 3
         });
 
-        _service = new TelemetryProcessorService(
-            _mockRedis.Object,
+        _service = new TelemetryProcessor(
+            _mockRedisStateRepo.Object,
             _mockLogger.Object,
             _mockEventProcessor.Object,
             _mockOptions.Object);
@@ -69,28 +65,27 @@ public class TelemetryProcessorServiceTests
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
 
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 1),
-            new HashEntry("last_timestamp", payload.Timestamp - 1000)
+            { "warmup_count", "1" },
+            { "last_timestamp", (payload.Timestamp - 1000).ToString() }
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
         
         // Assert warmup_count increments to 2
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                entries[0].Name == "warmup_count" && (int)entries[0].Value == 2 &&
-                entries[1].Name == "last_timestamp" && (long)entries[1].Value == payload.Timestamp),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                d["warmup_count"] == "2" &&
+                d["last_timestamp"] == payload.Timestamp.ToString())), Times.Once);
 
         // Assert no event is processed due to warm-up protective bypass
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
@@ -115,36 +110,35 @@ public class TelemetryProcessorServiceTests
         };
 
         // Warmup count is 3 (warmup complete), STT is not currently degraded
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("stt_ema", 2000.0),
-            new HashEntry("is_stt_degraded", false),
-            new HashEntry("last_timestamp", timestamp - 1000) // 1 second gap -> alpha = 0.3
+            { "warmup_count", "3" },
+            { "stt_ema", "2000.0" },
+            { "is_stt_degraded", "False" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // 1 second gap -> alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA computation check:
         // alpha = 0.1 + (0.2 * 1.0) = 0.3
         // New EMA = (4000.0 * 0.3) + (2000.0 * 0.7) = 1200 + 1400 = 2600.
         // 2600 is below 3000 degraded threshold, so no event should fire
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "stt_ema", 2600.0) &&
-                !HasEntryWithNameAndValue(entries, "is_stt_degraded", true)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "stt_ema", 2600.0) &&
+                !HasKeyAndBoolValue(d, "is_stt_degraded", true))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
@@ -167,35 +161,34 @@ public class TelemetryProcessorServiceTests
             Timestamp = timestamp
         };
 
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("stt_ema", 2800.0),
-            new HashEntry("is_stt_degraded", false),
-            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+            { "warmup_count", "3" },
+            { "stt_ema", "2800.0" },
+            { "is_stt_degraded", "False" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"STT_DEGRADED\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA computation:
         // New EMA = (6000 * 0.3) + (2800 * 0.7) = 1800 + 1960 = 3760.
         // 3760 > 3000. So it degrades.
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "stt_ema", 3760.0) &&
-                HasEntryWithNameAndValue(entries, "is_stt_degraded", true)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "stt_ema", 3760.0) &&
+                HasKeyAndBoolValue(d, "is_stt_degraded", true))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"STT_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
@@ -219,35 +212,34 @@ public class TelemetryProcessorServiceTests
         };
 
         // Already degraded
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("stt_ema", 1800.0),
-            new HashEntry("is_stt_degraded", true),
-            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+            { "warmup_count", "3" },
+            { "stt_ema", "1800.0" },
+            { "is_stt_degraded", "True" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA calculation:
         // New EMA = (500 * 0.3) + (1800 * 0.7) = 150 + 1260 = 1410.
         // 1410 < 1500 (STT recovery threshold). So it recovers!
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "stt_ema", 1410.0) &&
-                HasEntryWithNameAndValue(entries, "is_stt_degraded", false)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "stt_ema", 1410.0) &&
+                HasKeyAndBoolValue(d, "is_stt_degraded", false))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
@@ -270,35 +262,34 @@ public class TelemetryProcessorServiceTests
             Timestamp = timestamp
         };
 
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("tts_ema", 5000.0),
-            new HashEntry("is_tts_degraded", false),
-            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+            { "warmup_count", "3" },
+            { "tts_ema", "5000.0" },
+            { "is_tts_degraded", "False" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TTS_DEGRADED\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA calculation:
         // New EMA = (10000 * 0.3) + (5000 * 0.7) = 3000 + 3500 = 6500.
         // 6500 > 6000 (TTS degraded threshold). So it degrades!
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "tts_ema", 6500.0) &&
-                HasEntryWithNameAndValue(entries, "is_tts_degraded", true)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "tts_ema", 6500.0) &&
+                HasKeyAndBoolValue(d, "is_tts_degraded", true))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TTS_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
@@ -322,35 +313,34 @@ public class TelemetryProcessorServiceTests
         };
 
         // Currently degraded
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("tts_ema", 3500.0),
-            new HashEntry("is_tts_degraded", true),
-            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+            { "warmup_count", "3" },
+            { "tts_ema", "3500.0" },
+            { "is_tts_degraded", "True" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA calculation:
         // New EMA = (1000 * 0.3) + (3500 * 0.7) = 300 + 2450 = 2750.
         // 2750 < 3000 (TTS recovery threshold). So it recovers!
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "tts_ema", 2750.0) &&
-                HasEntryWithNameAndValue(entries, "is_tts_degraded", false)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "tts_ema", 2750.0) &&
+                HasKeyAndBoolValue(d, "is_tts_degraded", false))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"AUDIO_ROUTING_ACTIVE\"}", It.IsAny<CancellationToken>()), Times.Once);
@@ -373,52 +363,53 @@ public class TelemetryProcessorServiceTests
             Timestamp = timestamp
         };
 
-        var hashEntries = new HashEntry[]
+        var state = new Dictionary<string, string>
         {
-            new HashEntry("warmup_count", 3),
-            new HashEntry("translation_ema", 2000.0),
-            new HashEntry("is_translation_degraded", false),
-            new HashEntry("last_timestamp", timestamp - 1000) // alpha = 0.3
+            { "warmup_count", "3" },
+            { "translation_ema", "2000.0" },
+            { "is_translation_degraded", "False" },
+            { "last_timestamp", (timestamp - 1000).ToString() } // alpha = 0.3
         };
 
-        _mockDb.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync(hashEntries);
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(state);
 
         _mockEventProcessor.Setup(e => e.ProcessEventAsync(roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TRANSLATION_DEGRADED\"}", It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // Act
-        var result = await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+        Func<Task> act = async () => await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        await act.Should().NotThrowAsync();
 
         // EMA calculation:
         // New EMA = (4000 * 0.3) + (2000 * 0.7) = 1200 + 1400 = 2600.
         // 2600 > 2500 (Translation degraded threshold). So it degrades!
-        _mockDb.Verify(d => d.HashSetAsync(
-            It.IsAny<RedisKey>(),
-            It.Is<HashEntry[]>(entries => 
-                HasEntryWithNameAndValue(entries, "translation_ema", 2600.0) &&
-                HasEntryWithNameAndValue(entries, "is_translation_degraded", true)),
-            It.IsAny<CommandFlags>()), Times.Once);
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => 
+                HasKeyAndValue(d, "translation_ema", 2600.0) &&
+                HasKeyAndBoolValue(d, "is_translation_degraded", true))), Times.Once);
 
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
             roomId, routeId, AudioRoutingEventType.telemetry_state_updated.ToString(), "{\"status\":\"TRANSLATION_DEGRADED\"}", It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    private static bool HasEntryWithNameAndValue(HashEntry[] entries, string name, RedisValue value)
+    private static bool HasKeyAndValue(Dictionary<string, string> dict, string key, double value)
     {
-        foreach (var entry in entries)
+        if (dict.TryGetValue(key, out var valStr) && double.TryParse(valStr, out var val))
         {
-            if (entry.Name == name)
-            {
-                if (double.TryParse((string?)entry.Value, out double entryD) && double.TryParse((string?)value, out double valD))
-                {
-                    return Math.Abs(entryD - valD) < 0.001;
-                }
-                return entry.Value == value;
-            }
+            return Math.Abs(val - value) < 0.001;
+        }
+        return false;
+    }
+
+    private static bool HasKeyAndBoolValue(Dictionary<string, string> dict, string key, bool value)
+    {
+        if (dict.TryGetValue(key, out var valStr) && bool.TryParse(valStr, out var val))
+        {
+            return val == value;
         }
         return false;
     }

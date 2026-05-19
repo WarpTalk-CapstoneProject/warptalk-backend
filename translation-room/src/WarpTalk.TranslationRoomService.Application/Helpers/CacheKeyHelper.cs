@@ -2,7 +2,7 @@ using System;
 
 namespace WarpTalk.TranslationRoomService.Application.Helpers;
 
-public static class RedisKeyHelper
+public static class CacheKeyHelper
 {
     public static string GetTelemetryStateKey(Guid roomId) => $"translationRoom:{roomId}:telemetry_state";
     

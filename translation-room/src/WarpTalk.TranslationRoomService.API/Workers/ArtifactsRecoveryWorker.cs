@@ -55,7 +55,7 @@ public class ArtifactsRecoveryWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<ITranslationRoomAudioRouteRepository>();
-        var eventProcessor = scope.ServiceProvider.GetRequiredService<IAudioRouteEventProcessorService>();
+        var eventProcessor = scope.ServiceProvider.GetRequiredService<IAudioRouteEventProcessor>();
         
         var db = _redis.GetDatabase();
 

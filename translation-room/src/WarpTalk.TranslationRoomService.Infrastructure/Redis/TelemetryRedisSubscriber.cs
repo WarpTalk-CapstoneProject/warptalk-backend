@@ -54,13 +54,9 @@ public class TelemetryRedisSubscriber : BackgroundService
                         }
 
                         using var scope = _scopeFactory.CreateScope();
-                        var telemetryProcessor = scope.ServiceProvider.GetRequiredService<ITelemetryProcessorService>();
+                        var telemetryProcessor = scope.ServiceProvider.GetRequiredService<ITelemetryProcessor>();
 
-                        var result = await telemetryProcessor.ProcessTelemetryAsync(dto, stoppingToken);
-                        if (!result.IsSuccess)
-                        {
-                            _logger.LogWarning("Failed to process telemetry: {Error}", result.Error);
-                        }
+                        await telemetryProcessor.ProcessTelemetryAsync(dto, stoppingToken);
                     }
                 }
                 catch (Exception ex)

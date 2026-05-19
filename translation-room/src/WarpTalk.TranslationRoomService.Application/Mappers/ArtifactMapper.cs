@@ -7,7 +7,7 @@ namespace WarpTalk.TranslationRoomService.Application.Mappers;
 
 public static class ArtifactMapper
 {
-    public static TranslationRoomArtifact ToEntity(CreateArtifactRequest request)
+    public static TranslationRoomArtifact ToEntity(this CreateArtifactRequest request)
     {
         return new TranslationRoomArtifact
         {
@@ -26,7 +26,7 @@ public static class ArtifactMapper
         };
     }
 
-    public static RoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)
+    public static RoomArtifactDto ToDto(this TranslationRoomArtifact artifact)
     {
         return new RoomArtifactDto(
             artifact.Id,
@@ -37,7 +37,7 @@ public static class ArtifactMapper
             artifact.ContainsRawVideo,
             artifact.ConsentRequired,
             artifact.RetentionUntil,
-            artifact.Status, 
+            artifact.Status,
             artifact.CreatedAt
         );
     }

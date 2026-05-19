@@ -8,7 +8,7 @@ public class TranslationRoomSettings
     [JsonPropertyName("requires_approval")]
     public bool RequiresApproval { get; set; } = true;
 
-    [JsonPropertyName("history_access")]
+    [JsonPropertyName("artifact_access")]
     [JsonConverter(typeof(JsonStringEnumConverter))]
-    public ArtifactAccessLevel HistoryAccess { get; set; } = ArtifactAccessLevel.HostOnly;
+    public ArtifactAccessLevel ArtifactAccess { get; set; } = ArtifactAccessLevel.HostOnly;
 }

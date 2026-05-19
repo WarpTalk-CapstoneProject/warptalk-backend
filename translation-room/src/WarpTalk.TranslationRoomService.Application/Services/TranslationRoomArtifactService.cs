@@ -49,7 +49,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 return Result.Failure<List<RoomArtifactDto>>("Unauthorized to view artifacts for this room.", ErrorCodes.Unauthorized);
 
             var artifacts = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactsByRoomIdAsync(roomId, ct);
-            var dtos = artifacts?.Select(ArtifactMapper.ToArtifactDto).ToList() ?? new List<RoomArtifactDto>();
+            var dtos = artifacts?.Select(a => a.ToDto()).ToList() ?? new List<RoomArtifactDto>();
             return Result<List<RoomArtifactDto>>.Success(dtos);
         }
         catch (Exception ex)

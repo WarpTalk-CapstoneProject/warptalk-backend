@@ -5,7 +5,7 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 
-public interface IAudioRouteEventProcessorService
+public interface IAudioRouteEventProcessor
 {
     Task<Result> ProcessEventAsync(Guid roomId, Guid? routeId, string eventTypeStr, string payloadJson, CancellationToken ct = default);
 }

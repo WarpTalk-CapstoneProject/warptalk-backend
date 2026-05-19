@@ -38,7 +38,7 @@ public class ArtifactsFinalizationWorker : BackgroundService
                     try
                     {
                         using var scope = _serviceProvider.CreateScope();
-                        var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizationService>();
+                        var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
                         await finalizationService.ProcessRoomFinalizationAsync(roomId, stoppingToken);
                     }
                     catch (Exception ex)

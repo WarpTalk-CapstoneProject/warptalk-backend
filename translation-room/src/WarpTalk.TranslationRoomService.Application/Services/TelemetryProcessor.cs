@@ -1,11 +1,9 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using StackExchange.Redis;
 using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Helpers;
@@ -14,33 +12,32 @@ using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.StateMachines;
 
-namespace WarpTalk.TranslationRoomService.Application.BackgroundProcessors;
+namespace WarpTalk.TranslationRoomService.Application.Services;
 
-public class TelemetryProcessorService : ITelemetryProcessorService
+public class TelemetryProcessor : ITelemetryProcessor
 {
-    private readonly IConnectionMultiplexer _redis;
-    private readonly ILogger<TelemetryProcessorService> _logger;
-    private readonly IAudioRouteEventProcessorService _eventProcessor;
+    private readonly IRedisStateRepository _redisStateRepo;
+    private readonly ILogger<TelemetryProcessor> _logger;
+    private readonly IAudioRouteEventProcessor _eventProcessor;
     private readonly IOptionsMonitor<TelemetrySettings> _optionsMonitor;
 
-    public TelemetryProcessorService(
-        IConnectionMultiplexer redis, 
-        ILogger<TelemetryProcessorService> logger,
-        IAudioRouteEventProcessorService eventProcessor,
+    public TelemetryProcessor(
+        IRedisStateRepository redisStateRepo, 
+        ILogger<TelemetryProcessor> logger,
+        IAudioRouteEventProcessor eventProcessor,
         IOptionsMonitor<TelemetrySettings> optionsMonitor)
     {
-        _redis = redis;
+        _redisStateRepo = redisStateRepo;
         _logger = logger;
         _eventProcessor = eventProcessor;
         _optionsMonitor = optionsMonitor;
     }
 
-    public async Task<Result> ProcessTelemetryAsync(TelemetryPayload payload, CancellationToken ct = default)
+    public async Task ProcessTelemetryAsync(TelemetryPayload payload, CancellationToken ct = default)
     {
         try
         {
-            var db = _redis.GetDatabase();
-            var hashKey = RedisKeyHelper.GetTelemetryStateKey(payload.RoomId);
+            var hashKey = CacheKeyHelper.GetTelemetryStateKey(payload.RoomId);
 
             // 1. Fetch current live-reloaded settings with self-healing Docker fallbacks
             var settings = _optionsMonitor.CurrentValue;
@@ -52,25 +49,22 @@ public class TelemetryProcessorService : ITelemetryProcessorService
             var ttsRecovery = settings.TtsRecoveryMs > 0 ? settings.TtsRecoveryMs : 3000.0;
             var warmupThreshold = settings.WarmupCount > 0 ? settings.WarmupCount : 3;
 
-            // 2. Fetch centralized telemetry state from Redis Hash
-            var stateEntries = await db.HashGetAllAsync(hashKey);
+            // 2. Fetch centralized telemetry state from Redis Hash via Repository
+            var stateEntries = await _redisStateRepo.GetHashAllAsync(hashKey);
             
             double oldSttEma = 0, oldTranslationEma = 0, oldTtsEma = 0;
             bool isSttDegraded = false, isTranslationDegraded = false, isTtsDegraded = false;
             int warmupCount = 0;
             long lastTimestamp = 0;
 
-            foreach (var entry in stateEntries)
-            {
-                if (entry.Name == "stt_ema") oldSttEma = (double)entry.Value;
-                else if (entry.Name == "translation_ema") oldTranslationEma = (double)entry.Value;
-                else if (entry.Name == "tts_ema") oldTtsEma = (double)entry.Value;
-                else if (entry.Name == "is_stt_degraded") isSttDegraded = (bool)entry.Value;
-                else if (entry.Name == "is_translation_degraded") isTranslationDegraded = (bool)entry.Value;
-                else if (entry.Name == "is_tts_degraded") isTtsDegraded = (bool)entry.Value;
-                else if (entry.Name == "warmup_count") warmupCount = (int)entry.Value;
-                else if (entry.Name == "last_timestamp") lastTimestamp = (long)entry.Value;
-            }
+            if (stateEntries.TryGetValue("stt_ema", out var sttEmaStr) && double.TryParse(sttEmaStr, out var sttEmaVal)) oldSttEma = sttEmaVal;
+            if (stateEntries.TryGetValue("translation_ema", out var transEmaStr) && double.TryParse(transEmaStr, out var transEmaVal)) oldTranslationEma = transEmaVal;
+            if (stateEntries.TryGetValue("tts_ema", out var ttsEmaStr) && double.TryParse(ttsEmaStr, out var ttsEmaVal)) oldTtsEma = ttsEmaVal;
+            if (stateEntries.TryGetValue("is_stt_degraded", out var sttDegradedStr) && bool.TryParse(sttDegradedStr, out var sttDegradedVal)) isSttDegraded = sttDegradedVal;
+            if (stateEntries.TryGetValue("is_translation_degraded", out var transDegradedStr) && bool.TryParse(transDegradedStr, out var transDegradedVal)) isTranslationDegraded = transDegradedVal;
+            if (stateEntries.TryGetValue("is_tts_degraded", out var ttsDegradedStr) && bool.TryParse(ttsDegradedStr, out var ttsDegradedVal)) isTtsDegraded = ttsDegradedVal;
+            if (stateEntries.TryGetValue("warmup_count", out var warmupStr) && int.TryParse(warmupStr, out var warmupVal)) warmupCount = warmupVal;
+            if (stateEntries.TryGetValue("last_timestamp", out var lastTsStr) && long.TryParse(lastTsStr, out var lastTsVal)) lastTimestamp = lastTsVal;
 
             // 3. Warm-up sequence to prevent cold-start latency false alerts
             if (warmupCount < warmupThreshold)
@@ -78,11 +72,14 @@ public class TelemetryProcessorService : ITelemetryProcessorService
                 warmupCount++;
                 _logger.LogInformation("Room {RoomId} Telemetry warmup count: {Count}/{WarmupThreshold}. Latency: {LatencyMs}ms (Worker: {Worker})", 
                     payload.RoomId, warmupCount, warmupThreshold, payload.LatencyMs, payload.WorkerType);
-                await db.HashSetAsync(hashKey, new HashEntry[] { 
-                    new HashEntry("warmup_count", warmupCount),
-                    new HashEntry("last_timestamp", payload.Timestamp)
-                });
-                return Result.Success();
+
+                var warmupUpdates = new Dictionary<string, string>
+                {
+                    { "warmup_count", warmupCount.ToString() },
+                    { "last_timestamp", payload.Timestamp.ToString() }
+                };
+                await _redisStateRepo.HashSetAsync(hashKey, warmupUpdates);
+                return;
             }
 
             // 4. Calculate Adaptive Alpha (Smoothing Factor)
@@ -104,81 +101,81 @@ public class TelemetryProcessorService : ITelemetryProcessorService
             }
 
             // 5. Evaluate EMA and Hysteresis rules independently per pipeline stage
-            var updates = new List<HashEntry> { new HashEntry("last_timestamp", payload.Timestamp) };
+            var updates = new Dictionary<string, string>
+            {
+                { "last_timestamp", payload.Timestamp.ToString() }
+            };
 
             if (payload.WorkerType.Equals("stt", StringComparison.OrdinalIgnoreCase))
             {
                 double newSttEma = oldSttEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldSttEma * (1 - alpha));
-                updates.Add(new HashEntry("stt_ema", newSttEma));
+                updates["stt_ema"] = newSttEma.ToString();
 
                 _logger.LogDebug("STT Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newSttEma, alpha, payload.RoomId);
 
                 if (!isSttDegraded && newSttEma > sttDegraded)
                 {
                     isSttDegraded = true;
-                    updates.Add(new HashEntry("is_stt_degraded", true));
+                    updates["is_stt_degraded"] = "True";
                     _logger.LogWarning("STT Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newSttEma, sttDegraded);
                 }
                 else if (isSttDegraded && newSttEma < sttRecovery)
                 {
                     isSttDegraded = false;
-                    updates.Add(new HashEntry("is_stt_degraded", false));
+                    updates["is_stt_degraded"] = "False";
                     _logger.LogInformation("STT Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newSttEma, sttRecovery);
                 }
             }
             else if (payload.WorkerType.Equals("translation", StringComparison.OrdinalIgnoreCase))
             {
                 double newTranslationEma = oldTranslationEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTranslationEma * (1 - alpha));
-                updates.Add(new HashEntry("translation_ema", newTranslationEma));
+                updates["translation_ema"] = newTranslationEma.ToString();
 
                 _logger.LogDebug("Translation Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTranslationEma, alpha, payload.RoomId);
 
                 if (!isTranslationDegraded && newTranslationEma > translationDegraded)
                 {
                     isTranslationDegraded = true;
-                    updates.Add(new HashEntry("is_translation_degraded", true));
+                    updates["is_translation_degraded"] = "True";
                     _logger.LogWarning("Translation Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationDegraded);
                 }
                 else if (isTranslationDegraded && newTranslationEma < translationRecovery)
                 {
                     isTranslationDegraded = false;
-                    updates.Add(new HashEntry("is_translation_degraded", false));
+                    updates["is_translation_degraded"] = "False";
                     _logger.LogInformation("Translation Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationRecovery);
                 }
             }
             else if (payload.WorkerType.Equals("tts", StringComparison.OrdinalIgnoreCase))
             {
                 double newTtsEma = oldTtsEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTtsEma * (1 - alpha));
-                updates.Add(new HashEntry("tts_ema", newTtsEma));
+                updates["tts_ema"] = newTtsEma.ToString();
 
                 _logger.LogDebug("TTS Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTtsEma, alpha, payload.RoomId);
 
                 if (!isTtsDegraded && newTtsEma > ttsDegraded)
                 {
                     isTtsDegraded = true;
-                    updates.Add(new HashEntry("is_tts_degraded", true));
+                    updates["is_tts_degraded"] = "True";
                     _logger.LogWarning("TTS Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsDegraded);
                 }
                 else if (isTtsDegraded && newTtsEma < ttsRecovery)
                 {
                     isTtsDegraded = false;
-                    updates.Add(new HashEntry("is_tts_degraded", false));
+                    updates["is_tts_degraded"] = "False";
                     _logger.LogInformation("TTS Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsRecovery);
                 }
             }
 
             // 6. Save updated telemetry metrics back to Redis Hash
-            await db.HashSetAsync(hashKey, updates.ToArray());
+            await _redisStateRepo.HashSetAsync(hashKey, updates);
             
             // Set 24 hour TTL on telemetry key for automated lifecycle cleanup
-            await db.KeyExpireAsync(hashKey, TimeSpan.FromHours(24));
+            await _redisStateRepo.KeyExpireAsync(hashKey, TimeSpan.FromHours(24));
 
             // 7. Resolve Effective Canonical Status using Priority Resolver
-            var voiceCloneStatusVal = await db.HashGetAsync(hashKey, "voice_clone_status");
-            var deliveryModeVal = await db.HashGetAsync(hashKey, "delivery_mode");
-
-            string voiceCloneStatus = voiceCloneStatusVal.HasValue ? voiceCloneStatusVal.ToString() : "NORMAL";
-            string deliveryMode = deliveryModeVal.HasValue ? deliveryModeVal.ToString() : "NORMAL";
+            string voiceCloneStatus = await _redisStateRepo.HashGetAsync(hashKey, "voice_clone_status") ?? "NORMAL";
+            string deliveryMode = await _redisStateRepo.HashGetAsync(hashKey, "delivery_mode") ?? "NORMAL";
 
             var resolvedStatus = AudioRoutePriorityResolver.ResolveEffectiveStatus(
                 isSttDegraded,
@@ -193,13 +190,11 @@ public class TelemetryProcessorService : ITelemetryProcessorService
             // Synchronize the resolved canonical status to PostgreSQL
             var eventPayload = $"{{\"status\":\"{resolvedStatus}\"}}";
             await _eventProcessor.ProcessEventAsync(payload.RoomId, payload.RouteId, AudioRoutingEventType.telemetry_state_updated.ToString(), eventPayload, ct);
-            
-            return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing telemetry for room {RoomId}", payload.RoomId);
-            return Result.Failure(AudioRouteConstants.ErrorFailedToProcessTelemetry, ErrorCodes.InternalServerError);
+            throw;
         }
     }
 }

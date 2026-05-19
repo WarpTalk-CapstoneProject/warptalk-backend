@@ -78,4 +78,12 @@ public class LanguagePolicy : ILanguagePolicy
 
         return null; // Null means no validation errors (Success)
     }
+
+    public bool IsTranslationRequired(string speakLanguage, string listenLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(speakLanguage) || string.IsNullOrWhiteSpace(listenLanguage))
+            return false;
+
+        return !speakLanguage.Trim().Equals(listenLanguage.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
 }

@@ -42,4 +42,10 @@ public class TranslationRoomAudioRouteRepository : GenericRepository<Translation
     {
         await _dbSet.AddRangeAsync(routes, ct);
     }
+
+    public Task RemoveRoutesAsync(IEnumerable<TranslationRoomAudioRoute> routes, CancellationToken ct = default)
+    {
+        _dbSet.RemoveRange(routes);
+        return Task.CompletedTask;
+    }
 }

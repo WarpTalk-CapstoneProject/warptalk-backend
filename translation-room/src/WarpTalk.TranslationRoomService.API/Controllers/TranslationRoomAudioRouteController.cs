@@ -9,7 +9,7 @@ using WarpTalk.TranslationRoomService.Application.Interfaces;
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
 [ApiController]
-[Route("api/translation-rooms/{roomId:guid}/audio-routes")]
+[Route("api/v1/translation-rooms/{roomId:guid}/audio-routes")]
 [Authorize]
 public class TranslationRoomAudioRouteController : ControllerBase
 {

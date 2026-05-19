@@ -1,15 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using StackExchange.Redis;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -24,22 +23,25 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _translationRoomParticipantRepository;
     private readonly ITranslationRoomAudioRouteRepository _translationRoomAudioRouteRepository;
-    private readonly IConnectionMultiplexer _redisConnection;
-    private readonly IAudioRouteEventProcessorService _eventProcessor;
+    private readonly IAudioRouteCacheService _audioRouteCacheService;
+    private readonly IAudioRouteEventProcessor _eventProcessor;
+    private readonly ILanguagePolicy _languagePolicy;
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
 
     public TranslationRoomAudioRouteService(
         IUnitOfWork unitOfWork, 
-        IConnectionMultiplexer redisConnection,
-        IAudioRouteEventProcessorService eventProcessor,
+        IAudioRouteCacheService audioRouteCacheService,
+        IAudioRouteEventProcessor eventProcessor,
+        ILanguagePolicy languagePolicy,
         ILogger<TranslationRoomAudioRouteService> logger)
     {
         _unitOfWork = unitOfWork;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _translationRoomParticipantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _translationRoomAudioRouteRepository = _unitOfWork.TranslationRoomAudioRouteRepository;
-        _redisConnection = redisConnection;
+        _audioRouteCacheService = audioRouteCacheService;
         _eventProcessor = eventProcessor;
+        _languagePolicy = languagePolicy;
         _logger = logger;
     }
 
@@ -60,119 +62,101 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             }
 
             var participants = await _translationRoomParticipantRepository.GetByRoomIdAsync(roomId, ct);
-            
-            // Only consider participants that are CONNECTED or in a state where they can speak/listen
-            var activeParticipants = participants
-                .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED)
-                .ToList();
-
-            // Guard clause: Not enough participants
-            if (activeParticipants.Count < 2)
+            if (participants == null || !participants.Any())
             {
-                // Can't create routes with < 2 participants, return empty or failure
-                // We'll return empty list as it's a valid state, just no routes yet.
-                return Result.Success(new List<TranslationRoomAudioRouteDto>());
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorNoParticipantsInRoom, ErrorCodes.InvalidState);
             }
 
             var existingRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
-            var desiredRoutes = new List<TranslationRoomAudioRoute>();
+            var updatedRoutes = new List<TranslationRoomAudioRoute>();
+            var newRoutes = new List<TranslationRoomAudioRoute>();
 
-            foreach (var pSrc in activeParticipants)
+            var sourceLanguage = room.SourceLanguage;
+            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            // Generate full-mesh audio routing pathways
+            foreach (var speaker in participants)
             {
-                foreach (var pTgt in activeParticipants)
+                foreach (var listener in participants)
                 {
-                    // Guard clause: Prevent self-route
-                    if (pSrc.Id == pTgt.Id)
-                        continue; 
+                    if (speaker.Id == listener.Id) continue;
 
-                    // Guard clause: Invalid participant language
-                    if (string.IsNullOrWhiteSpace(pSrc.SpeakLanguage) || string.IsNullOrWhiteSpace(pTgt.ListenLanguage))
-                        continue;
+                    var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
+                    var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
 
-                    var route = TranslationRoomAudioRouteMapper.ToEntity(roomId, pSrc, pTgt);
-                    desiredRoutes.Add(route);
-                }
-            }
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue; // Direct audio routing handles same languages bypasses MT
 
-            var routesToAdd = new List<TranslationRoomAudioRoute>();
-            var routesToUpdate = new List<TranslationRoomAudioRoute>();
+                    var existingRoute = existingRoutes.FirstOrDefault(r => 
+                        r.SourceParticipantId == speaker.Id && 
+                        r.TargetParticipantId == listener.Id);
 
-            var existingRoutesMap = existingRoutes.ToDictionary(
-                r => (r.SourceParticipantId, r.TargetParticipantId, r.SourceLanguage, r.TargetLanguage));
-
-            foreach (var desired in desiredRoutes)
-            {
-                var key = (desired.SourceParticipantId, desired.TargetParticipantId, desired.SourceLanguage, desired.TargetLanguage);
-                if (existingRoutesMap.TryGetValue(key, out var existing))
-                {
-                    // Existing route still valid. 
-                    // If it was COMPLETED or STOPPING, it means participant rejoined or changed back language. We reset to IDLE.
-                    if (existing.Status == AudioRouteStatus.COMPLETED.ToString() || existing.Status == AudioRouteStatus.STOPPING.ToString())
+                    if (existingRoute != null)
                     {
-                        existing.Status = AudioRouteStatus.IDLE.ToString();
-                        existing.StreamId = null;
-                        existing.UpdatedAt = DateTime.UtcNow;
-                        routesToUpdate.Add(existing);
+                        bool isRouteStale = existingRoute.SourceLanguage != sourceLang || existingRoute.TargetLanguage != targetLang;
+                        if (isRouteStale)
+                        {
+                            existingRoute.SourceLanguage = sourceLang;
+                            existingRoute.TargetLanguage = targetLang;
+                            existingRoute.UpdatedAt = DateTime.UtcNow;
+                            updatedRoutes.Add(existingRoute);
+                        }
                     }
-                    // Keep intact if it is in an active or degraded state.
-                    
-                    existingRoutesMap.Remove(key);
-                }
-                else
-                {
-                    // New route
-                    routesToAdd.Add(desired);
-                }
-            }
-
-            // Any routes left in existingRoutesMap are no longer valid (participants left, changed language, etc.)
-            foreach (var obsolete in existingRoutesMap.Values)
-            {
-                if (obsolete.Status != AudioRouteStatus.COMPLETED.ToString() && obsolete.Status != AudioRouteStatus.STOPPING.ToString())
-                {
-                    obsolete.Status = AudioRouteStatus.STOPPING.ToString();
-                    obsolete.UpdatedAt = DateTime.UtcNow;
-                    routesToUpdate.Add(obsolete);
+                    else
+                    {
+                        var route = new TranslationRoomAudioRoute
+                        {
+                            Id = Guid.NewGuid(),
+                            TranslationRoomId = roomId,
+                            SourceParticipantId = speaker.Id,
+                            TargetParticipantId = listener.Id,
+                            SourceLanguage = sourceLang,
+                            TargetLanguage = targetLang,
+                            VoiceCloneEnabled = true,
+                            Status = AudioRouteStatus.IDLE.ToString(),
+                            CreatedAt = DateTime.UtcNow,
+                            UpdatedAt = DateTime.UtcNow
+                        };
+                        newRoutes.Add(route);
+                    }
                 }
             }
 
-            if (routesToAdd.Any())
+            // Remove obsolete routes (e.g. participants left the room)
+            var activeParticipantIds = participants.Select(p => p.Id).ToHashSet();
+            var obsoleteRoutes = existingRoutes
+                .Where(r => !activeParticipantIds.Contains(r.SourceParticipantId) || !activeParticipantIds.Contains(r.TargetParticipantId))
+                .ToList();
+
+            if (newRoutes.Any())
             {
-                await _translationRoomAudioRouteRepository.AddRoutesAsync(routesToAdd, ct);
+                await _translationRoomAudioRouteRepository.AddRoutesAsync(newRoutes, ct);
             }
 
-            if (routesToUpdate.Any())
+            if (updatedRoutes.Any())
             {
-                await _translationRoomAudioRouteRepository.UpdateRoutesAsync(routesToUpdate, ct);
+                await _translationRoomAudioRouteRepository.UpdateRoutesAsync(updatedRoutes, ct);
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
-
-            var transitionResult = await _eventProcessor.ProcessEventAsync(
-                roomId, 
-                null, 
-                AudioRoutingEventType.config_ready.ToString(), 
-                "{}", 
-                ct);
-
-            if (!transitionResult.IsSuccess)
+            if (obsoleteRoutes.Any())
             {
-                _logger.LogError("Failed to transition generated routes to ROUTING_READY for room {RoomId}. Error: {Error}", roomId, transitionResult.Error);
-                return Result.Failure<List<TranslationRoomAudioRouteDto>>(transitionResult.Error ?? "Failed to transition generated routes to ROUTING_READY", transitionResult.ErrorCode);
+                await _translationRoomAudioRouteRepository.RemoveRoutesAsync(obsoleteRoutes, ct);
+            }
+
+            if (newRoutes.Any() || updatedRoutes.Any() || obsoleteRoutes.Any())
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
             }
 
             var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
-            var activeOrPendingRoutes = allRoutes
-                .Where(r => r.Status != AudioRouteStatus.COMPLETED.ToString())
-                .Select(TranslationRoomAudioRouteMapper.ToDto)
-                .ToList();
+            var dtos = allRoutes.Select(TranslationRoomAudioRouteMapper.ToDto).ToList();
 
-            return Result.Success(activeOrPendingRoutes);
+            return Result.Success(dtos);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error occurred while generating routes for room {RoomId}", roomId);
-            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorGenerateAudioRoutesUnexpected, ErrorCodes.InternalServerError);
+            _logger.LogError(ex, "Error occurred while generating audio routing mesh for Room {RoomId}", roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -181,15 +165,13 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         try
         {
             var routes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
-
             var dtos = routes.Select(TranslationRoomAudioRouteMapper.ToDto).ToList();
-
             return Result.Success(dtos);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error occurred while fetching routes for room {RoomId}", roomId);
-            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorFetchAudioRoutesUnexpected, ErrorCodes.InternalServerError);
+            _logger.LogError(ex, "Error occurred while fetching audio routing mesh for Room {RoomId}", roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
 
@@ -197,7 +179,6 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     {
         try
         {
-            
             var route = await _translationRoomAudioRouteRepository.GetByIdAsync(routeId, ct);
             if (route == null)
             {
@@ -215,7 +196,6 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             }
 
             bool updated = false;
-
             if (dto.StreamId != null && route.StreamId != dto.StreamId)
             {
                 route.StreamId = dto.StreamId;
@@ -238,7 +218,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 _translationRoomAudioRouteRepository.Update(route);
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                await AudioRouteCacheHelper.PublishRoutesUpdateAsync(route.TranslationRoomId, _translationRoomAudioRouteRepository, _translationRoomRepository, _redisConnection, ct);
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(route.TranslationRoomId, ct);
             }
 
             return Result.Success(TranslationRoomAudioRouteMapper.ToDto(route));
@@ -278,7 +258,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 _translationRoomAudioRouteRepository.Update(route);
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                await AudioRouteCacheHelper.PublishRoutesUpdateAsync(route.TranslationRoomId, _translationRoomAudioRouteRepository, _translationRoomRepository, _redisConnection, ct);
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(route.TranslationRoomId, ct);
             }
 
             return Result.Success(TranslationRoomAudioRouteMapper.ToDto(route));

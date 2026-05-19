@@ -13,4 +13,5 @@ public interface ITranslationRoomAudioRouteRepository : IGenericRepository<Trans
     Task<List<TranslationRoomAudioRoute>> GetRoutesByStatusAsync(AudioRouteStatus status, CancellationToken ct = default);
     Task UpdateRoutesAsync(IEnumerable<TranslationRoomAudioRoute> routes, CancellationToken ct = default);
     Task AddRoutesAsync(IEnumerable<TranslationRoomAudioRoute> routes, CancellationToken ct = default);
+    Task RemoveRoutesAsync(IEnumerable<TranslationRoomAudioRoute> routes, CancellationToken ct = default);
 }

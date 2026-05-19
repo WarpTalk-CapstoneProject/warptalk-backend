@@ -25,10 +25,10 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
     private readonly ILanguagePolicy _languagePolicy;
-    private readonly IAudioRouteEventProcessorService _audioRouteEventProcessor;
+    private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
     private readonly ILogger<TranslationRoomService> _logger;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessorService audioRouteEventProcessor, ILogger<TranslationRoomService> logger)
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, ILogger<TranslationRoomService> logger)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
@@ -96,11 +96,7 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // 5. Return mapped response
-            var settingsResponse = request.Settings != null 
-                ? new RoomSettingsResponse(request.Settings.RequiresApproval, request.Settings.HistoryAccess) 
-                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
-
-            return Result.Success(TranslationRoomMapper.ToResponseDto(room, settingsResponse));
+            return Result.Success(room.ToResponseDto());
         }
         catch (Exception ex)
         {
@@ -118,11 +114,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            var settings = !string.IsNullOrEmpty(translationRoom.Settings) 
-                ? JsonSerializer.Deserialize<RoomSettingsResponse>(translationRoom.Settings) 
-                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
-
-            return Result.Success(TranslationRoomMapper.ToResponseDto(translationRoom, settings!));
+            return Result.Success(translationRoom.ToResponseDto());
         }
         catch (Exception ex)
         {
@@ -209,14 +201,10 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var settingsResponse = !string.IsNullOrEmpty(translationRoom.Settings) 
-                ? JsonSerializer.Deserialize<RoomSettingsResponse>(translationRoom.Settings) 
-                : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
-
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                TranslationRoomMapper.ToResponseDto(translationRoom, settingsResponse!),
-                TranslationRoomParticipantMapper.ToParticipantDto(participant)
+                translationRoom.ToResponseDto(),
+                TranslationRoomParticipantMapper.ToDto(participant)
             ));
         }
         catch (Exception ex)
@@ -234,10 +222,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.SCHEDULED)
+            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToWaiting, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.WAITING;
+            translationRoom.Status = nameof(RoomStatus.WAITING);
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -259,10 +247,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.WAITING)
+            if (translationRoom.Status != nameof(RoomStatus.WAITING))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.IN_PROGRESS;
+            translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
             
             if (!translationRoom.StartedAt.HasValue)
                 translationRoom.StartedAt = DateTime.UtcNow;
@@ -292,10 +280,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.IN_PROGRESS)
+            if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.PAUSED;
+            translationRoom.Status = nameof(RoomStatus.PAUSED);
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -321,10 +309,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.PAUSED)
+            if (translationRoom.Status != nameof(RoomStatus.PAUSED))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.IN_PROGRESS;
+            translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -350,13 +338,30 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
+            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToCancelled, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.CANCELLED;
+            translationRoom.Status = nameof(RoomStatus.CANCELLED);
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
+
+            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+            if (participants != null)
+            {
+                var participantsToUpdate = participants
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .ToList();
+
+                foreach (var participant in participantsToUpdate)
+                {
+                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.UpdatedAt = DateTime.UtcNow;
+                    _participantRepository.Update(participant);
+                }
+            }
+
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
@@ -375,16 +380,33 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             
             // Idempotent check
-            if (translationRoom.Status == RoomStatus.EXPIRED)
+            if (translationRoom.Status == nameof(RoomStatus.EXPIRED))
                 return Result.Success();
 
-            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
+            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToExpired, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.EXPIRED;
+            translationRoom.Status = nameof(RoomStatus.EXPIRED);
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
+
+            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+            if (participants != null)
+            {
+                var participantsToUpdate = participants
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .ToList();
+
+                foreach (var participant in participantsToUpdate)
+                {
+                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.UpdatedAt = DateTime.UtcNow;
+                    _participantRepository.Update(participant);
+                }
+            }
+
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
@@ -407,10 +429,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != RoomStatus.IN_PROGRESS && translationRoom.Status != RoomStatus.PAUSED)
+            if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS) && translationRoom.Status != nameof(RoomStatus.PAUSED))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
-            translationRoom.Status = RoomStatus.ENDED;
+            translationRoom.Status = nameof(RoomStatus.ENDED);
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
@@ -420,6 +442,23 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             _translationRoomRepository.Update(translationRoom);
+
+            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+            if (participants != null)
+            {
+                var participantsToUpdate = participants
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .ToList();
+
+                foreach (var participant in participantsToUpdate)
+                {
+                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.UpdatedAt = DateTime.UtcNow;
+                    _participantRepository.Update(participant);
+                }
+            }
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine
@@ -475,7 +514,8 @@ public class TranslationRoomService : ITranslationRoomService
             {
                 var newSettings = new TranslationRoomSettings 
                 { 
-                    RequiresApproval = request.Settings.RequiresApproval 
+                    RequiresApproval = request.Settings.RequiresApproval,
+                    ArtifactAccess = request.Settings.ArtifactAccess
                 };
                 translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(newSettings);
             }
@@ -499,33 +539,7 @@ public class TranslationRoomService : ITranslationRoomService
         try
         {
             var userRooms = await _translationRoomRepository.GetHistoryByUserIdAsync(userId, limit, offset, ct);
-                
-            var visibleRooms = new List<TranslationRoom>();
-            foreach(var room in userRooms)
-            {
-                if (room.HostId == userId)
-                {
-                    visibleRooms.Add(room);
-                    continue;
-                }
-                
-                var settings = !string.IsNullOrEmpty(room.Settings) ? JsonSerializer.Deserialize<TranslationRoomSettings>(room.Settings) : null;
-                if (settings?.HistoryAccess == ArtifactAccessLevel.Participants || settings?.HistoryAccess == ArtifactAccessLevel.Workspace)
-                {
-                    visibleRooms.Add(room);
-                }
-            }
-
-            var dtos = visibleRooms.Select(room =>
-            {
-                var settings = !string.IsNullOrEmpty(room.Settings) 
-                    ? JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings) 
-                    : new RoomSettingsResponse(true, ArtifactAccessLevel.HostOnly);
-
-                var artifacts = room.TranslationRoomArtifacts?.Select(ArtifactMapper.ToArtifactDto).ToList() ?? new List<RoomArtifactDto>();
-
-                return TranslationRoomMapper.ToHistoryDto(room, settings!, artifacts);
-            }).ToList();
+            var dtos = userRooms.Select(room => room.ToHistoryDto()).ToList();
             
             return Result<List<TranslationRoomDto>>.Success(dtos);
         }

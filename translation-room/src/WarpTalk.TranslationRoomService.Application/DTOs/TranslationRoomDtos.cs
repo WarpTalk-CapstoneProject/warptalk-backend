@@ -9,12 +9,12 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record RoomSettingsRequest(
     bool RequiresApproval = true,
-    ArtifactAccessLevel HistoryAccess = ArtifactAccessLevel.HostOnly
+    ArtifactAccessLevel ArtifactAccess = ArtifactAccessLevel.HostOnly
 );
 
 public record RoomSettingsResponse(
     bool RequiresApproval,
-    ArtifactAccessLevel HistoryAccess
+    ArtifactAccessLevel ArtifactAccess
 );
 
 public record UpdateRoomSettingsRequest(

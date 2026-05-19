@@ -1,33 +1,42 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using StackExchange.Redis;
-using System.Collections.Generic;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
-namespace WarpTalk.TranslationRoomService.Application.Helpers;
+namespace WarpTalk.TranslationRoomService.Application.Services;
 
-public static class AudioRouteCacheHelper
+public class AudioRouteCacheService : IAudioRouteCacheService
 {
-    public static async Task<List<TranslationRoomAudioRouteDto>> PublishRoutesUpdateAsync(
-        Guid roomId,
+    private readonly ITranslationRoomAudioRouteRepository _routeRepository;
+    private readonly ITranslationRoomRepository _roomRepository;
+    private readonly IRedisStateRepository _redisStateRepo;
+
+    public AudioRouteCacheService(
         ITranslationRoomAudioRouteRepository routeRepository,
         ITranslationRoomRepository roomRepository,
-        IConnectionMultiplexer redisConnection,
-        CancellationToken ct = default)
+        IRedisStateRepository redisStateRepo)
     {
-        var allRoutes = await routeRepository.GetRoutesByRoomIdAsync(roomId, ct);
+        _routeRepository = routeRepository;
+        _roomRepository = roomRepository;
+        _redisStateRepo = redisStateRepo;
+    }
+
+    public async Task<List<TranslationRoomAudioRouteDto>> PublishRoutesUpdateAsync(Guid roomId, CancellationToken ct = default)
+    {
+        var allRoutes = await _routeRepository.GetRoutesByRoomIdAsync(roomId, ct);
         var activeOrPendingRoutes = allRoutes
             .Where(r => r.Status != AudioRouteStatus.COMPLETED.ToString())
             .Select(TranslationRoomAudioRouteMapper.ToDto)
             .ToList();
 
-        var room = await roomRepository.GetByIdAsync(roomId, ct);
+        var room = await _roomRepository.GetByIdAsync(roomId, ct);
         var payload = new
         {
             routes = activeOrPendingRoutes,
@@ -40,16 +49,15 @@ public static class AudioRouteCacheHelper
         var cacheKey = $"translationRoom:{roomId}:audio_routes";
         var eventChannel = $"translationRoom:{roomId}:events";
 
-        var db = redisConnection.GetDatabase();
-        await db.StringSetAsync(cacheKey, jsonPayload, TimeSpan.FromHours(12));
+        await _redisStateRepo.StringSetAsync(cacheKey, jsonPayload, TimeSpan.FromHours(12));
 
-        var pubSub = redisConnection.GetSubscriber();
         var pubSubPayload = JsonSerializer.Serialize(new
         {
             type = "AUDIO_ROUTES_UPDATED",
             data = payload
         });
-        await pubSub.PublishAsync(RedisChannel.Literal(eventChannel), pubSubPayload);
+        
+        await _redisStateRepo.PublishAsync(eventChannel, pubSubPayload);
 
         return activeOrPendingRoutes;
     }

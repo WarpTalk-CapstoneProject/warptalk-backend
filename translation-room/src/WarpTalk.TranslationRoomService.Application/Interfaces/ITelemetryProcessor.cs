@@ -1,11 +1,10 @@
 using System.Threading;
 using System.Threading.Tasks;
-using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 
 namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 
-public interface ITelemetryProcessorService
+public interface ITelemetryProcessor
 {
-    Task<Result> ProcessTelemetryAsync(TelemetryPayload payload, CancellationToken ct = default);
+    Task ProcessTelemetryAsync(TelemetryPayload payload, CancellationToken ct = default);
 }

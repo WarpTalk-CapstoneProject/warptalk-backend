@@ -12,13 +12,13 @@ public static class AudioRoutePriorityResolver
         string deliveryMode)
     {
         // 1. TEXT_ONLY_MODE - Most severe (audio transport or TTS unavailable)
-        if (deliveryMode == "TEXT_ONLY")
+        if (deliveryMode == DeliveryMode.TEXT_ONLY.ToString())
         {
             return AudioRouteStatus.TEXT_ONLY_MODE;
         }
 
         // 2. VOICE_CLONE_FALLBACK - Voice clone failed/exhausted, standard voice fallback
-        if (voiceCloneStatus == "FALLBACK")
+        if (voiceCloneStatus == VoiceCloneStatus.FALLBACK.ToString())
         {
             return AudioRouteStatus.VOICE_CLONE_FALLBACK;
         }

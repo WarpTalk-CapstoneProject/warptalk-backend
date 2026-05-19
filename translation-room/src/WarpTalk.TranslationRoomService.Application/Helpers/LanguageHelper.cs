@@ -15,14 +15,13 @@ public static class LanguageHelper
     {
         if (string.IsNullOrWhiteSpace(json)) return new List<string>();
 
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(json, JsonOptions) ?? new List<string>();
-        }
-        catch
-        {
-            return new List<string>();
-        }
+        var list = JsonSerializer.Deserialize<List<string>>(json, JsonOptions)
+            ?? throw new InvalidOperationException("Failed to deserialize TargetLanguages.");
+
+        return list
+            .Where(lang => !string.IsNullOrWhiteSpace(lang))
+            .Select(lang => lang.Trim())
+            .ToList();
     }
 
     public static string SerializeTargetLanguages(List<string>? languages)

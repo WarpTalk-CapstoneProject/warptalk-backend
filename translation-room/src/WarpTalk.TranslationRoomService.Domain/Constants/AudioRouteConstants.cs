@@ -4,6 +4,7 @@ public static class AudioRouteConstants
 {
     // Error Messages
     public const string ErrorRoomPolicyIncomplete = "Room language policy is incomplete. Cannot generate routes.";
+    public const string ErrorNoParticipantsInRoom = "No participants found in the translation room. Cannot generate routes.";
     public const string ErrorGenerateAudioRoutesUnexpected = "An unexpected error occurred while generating audio routes.";
     public const string ErrorFetchAudioRoutesUnexpected = "An unexpected error occurred while fetching audio routes.";
     public const string ErrorRouteNotFound = "Route not found.";
