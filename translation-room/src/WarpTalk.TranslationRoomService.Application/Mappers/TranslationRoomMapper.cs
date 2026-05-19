@@ -28,6 +28,7 @@ public static class TranslationRoomMapper
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
+            room.DurationSeconds,
             room.CreatedAt,
             settings!
         );
@@ -49,7 +50,8 @@ public static class TranslationRoomMapper
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
             Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval }) : "{\"requires_approval\":true}",
-            ScheduledAt = request.ScheduledAt
+            ScheduledAt = request.ScheduledAt,
+            IsActive = true
         };
     }
 }

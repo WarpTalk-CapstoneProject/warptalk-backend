@@ -9,6 +9,6 @@ namespace WarpTalk.TranscriptService.Application.Interfaces;
 
 public interface ITranscriptCorrectionService
 {
-    Task<Result> SubmitCorrectionAsync(Guid segmentId, CreateCorrectionDto dto, CancellationToken cancellationToken = default);
-    Task<Result<IEnumerable<TranscriptCorrectionDto>>> GetCorrectionsBySegmentIdAsync(Guid segmentId, CancellationToken cancellationToken = default);
+    Task<Result> SubmitCorrectionAsync(Guid transcriptId, Guid segmentId, Guid userId, CreateCorrectionDto dto, CancellationToken cancellationToken = default);
+    Task<Result<IEnumerable<TranscriptCorrectionDto>>> GetCorrectionsBySegmentIdAsync(Guid transcriptId, Guid segmentId, Guid userId, CancellationToken cancellationToken = default);
 }

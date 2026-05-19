@@ -8,6 +8,20 @@ public record PagedResult<T>(
     IEnumerable<T> Items
 );
 
+public record TranscriptDto(
+    Guid Id,
+    Guid WorkspaceId,
+    Guid TranslationRoomId,
+    int Version,
+    string Status,
+    string SourceLanguage,
+    int TotalSegments,
+    int TotalDurationMs,
+    DateTime CreatedAt,
+    DateTime UpdatedAt,
+    DateTime? FinalizedAt
+);
+
 public record TranscriptSegmentDto(
     Guid Id,
     Guid? SpeakerParticipantId,

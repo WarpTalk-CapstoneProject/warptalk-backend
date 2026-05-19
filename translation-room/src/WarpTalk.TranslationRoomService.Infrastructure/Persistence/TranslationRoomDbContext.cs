@@ -20,6 +20,8 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomAudioRoute> TranslationRoomAudioRoutes { get; set; }
 
+    public virtual DbSet<TranslationRoomArtifact> TranslationRoomArtifacts { get; set; }
+
     public virtual DbSet<TranslationRoomFeedback> TranslationRoomFeedbacks { get; set; }
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
@@ -92,6 +94,12 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
         });
 
         modelBuilder.Entity<TranslationRoomAudioRoute>(entity =>
@@ -139,6 +147,47 @@ public partial class TranslationRoomDbContext : DbContext
             entity.HasOne(d => d.TargetParticipant).WithMany(p => p.TranslationRoomAudioRouteTargetParticipants)
                 .HasForeignKey(d => d.TargetParticipantId)
                 .HasConstraintName("translation_room_audio_routes_target_participant_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationRoomArtifact>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_artifacts_pkey");
+
+            entity.ToTable("translation_room_artifacts", "translation_room");
+
+            entity.HasIndex(e => e.TranslationRoomId, "idx_artifacts_translation_room");
+
+            entity.HasIndex(e => e.RetentionUntil, "idx_artifacts_retention_until");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("public.uuid_generate_v7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.FileUrl)
+                .HasMaxLength(500)
+                .HasColumnName("file_url");
+            entity.Property(e => e.FileFormat)
+                .HasMaxLength(20)
+                .HasColumnName("file_format");
+            entity.Property(e => e.FileSizeBytes).HasColumnName("file_size_bytes");
+            entity.Property(e => e.ContainsRawAudio).HasColumnName("contains_raw_audio");
+            entity.Property(e => e.ContainsRawVideo).HasColumnName("contains_raw_video");
+            entity.Property(e => e.ConsentRequired).HasColumnName("consent_required");
+            entity.Property(e => e.RetentionUntil).HasColumnName("retention_until");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
+
+            entity.HasOne(d => d.TranslationRoom).WithMany(p => p.TranslationRoomArtifacts)
+                .HasForeignKey(d => d.TranslationRoomId)
+                .HasConstraintName("translation_room_artifacts_translation_room_id_fkey");
         });
 
         modelBuilder.Entity<TranslationRoomFeedback>(entity =>
@@ -215,6 +264,9 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("speak_language");
             entity.Property(e => e.Status)
                 .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
