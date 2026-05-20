@@ -32,6 +32,10 @@ public class TranscriptExportsController : ControllerBase
             var result = await _exportService.CreateExportAsync(transcriptId, request, userId);
             return Ok(result);
         }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
         catch (Exception ex)
         {
             return BadRequest(new { Message = ex.Message });
@@ -39,20 +43,20 @@ public class TranscriptExportsController : ControllerBase
     }
 
     [HttpGet("{id}/download")]
-    [AllowAnonymous] // Ideally should be authorized, but simple for MVP if using standard browser download without headers
     public async Task<IActionResult> DownloadExport(Guid transcriptId, Guid id)
     {
-        // If security is required for downloads, uncomment below and remove [AllowAnonymous]
-        // var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        // if (!Guid.TryParse(userIdString, out var userId))
-        //     return Unauthorized();
-
-        var userId = Guid.Empty; // Bypass for now if allowed anonymous
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdString, out var userId))
+            return Unauthorized();
 
         try
         {
             var (fileBytes, contentType, fileName) = await _exportService.DownloadExportAsync(transcriptId, id, userId);
             return File(fileBytes, contentType, fileName);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
         }
         catch (Exception ex)
         {
