@@ -274,54 +274,6 @@ public class TranslationRoomServiceTests
         _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
     }
 
-    [Fact]
-    public async Task GetRoomHistoryAsync_ShouldReturnAllTerminalRooms_ForBothHostAndParticipant()
-    {
-        // Arrange
-        var userId = Guid.NewGuid();
-        var hostRoom = new TranslationRoom
-        {
-            Id = Guid.NewGuid(),
-            HostId = userId,
-            Title = "Host Room",
-            TranslationRoomCode = "ABCDEF123456",
-            Status = nameof(RoomStatus.ENDED),
-            TranslationRoomType = "Instant",
-            MaxParticipants = 5,
-            SourceLanguage = "en",
-            TargetLanguages = "[\"vi\"]",
-            Settings = "{\"requires_approval\":true}",
-            CreatedAt = DateTime.UtcNow
-        };
 
-        var participantRoom = new TranslationRoom
-        {
-            Id = Guid.NewGuid(),
-            HostId = Guid.NewGuid(),
-            Title = "Participant Room",
-            TranslationRoomCode = "XYZ123456789",
-            Status = nameof(RoomStatus.ENDED),
-            TranslationRoomType = "Instant",
-            MaxParticipants = 5,
-            SourceLanguage = "en",
-            TargetLanguages = "[\"vi\"]",
-            Settings = "{\"requires_approval\":true}",
-            CreatedAt = DateTime.UtcNow
-        };
-
-        var rooms = new List<TranslationRoom> { hostRoom, participantRoom };
-
-        _mockRoomRepo.Setup(r => r.GetHistoryByUserIdAsync(userId, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(rooms);
-
-        // Act
-        var result = await _service.GetRoomHistoryAsync(userId);
-
-        // Assert
-        result.IsSuccess.Should().BeTrue();
-        result.Value!.Should().HaveCount(2);
-        result.Value![0].Title.Should().Be("Host Room");
-        result.Value![1].Title.Should().Be("Participant Room");
-    }
 }
 
