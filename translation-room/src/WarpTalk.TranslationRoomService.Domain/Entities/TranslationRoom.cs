@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
@@ -39,6 +39,8 @@ public partial class TranslationRoom
 
     public string TranslationRoomCode { get; set; } = null!;
 
+    public string Status { get; set; } = null!;
+
     public string TranslationRoomType { get; set; } = null!;
 
     public int MaxParticipants { get; set; }
@@ -58,8 +60,6 @@ public partial class TranslationRoom
     public int? DurationSeconds { get; set; }
 
     public bool IsActive { get; set; }
-
-    public string Status { get; set; } = null!;
 
     public DateTime CreatedAt { get; set; }
 

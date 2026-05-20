@@ -10,21 +10,27 @@ public class UnitOfWork : IUnitOfWork
 
     public ITranslationRoomRepository TranslationRoomRepository { get; }
     public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
+    public ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
     public ILanguageRepository LanguageRepository { get; }
     public IUserSettingsRepository UserSettingsRepository { get; }
+    public ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
 
     public UnitOfWork(
-        TranslationRoomDbContext context, 
+        TranslationRoomDbContext context,
         ITranslationRoomRepository translationRoomRepository,
         ITranslationRoomParticipantRepository translationRoomParticipantRepository,
+        ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
         ILanguageRepository languageRepository,
-        IUserSettingsRepository userSettingsRepository)
+        IUserSettingsRepository userSettingsRepository,
+        ITranslationRoomArtifactRepository translationRoomArtifactRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
         TranslationRoomParticipantRepository = translationRoomParticipantRepository;
+        TranslationRoomAudioRouteRepository = translationRoomAudioRouteRepository;
         LanguageRepository = languageRepository;
         UserSettingsRepository = userSettingsRepository;
+        TranslationRoomArtifactRepository = translationRoomArtifactRepository;
     }
 
     public IGenericRepository<T> Repository<T>() where T : class

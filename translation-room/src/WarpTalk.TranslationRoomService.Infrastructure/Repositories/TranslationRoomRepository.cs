@@ -2,6 +2,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
@@ -38,5 +39,21 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         }
 
         return await query.FirstOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<List<TranslationRoom>> GetHistoryByUserIdAsync(Guid userId, int limit, int offset, CancellationToken ct = default)
+    {
+        var terminalStatuses = TranslationRoomConstants.TerminalStatuses;
+        
+        var query = _dbSet
+            .Include(r => r.TranslationRoomParticipants)
+            .Include(r => r.TranslationRoomArtifacts)
+            .Where(r => terminalStatuses.Contains(r.Status) && r.DeletedAt == null &&
+                        (r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)))
+            .OrderByDescending(r => r.CreatedAt)
+            .Skip(offset)
+            .Take(limit);
+
+        return await query.ToListAsync(ct);
     }
 }

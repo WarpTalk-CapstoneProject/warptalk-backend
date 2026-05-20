@@ -1,0 +1,43 @@
+%% WarpTalk Module 1 - Translation Room Management
+%% Recommended Audio Routing State Diagram
+%% Converted from PDF to Mermaid
+
+---
+title: Recommended Audio Routing State Diagram
+---
+stateDiagram-v2
+    [*] --> IDLE: START
+    IDLE --> ROUTING_READY: config ready
+    ROUTING_READY --> AUDIO_ROUTING_ACTIVE: session starts
+
+    AUDIO_ROUTING_ACTIVE --> AUDIO_ROUTING_PAUSED: room pause
+    AUDIO_ROUTING_PAUSED --> AUDIO_ROUTING_ACTIVE: room resume
+
+    AUDIO_ROUTING_ACTIVE --> STT_DEGRADED: stt latency high
+    STT_DEGRADED --> AUDIO_ROUTING_ACTIVE: stt recovered
+
+    AUDIO_ROUTING_ACTIVE --> TRANSLATION_DEGRADED: translation latency high
+    TRANSLATION_DEGRADED --> AUDIO_ROUTING_ACTIVE: translation recovered
+
+    AUDIO_ROUTING_ACTIVE --> TTS_DEGRADED: tts latency high
+    TTS_DEGRADED --> AUDIO_ROUTING_ACTIVE: tts recovered
+
+    AUDIO_ROUTING_ACTIVE --> VOICE_CLONE_FALLBACK: voice clone unavailable
+    VOICE_CLONE_FALLBACK --> AUDIO_ROUTING_ACTIVE: voice clone recovered
+
+    AUDIO_ROUTING_ACTIVE --> TEXT_ONLY_MODE: audio unavailable
+    TTS_DEGRADED --> TEXT_ONLY_MODE: tts unavailable
+    VOICE_CLONE_FALLBACK --> TEXT_ONLY_MODE: tts unavailable
+    TEXT_ONLY_MODE --> AUDIO_ROUTING_ACTIVE: audio recovered
+
+    AUDIO_ROUTING_ACTIVE --> STOPPING: session ends or system disables
+    AUDIO_ROUTING_PAUSED --> STOPPING: session ends or system disables
+    STT_DEGRADED --> STOPPING: session ends or system disables
+    TRANSLATION_DEGRADED --> STOPPING: session ends or system disables
+    TTS_DEGRADED --> STOPPING: session ends or system disables
+    VOICE_CLONE_FALLBACK --> STOPPING: session ends or system disables
+    TEXT_ONLY_MODE --> STOPPING: session ends or system disables
+
+    STOPPING --> FINALIZING_ARTIFACTS: flush runtime
+    FINALIZING_ARTIFACTS --> COMPLETED: outputs linked
+    COMPLETED --> [*]: END

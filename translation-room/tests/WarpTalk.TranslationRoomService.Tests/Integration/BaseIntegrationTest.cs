@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
+using StackExchange.Redis;
 using Testcontainers.PostgreSql;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -35,6 +37,38 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     services.AddDbContext<TranslationRoomDbContext>(options =>
                         options.UseNpgsql(_dbContainer.GetConnectionString()));
 
+                    // Remove existing Redis registration
+                    var redisDescriptor = services.SingleOrDefault(
+                        d => d.ServiceType == typeof(IConnectionMultiplexer));
+                    if (redisDescriptor != null) services.Remove(redisDescriptor);
+
+                    // Add mocked Redis multiplexer
+                    var mockRedis = new Mock<IConnectionMultiplexer>();
+                    var mockDatabase = new Mock<IDatabase>();
+                    var mockSubscriber = new Mock<ISubscriber>();
+                    
+                    mockDatabase.Setup(d => d.StreamCreateConsumerGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(true);
+                    mockDatabase.Setup(d => d.StreamReadGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(Array.Empty<StreamEntry>());
+                    mockDatabase.Setup(d => d.StreamAcknowledgeAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(1L);
+                    mockDatabase.Setup(d => d.StreamAddAsync(It.IsAny<RedisKey>(), It.IsAny<NameValueEntry[]>(), It.IsAny<RedisValue?>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(new RedisValue("dummy-id"));
+                    mockDatabase.Setup(d => d.StringSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<TimeSpan?>(), It.IsAny<bool>(), It.IsAny<When>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(true);
+
+                    mockSubscriber.Setup(s => s.SubscribeAsync(It.IsAny<RedisChannel>(), It.IsAny<Action<RedisChannel, RedisValue>>(), It.IsAny<CommandFlags>()))
+                        .Returns(Task.CompletedTask);
+                    mockSubscriber.Setup(s => s.UnsubscribeAsync(It.IsAny<RedisChannel>(), It.IsAny<Action<RedisChannel, RedisValue>>(), It.IsAny<CommandFlags>()))
+                        .Returns(Task.CompletedTask);
+                    mockSubscriber.Setup(s => s.PublishAsync(It.IsAny<RedisChannel>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>()))
+                        .ReturnsAsync(1L);
+
+                    mockRedis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(mockDatabase.Object);
+                    mockRedis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(mockSubscriber.Object);
+                    services.AddSingleton<IConnectionMultiplexer>(mockRedis.Object);
+
                     // Add Test Auth
                     services.AddAuthentication("Test")
                         .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", options => { });
@@ -48,7 +82,16 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                 });
             });
 
-        Client = _factory.CreateClient();
+        try
+        {
+            Client = _factory.CreateClient();
+            var server = _factory.Server;
+        }
+        catch (Exception ex)
+        {
+            System.IO.File.WriteAllText("c:\\Users\\Admin\\Documents\\WarpTalk - Capstone Project\\host_startup_error.txt", ex.ToString());
+            throw;
+        }
         Client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Test");
 
         // Run Migrations

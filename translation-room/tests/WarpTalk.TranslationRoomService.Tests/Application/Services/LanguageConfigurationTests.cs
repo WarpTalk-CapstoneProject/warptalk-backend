@@ -24,6 +24,7 @@ public class LanguageConfigurationTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
+    private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
 
@@ -33,12 +34,13 @@ public class LanguageConfigurationTests
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
+        _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
-        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockLogger.Object);
+        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -46,7 +48,7 @@ public class LanguageConfigurationTests
     {
         // Arrange
         var request = new CreateTranslationRoomRequest(
-            null, "Test Room", null, TranslationRoomType.GROUP, 10,
+            null, "Test Room", null, TranslationRoomType.INSTANT, 10,
             "xx-XX", // Unsupported
             new List<string> { "en-US" },
             null, null
@@ -67,7 +69,7 @@ public class LanguageConfigurationTests
     {
         // Arrange
         var request = new CreateTranslationRoomRequest(
-            null, "Test Room", null, TranslationRoomType.GROUP, 10,
+            null, "Test Room", null, TranslationRoomType.INSTANT, 10,
             "vi-VN",
             new List<string> { "xx-XX" }, // Unsupported
             null, null

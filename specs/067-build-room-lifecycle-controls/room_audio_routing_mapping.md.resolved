@@ -1,0 +1,46 @@
+# Room Lifecycle Status ↔ Audio Routing Realtime Status Mapping
+
+## Mục tiêu
+
+Tài liệu này mô tả mối liên hệ chuẩn xác giữa **room lifecycle status** (trạng thái phòng) và **audio routing realtime status** (trạng thái luồng âm thanh) theo đúng kiến trúc đã được triển khai, đảm bảo tính nhất quán giữa nghiệp vụ quản lý phòng họp và runtime stream pipeline.
+
+---
+
+## Nguyên tắc chung
+
+- **Room lifecycle status** đại diện cho trạng thái nghiệp vụ của phòng họp (PostgreSQL).
+- **Audio routing realtime status** là trạng thái runtime của pipeline audio/translation (được quản lý thông qua PostgreSQL canonical state và Redis volatile telemetry).
+- **Phân tách trách nhiệm (Separation of Concerns):** Trạng thái suy hao của runtime pipeline (STT, Translate, TTS) không làm thay đổi trực tiếp trạng thái nghiệp vụ của phòng họp (`IN_PROGRESS`), mà được giải quyết độc lập thông qua bộ giải quyết ưu tiên (`AudioRoutePriorityResolver`).
+
+---
+
+## Bảng mapping chính xác thực tế
+
+| Room status | Audio routing realtime status | Điều kiện & Kịch bản chi tiết |
+| :--- | :--- | :--- |
+| `DRAFT` | `IDLE` | Room mới ở mức bản nháp, chưa có phiên runtime thực tế. |
+| `SCHEDULED` | `IDLE` | Room đã được lên lịch nhưng chưa mở phiên chờ. |
+| `WAITING` | `IDLE` hoặc `ROUTING_READY` | Nếu chưa đủ participants / language preferences / routing policy thì vẫn `IDLE`. Khi đã sẵn sàng kết nối pipeline thì chuyển `ROUTING_READY`. |
+| `IN_PROGRESS` | `AUDIO_ROUTING_ACTIVE` | Phiên họp hoạt động bình thường, tất cả các khâu (STT, Translate, TTS, Voice Clone) chạy mượt mà dưới ngưỡng độ trễ quy định. |
+| `IN_PROGRESS` | `STT_DEGRADED` | Phiên họp hoạt động nhưng STT (Whisper) latency EMA vượt quá `3000ms`. |
+| `IN_PROGRESS` | `TRANSLATION_DEGRADED` | Phiên họp hoạt động nhưng NMT Translation latency EMA vượt quá `2500ms`. |
+| `IN_PROGRESS` | `TTS_DEGRADED` | Phiên họp hoạt động nhưng Speech Synthesis latency EMA vượt quá `6000ms`. |
+| `IN_PROGRESS` | `VOICE_CLONE_FALLBACK` | Quota voice clone cạn kiệt hoặc server clone offline, hệ thống tự động chuyển sang giọng chuẩn (generic voice). |
+| `IN_PROGRESS` | `TEXT_ONLY_MODE` | Sự cố truyền tải WebRTC nghiêm trọng hoặc sập TTS. Pipeline âm thanh tạm dừng, tự động đẩy phụ đề dạng text trực tiếp cho người dùng. |
+| `PAUSED` | `AUDIO_ROUTING_PAUSED` | Host tạm dừng phiên họp. Runtime pipeline dừng xử lý âm thanh để tiết kiệm tài nguyên GPU. **Cơ chế Update Protection** được kích hoạt để chặn telemetry cập nhật làm sai lệch trạng thái PAUSED. |
+| `ENDED` | `STOPPING` $\rightarrow$ `FINALIZING_ARTIFACTS` $\rightarrow$ `COMPLETED` | Khi host kết thúc room, runtime dừng routing, flush dữ liệu sang hậu kỳ để ghi tệp, và **Unified Redis Cache Cleanup** được gọi ngay khi chuyển sang `COMPLETED` để giải phóng RAM lập tức. |
+| `CANCELLED` | `COMPLETED` | Room bị hủy trước khi bắt đầu, bỏ qua chuỗi xử lý hậu kỳ và dọn dẹp cache Redis ngay lập tức. |
+| `EXPIRED` | `COMPLETED` | Hết hạn phòng, dọn dẹp trực tiếp các key liên quan. |
+
+---
+
+## Chi tiết cơ chế vận hành
+
+### 1. Trạng thái tạm dừng (`PAUSED` $\leftrightarrow$ `AUDIO_ROUTING_PAUSED`)
+*   Khi phòng chuyển sang `PAUSED`, luồng audio routing chuyển ngay sang `AUDIO_ROUTING_PAUSED`.
+*   **Update Protection:** Telemetry thu thập từ client/gateway vẫn có thể đẩy lên Redis làm thay đổi các flag volatile (`is_stt_degraded`, v.v.), nhưng bộ vi xử lý của C# Backend sẽ **chặn hoàn toàn** việc ghi đè trạng thái `AUDIO_ROUTING_PAUSED` trong cơ sở dữ liệu PostgreSQL.
+*   Khi resume (`IN_PROGRESS`), hệ thống khôi phục `AUDIO_ROUTING_ACTIVE` và telemetry sweep tiếp theo sẽ tính toán lại trạng thái suy hao thực tế.
+
+### 2. Trạng thái kết thúc phòng (`ENDED` $\rightarrow$ `COMPLETED`)
+*   Khi host bấm kết thúc, trạng thái chuyển tiếp qua `STOPPING` và `FINALIZING_ARTIFACTS` để tổng hợp tệp ghi âm, bản dịch và tóm tắt cuộc họp.
+*   **Unified Cache Cleanup:** Ngay tại thời điểm chuyển sang trạng thái cuối cùng `COMPLETED` (hoặc bị bỏ qua do lỗi qua event `finalization_abandoned`), Backend thực hiện xóa nóng các key `transcript` và `telemetry` trên Redis (`db.KeyDeleteAsync`), giải phóng dung lượng RAM ngay lập tức mà không phải chờ thời hạn TTL 24 giờ.

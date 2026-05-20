@@ -1,0 +1,48 @@
+# Audio Routing State Machine Specification (13-State Model)
+
+Below is the state machine diagram representing the lifecycle and status transitions of the Audio Routing mechanism, particularly highlighting how degradation (STT/Translate/TTS latency) and recovery events are resolved via the **Priority Resolver Engine**.
+
+```mermaid
+flowchart TD
+    START(("Start")) --> IDLE["IDLE<br/>Room not started"]
+    IDLE -->|config_ready| ROUTING_READY["ROUTING_READY<br/>Languages configured"]
+    ROUTING_READY -->|session_starts| AUDIO_ROUTING_ACTIVE["AUDIO_ROUTING_ACTIVE<br/>Audio routing is active & healthy"]
+
+    %% Active Streaming States
+    subgraph StreamingStates ["Active Streaming States"]
+        AUDIO_ROUTING_ACTIVE
+        STT_DEGRADED["STT_DEGRADED<br/>Whisper speed drop"]
+        TRANSLATION_DEGRADED["TRANSLATION_DEGRADED<br/>NMT latency high"]
+        TTS_DEGRADED["TTS_DEGRADED<br/>Speech synthesis slow"]
+        VOICE_CLONE_FALLBACK["VOICE_CLONE_FALLBACK<br/>Using generic standard voice"]
+        TEXT_ONLY_MODE["TEXT_ONLY_MODE<br/>Plain captions UI delivery"]
+    end
+
+    %% Telemetry dynamic prioritization
+    StreamingStates -.->|telemetry_state_updated<br/>Calculated by Priority Resolver| StreamingStates
+
+    %% Pause / Resume
+    StreamingStates -->|room_pause<br/>(Update Protection active)| PAUSED["AUDIO_ROUTING_PAUSED<br/>Streams suspended"]
+    PAUSED -->|room_resume| AUDIO_ROUTING_ACTIVE
+
+    %% Ending Room
+    StreamingStates -->|session_ends / system_disabled| STOPPING["STOPPING<br/>Winding down streams"]
+    PAUSED -->|session_ends / system_disabled| STOPPING
+
+    %% Finalization
+    STOPPING -->|flush_runtime| FINALIZING_ARTIFACTS["FINALIZING_ARTIFACTS<br/>Compiling recordings/transcripts"]
+    FINALIZING_ARTIFACTS -->|outputs_linked| COMPLETED["COMPLETED<br/>Terminal Sink State<br/>(Unified Cache Cleaned)"]
+    FINALIZING_ARTIFACTS -->|finalization_failed| FINALIZING_FAILED["FINALIZING_ARTIFACTS_FAILED<br/>Exhausted local retries"]
+    
+    FINALIZING_FAILED -->|flush_runtime<br/>(Recovery Sweep)| FINALIZING_ARTIFACTS
+    FINALIZING_FAILED -->|finalization_abandoned| COMPLETED
+    FINALIZING_ARTIFACTS -->|finalization_abandoned| COMPLETED
+
+    COMPLETED --> END(("End"))
+```
+
+### State Resolution & Cache Cleanup Rules
+1.  **Authoritative State Machine**: The C# Backend orchestrates all transitions and updates PostgreSQL canonical states.
+2.  **Unified Telemetry**: Instead of individual direct state transitions, the telemetry processor periodically sweeps Redis volatile indicators and runs the `AudioRoutePriorityResolver` to resolve the current canonical state.
+3.  **Update Protection**: Telemetry sweeps are strictly blocked from overwriting the PostgreSQL state if the route status is `AUDIO_ROUTING_PAUSED`.
+4.  **Immediate RAM Recovery**: Upon transitioning to the terminal `COMPLETED` state (both on happy-path success and on abandoned failures), the service executes **Unified Redis Cache Cleanup** to instantly delete telemetry and transcript cache keys, ensuring minimum memory foot-print.

@@ -91,11 +91,11 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             if (room.HostId != requestedByUserId)
-                return Result.Failure("Only the host can manage participant audio.", ErrorCodes.Forbidden);
+                return Result.Failure(TranslationRoomConstants.ErrorOnlyHostCanManageAudio, ErrorCodes.Forbidden);
 
             var participant = await _participantRepository.GetByIdAsync(participantId, ct);
             if (participant == null || participant.TranslationRoomId != translationRoomId)
-                return Result.Failure("Participant not found.", ErrorCodes.NotFound);
+                return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
             // Per BR-1.3-005: "Disable translation audio" means stopping translated audio relay to the participant, not muting their mic.
             participant.IsTranslationAudioEnabled = request.IsTranslationAudioEnabled;
@@ -109,7 +109,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while updating participant audio. RoomId: {RoomId}, ParticipantId: {ParticipantId}", translationRoomId, participantId);
-            return Result.Failure("An unexpected error occurred while updating participant audio.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateParticipantAudio, ErrorCodes.InternalServerError);
         }
     }
 
@@ -155,14 +155,14 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             if (room.HostId != requestedByUserId)
-                return Result.Failure("Only the host can kick participants.", ErrorCodes.Forbidden);
+                return Result.Failure(TranslationRoomConstants.ErrorOnlyHostCanKick, ErrorCodes.Forbidden);
 
             var participant = await _participantRepository.GetByIdAsync(participantId, ct);
             if (participant == null || participant.TranslationRoomId != translationRoomId)
-                return Result.Failure("Participant not found.", ErrorCodes.NotFound);
+                return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
             if (participant.UserId == room.HostId)
-                return Result.Failure("Cannot kick the host.", ErrorCodes.ValidationError);
+                return Result.Failure(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
 
             participant.Status = nameof(TranslationRoomParticipantStatus.KICKED);
             participant.UpdatedAt = DateTime.UtcNow;
@@ -175,7 +175,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while kicking participant. RoomId: {RoomId}, ParticipantId: {ParticipantId}", translationRoomId, participantId);
-            return Result.Failure("An unexpected error occurred while kicking participant.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedKickParticipant, ErrorCodes.InternalServerError);
         }
     }
 
@@ -185,7 +185,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         {
             var participant = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
             if (participant == null)
-                return Result.Failure("Participant not found.", ErrorCodes.NotFound);
+                return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
             participant.Status = nameof(TranslationRoomParticipantStatus.LEFT);
             participant.UpdatedAt = DateTime.UtcNow;
@@ -198,7 +198,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while leaving room. RoomId: {RoomId}, UserId: {UserId}", translationRoomId, requestedByUserId);
-            return Result.Failure("An unexpected error occurred while leaving room.", ErrorCodes.InternalServerError);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedLeaveRoom, ErrorCodes.InternalServerError);
         }
     }
 }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
@@ -7,11 +8,13 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record RoomSettingsRequest(
-    bool RequiresApproval = true
+    bool RequiresApproval = true,
+    ArtifactAccessLevel ArtifactAccess = ArtifactAccessLevel.HostOnly
 );
 
 public record RoomSettingsResponse(
-    bool RequiresApproval
+    bool RequiresApproval,
+    ArtifactAccessLevel ArtifactAccess
 );
 
 public record UpdateRoomSettingsRequest(
@@ -65,7 +68,8 @@ public record TranslationRoomDto(
     DateTime? EndedAt,
     int? DurationSeconds,
     DateTime CreatedAt,
-    RoomSettingsResponse Settings
+    RoomSettingsResponse Settings,
+    List<RoomArtifactDto>? Artifacts = null
 );
 
 public record TranslationRoomListItemDto(
@@ -102,6 +106,19 @@ public record JoinTranslationRoomResponse(
     TranslationRoomParticipantDto Participant
 );
 
+public record RoomArtifactDto(
+    Guid Id,
+    ArtifactType ArtifactType,
+    string? FileFormat,
+    long? FileSizeBytes,
+    bool ContainsRawAudio,
+    bool ContainsRawVideo,
+    bool ConsentRequired,
+    DateTime? RetentionUntil,
+    string Status,
+    DateTime CreatedAt
+);
+
 public record TranslationRoomArtifactDto(
     Guid Id,
     Guid TranslationRoomId,
@@ -116,6 +133,18 @@ public record TranslationRoomArtifactDto(
     DateTime? RetentionUntil,
     string Status,
     DateTime CreatedAt
+);
+
+public record CreateArtifactRequest(
+    Guid RoomId,
+    ArtifactType ArtifactType,
+    string FileUrl,
+    string FileFormat,
+    long SizeBytes,
+    bool ContainsRawAudio,
+    bool ContainsRawVideo,
+    bool ConsentRequired,
+    DateTime? RetentionUntil = null
 );
 
 public record TranslationRoomHistoryItemDto(
