@@ -12,11 +12,13 @@ public class SubscriptionService : ISubscriptionService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionService> _logger;
+    private readonly IBillingMessagePublisher _messagePublisher;
 
-    public SubscriptionService(IUnitOfWork unitOfWork, ILogger<SubscriptionService> logger)
+    public SubscriptionService(IUnitOfWork unitOfWork, ILogger<SubscriptionService> logger, IBillingMessagePublisher messagePublisher)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _messagePublisher = messagePublisher;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -71,6 +73,8 @@ public class SubscriptionService : ISubscriptionService
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+            await PublishRealtimeUpdateAsync(subscription.UserId, "created", plan.Name, cancellationToken);
+
             return Result.Success(subscription.ToDto(plan.Name));
         }
         catch (Exception ex)
@@ -100,6 +104,9 @@ public class SubscriptionService : ISubscriptionService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            
+            await PublishRealtimeUpdateAsync(sub.UserId, "cancelled", plan?.Name ?? "Unknown Plan", cancellationToken);
+
             return Result.Success(sub.ToDto(plan?.Name ?? string.Empty));
         }
         catch (Exception ex)
@@ -146,12 +153,37 @@ public class SubscriptionService : ISubscriptionService
             await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+            await PublishRealtimeUpdateAsync(newSub.UserId, "changed", newPlan.Name, cancellationToken);
+
             return Result.Success(newSub.ToDto(newPlan.Name));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error changing subscription for WorkspaceId {WorkspaceId} to NewPlanId {NewPlanId}", request.WorkspaceId, request.NewPlanId);
             return Result.Failure<SubscriptionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    private async Task PublishRealtimeUpdateAsync(Guid userId, string action, string planName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
+            {
+                Id = Guid.NewGuid().ToString(),
+                UserId = userId.ToString(),
+                Type = "billing.subscription_changed",
+                Title = "Subscription Updated",
+                Content = $"Your subscription has been {action} to {planName}.",
+                PayloadJson = "{}",
+                CreatedAt = DateTime.UtcNow.ToString("O")
+            };
+            await _messagePublisher.PublishAsync("warptalk:notifications:new", msg, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Realtime push failures shouldn't break the main flow
+            _logger.LogWarning(ex, "Failed to publish realtime update for user {UserId}", userId);
         }
     }
 }

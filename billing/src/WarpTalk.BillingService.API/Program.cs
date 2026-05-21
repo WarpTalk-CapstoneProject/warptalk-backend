@@ -40,6 +40,12 @@ builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<ICreditService, CreditService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 
+// --- Messaging (Redis) ---
+var redisConnString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
+    StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnString));
+builder.Services.AddSingleton<IBillingMessagePublisher, WarpTalk.BillingService.Infrastructure.Messaging.RedisBillingMessagePublisher>();
+
 // Note: BillingGrpcService no longer injects IUnitOfWork directly.
 // All persistence access is delegated through Application services.
 
