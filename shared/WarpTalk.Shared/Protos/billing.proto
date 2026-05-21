@@ -25,6 +25,9 @@ service BillingService {
   // Get active subscription of a workspace
   rpc GetActiveSubscription (GetActiveSubscriptionRequest) returns (SubscriptionResponse);
 
+  // Check feature access limits for a workspace
+  rpc GetWorkspaceFeatureAccess (GetFeatureAccessRequest) returns (GetFeatureAccessResponse);
+
   // Cancel an active subscription
   rpc CancelSubscription (CancelSubscriptionRequest) returns (SubscriptionResponse);
 
@@ -130,6 +133,22 @@ message SubscriptionResponse {
   string current_period_end   = 9;  // ISO-8601
   bool   auto_renew           = 10;
   string cancelled_at         = 11; // ISO-8601; empty if not cancelled
+}
+
+message GetFeatureAccessRequest {
+  string workspace_id = 1;
+}
+
+message GetFeatureAccessResponse {
+  bool   has_active_subscription = 1;
+  string plan_tier              = 2;
+  int32  max_participants       = 3;
+  int32  max_languages          = 4;
+  bool   voice_clone_enabled    = 5;
+  bool   ai_assistant_enabled   = 6;
+  bool   glossary_enabled       = 7;
+  bool   dedicated_gpu          = 8;
+  string features_json          = 9;
 }
 
 // ─────────────────────────────────────────────────────────────

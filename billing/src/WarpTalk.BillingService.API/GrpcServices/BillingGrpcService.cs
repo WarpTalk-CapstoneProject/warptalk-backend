@@ -189,6 +189,35 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         return ToSubscriptionResponse(result.Value!);
     }
 
+    public override async Task<Shared.Protos.GetFeatureAccessResponse> GetWorkspaceFeatureAccess(
+        Shared.Protos.GetFeatureAccessRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid workspace_id."));
+
+        var subResult = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, context.CancellationToken);
+        if (!subResult.IsSuccess || subResult.Value == null)
+            return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
+
+        var planResult = await _planService.GetPlanByIdAsync(subResult.Value.PlanId, context.CancellationToken);
+        if (!planResult.IsSuccess || planResult.Value == null)
+            return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
+
+        var plan = planResult.Value;
+        return new Shared.Protos.GetFeatureAccessResponse
+        {
+            HasActiveSubscription = true,
+            PlanTier             = plan.Tier ?? string.Empty,
+            MaxParticipants      = plan.MaxParticipants,
+            MaxLanguages         = plan.MaxLanguages,
+            VoiceCloneEnabled    = plan.VoiceCloneEnabled,
+            AiAssistantEnabled   = plan.AiAssistantEnabled,
+            GlossaryEnabled      = plan.GlossaryEnabled,
+            DedicatedGpu         = plan.DedicatedGpu,
+            FeaturesJson         = plan.Features ?? "{}"
+        };
+    }
+
     public override async Task<Shared.Protos.SubscriptionResponse> CancelSubscription(
         Shared.Protos.CancelSubscriptionRequest request, ServerCallContext context)
     {
