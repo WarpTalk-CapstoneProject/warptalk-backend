@@ -73,6 +73,9 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 
+                "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
+
             return Result.Success(tx.ToDto());
         }
         catch (Exception ex)
@@ -104,6 +107,9 @@ public class CreditService : ICreditService
 
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 
+                "Credits Topped Up", $"You have successfully added {request.Amount} credits.", cancellationToken);
 
             return Result.Success(sub.ToCreditBalanceDto(workspaceId));
         }
@@ -238,25 +244,8 @@ public class CreditService : ICreditService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish Realtime update for the Host
-            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
-            {
-                Id = Guid.NewGuid().ToString(),
-                UserId = request.HostWorkspaceId.ToString(), // Assuming WorkspaceId == UserId for personal workspaces, or send to workspace channel
-                Type = "billing.credits_updated",
-                Title = "Credits Deducted",
-                Content = $"Host-pays: {request.CreditsConsumed} credits were deducted for {request.UsageType}.",
-                PayloadJson = $"{{\"new_balance\": {sub.CreditsRemaining}}}",
-                CreatedAt = DateTime.UtcNow.ToString("O")
-            };
-            
-            try 
-            {
-                await _messagePublisher.PublishAsync("warptalk:notifications:new", msg, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to publish realtime credit update for WorkspaceId {WorkspaceId}", request.HostWorkspaceId);
-            }
+            await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.CreditsRemaining,
+                "Credits Deducted", $"Host-pays: {request.CreditsConsumed} credits were deducted for {request.UsageType}.", cancellationToken);
 
             return Result.Success(sub.ToCreditBalanceDto(request.HostWorkspaceId));
         }
@@ -264,6 +253,29 @@ public class CreditService : ICreditService
         {
             _logger.LogError(ex, "Error recording usage for HostWorkspaceId {HostWorkspaceId}", request.HostWorkspaceId);
             return Result.Failure<CreditBalanceDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    private async Task PublishCreditUpdateAsync(Guid workspaceId, int newBalance, string title, string content, CancellationToken cancellationToken)
+    {
+        var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
+        {
+            Id = Guid.NewGuid().ToString(),
+            UserId = workspaceId.ToString(),
+            Type = "billing.credits_updated",
+            Title = title,
+            Content = content,
+            PayloadJson = $"{{\"new_balance\": {newBalance}}}",
+            CreatedAt = DateTime.UtcNow.ToString("O")
+        };
+        
+        try 
+        {
+            await _messagePublisher.PublishAsync("warptalk:notifications:new", msg, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish realtime credit update for WorkspaceId {WorkspaceId}", workspaceId);
         }
     }
 }
