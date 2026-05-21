@@ -94,12 +94,7 @@ public class SubscriptionService : ISubscriptionService
                     "No active subscription found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var now = DateTime.UtcNow;
-            sub.Status = "cancelled";
-            sub.CancellationReason = reason;
-            sub.CancelledAt = now;
-            sub.IsActive = false;
-            sub.UpdatedAt = now;
+            sub.Cancel(reason);
 
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -142,32 +137,11 @@ public class SubscriptionService : ISubscriptionService
                     $"New Plan '{request.NewPlanId}' not found or inactive.",
                     ErrorCodes.BillingPlanNotFound);
 
-            // Cancel old subscription
-            var now = DateTime.UtcNow;
-            oldSub.Status = "cancelled";
-            oldSub.CancellationReason = "upgraded/downgraded";
-            oldSub.CancelledAt = now;
-            oldSub.IsActive = false;
-            oldSub.UpdatedAt = now;
+            oldSub.Cancel("upgraded/downgraded");
             _unitOfWork.SubscriptionRepository.Update(oldSub);
 
             // Create new subscription with carry-over credits
-            var newSub = new Subscription
-            {
-                Id = Guid.NewGuid(),
-                UserId = oldSub.UserId,
-                WorkspaceId = oldSub.WorkspaceId,
-                PlanId = newPlan.Id,
-                Status = "active",
-                CreditsRemaining = newPlan.CreditsPerCycle + oldSub.CreditsRemaining,
-                CreditsUsedThisCycle = 0,
-                CurrentPeriodStart = now,
-                CurrentPeriodEnd = now.AddMonths(1),
-                AutoRenew = true,
-                IsActive = true,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
+            var newSub = request.ToEntity(oldSub, newPlan);
 
             await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);

@@ -1,4 +1,4 @@
-﻿using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.Application.Mappers;
@@ -58,6 +58,37 @@ public static class BillingMapper
             CreatedAt = now,
             UpdatedAt = now
         };
+    }
+
+    public static Subscription ToEntity(this ChangeSubscriptionRequest request, Subscription oldSub, Plan newPlan)
+    {
+        var now = DateTime.UtcNow;
+        return new Subscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = oldSub.UserId,
+            WorkspaceId = oldSub.WorkspaceId,
+            PlanId = newPlan.Id,
+            Status = "active",
+            CreditsRemaining = newPlan.CreditsPerCycle + oldSub.CreditsRemaining,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodStart = now,
+            CurrentPeriodEnd = now.AddMonths(1),
+            AutoRenew = true,
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    public static void Cancel(this Subscription sub, string? reason)
+    {
+        var now = DateTime.UtcNow;
+        sub.Status = "cancelled";
+        sub.CancellationReason = reason;
+        sub.CancelledAt = now;
+        sub.IsActive = false;
+        sub.UpdatedAt = now;
     }
 
     public static CreditBalanceDto ToCreditBalanceDto(this Subscription sub, Guid workspaceId) => new(
