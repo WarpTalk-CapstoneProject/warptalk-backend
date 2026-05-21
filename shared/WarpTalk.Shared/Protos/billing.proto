@@ -15,6 +15,9 @@ service BillingService {
   // Add credits (Internal / Admin)
   rpc TopUpCredits (TopUpRequest) returns (GetCreditsResponse);
 
+  // Record AI usage and apply Host-Pays model
+  rpc RecordUsage (RecordUsageGrpcRequest) returns (RecordUsageGrpcResponse);
+
   // Credit transaction history (paginated)
   rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
 
@@ -100,6 +103,24 @@ message CreditTransaction {
   string reference_id  = 6;
   int32  balance_after = 7;
   string created_at    = 8;  // ISO-8601
+}
+
+message RecordUsageGrpcRequest {
+  string host_workspace_id  = 1;
+  string user_id            = 2;
+  string usage_type         = 3;
+  string unit               = 4;
+  double quantity           = 5;
+  int32  credits_consumed   = 6;
+  int32  duration_seconds   = 7;
+  string translation_room_id = 8;
+  string details_json       = 9;
+}
+
+message RecordUsageGrpcResponse {
+  bool   success       = 1;
+  int32  new_balance   = 2;
+  string error_message = 3;
 }
 
 // ─────────────────────────────────────────────────────────────

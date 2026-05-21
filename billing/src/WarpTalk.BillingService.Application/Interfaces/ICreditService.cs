@@ -1,4 +1,4 @@
-﻿using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
@@ -12,6 +12,10 @@ public interface ICreditService
     Task<Result<CreditTransactionDto>> ConsumeCreditsAsync(
         Guid workspaceId,
         ConsumeCreditsRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CreditBalanceDto>> RecordUsageAsync(
+        RecordUsageRequest request,
         CancellationToken cancellationToken = default);
 
     Task<Result<CreditBalanceDto>> TopUpCreditsAsync(

@@ -118,6 +118,44 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         };
     }
 
+    public override async Task<Shared.Protos.RecordUsageGrpcResponse> RecordUsage(
+        Shared.Protos.RecordUsageGrpcRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.HostWorkspaceId, out var hostWorkspaceId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid host_workspace_id."));
+        if (!Guid.TryParse(request.UserId, out var userId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid user_id."));
+
+        Guid? translationRoomId = Guid.TryParse(request.TranslationRoomId, out var trId) ? trId : null;
+
+        var dtoRequest = new RecordUsageRequest(
+            hostWorkspaceId,
+            userId,
+            request.UsageType,
+            request.Unit,
+            (decimal)request.Quantity,
+            request.CreditsConsumed,
+            request.DurationSeconds > 0 ? request.DurationSeconds : null,
+            translationRoomId,
+            string.IsNullOrWhiteSpace(request.DetailsJson) ? null : request.DetailsJson
+        );
+
+        var result = await _creditService.RecordUsageAsync(dtoRequest, context.CancellationToken);
+
+        if (!result.IsSuccess)
+            return new Shared.Protos.RecordUsageGrpcResponse
+            {
+                Success = false,
+                ErrorMessage = result.Error
+            };
+
+        return new Shared.Protos.RecordUsageGrpcResponse
+        {
+            Success = true,
+            NewBalance = result.Value!.CurrentCredits
+        };
+    }
+
     public override async Task<Shared.Protos.CreditHistoryResponse> GetCreditHistory(
         Shared.Protos.GetHistoryRequest request, ServerCallContext context)
     {

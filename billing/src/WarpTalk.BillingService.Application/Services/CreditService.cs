@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
@@ -12,11 +12,13 @@ public class CreditService : ICreditService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditService> _logger;
+    private readonly IBillingMessagePublisher _messagePublisher;
 
-    public CreditService(IUnitOfWork unitOfWork, ILogger<CreditService> logger)
+    public CreditService(IUnitOfWork unitOfWork, ILogger<CreditService> logger, IBillingMessagePublisher messagePublisher)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _messagePublisher = messagePublisher;
     }
 
     public async Task<Result<CreditBalanceDto>> GetWorkspaceCreditsAsync(
@@ -172,5 +174,96 @@ public class CreditService : ICreditService
         {
             _logger.LogError(ex, "Error taking snapshot for SubscriptionId {SubscriptionId}", subscriptionId);
             throw;  
+        }
+    }
+
+    public async Task<Result<CreditBalanceDto>> RecordUsageAsync(
+        RecordUsageRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == request.HostWorkspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<CreditBalanceDto>(
+                    "No active subscription found for the host workspace.",
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (sub.CreditsRemaining < request.CreditsConsumed)
+                return Result.Failure<CreditBalanceDto>(
+                    "Insufficient credits in the host workspace.",
+                    ErrorCodes.BillingInsufficientCredits);
+
+            // Deduct credits
+            sub.CreditsRemaining -= request.CreditsConsumed;
+            sub.CreditsUsedThisCycle += request.CreditsConsumed;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            // 1. Create Transaction (Accounting)
+            var tx = new CreditTransaction
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                Amount = -request.CreditsConsumed,
+                Type = "usage",
+                Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
+                ReferenceType = "usage_record",
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+
+            // 2. Create Usage Record (Analytics)
+            var usage = new UsageRecord
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                UserId = request.UserId,
+                WorkspaceId = request.HostWorkspaceId,
+                TranslationRoomId = request.TranslationRoomId,
+                UsageType = request.UsageType,
+                Unit = request.Unit,
+                Quantity = request.Quantity,
+                CreditsConsumed = request.CreditsConsumed,
+                DurationSeconds = request.DurationSeconds,
+                Details = request.Details,
+                RecordedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
+
+            // Save atomic transaction
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Publish Realtime update for the Host
+            var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
+            {
+                Id = Guid.NewGuid().ToString(),
+                UserId = request.HostWorkspaceId.ToString(), // Assuming WorkspaceId == UserId for personal workspaces, or send to workspace channel
+                Type = "billing.credits_updated",
+                Title = "Credits Deducted",
+                Content = $"Host-pays: {request.CreditsConsumed} credits were deducted for {request.UsageType}.",
+                PayloadJson = $"{{\"new_balance\": {sub.CreditsRemaining}}}",
+                CreatedAt = DateTime.UtcNow.ToString("O")
+            };
+            
+            try 
+            {
+                await _messagePublisher.PublishAsync("warptalk:notifications:new", msg, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to publish realtime credit update for WorkspaceId {WorkspaceId}", request.HostWorkspaceId);
+            }
+
+            return Result.Success(sub.ToCreditBalanceDto(request.HostWorkspaceId));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error recording usage for HostWorkspaceId {HostWorkspaceId}", request.HostWorkspaceId);
+            return Result.Failure<CreditBalanceDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
     }
 }

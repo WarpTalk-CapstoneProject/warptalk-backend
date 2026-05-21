@@ -47,3 +47,23 @@ public record ChangeSubscriptionRequest(
     [Required(ErrorMessage = "NewPlanId is required.")]
     Guid NewPlanId
 );
+
+public record RecordUsageRequest(
+    [Required(ErrorMessage = "HostWorkspaceId is required.")]
+    Guid HostWorkspaceId,
+
+    [Required(ErrorMessage = "UserId is required.")]
+    Guid UserId,
+
+    [Required(ErrorMessage = "UsageType is required.")]
+    string UsageType,
+
+    [Required(ErrorMessage = "Unit is required.")]
+    string Unit,
+
+    decimal Quantity,
+    int CreditsConsumed,
+    int? DurationSeconds,
+    Guid? TranslationRoomId,
+    string? Details
+);
