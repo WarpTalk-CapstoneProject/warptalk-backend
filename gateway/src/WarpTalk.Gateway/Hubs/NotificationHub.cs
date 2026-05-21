@@ -14,11 +14,16 @@ public class NotificationHub : Hub
 {
     private readonly IConnectionManager _connectionManager;
     private readonly ILogger<NotificationHub> _logger;
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
 
-    public NotificationHub(IConnectionManager connectionManager, ILogger<NotificationHub> logger)
+    public NotificationHub(
+        IConnectionManager connectionManager, 
+        ILogger<NotificationHub> logger,
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
     {
         _connectionManager = connectionManager;
         _logger = logger;
+        _grpcClient = grpcClient;
     }
 
     // ── Lifecycle ─────────────────────────────────────────
@@ -54,38 +59,76 @@ public class NotificationHub : Hub
 
     // ── Server Methods (Client → Server) ──────────────────
 
-    /// <summary>
-    /// Mark a notification as read. Broadcasts to all user's devices
-    /// so the read status is synced across tabs/devices.
-    /// </summary>
+    
     public async Task MarkAsRead(Guid notificationId)
     {
         var userId = GetUserId();
 
-        // TODO: Call NotificationService via gRPC to persist read status
-        // For now, just broadcast the read event to all user's connections
-        await Clients.Group(UserGroupName(userId))
-            .SendAsync("NotificationRead", notificationId);
+        // Call NotificationService via gRPC to persist read status
+        var request = new WarpTalk.Shared.Protos.MarkAsReadRequest
+        {
+            UserId = userId,
+            NotificationId = notificationId.ToString()
+        };
 
-        _logger.LogDebug(
-            "NotificationHub: User {UserId} marked notification {NotificationId} as read",
-            userId, notificationId);
+        try
+        {
+            var response = await _grpcClient.MarkAsReadAsync(request);
+            if (response.Success)
+            {
+                // Broadcast the read event to all user's connections
+                await Clients.Group(UserGroupName(userId))
+                    .SendAsync("NotificationRead", notificationId);
+
+                _logger.LogDebug(
+                    "NotificationHub: User {UserId} marked notification {NotificationId} as read",
+                    userId, notificationId);
+            }
+            else
+            {
+                _logger.LogWarning("NotificationHub: Failed to mark {NotificationId} as read. Reason: {Reason}", notificationId, response.ErrorMessage);
+                // Can also send error back to client
+                await Clients.Caller.SendAsync("NotificationError", $"Failed to mark as read: {response.ErrorMessage}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "NotificationHub: Error calling gRPC MarkAsRead for user {UserId}", userId);
+            await Clients.Caller.SendAsync("NotificationError", "An error occurred while marking as read.");
+        }
     }
 
-    /// <summary>
-    /// Mark all notifications as read.
-    /// </summary>
+    
     public async Task MarkAllAsRead()
     {
         var userId = GetUserId();
 
-        // TODO: Call NotificationService via gRPC to persist
-        await Clients.Group(UserGroupName(userId))
-            .SendAsync("AllNotificationsRead");
+        // Call NotificationService via gRPC to persist
+        var request = new WarpTalk.Shared.Protos.MarkAllAsReadRequest { UserId = userId };
+        try
+        {
+            var response = await _grpcClient.MarkAllAsReadAsync(request);
 
-        _logger.LogDebug(
-            "NotificationHub: User {UserId} marked all notifications as read",
-            userId);
+            if (response.Success)
+            {
+                await Clients.Group(UserGroupName(userId))
+                    .SendAsync("AllNotificationsRead");
+
+                _logger.LogDebug(
+                    "NotificationHub: User {UserId} marked all notifications as read",
+                    userId);
+            }
+            else
+            {
+                _logger.LogWarning("NotificationHub: Failed to mark all as read. Reason: {Reason}", response.ErrorMessage);
+                await Clients.Caller.SendAsync("NotificationError", $"Failed to mark all as read: {response.ErrorMessage}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "NotificationHub: Error calling gRPC MarkAllAsRead for user {UserId}", userId);
+            await Clients.Caller.SendAsync("NotificationError", "An error occurred while marking all as read.");
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────

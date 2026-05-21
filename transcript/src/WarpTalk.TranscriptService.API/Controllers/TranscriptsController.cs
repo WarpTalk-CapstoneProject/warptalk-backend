@@ -1,61 +1,62 @@
+using System;
+using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
-using WarpTalk.Shared;
 
 namespace WarpTalk.TranscriptService.API.Controllers;
 
-[ApiController]
-[Route("api/v1/[controller]")]
 [Authorize]
+[ApiController]
+[Route("api/v1/transcripts")]
 public class TranscriptsController : ControllerBase
 {
-    private readonly ITranscriptService _transcriptService;
+    private readonly ITranscriptQueryService _transcriptQueryService;
 
-    public TranscriptsController(ITranscriptService transcriptService)
+    public TranscriptsController(ITranscriptQueryService transcriptQueryService)
     {
-        _transcriptService = transcriptService;
-    }
-
-    [HttpPost]
-    public async Task<IActionResult> StartTranscript([FromBody] CreateTranscriptRequest request, CancellationToken ct)
-    {
-        var result = await _transcriptService.StartTranscriptAsync(request, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        return Ok(result.Value);
+        _transcriptQueryService = transcriptQueryService;
     }
 
     [HttpGet("{id}")]
-    public async Task<IActionResult> GetTranscript(Guid id, CancellationToken ct)
+    public async Task<ActionResult<TranscriptDto>> GetTranscript(Guid id, CancellationToken cancellationToken)
     {
-        var result = await _transcriptService.GetTranscriptAsync(id, ct);
-        if (!result.IsSuccess)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+        if (!TryGetUserId(out var userId))
+            return Unauthorized();
 
-        return Ok(result.Value);
+        var result = await _transcriptQueryService.GetTranscriptAsync(id, userId, cancellationToken);
+        return ToActionResult(result);
     }
 
-    [HttpPost("{id}/audio")]
-    public async Task<IActionResult> ProcessAudioChunk(Guid id, [FromBody] ProcessAudioChunkRequest request, CancellationToken ct)
+    [HttpGet("by-room/{translationRoomId}")]
+    public async Task<ActionResult<TranscriptDto>> GetTranscriptByTranslationRoom(Guid translationRoomId, CancellationToken cancellationToken)
     {
-        var audioBytes = Convert.FromBase64String(request.Base64AudioData ?? string.Empty);
-        var result = await _transcriptService.ProcessAudioChunkAsync(id, audioBytes, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        if (!TryGetUserId(out var userId))
+            return Unauthorized();
 
-        return Accepted();
+        var result = await _transcriptQueryService.GetTranscriptByTranslationRoomAsync(translationRoomId, userId, cancellationToken);
+        return ToActionResult(result);
     }
 
-    [HttpPost("{id}/finalize")]
-    public async Task<IActionResult> FinalizeTranscript(Guid id, CancellationToken ct)
+    private bool TryGetUserId(out Guid userId)
     {
-        var result = await _transcriptService.FinalizeTranscriptAsync(id, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return Guid.TryParse(userIdString, out userId);
+    }
 
-        return NoContent();
+    private ActionResult<T> ToActionResult<T>(WarpTalk.Shared.Result<T> result)
+    {
+        if (result.IsSuccess)
+            return Ok(result.Value);
+
+        return result.ErrorCode switch
+        {
+            "NOT_FOUND" => NotFound(new { Message = result.Error }),
+            "FORBIDDEN" => Forbid(),
+            _ => StatusCode(500, new { Message = result.Error })
+        };
     }
 }

@@ -6,6 +6,7 @@ package translation_room;
 
 service TranslationRoomService {
   rpc GetTranslationRoomById (GetTranslationRoomRequest) returns (GetTranslationRoomResponse);
+  rpc GetParticipantsByRoomId (GetParticipantsByRoomIdRequest) returns (GetParticipantsByRoomIdResponse);
 }
 
 message GetTranslationRoomRequest {
@@ -16,4 +17,22 @@ message GetTranslationRoomResponse {
   string id = 1;
   string title = 2;
   string hostId = 3;
+  string workspace_id = 4;
+  string status = 5;
+}
+
+message GetParticipantsByRoomIdRequest {
+  string room_id = 1;
+}
+
+message GetParticipantsByRoomIdResponse {
+  repeated Participant participants = 1;
+}
+
+message Participant {
+  string id = 1;
+  string display_name = 2;
+  string role = 3;       // HOST, PARTICIPANT
+  string language = 4;   // e.g. "vi-VN"
+  bool is_active = 5;
 }

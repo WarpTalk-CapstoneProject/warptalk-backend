@@ -7,8 +7,10 @@ namespace WarpTalk.Shared;
 public static class ErrorCodes
 {
     // ── Common ────────────────────────────────────────────
+    public const string InternalServerError = "INTERNAL_SERVER_ERROR";
     public const string NotFound = "NOT_FOUND";
     public const string Unauthorized = "UNAUTHORIZED";
+    public const string Forbidden = "FORBIDDEN";
     public const string InvalidState = "INVALID_STATE";
     public const string ValidationError = "VALIDATION_ERROR";
 

@@ -1,0 +1,297 @@
+﻿{
+    "info":  {
+                 "_postman_id":  "97888cd7-fd55-467e-b878-299cc41c4e28",
+                 "name":  "WarpTalk Backend - Auth",
+                 "description":  "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
+                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+                 "_exporter_id":  "51979719",
+                 "_collection_link":  "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
+             },
+    "item":  [
+                 {
+                     "name":  "01 - Auth via Gateway",
+                     "item":  [
+                                  {
+                                      "name":  "Register",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Register returns 200/400/409\u0027, function () {",
+                                                                                    "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 409]);",
+                                                                                    "});"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "packages":  {
+
+                                                                                    },
+                                                                       "requests":  {
+
+                                                                                    }
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\",\n  \"fullName\": \"Postman User\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/auth/register",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "auth",
+                                                                               "register"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Login",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Login returns 200\u0027, function () {",
+                                                                                    "  pm.response.to.have.status(200);",
+                                                                                    "});",
+                                                                                    "var json = pm.response.json();",
+                                                                                    "var token = json.token || json.accessToken || \u0027\u0027;",
+                                                                                    "var refresh = json.refreshToken || \u0027\u0027;",
+                                                                                    "pm.test(\u0027Access token exists\u0027, function () {",
+                                                                                    "  pm.expect(token).to.not.eql(\u0027\u0027);",
+                                                                                    "});",
+                                                                                    "if (token) pm.environment.set(\u0027accessToken\u0027, token);",
+                                                                                    "if (refresh) pm.environment.set(\u0027refreshToken\u0027, refresh);"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "packages":  {
+
+                                                                                    },
+                                                                       "requests":  {
+
+                                                                                    }
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "auth":  {
+                                                                   "type":  "bearer",
+                                                                   "bearer":  [
+                                                                                  {
+                                                                                      "key":  "token",
+                                                                                      "value":  "{{accessToken}}",
+                                                                                      "type":  "string"
+                                                                                  }
+                                                                              ]
+                                                               },
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/auth/login",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "auth",
+                                                                               "login"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Get Current Profile (/me)",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Me returns 200 when token valid\u0027, function () {",
+                                                                                    "  pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+                                                                                    "});"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "GET",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/auth/me",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "auth",
+                                                                               "me"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Refresh Token",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Refresh returns 200/401\u0027, function () {",
+                                                                                    "  pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+                                                                                    "});"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/auth/refresh",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "auth",
+                                                                               "refresh"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  }
+                              ]
+                 }
+             ],
+    "variable":  [
+                     {
+                         "key":  "gatewayBaseUrl",
+                         "value":  "http://localhost:5200"
+                     },
+                     {
+                         "key":  "authBaseUrl",
+                         "value":  "http://localhost:5101"
+                     },
+                     {
+                         "key":  "translationRoomBaseUrl",
+                         "value":  "http://localhost:5102"
+                     },
+                     {
+                         "key":  "transcriptBaseUrl",
+                         "value":  "http://localhost:5103"
+                     },
+                     {
+                         "key":  "notificationBaseUrl",
+                         "value":  "http://localhost:5104"
+                     },
+                     {
+                         "key":  "testEmail",
+                         "value":  "warptalk+{{$timestamp}}@mail.com"
+                     },
+                     {
+                         "key":  "testPassword",
+                         "value":  "P@ssw0rd123!"
+                     },
+                     {
+                         "key":  "accessToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "refreshToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "translationRoomId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     },
+                     {
+                         "key":  "transcriptId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     }
+                 ],
+    "event":  [
+                  {
+                      "listen":  "prerequest",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  },
+                  {
+                      "listen":  "test",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  }
+              ]
+}

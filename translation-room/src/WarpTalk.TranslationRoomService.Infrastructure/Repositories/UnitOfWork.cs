@@ -8,7 +8,30 @@ public class UnitOfWork : IUnitOfWork
     private readonly TranslationRoomDbContext _context;
     private readonly Dictionary<Type, object> _repositories = new();
 
-    public UnitOfWork(TranslationRoomDbContext context) => _context = context;
+    public ITranslationRoomRepository TranslationRoomRepository { get; }
+    public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
+    public ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
+    public ILanguageRepository LanguageRepository { get; }
+    public IUserSettingsRepository UserSettingsRepository { get; }
+    public ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
+
+    public UnitOfWork(
+        TranslationRoomDbContext context,
+        ITranslationRoomRepository translationRoomRepository,
+        ITranslationRoomParticipantRepository translationRoomParticipantRepository,
+        ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
+        ILanguageRepository languageRepository,
+        IUserSettingsRepository userSettingsRepository,
+        ITranslationRoomArtifactRepository translationRoomArtifactRepository)
+    {
+        _context = context;
+        TranslationRoomRepository = translationRoomRepository;
+        TranslationRoomParticipantRepository = translationRoomParticipantRepository;
+        TranslationRoomAudioRouteRepository = translationRoomAudioRouteRepository;
+        LanguageRepository = languageRepository;
+        UserSettingsRepository = userSettingsRepository;
+        TranslationRoomArtifactRepository = translationRoomArtifactRepository;
+    }
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

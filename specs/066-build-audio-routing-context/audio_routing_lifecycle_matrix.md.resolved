@@ -1,0 +1,267 @@
+# WarpTalk Audio Routing: Comprehensive Status & Scenario Matrix (Priority Resolution Version)
+
+This document provides a single, unified reference for auditing all scenarios (kịch bản) of the WarpTalk Audio Routing state machine. It maps each status from `AudioRouteStatus` to its technical behavior, data persistence details, and every possible event-driven state transition.
+
+---
+
+## 1. Overview of State Interactions
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE: Initialize Room
+    IDLE --> ROUTING_READY: config_ready (Verify languages)
+    ROUTING_READY --> AUDIO_ROUTING_ACTIVE: session_starts (Host clicks Start)
+
+    %% Degraded & Fallback States via Telemetry
+    state StreamingStates {
+        AUDIO_ROUTING_ACTIVE
+        STT_DEGRADED
+        TRANSLATION_DEGRADED
+        TTS_DEGRADED
+        VOICE_CLONE_FALLBACK
+        TEXT_ONLY_MODE
+    }
+
+    StreamingStates --> StreamingStates: telemetry_state_updated (Resolved via AudioRoutePriorityResolver)
+
+    StreamingStates --> AUDIO_ROUTING_PAUSED: room_pause (Update Protection active)
+    AUDIO_ROUTING_PAUSED --> AUDIO_ROUTING_ACTIVE: room_resume (Resets to Active, then Telemetry re-evaluates)
+
+    %% Termination Lifecycle
+    StreamingStates --> STOPPING: session_ends / system_disabled
+    AUDIO_ROUTING_PAUSED --> STOPPING: session_ends / system_disabled
+
+    STOPPING --> FINALIZING_ARTIFACTS: flush_runtime
+    FINALIZING_ARTIFACTS --> COMPLETED: outputs_linked (Success - Unified Cache Cleanup)
+    FINALIZING_ARTIFACTS --> FINALIZING_ARTIFACTS_FAILED: finalization_failed
+    FINALIZING_ARTIFACTS --> COMPLETED: finalization_abandoned (Permanent DB / Sweeps Exhausted - Unified Cache Cleanup)
+
+    FINALIZING_ARTIFACTS_FAILED --> FINALIZING_ARTIFACTS: flush_runtime (Retry Sweep)
+    FINALIZING_ARTIFACTS_FAILED --> COMPLETED: finalization_abandoned (Unified Cache Cleanup)
+
+    COMPLETED --> [*]
+```
+
+---
+
+## 2. Detailed Status Matrix
+
+### 1. `IDLE`
+*   **Description:** The default state when a translation room is created. No audio routing context has been defined yet.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Room record has `Status = SCHEDULED` or `WAITING`. AudioRoute records are not yet generated or set to `IDLE`.
+    *   **Redis:** No active routing tables present.
+*   **Transitions:**
+    *   **Incoming:** None (Initial state).
+    *   **Outgoing:** $\rightarrow$ `ROUTING_READY` via event `config_ready`.
+*   **Audited Scenarios:**
+    *   **Happy Path:** Room is scheduled. System validates target and source languages. Once languages are ready, transitions to `ROUTING_READY`.
+
+---
+
+### 2. `ROUTING_READY`
+*   **Description:** Language configurations are validated, and the routing tables are initialized in PostgreSQL and cached in Redis. The system is ready to handle WebRTC streams.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Routes saved in `ROUTING_READY` status.
+    *   **Redis:** Active paths parsed and cached in `"translationRoom:{roomId}:audio_routes"` hash.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ `IDLE` via event `config_ready`.
+    *   **Outgoing:** 
+        *   $\rightarrow$ `AUDIO_ROUTING_ACTIVE` via event `session_starts`.
+        *   $\rightarrow$ `STOPPING` via priority event `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Happy Path:** Host starts the meeting. Python AI Workers connect to standard pipelines and prepare translation channels.
+    *   **Cancellation Path:** The meeting is cancelled or expires before starting. Priority override `session_ends` pulls it straight to `STOPPING`.
+
+---
+
+### 3. `AUDIO_ROUTING_ACTIVE`
+*   **Description:** The happy path state where voice packets are streaming in real-time, processed by Python AI workers (STT, Translate, TTS), and distributed to listeners.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Routes set to `AUDIO_ROUTING_ACTIVE`.
+    *   **Redis:** Cache maps state as `"AUDIO_ROUTING_ACTIVE"`. High-frequency telemetry variables begin updating.
+*   **Transitions:**
+    *   **Incoming:** 
+        *   $\leftarrow$ `ROUTING_READY` via `session_starts`.
+        *   $\leftarrow$ `AUDIO_ROUTING_PAUSED` via `room_resume`.
+        *   $\leftarrow$ Degraded streaming states via dynamic priority resolver when all volatile flags clear.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via `room_pause`.
+        *   $\rightarrow$ Degraded streaming states via `telemetry_state_updated` event when flags are raised in Redis.
+        *   $\rightarrow$ `STOPPING` via priority event `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Normal Streaming:** Complete multi-way translated vocal relay with low latency (<1.5s).
+
+---
+
+### 4. `AUDIO_ROUTING_PAUSED`
+*   **Description:** The host has temporarily paused the session. Real-time translation streams are suspended to save system and GPU resources.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status set to `AUDIO_ROUTING_PAUSED`.
+    *   **Redis:** Status cached. AI workers add the room to their `self._paused_rooms` list and discard audio chunks.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `room_pause`.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_ACTIVE` via `room_resume` (Telemetry resolution restarts).
+        *   $\rightarrow$ `STOPPING` via priority event `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Update Protection Guard:** While in `AUDIO_ROUTING_PAUSED`, telemetry background sweeps process latency but are **blocked** from updating PostgreSQL. This prevents stale indicators from corrupting the paused status.
+    *   **Resource Management:** GPU instances suspend parsing whisper queues for this room while paused, reducing compute costs.
+
+---
+
+### 5. `STT_DEGRADED`
+*   **Description:** STT processing (Whisper inference) latency exceeds `3000ms`.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Route status set to `STT_DEGRADED`.
+    *   **Redis:** Ephemeral flag `stt_degraded = true` registered in Redis Hash.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `telemetry_state_updated`.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via `room_pause`.
+        *   $\rightarrow$ Other states in `StreamingStates` via `telemetry_state_updated` based on `AudioRoutePriorityResolver` priority resolving.
+        *   $\rightarrow$ `STOPPING` via `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Hyper-Parameter Adaptive Recovery:** Python STT worker reduces decoding beam size or drops temperature fallback steps, boosting speed and recovering state to `ACTIVE` with minimal accuracy loss.
+
+---
+
+### 6. `TRANSLATION_DEGRADED`
+*   **Description:** Neural translation API (or local NMT translation model) latency spikes past `2500ms`.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status updated to `TRANSLATION_DEGRADED`.
+    *   **Redis:** Ephemeral flag `translation_degraded = true` registered.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `telemetry_state_updated`.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via `room_pause`.
+        *   $\rightarrow$ Other states in `StreamingStates` via `telemetry_state_updated`.
+        *   $\rightarrow$ `STOPPING` via `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **NMT Model Fallback:** Translation worker falls back from deep neural translation models to pre-calculated dictionary lookups or standard dictionary cached caches.
+
+---
+
+### 7. `TTS_DEGRADED`
+*   **Description:** Text-to-Speech synthesis response latency exceeds `6000ms`.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status updated to `TTS_DEGRADED`.
+    *   **Redis:** Flag `tts_degraded = true` set.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `telemetry_state_updated`.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via `room_pause`.
+        *   $\rightarrow$ Other states in `StreamingStates` via `telemetry_state_updated`.
+        *   $\rightarrow$ `STOPPING` via `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Synthesis Fallback:** Synthesizer falls back to lower sample-rate outputs, speeding up rendering to recover synthesis metrics.
+
+---
+
+### 8. `VOICE_CLONE_FALLBACK`
+*   **Description:** Custom Voice Clone synthesis nodes are overloaded, missing, or the user's token quota has been exhausted.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status updated to `VOICE_CLONE_FALLBACK`.
+    *   **Redis:** Hash attribute `voice_clone_status = "FALLBACK"` set.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `telemetry_state_updated` (Quenched by higher priority degraded flags if present).
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via `room_pause`.
+        *   $\rightarrow$ Other states in `StreamingStates` via `telemetry_state_updated`.
+        *   $\rightarrow$ `STOPPING` via `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Generic Voice Relay:** System seamlessly swaps the customized voice clone profile for a pre-configured generic standard voice matching the target speaker's gender. No stream failure is felt by the user.
+
+---
+
+### 9. `TEXT_ONLY_MODE`
+*   **Description:** Complete failure of the voice delivery pipeline, high network WebRTC packet drops, or fatal crash of the TTS engine. No voice output is possible. This is the highest priority degradation state.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status updated to `TEXT_ONLY_MODE`.
+    *   **Redis:** Hash attribute `delivery_mode = "TEXT_ONLY"` configured.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Streaming States via `telemetry_state_updated` when `delivery_mode` flag is raised in Redis.
+    *   **Outgoing:**
+        *   $\rightarrow$ `AUDIO_ROUTING_PAUSED` via event `room_pause`.
+        *   $\rightarrow$ Other states in `StreamingStates` via `telemetry_state_updated` when `TEXT_ONLY` flag is cleared.
+        *   $\rightarrow$ `STOPPING` via priority events `session_ends` or `system_disabled`.
+*   **Audited Scenarios:**
+    *   **Subtitle/Captions Safe Mode:** Audio synthesis is bypassed entirely to protect resource usage. Translations are pushed directly to the UI as plain text subtitles, keeping the meeting informative despite audio outages.
+
+---
+
+### 10. `STOPPING`
+*   **Description:** The meeting has ended. The system is systematically winding down real-time audio routing processes.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Audio route status changed to `STOPPING`.
+    *   **Redis:** Status cached. Active routes disabled.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ Any active, paused, or degraded state via `session_ends` or `system_disabled`.
+    *   **Outgoing:** $\rightarrow$ `FINALIZING_ARTIFACTS` via event `flush_runtime`.
+*   **Audited Scenarios:**
+    *   **Graceful Queue Wind-down:** Workers stop reading incoming queues, dump outstanding in-memory chunks into storage, and clean up thread arrays.
+
+---
+
+### 11. `FINALIZING_ARTIFACTS`
+*   **Description:** Background processor is currently generating meeting transcripts, audio recordings, and semantic summaries, and saving them into PostgreSQL.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status set to `FINALIZING_ARTIFACTS`.
+    *   **Redis:** Added to finalization task queue.
+*   **Transitions:**
+    *   **Incoming:** 
+        *   $\leftarrow$ `STOPPING` via `flush_runtime`.
+        *   $\leftarrow$ `FINALIZING_ARTIFACTS_FAILED` via `flush_runtime` (triggered by the Sweeper).
+    *   **Outgoing:**
+        *   $\rightarrow$ `COMPLETED` via `outputs_linked` (Success).
+        *   $\rightarrow$ `FINALIZING_ARTIFACTS_FAILED` via `finalization_failed` (Transient limit hit).
+        *   $\rightarrow$ `COMPLETED` via `finalization_abandoned` (Permanent DB constraint error).
+*   **Audited Scenarios:**
+    *   **Happy Path Output Linking:** parallel processes compile summary and recordings, database writes succeed, triggers event `outputs_linked`.
+    *   **gRPC/External Service Outage Fallback:** `TranscriptService` is unreachable. Service retrieves cache translations from Redis (`ITranscriptCacheService`) to build a partial transcript and prevent data loss.
+    *   **Database Constraints Crash:** Unique constraint or DB corruption throws `DbUpdateException`. System intercepts this via name-based exception parsing and triggers `finalization_abandoned` immediately to prevent freezing the room lifecycle.
+
+---
+
+### 12. `FINALIZING_ARTIFACTS_FAILED`
+*   **Description:** Local retry budget (`MaxLocalRetries`, default 3) is exhausted during artifact compilation (typically due to external gRPC server outages).
+*   **Data Stores State:**
+    *   **PostgreSQL:** Status set to `FINALIZING_ARTIFACTS_FAILED`.
+    *   **Redis:** Increments `"translationRoom:{roomId}:recovery_attempts"` string key.
+*   **Transitions:**
+    *   **Incoming:** $\leftarrow$ `FINALIZING_ARTIFACTS` via `finalization_failed`.
+    *   **Outgoing:**
+        *   $\rightarrow$ `FINALIZING_ARTIFACTS` via `flush_runtime` (Emitted by Recovery Sweeper).
+        *   $\rightarrow$ `COMPLETED` via `finalization_abandoned` (Exceeded recovery sweep limits).
+*   **Audited Scenarios:**
+    *   **Sweeper Recovery:** Recovery worker running every 5 minutes identifies the room, increments attempts, and fires `flush_runtime` to retry the compilation.
+    *   **Abandonment Safe Path:** Sweep attempts hit `MaxRecoverySweeps` (default 5). Recovery worker emits `finalization_abandoned` to bypass further retries and close the meeting lifecycle as `COMPLETED`.
+
+---
+
+### 13. `COMPLETED`
+*   **Description:** The absolute sink/terminal state for the Audio Routing lifecycle. The room is fully finalized.
+*   **Data Stores State:**
+    *   **PostgreSQL:** Final routing status stored permanently as `COMPLETED`.
+    *   **Redis:** All associated telemetry and transcript cache keys are **instantly deleted** to release system memory.
+*   **Transitions:**
+    *   **Incoming:**
+        *   $\leftarrow$ `FINALIZING_ARTIFACTS` via `outputs_linked` or `finalization_abandoned`.
+        *   $\leftarrow$ `FINALIZING_ARTIFACTS_FAILED` via `finalization_abandoned`.
+    *   **Outgoing:** None (Terminal Sink State).
+*   **Audited Scenarios:**
+    *   **Immediate Cache Cleanup:** Telemetry and transcript cache keys are completely cleared on transition to minimize RAM leakages.
+    *   **Lifecycle Concluded:** Meeting metadata locked. No further state mutations are accepted.
+
+---
+
+## 3. Configuration & Recovery Settings Reference
+
+These values are configured in `appsettings.json` under `ArtifactFinalizationSettings` and dictate the dynamic recovery limits:
+
+| Config Property | Default Value | Purpose |
+| :--- | :--- | :--- |
+| `MaxLocalRetries` | `3` | Local retry attempts inside `ArtifactsFinalizationService.cs` before flagging as `FAILED`. Uses exponential backoff with jitter. |
+| `MaxRecoverySweeps` | `5` | Total sweep attempts executed by `ArtifactsRecoveryWorker.cs` before forcing transition to `COMPLETED` via `finalization_abandoned`. |
+| `SweepInterval` | `5 minutes` | Sweep cycle duration for checking failed routes. |
+| `KeyExpiryTTL` | `24 hours` | Fallback automatic TTL set on telemetry cache keys in case explicit cleanup is bypassed. |

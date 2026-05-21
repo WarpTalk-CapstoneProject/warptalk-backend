@@ -36,6 +36,11 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
         await _dbSet.AddAsync(entity);
     }
 
+    public async Task AddRangeAsync(IEnumerable<T> entities)
+    {
+        await _dbSet.AddRangeAsync(entities);
+    }
+
     public void Update(T entity)
     {
         _dbSet.Update(entity);
@@ -44,5 +49,25 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
     public void Remove(T entity)
     {
         _dbSet.Remove(entity);
+    }
+
+    public IQueryable<T> Query()
+    {
+        return _dbSet.AsQueryable();
+    }
+
+    public async Task<int> CountAsync(Expression<Func<T, bool>> predicate)
+    {
+        return await _dbSet.CountAsync(predicate);
+    }
+
+    public async Task<IEnumerable<T>> FindWithPaginationAsync(Expression<Func<T, bool>> predicate, int skip, int take, Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null)
+    {
+        var query = _dbSet.Where(predicate);
+        if (orderBy != null)
+        {
+            query = orderBy(query);
+        }
+        return await query.Skip(skip).Take(take).ToListAsync();
     }
 }

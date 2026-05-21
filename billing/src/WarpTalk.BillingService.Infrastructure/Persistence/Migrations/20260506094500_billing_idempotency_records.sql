@@ -7,7 +7,7 @@ BEGIN;
 
 -- 1. Idempotency Records Table
 CREATE TABLE IF NOT EXISTS billing.idempotency_records (
-    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v7(),
+    id                  UUID PRIMARY KEY DEFAULT uuidv7(),
     idempotency_key     VARCHAR(255) NOT NULL,
     operation           VARCHAR(100) NOT NULL,
     workspace_id        UUID NULL,

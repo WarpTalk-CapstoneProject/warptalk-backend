@@ -1,0 +1,277 @@
+﻿{
+    "info":  {
+                 "_postman_id":  "de986cd1-15b1-460a-8e7c-c6bc0b19e213",
+                 "name":  "WarpTalk Backend - Transcript",
+                 "description":  "Full local test collection for WarpTalk Gateway + Auth + TranslationRoom + Transcript + Notification.",
+                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+                 "_exporter_id":  "51979719",
+                 "_collection_link":  "https://go.postman.co/collection/51979719-e71538f7-9bcb-4235-9064-41090c3d25a8?source=collection_link"
+             },
+    "item":  [
+                 {
+                     "name":  "03 - Transcript via Gateway",
+                     "item":  [
+                                  {
+                                      "name":  "Start Transcript",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Start transcript returns 200/400/401\u0027, function () {",
+                                                                                    "  pm.expect(pm.response.code).to.be.oneOf([200, 400, 401]);",
+                                                                                    "});",
+                                                                                    "if (pm.response.code === 200) {",
+                                                                                    "  var json = pm.response.json();",
+                                                                                    "  var id = json.id || json.transcriptId || \u0027\u0027;",
+                                                                                    "  if (id) pm.collectionVariables.set(\u0027transcriptId\u0027, id);",
+                                                                                    "}"
+                                                                                ],
+                                                                       "type":  "text/javascript",
+                                                                       "packages":  {
+
+                                                                                    },
+                                                                       "requests":  {
+
+                                                                                    }
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     },
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"TranslationRoomId\": \"{{translationRoomId}}\",\n  \"SourceLanguage\": \"en-US\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/transcripts",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "transcripts"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Get Transcript by ID",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Get transcript returns 200/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([200, 401, 404]); });"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "GET",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "transcripts",
+                                                                               "{{transcriptId}}"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Process Audio Chunk",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Audio chunk returns 202/400/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([202, 400, 401, 404]); });"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     },
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"base64AudioData\": \"UklGRiQAAABXQVZFZm10IBAAAAABAAEA\"\n}"
+                                                               },
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}/audio",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "transcripts",
+                                                                               "{{transcriptId}}",
+                                                                               "audio"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  },
+                                  {
+                                      "name":  "Finalize Transcript",
+                                      "event":  [
+                                                    {
+                                                        "listen":  "test",
+                                                        "script":  {
+                                                                       "type":  "text/javascript",
+                                                                       "exec":  [
+                                                                                    "pm.test(\u0027Finalize returns 204/400/401/404\u0027, function () { pm.expect(pm.response.code).to.be.oneOf([204, 400, 401, 404]); });"
+                                                                                ]
+                                                                   }
+                                                    }
+                                                ],
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Authorization",
+                                                                         "value":  "Bearer {{accessToken}}"
+                                                                     }
+                                                                 ],
+                                                      "url":  {
+                                                                  "raw":  "{{gatewayBaseUrl}}/api/v1/transcripts/{{transcriptId}}/finalize",
+                                                                  "host":  [
+                                                                               "{{gatewayBaseUrl}}"
+                                                                           ],
+                                                                  "path":  [
+                                                                               "api",
+                                                                               "v1",
+                                                                               "transcripts",
+                                                                               "{{transcriptId}}",
+                                                                               "finalize"
+                                                                           ]
+                                                              }
+                                                  },
+                                      "response":  [
+
+                                                   ]
+                                  }
+                              ]
+                 }
+             ],
+    "variable":  [
+                     {
+                         "key":  "gatewayBaseUrl",
+                         "value":  "http://localhost:5200"
+                     },
+                     {
+                         "key":  "authBaseUrl",
+                         "value":  "http://localhost:5101"
+                     },
+                     {
+                         "key":  "translationRoomBaseUrl",
+                         "value":  "http://localhost:5102"
+                     },
+                     {
+                         "key":  "transcriptBaseUrl",
+                         "value":  "http://localhost:5103"
+                     },
+                     {
+                         "key":  "notificationBaseUrl",
+                         "value":  "http://localhost:5104"
+                     },
+                     {
+                         "key":  "testEmail",
+                         "value":  "warptalk+{{$timestamp}}@mail.com"
+                     },
+                     {
+                         "key":  "testPassword",
+                         "value":  "P@ssw0rd123!"
+                     },
+                     {
+                         "key":  "accessToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "refreshToken",
+                         "value":  ""
+                     },
+                     {
+                         "key":  "translationRoomId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     },
+                     {
+                         "key":  "transcriptId",
+                         "value":  "00000000-0000-0000-0000-000000000000"
+                     }
+                 ],
+    "event":  [
+                  {
+                      "listen":  "prerequest",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  },
+                  {
+                      "listen":  "test",
+                      "script":  {
+                                     "type":  "text/javascript",
+                                     "packages":  {
+
+                                                  },
+                                     "requests":  {
+
+                                                  },
+                                     "exec":  [
+                                                  ""
+                                              ]
+                                 }
+                  }
+              ]
+}

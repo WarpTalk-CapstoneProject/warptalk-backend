@@ -23,9 +23,96 @@ public partial class NotificationDbContext : DbContext
 
     public virtual DbSet<PushSubscription> PushSubscriptions { get; set; }
 
+    public virtual DbSet<NotificationMessage> NotificationMessages { get; set; }
+
+    public virtual DbSet<AdminNotification> AdminNotifications { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasPostgresExtension("pgcrypto");
+        modelBuilder.HasPostgresExtension("pg_trgm");
+
+        modelBuilder.Entity<AdminNotification>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_notifications_pkey");
+
+            entity.ToTable("admin_notifications", "notification");
+
+            entity.HasIndex(e => e.CreatedAt, "idx_admin_notifications_created_at").IsDescending();
+            entity.HasIndex(e => e.CreatedBy, "idx_admin_notifications_created_by");
+            entity.HasIndex(e => e.Status, "idx_admin_notifications_status");
+            entity.HasIndex(e => new { e.Type, e.Status, e.CreatedAt }, "idx_admin_notif_list_opt").IsDescending(false, false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasColumnName("id");
+            entity.Property(e => e.Title)
+                .HasMaxLength(255)
+                .HasColumnName("title");
+            entity.Property(e => e.Content).HasColumnName("content");
+            entity.Property(e => e.Type)
+                .HasMaxLength(50)
+                .HasColumnName("type");
+            entity.Property(e => e.Payload)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("payload");
+            entity.Property(e => e.TargetAudienceMode)
+                .HasMaxLength(50)
+                .HasColumnName("target_audience_mode");
+            entity.Property(e => e.TargetAudienceData)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("target_audience_data");
+            entity.Property(e => e.Status)
+                .HasMaxLength(50)
+                .HasColumnName("status");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<NotificationMessage>(entity =>
+        {
+            entity.HasKey(e => new { e.Id, e.CreatedAt }).HasName("notification_messages_pkey");
+
+            entity.ToTable("notification_messages", "notification");
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "idx_notif_msgs_user_unread").IsDescending(false, true).HasFilter("(is_read = FALSE)");
+            entity.HasIndex(e => e.CreatedAt, "idx_notif_msgs_created_at").IsDescending();
+            entity.HasIndex(e => e.UserId, "idx_notif_msgs_user");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Type)
+                .HasMaxLength(50)
+                .HasColumnName("type");
+            entity.Property(e => e.Title)
+                .HasMaxLength(255)
+                .HasColumnName("title");
+            entity.Property(e => e.Content).HasColumnName("content");
+            entity.Property(e => e.ActionUrl)
+                .HasMaxLength(500)
+                .HasColumnName("action_url");
+            entity.Property(e => e.PayloadJson)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("payload_json");
+            entity.Property(e => e.IsRead)
+                .HasDefaultValue(false)
+                .HasColumnName("is_read");
+            entity.Property(e => e.ReadAt).HasColumnName("read_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+        });
 
         modelBuilder.Entity<NotificationPreference>(entity =>
         {
