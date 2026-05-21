@@ -209,35 +209,11 @@ public class CreditService : ICreditService
             _unitOfWork.SubscriptionRepository.Update(sub);
 
             // 1. Create Transaction (Accounting)
-            var tx = new CreditTransaction
-            {
-                Id = Guid.NewGuid(),
-                SubscriptionId = sub.Id,
-                Amount = -request.CreditsConsumed,
-                Type = "usage",
-                Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
-                ReferenceType = "usage_record",
-                BalanceAfter = sub.CreditsRemaining,
-                CreatedAt = DateTime.UtcNow
-            };
+            var tx = request.ToCreditTransaction(sub);
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
 
             // 2. Create Usage Record (Analytics)
-            var usage = new UsageRecord
-            {
-                Id = Guid.NewGuid(),
-                SubscriptionId = sub.Id,
-                UserId = request.UserId,
-                WorkspaceId = request.HostWorkspaceId,
-                TranslationRoomId = request.TranslationRoomId,
-                UsageType = request.UsageType,
-                Unit = request.Unit,
-                Quantity = request.Quantity,
-                CreditsConsumed = request.CreditsConsumed,
-                DurationSeconds = request.DurationSeconds,
-                Details = request.Details,
-                RecordedAt = DateTime.UtcNow
-            };
+            var usage = request.ToUsageRecord(sub);
             await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
 
             // Save atomic transaction
