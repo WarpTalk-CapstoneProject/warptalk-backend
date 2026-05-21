@@ -1,6 +1,0 @@
-@WarpTalk.BillingService.API_HostAddress = http://localhost:5201
-
-GET {{WarpTalk.BillingService.API_HostAddress}}/api/billing/plans
-Accept: application/json
-
-###

@@ -1,119 +1,41 @@
+﻿using System;
 using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
-// ============================================================================
-// RESPONSE DTOs
-// ============================================================================
+public record PagedResult<T>(
+    int TotalCount,
+    IEnumerable<T> Items
+);
 
-public record PlanDto(
-    Guid Id,
-    string Name,
-    decimal PricePerMonth,
-    int TokensPerMonth,
-    bool IsActive = true,
-    DateTime? CreatedAt = null);
 
 public record SubscriptionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    Guid PlanId,
+    Guid   Id,
+    Guid?  WorkspaceId,
+    Guid   PlanId,
+    string PlanName,
     string Status,
-    int CurrentTokens,
-    DateTime StartDate,
-    DateTime? EndDate,
-    string Duration,
-    string Tier,
-    DateTime CreatedAt);
-
-public record WorkspaceTokensDto(
-    Guid WorkspaceId,
-    int CurrentTokens,
-    DateTime? SubscriptionEndDate,
-    string SubscriptionStatus = "active");
-
-public record TokenTransactionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    int Amount,
-    string Type,
-    Guid? ReferenceId,
-    string? ReferenceType,
-    string? CreatedBy,
-    DateTime CreatedAt);
-
-public record TransactionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    Guid? SubscriptionId,
-    decimal Amount,
-    string Status,
-    string? ExternalId,
-    string? CreatedBy,
-    DateTime CreatedAt);
-
-// ============================================================================
-// REQUEST DTOs (with validation)
-// ============================================================================
+    int    CreditsRemaining,
+    int    CreditsUsedThisCycle,
+    DateTime CurrentPeriodStart,
+    DateTime CurrentPeriodEnd,
+    bool   AutoRenew,
+    DateTime CreatedAt,
+    DateTime? CancelledAt
+);
 
 public record CreateSubscriptionRequest(
-    [Required(ErrorMessage = "Plan ID is required")]
+    [Required(ErrorMessage = "WorkspaceId is required.")]
+    Guid WorkspaceId,
+
+    [Required(ErrorMessage = "PlanId is required.")]
     Guid PlanId,
-    
-    string? Duration = "1mo",
-    
-    string? Tier = "Premium");
 
-public record TopUpTokensRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount);
-
-public record ConsumeTokensRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount,
-    
-    [Required(ErrorMessage = "Reference type is required")]
-    string ReferenceType,
-    
-    Guid? ReferenceId = null);
+    [Required(ErrorMessage = "UserId is required.")]
+    Guid UserId
+);
 
 public record CancelSubscriptionRequest(
-    string? CancellationReason = null);
-
-// ============================================================================
-// PAGINATION
-// ============================================================================
-
-public record PaginationParams(
-    [Range(1, 200, ErrorMessage = "Page size must be between 1 and 200")]
-    int PageSize = 50,
-    
-    [Range(1, int.MaxValue, ErrorMessage = "Page number must be >= 1")]
-    int PageNumber = 1);
-
-public record PaginatedResponse<T>(
-    IReadOnlyList<T> Items,
-    int PageNumber,
-    int PageSize,
-    int TotalCount,
-    int TotalPages)
-{
-    public bool HasNextPage => PageNumber < TotalPages;
-    public bool HasPreviousPage => PageNumber > 1;
-}
-
-// ============================================================================
-// ERROR RESPONSE
-// ============================================================================
-
-public record ErrorDetailDto(
-    string Code,
-    string Message,
-    string? Details = null,
-    DateTime Timestamp = default)
-{
-    public ErrorDetailDto(string code, string message, string? details = null)
-        : this(code, message, details, DateTime.UtcNow) { }
-}
+    [MaxLength(500, ErrorMessage = "Reason cannot exceed 500 characters.")]
+    string? Reason
+);

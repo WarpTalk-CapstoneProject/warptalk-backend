@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -8,25 +6,57 @@ public partial class Subscription
 {
     public Guid Id { get; set; }
 
-    public Guid WorkspaceId { get; set; }
+    /// <summary>
+    /// External AuthService user id. No physical FK.
+    /// </summary>
+    public Guid UserId { get; set; }
+
+    /// <summary>
+    /// External AuthService workspace id. No physical FK.
+    /// </summary>
+    public Guid? WorkspaceId { get; set; }
 
     public Guid PlanId { get; set; }
 
-    public SubscriptionStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
-    public int CurrentTokens { get; set; }
+    public int CreditsRemaining { get; set; }
 
-    public DateTime StartDate { get; set; }
+    public int CreditsUsedThisCycle { get; set; }
 
-    public DateTime? EndDate { get; set; }
+    public DateTime CurrentPeriodStart { get; set; }
+
+    public DateTime CurrentPeriodEnd { get; set; }
+
+    public bool AutoRenew { get; set; }
+
+    public string? CancellationReason { get; set; }
+
+    public DateTime? CancelledAt { get; set; }
+
+    public DateTime? TrialEndsAt { get; set; }
+
+    public bool IsActive { get; set; }
 
     public DateTime CreatedAt { get; set; }
 
-    public string Duration { get; set; } = "1mo"; // 1mo, 6mo, 1yr
+    public Guid? CreatedBy { get; set; }
 
-    public string Tier { get; set; } = "Premium"; // Premium, Enterprise
+    public DateTime UpdatedAt { get; set; }
+
+    public Guid? UpdatedBy { get; set; }
+
+    public DateTime? DeletedAt { get; set; }
+
+    public Guid? DeletedBy { get; set; }
 
     public virtual Plan Plan { get; set; } = null!;
 
-    public virtual ICollection<Transaction> Transactions { get; set; } = new List<Transaction>();
+    public virtual ICollection<CreditTransaction> CreditTransactions { get; set; } = new List<CreditTransaction>();
+
+    public virtual ICollection<CreditBalanceSnapshot> CreditBalanceSnapshots { get; set; } = new List<CreditBalanceSnapshot>();
+
+    public virtual ICollection<UsageRecord> UsageRecords { get; set; } = new List<UsageRecord>();
+
+    public virtual ICollection<Payment> Payments { get; set; } = new List<Payment>();
 }

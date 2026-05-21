@@ -5,105 +5,189 @@ option csharp_namespace = "WarpTalk.Shared.Protos";
 package billing;
 
 service BillingService {
-  // Read credit balance
+  // ── Credits ──────────────────────────────────────────────
+  // Read credit balance of a workspace
   rpc GetWorkspaceCredits (GetCreditsRequest) returns (GetCreditsResponse);
-  
-  // Deduct credits for usage
+
+  // Deduct credits for usage (called by other services)
   rpc ConsumeCredits (ConsumeCreditsRequest) returns (ConsumeCreditsResponse);
-  
-  // Add credits (Internal/Admin)
+
+  // Add credits (Internal / Admin)
   rpc TopUpCredits (TopUpRequest) returns (GetCreditsResponse);
-  
-  // Provision subscription
+
+  // Credit transaction history (paginated)
+  rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
+
+  // ── Subscriptions ─────────────────────────────────────────
+  // Provision a new subscription for a workspace
   rpc CreateSubscription (CreateSubscriptionRequest) returns (SubscriptionResponse);
 
-  // Get active subscription
-  rpc GetActiveSubscription (GetCreditsRequest) returns (SubscriptionResponse);
+  // Get active subscription of a workspace
+  rpc GetActiveSubscription (GetActiveSubscriptionRequest) returns (SubscriptionResponse);
 
-  // Cancel subscription
+  // Cancel an active subscription
   rpc CancelSubscription (CancelSubscriptionRequest) returns (SubscriptionResponse);
 
-  // History
-  rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
+  // ── Plans ─────────────────────────────────────────────────
+  // List all active plans
+  rpc GetPlans (GetPlansRequest) returns (GetPlansResponse);
+
+  // Get a single plan by id
+  rpc GetPlanById (GetPlanByIdRequest) returns (PlanResponse);
+
+  // ── Payments ─────────────────────────────────────────────
+  // Payment / transaction history (paginated)
   rpc GetTransactionHistory (GetHistoryRequest) returns (TransactionHistoryResponse);
 }
+
+// ─────────────────────────────────────────────────────────────
+// Credits
+// ─────────────────────────────────────────────────────────────
 
 message GetCreditsRequest {
   string workspace_id = 1;
 }
 
 message GetCreditsResponse {
-  string workspace_id = 1;
-  int32 current_credits = 2;
-  string status = 3;
+  string workspace_id          = 1;
+  int32  current_credits       = 2;
+  string status                = 3;
+  int32  credits_used_this_cycle = 4;
+  string current_period_start  = 5; // ISO-8601
+  string current_period_end    = 6; // ISO-8601
 }
 
 message ConsumeCreditsRequest {
-  string workspace_id = 1;
-  int32 amount = 2;
-  string reference_type = 3;
-  string reference_id = 4;
+  string workspace_id    = 1;
+  int32  amount          = 2;
+  string reference_type  = 3;
+  string reference_id    = 4; // optional; UUID of the originating resource
 }
 
 message ConsumeCreditsResponse {
-  bool success = 1;
-  int32 new_balance = 2;
+  bool   success       = 1;
+  int32  new_balance   = 2;
   string error_message = 3;
 }
 
 message TopUpRequest {
-  string workspace_id = 1;
-  int32 amount = 2;
+  string workspace_id   = 1;
+  int32  amount         = 2;
   string reference_type = 3;
-}
-
-message CreateSubscriptionRequest {
-  string workspace_id = 1;
-  string plan_id = 2;
-}
-
-message CancelSubscriptionRequest {
-  string workspace_id = 1;
-  string reason = 2;
-}
-
-message SubscriptionResponse {
-  string subscription_id = 1;
-  string status = 2;
-  string error_message = 3;
-  string plan_name = 4;
+  string reference_id   = 4; // optional; e.g. payment UUID
 }
 
 message GetHistoryRequest {
   string workspace_id = 1;
-  int32 page_number = 2;
-  int32 page_size = 3;
+  int32  page_number  = 2; // 1-based
+  int32  page_size    = 3; // default: 20
 }
 
 message CreditHistoryResponse {
   repeated CreditTransaction items = 1;
-  int32 total_count = 2;
+  int32 total_count                = 2;
 }
 
 message CreditTransaction {
-  string id = 1;
-  int32 amount = 2;
-  string type = 3;
-  string reference_type = 4;
-  string reference_id = 5;
-  string created_at = 6;
+  string id            = 1;
+  int32  amount        = 2;  // negative = consumption, positive = top-up
+  string type          = 3;  // "consumption" | "top_up"
+  string description   = 4;
+  string reference_type = 5;
+  string reference_id  = 6;
+  int32  balance_after = 7;
+  string created_at    = 8;  // ISO-8601
 }
+
+// ─────────────────────────────────────────────────────────────
+// Subscriptions
+// ─────────────────────────────────────────────────────────────
+
+message CreateSubscriptionRequest {
+  string workspace_id = 1;
+  string plan_id      = 2;
+  string user_id      = 3; // owning user
+}
+
+message GetActiveSubscriptionRequest {
+  string workspace_id = 1;
+}
+
+message CancelSubscriptionRequest {
+  string workspace_id = 1;
+  string reason       = 2;
+}
+
+message SubscriptionResponse {
+  string subscription_id      = 1;
+  string status               = 2;
+  string error_message        = 3;
+  string plan_id              = 4;
+  string plan_name            = 5;
+  string workspace_id         = 6;
+  int32  credits_remaining    = 7;
+  string current_period_start = 8;  // ISO-8601
+  string current_period_end   = 9;  // ISO-8601
+  bool   auto_renew           = 10;
+  string cancelled_at         = 11; // ISO-8601; empty if not cancelled
+}
+
+// ─────────────────────────────────────────────────────────────
+// Plans
+// ─────────────────────────────────────────────────────────────
+
+message GetPlansRequest {
+  // Empty – returns all active plans
+}
+
+message GetPlansResponse {
+  repeated PlanResponse plans = 1;
+}
+
+message GetPlanByIdRequest {
+  string plan_id = 1;
+}
+
+message PlanResponse {
+  string plan_id                = 1;
+  string name                   = 2;
+  string slug                   = 3;
+  string tier                   = 4;
+  double price                  = 5;
+  string currency               = 6;
+  string billing_cycle          = 7;
+  int32  credits_per_cycle      = 8;
+  int32  max_participants       = 9;
+  int32  max_languages          = 10;
+  bool   voice_clone_enabled    = 11;
+  bool   ai_assistant_enabled   = 12;
+  bool   glossary_enabled       = 13;
+  bool   dedicated_gpu          = 14;
+  string features               = 15; // JSON blob
+  int32  sort_order             = 16;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payments
+// ─────────────────────────────────────────────────────────────
 
 message TransactionHistoryResponse {
   repeated PaymentTransaction items = 1;
-  int32 total_count = 2;
+  int32 total_count                 = 2;
 }
 
 message PaymentTransaction {
-  string id = 1;
-  double amount = 2;
-  string currency = 3;
-  string status = 4;
-  string provider = 5;
-  string created_at = 6;
+  string id                      = 1;
+  string subscription_id         = 2;
+  double amount                  = 3;
+  double tax_amount              = 4;
+  double total_amount            = 5;
+  string currency                = 6;
+  string payment_method          = 7;
+  string provider                = 8;
+  string provider_transaction_id = 9;
+  string status                  = 10; // pending | paid | failed | refunded
+  string failure_reason          = 11;
+  string paid_at                 = 12; // ISO-8601; empty if not paid
+  string created_at              = 13; // ISO-8601
 }

@@ -5,8 +5,4 @@
     <Project Path="src/WarpTalk.BillingService.Domain/WarpTalk.BillingService.Domain.csproj" />
     <Project Path="src/WarpTalk.BillingService.Infrastructure/WarpTalk.BillingService.Infrastructure.csproj" />
   </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/WarpTalk.BillingService.Tests/WarpTalk.BillingService.Tests.csproj" />
-  </Folder>
-  <Project Path="../shared/WarpTalk.Shared/WarpTalk.Shared.csproj" />
 </Solution>

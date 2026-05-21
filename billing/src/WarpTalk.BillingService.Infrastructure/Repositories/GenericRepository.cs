@@ -1,57 +1,88 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class GenericRepository<T> : IGenericRepository<T> where T : class
 {
-    private readonly BillingDbContext _db;
-    private readonly DbSet<T> _set;
+    protected readonly BillingDbContext _context;
+    protected readonly DbSet<T> _dbSet;
 
-    public GenericRepository(BillingDbContext db)
+    public GenericRepository(BillingDbContext context)
     {
-        _db = db;
-        _set = db.Set<T>();
+        _context = context;
+        _dbSet = context.Set<T>();
     }
 
-    public async Task<T?> GetByIdAsync(Guid id, CancellationToken ct = default)
-        => await _set.FindAsync([id], ct);
-
-    public async Task<IReadOnlyList<T>> GetAllAsync(string includeProperties = "", CancellationToken ct = default)
+    public async Task<T?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        IQueryable<T> query = _set;
-        foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-            query = query.Include(includeProperty.Trim());
-        return await query.ToListAsync(ct);
+        return await _dbSet.FindAsync(new object[] { id }, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<T>> FindAsync(Expression<Func<T, bool>> predicate, string includeProperties = "", CancellationToken ct = default)
+    public async Task<IEnumerable<T>> GetAllAsync(CancellationToken cancellationToken = default)
     {
-        IQueryable<T> query = _set;
-        foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-            query = query.Include(includeProperty.Trim());
-        return await query.Where(predicate).ToListAsync(ct);
+        return await _dbSet.ToListAsync(cancellationToken);
     }
 
-    public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, string includeProperties = "", CancellationToken ct = default)
+    public async Task<IEnumerable<T>> FindAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default)
     {
-        IQueryable<T> query = _set;
-        foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
-            query = query.Include(includeProperty.Trim());
-        return await query.FirstOrDefaultAsync(predicate, ct);
+        return await _dbSet.Where(predicate).ToListAsync(cancellationToken);
     }
 
-    public async Task<bool> AnyAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
-        => await _set.AnyAsync(predicate, ct);
+    public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.FirstOrDefaultAsync(predicate, cancellationToken);
+    }
 
-    public async Task AddAsync(T entity, CancellationToken ct = default)
-        => await _set.AddAsync(entity, ct);
+    public async Task AddAsync(T entity, CancellationToken cancellationToken = default)
+    {
+        await _dbSet.AddAsync(entity, cancellationToken);
+    }
 
-    public void Update(T entity) => _set.Update(entity);
+    public async Task AddRangeAsync(IEnumerable<T> entities, CancellationToken cancellationToken = default)
+    {
+        await _dbSet.AddRangeAsync(entities, cancellationToken);
+    }
 
-    public void Remove(T entity) => _set.Remove(entity);
+    public void Update(T entity)
+    {
+        _dbSet.Update(entity);
+    }
 
-    public IQueryable<T> Query() => _set.AsQueryable();
+    public void Remove(T entity)
+    {
+        _dbSet.Remove(entity);
+    }
+
+    public async Task<bool> ExistsAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.AnyAsync(predicate, cancellationToken);
+    }
+
+    public async Task<int> CountAsync(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet.CountAsync(predicate, cancellationToken);
+    }
+
+    public async Task<IEnumerable<T>> GetPagedAsync(
+        Expression<Func<T, bool>> predicate,
+        int skip,
+        int take,
+        Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<T> query = _dbSet.Where(predicate);
+        if (orderBy != null)
+        {
+            query = orderBy(query);
+        }
+        return await query.Skip(skip).Take(take).ToListAsync(cancellationToken);
+    }
 }
