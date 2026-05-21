@@ -7,8 +7,8 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 
 public class GenericRepository<T> : IGenericRepository<T> where T : class
 {
-    private readonly AuthDbContext _db;
-    private readonly DbSet<T> _set;
+    protected readonly AuthDbContext _db;
+    protected readonly DbSet<T> _set;
 
     public GenericRepository(AuthDbContext db)
     {

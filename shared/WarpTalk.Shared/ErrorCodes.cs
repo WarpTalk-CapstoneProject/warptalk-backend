@@ -23,6 +23,9 @@ public static class ErrorCodes
     public const string UserInactive = "USER_INACTIVE";
     public const string UserNotFound = "USER_NOT_FOUND";
     public const string InvalidPassword = "INVALID_PASSWORD";
+    public const string AccountPending = "ACCOUNT_PENDING";
+    public const string CooldownActive = "COOLDOWN_ACTIVE";
+    public const string RateLimitExceeded = "RATE_LIMIT_EXCEEDED";
 
     // ── TranslationRoom ──────────────────────────────────────────
     public const string TranslationRoomNotActive = "MEETING_NOT_ACTIVE";

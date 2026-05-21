@@ -35,7 +35,7 @@ public class AuthController : ControllerBase
 
         var result = await _authService.LoginAsync(loginRequest, ct);
         if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return HandleAuthFailure(result);
         return Ok(result.Value);
     }
 
@@ -50,7 +50,7 @@ public class AuthController : ControllerBase
 
         var result = await _authService.GoogleLoginAsync(loginRequest, ct);
         if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return HandleAuthFailure(result);
         return Ok(result.Value);
     }
 
@@ -65,7 +65,7 @@ public class AuthController : ControllerBase
 
         var result = await _authService.RefreshTokenAsync(refreshRequest, ct);
         if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return HandleAuthFailure(result);
         return Ok(result.Value);
     }
 
@@ -111,6 +111,32 @@ public class AuthController : ControllerBase
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("resend-verification")]
+    public async Task<IActionResult> ResendVerification(CancellationToken ct)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var result = await _authService.ResendVerificationAsync(userId, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.RateLimitExceeded || result.ErrorCode == ErrorCodes.CooldownActive)
+            {
+                return StatusCode(StatusCodes.Status429TooManyRequests, new ApiErrorResponse(result.Error, result.ErrorCode));
+            }
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok();
+    }
+
+    private IActionResult HandleAuthFailure(Result<AuthResponse> result)
+    {
+        if (result.ErrorCode == ErrorCodes.AccountInactive || result.ErrorCode == ErrorCodes.AccountLocked)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
     }
 }
 

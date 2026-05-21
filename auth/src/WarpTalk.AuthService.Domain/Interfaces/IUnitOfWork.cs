@@ -4,13 +4,15 @@ namespace WarpTalk.AuthService.Domain.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
-    IGenericRepository<User> Users { get; }
-    IGenericRepository<Role> Roles { get; }
-    IGenericRepository<Permission> Permissions { get; }
-    IGenericRepository<UserRole> UserRoles { get; }
-    IGenericRepository<UserSetting> UserSettings { get; }
-    IGenericRepository<RefreshToken> RefreshTokens { get; }
-    IGenericRepository<Workspace> Workspaces { get; }
-    IGenericRepository<WorkspaceInvitation> WorkspaceInvitations { get; }
+    IUserRepository UserRepository { get; }
+    IRoleRepository RoleRepository { get; }
+    IPermissionRepository PermissionRepository { get; }
+    IUserRoleRepository UserRoleRepository { get; }
+    IUserSettingRepository UserSettingRepository { get; }
+    IRefreshTokenRepository RefreshTokenRepository { get; }
+    IWorkspaceRepository WorkspaceRepository { get; }
+    IWorkspaceInvitationRepository WorkspaceInvitationRepository { get; }
+    IWorkspaceMemberRepository WorkspaceMemberRepository { get; }
+    IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

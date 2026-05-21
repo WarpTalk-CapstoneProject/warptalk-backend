@@ -3,11 +3,13 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Application.Interfaces.Security;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.AuthService.Infrastructure.Persistence;
 using WarpTalk.AuthService.Infrastructure.Repositories;
 using WarpTalk.AuthService.Infrastructure.Security;
 using WarpTalk.AuthService.API.GrpcServices;
+using WarpTalk.AuthService.Domain.Constants;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,10 +29,24 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.AddDbContext<AuthDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("AuthDb")));
 
+// --- Configuration ---
+builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
+
 // --- Repositories ---
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IRoleRepository, RoleRepository>();
+builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
+builder.Services.AddScoped<IUserRoleRepository, UserRoleRepository>();
+builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
+builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
+builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
+builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // --- Application Services ---
+builder.Services.AddMemoryCache();
+builder.Services.AddDistributedMemoryCache();
 builder.Services.AddScoped<IAuthService, WarpTalk.AuthService.Application.Services.AuthService>();
 
 // --- Infrastructure Services ---

@@ -1,3 +1,5 @@
+using WarpTalk.AuthService.Domain.Enums;
+
 namespace WarpTalk.AuthService.Application.DTOs;
 
 public record RegisterRequest(string Email, string Password, string FullName);
@@ -17,6 +19,7 @@ public record UserDto(
     string? PreferredLanguage,
     string? Timezone,
     bool EmailVerified,
+    AccountStatus Status,
     IReadOnlyList<string> Roles
 );
 

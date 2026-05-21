@@ -13,9 +13,12 @@ public partial class WorkspaceInvitation
 
     public Guid RoleId { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid InvitedBy { get; set; }
 
-    public string Token { get; set; } = null!;
+    public string TokenHash { get; set; } = null!;
 
     public string Status { get; set; } = null!;
 

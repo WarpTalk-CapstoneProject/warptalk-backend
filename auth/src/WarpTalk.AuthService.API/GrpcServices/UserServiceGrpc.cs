@@ -19,7 +19,7 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (!Guid.TryParse(request.Id, out var parsedId))
             throw GrpcErrors.InvalidId("User");
 
-        var user = await _unitOfWork.Users.GetByIdAsync(parsedId);
+        var user = await _unitOfWork.UserRepository.GetByIdAsync(parsedId);
         if (user is null)
             throw GrpcErrors.NotFound("User", request.Id);
 
