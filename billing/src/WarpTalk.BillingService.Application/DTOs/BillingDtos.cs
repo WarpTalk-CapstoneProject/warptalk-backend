@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.BillingService.Application.DTOs;
@@ -38,4 +38,12 @@ public record CreateSubscriptionRequest(
 public record CancelSubscriptionRequest(
     [MaxLength(500, ErrorMessage = "Reason cannot exceed 500 characters.")]
     string? Reason
+);
+
+public record ChangeSubscriptionRequest(
+    [Required(ErrorMessage = "WorkspaceId is required.")]
+    Guid WorkspaceId,
+
+    [Required(ErrorMessage = "NewPlanId is required.")]
+    Guid NewPlanId
 );

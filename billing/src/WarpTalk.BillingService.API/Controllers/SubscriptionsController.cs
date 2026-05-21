@@ -61,6 +61,24 @@ public class SubscriptionsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Change the active subscription plan for a workspace.
+    /// </summary>
+    [HttpPut("workspace/{workspaceId:guid}/change-plan")]
+    public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(
+        Guid workspaceId,
+        [FromBody] ChangeSubscriptionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (workspaceId != request.WorkspaceId)
+            return BadRequest(new { Message = "Workspace ID in URL does not match request body." });
+
+        var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {

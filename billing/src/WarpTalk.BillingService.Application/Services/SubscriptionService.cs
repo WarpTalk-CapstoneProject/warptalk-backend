@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
@@ -110,6 +110,73 @@ public class SubscriptionService : ISubscriptionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error cancelling subscription for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<SubscriptionDto>> ChangeSubscriptionAsync(
+        ChangeSubscriptionRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var oldSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (oldSub is null)
+                return Result.Failure<SubscriptionDto>(
+                    "No active subscription found for this workspace.",
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (oldSub.PlanId == request.NewPlanId)
+                return Result.Failure<SubscriptionDto>(
+                    "The workspace is already subscribed to this plan.",
+                    ErrorCodes.BillingSubscriptionAlreadyActive);
+
+            var newPlan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Id == request.NewPlanId && p.IsActive && p.DeletedAt == null,
+                cancellationToken);
+
+            if (newPlan is null)
+                return Result.Failure<SubscriptionDto>(
+                    $"New Plan '{request.NewPlanId}' not found or inactive.",
+                    ErrorCodes.BillingPlanNotFound);
+
+            // Cancel old subscription
+            var now = DateTime.UtcNow;
+            oldSub.Status = "cancelled";
+            oldSub.CancellationReason = "upgraded/downgraded";
+            oldSub.CancelledAt = now;
+            oldSub.IsActive = false;
+            oldSub.UpdatedAt = now;
+            _unitOfWork.SubscriptionRepository.Update(oldSub);
+
+            // Create new subscription with carry-over credits
+            var newSub = new Subscription
+            {
+                Id = Guid.NewGuid(),
+                UserId = oldSub.UserId,
+                WorkspaceId = oldSub.WorkspaceId,
+                PlanId = newPlan.Id,
+                Status = "active",
+                CreditsRemaining = newPlan.CreditsPerCycle + oldSub.CreditsRemaining,
+                CreditsUsedThisCycle = 0,
+                CurrentPeriodStart = now,
+                CurrentPeriodEnd = now.AddMonths(1),
+                AutoRenew = true,
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(newSub.ToDto(newPlan.Name));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error changing subscription for WorkspaceId {WorkspaceId} to NewPlanId {NewPlanId}", request.WorkspaceId, request.NewPlanId);
             return Result.Failure<SubscriptionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }

@@ -1,4 +1,4 @@
-﻿using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
@@ -16,5 +16,9 @@ public interface ISubscriptionService
     Task<Result<SubscriptionDto>> CancelSubscriptionAsync(
         Guid workspaceId,
         string? reason,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<SubscriptionDto>> ChangeSubscriptionAsync(
+        ChangeSubscriptionRequest request,
         CancellationToken cancellationToken = default);
 }
