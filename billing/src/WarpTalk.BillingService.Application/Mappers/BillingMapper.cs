@@ -180,10 +180,11 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = request.UserId,
-        Amount = -request.CreditsConsumed,
-        Type = "usage",
+        Amount = request.CreditsConsumed, // Keep positive because CalculateBalanceAsync subtracts consume amounts
+        Type = "consume",
         Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
         ReferenceType = "usage_record",
+        Status = "committed",
         BalanceAfter = sub.CreditsRemaining,
         CreatedAt = DateTime.UtcNow
     };

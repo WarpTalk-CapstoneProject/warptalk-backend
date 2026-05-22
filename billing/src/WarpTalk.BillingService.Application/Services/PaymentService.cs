@@ -186,6 +186,21 @@ public class PaymentService : IPaymentService
                             sub.CreditsUsedThisCycle = 0;
                             sub.UpdatedAt = DateTime.UtcNow;
                             _unitOfWork.SubscriptionRepository.Update(sub);
+
+                            var topupTx = new CreditTransaction
+                            {
+                                SubscriptionId = sub.Id,
+                                UserId = sub.UserId,
+                                Amount = plan.CreditsPerCycle,
+                                Type = "top_up",
+                                Description = "Subscription Top-up",
+                                ReferenceId = payment.Id,
+                                ReferenceType = "payment",
+                                Status = "committed",
+                                BalanceAfter = sub.CreditsRemaining,
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
                         }
                         else
                         {
@@ -202,6 +217,7 @@ public class PaymentService : IPaymentService
                 _unitOfWork.PaymentRepository.Update(payment);
             }
 
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
             return Result.Success(true);
         }
         catch (Exception ex)

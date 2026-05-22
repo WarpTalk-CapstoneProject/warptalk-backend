@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
@@ -11,9 +12,11 @@ using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 namespace WarpTalk.BillingService.Infrastructure.Migrations
 {
     [DbContext(typeof(BillingDbContext))]
-    partial class BillingDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260522180209_AddLedgerColumnsToCreditTransaction")]
+    partial class AddLedgerColumnsToCreditTransaction
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -124,10 +127,6 @@ namespace WarpTalk.BillingService.Infrastructure.Migrations
                         .HasName("credit_transactions_pkey");
 
                     b.HasIndex("SubscriptionId");
-
-                    b.HasIndex("CorrelationId", "Type")
-                        .IsUnique()
-                        .HasDatabaseName("ix_credit_transactions_correlation_type");
 
                     b.ToTable("credit_transactions", "subscription");
                 });

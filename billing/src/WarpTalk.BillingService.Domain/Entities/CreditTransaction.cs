@@ -20,6 +20,10 @@ public partial class CreditTransaction
 
     public string? ReferenceType { get; set; }
 
+    public string? CorrelationId { get; set; }
+
+    public string Status { get; set; } = "committed";
+
     public int BalanceAfter { get; set; }
 
     public DateTime CreatedAt { get; set; }

@@ -49,35 +49,13 @@ public class SessionMonitorWorker : BackgroundService
 
         var now = DateTimeOffset.UtcNow;
 
-        // 1. Clean up expired sessions
+        // Grace period is 75s. Any session that expires in Redis means it missed heartbeats and exceeded the 60s grace period.
+        // We only remove the session from Redis. The StaleReservationWorker will handle refunding its pending reservations safely via the Ledger.
         var expiredSessions = await redisStore.GetExpiredSessionsAsync(now, cancellationToken);
         foreach (var sessionId in expiredSessions)
         {
             await redisStore.RemoveSessionAsync(sessionId, cancellationToken);
-            _logger.LogInformation("Session {SessionId} expired and removed from Redis.", sessionId);
-        }
-
-        // 2. Refund expired reservations
-        var expiredReservations = await redisStore.GetAndRemoveExpiredReservationsAsync(now, cancellationToken);
-        var hasRefunds = false;
-
-        foreach (var reservation in expiredReservations)
-        {
-            // Refund logic
-            var sub = await unitOfWork.SubscriptionRepository.GetByIdAsync(reservation.SubscriptionId, cancellationToken);
-            if (sub != null)
-            {
-                sub.CreditsRemaining += reservation.Amount;
-                sub.UpdatedAt = now.UtcDateTime;
-                unitOfWork.SubscriptionRepository.Update(sub);
-                _logger.LogInformation("Refunded {Amount} credits for expired reservation {ReservationId}.", reservation.Amount, reservation.IdempotencyKey);
-                hasRefunds = true;
-            }
-        }
-
-        if (hasRefunds)
-        {
-            await unitOfWork.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Session {SessionId} missed heartbeats and exceeded 60s grace period. Terminated.", sessionId);
         }
     }
 }

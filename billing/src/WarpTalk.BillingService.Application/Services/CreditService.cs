@@ -80,6 +80,7 @@ public class CreditService : ICreditService
             var tx = request.ToEntity(sub);
 
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 
                 "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
@@ -208,6 +209,16 @@ public class CreditService : ICreditService
                     ErrorCodes.BillingSubscriptionNotFound);
             }
 
+            // --- Feature Gate: block unsupported features by plan ---
+            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            if (plan is null)
+                return Result.Failure<CreditBalanceDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+
+            if (request.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase) && !plan.VoiceCloneEnabled)
+                return Result.Failure<CreditBalanceDto>(
+                    $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
+                    "FEATURE_NOT_AVAILABLE");
+
             if (sub.CreditsRemaining < request.CreditsConsumed)
             {
                 return Result.Failure<CreditBalanceDto>(
@@ -229,7 +240,8 @@ public class CreditService : ICreditService
             var usage = request.ToUsageRecord(sub);
             await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
 
-            // Save atomic transaction
+            // Save atomically
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish Realtime update for the Host
             await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.CreditsRemaining,
@@ -250,6 +262,17 @@ public class CreditService : ICreditService
     {
         try
         {
+            // 1. Idempotency Check
+            var existingReserve = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+                tx => tx.CorrelationId == request.IdempotencyKey && tx.Type == "reserve",
+                cancellationToken);
+
+            if (existingReserve != null)
+            {
+                var existingDto = new CreditReservationDto(Guid.Empty, existingReserve.SubscriptionId, existingReserve.CorrelationId!, existingReserve.Amount, "Reserved", DateTime.UtcNow.AddMinutes(5));
+                return Result.Success(existingDto);
+            }
+
             var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
                 s => s.WorkspaceId == request.HostWorkspaceId && s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd >= DateTime.UtcNow,
                 cancellationToken);
@@ -260,6 +283,12 @@ public class CreditService : ICreditService
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
             if (plan == null)
                 return Result.Failure<CreditReservationDto>("Plan not found.", "PLAN_NOT_FOUND");
+
+            // --- Feature Gate: hard-block voice clone for unsupported plans ---
+            if (request.IsVoiceClone && !plan.VoiceCloneEnabled)
+                return Result.Failure<CreditReservationDto>(
+                    $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade to Pro or Premium.",
+                    "FEATURE_NOT_AVAILABLE");
 
             var cost = _costCalculator.CalculateCreditCost(request.AudioSeconds, request.TokenCount, request.GpuInferenceMs, request.IsVoiceClone, plan);
 
@@ -276,7 +305,33 @@ public class CreditService : ICreditService
 
             sub.CreditsRemaining -= cost; // Reserve the amount immediately
             _unitOfWork.SubscriptionRepository.Update(sub);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            var reserveTx = new CreditTransaction
+            {
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId,
+                Amount = cost,
+                Type = "reserve",
+                CorrelationId = request.IdempotencyKey,
+                Status = "pending",
+                Description = "AI Real-time reserve",
+                ReferenceType = "RedisReservation",
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.CreditTransactionRepository.AddAsync(reserveTx, cancellationToken);
+
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            {
+                // Concurrency Race Condition Handle (Unique Constraint Violation)
+                _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey}. Assuming already reserved.", request.IdempotencyKey);
+                var existingDto = new CreditReservationDto(Guid.Empty, sub.Id, request.IdempotencyKey, cost, "Reserved", DateTime.UtcNow.AddMinutes(5));
+                return Result.Success(existingDto);
+            }
 
             await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(5), cancellationToken);
 
@@ -298,6 +353,17 @@ public class CreditService : ICreditService
         try
         {
 
+            // 1. Idempotency Check: Already consumed?
+            var existingConsume = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+                tx => tx.CorrelationId == idempotencyKey && tx.Type == "consume",
+                cancellationToken);
+
+            if (existingConsume != null)
+            {
+                var existingDto = new CreditTransactionDto(existingConsume.Id, -existingConsume.Amount, existingConsume.Type, existingConsume.Description ?? "", existingConsume.ReferenceType ?? "", existingConsume.ReferenceId, existingConsume.BalanceAfter, existingConsume.CreatedAt);
+                return Result.Success(existingDto);
+            }
+
             var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
             if (reservation == null)
@@ -309,6 +375,17 @@ public class CreditService : ICreditService
             if (sub == null || sub.WorkspaceId != workspaceId)
             {
                 return Result.Failure<CreditTransactionDto>("Subscription invalid.", ErrorCodes.BillingSubscriptionNotFound);
+            }
+
+            // Find the pending reserve transaction
+            var reserveTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+                tx => tx.Type == "reserve" && tx.CorrelationId == idempotencyKey && tx.SubscriptionId == sub.Id,
+                cancellationToken);
+
+            if (reserveTx != null)
+            {
+                reserveTx.Status = "committed";
+                _unitOfWork.CreditTransactionRepository.Update(reserveTx);
             }
 
             sub.CreditsUsedThisCycle += reservation.Amount;
@@ -324,11 +401,23 @@ public class CreditService : ICreditService
                 Description = "AI Real-time consumption",
                 ReferenceId = null,
                 ReferenceType = "CreditReservation",
+                CorrelationId = idempotencyKey,
+                Status = "committed",
                 BalanceAfter = sub.CreditsRemaining,
                 CreatedAt = DateTime.UtcNow
             };
 
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            {
+                _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during consume. Assuming already consumed.", idempotencyKey);
+                var existingDto = new CreditTransactionDto(tx.Id, -tx.Amount, tx.Type, tx.Description ?? "", tx.ReferenceType ?? "", tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt);
+                return Result.Success(existingDto);
+            }
 
             return Result.Success(new CreditTransactionDto(tx.Id, -tx.Amount, tx.Type, tx.Description, tx.ReferenceType, tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt));
         }
@@ -346,6 +435,15 @@ public class CreditService : ICreditService
     {
         try
         {
+            // 1. Idempotency Check: Already refunded?
+            var existingRefund = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+                tx => tx.CorrelationId == idempotencyKey && tx.Type == "refund",
+                cancellationToken);
+
+            if (existingRefund != null)
+            {
+                return Result.Success(true);
+            }
 
             var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
@@ -360,10 +458,47 @@ public class CreditService : ICreditService
                 return Result.Failure<bool>("Subscription invalid.", ErrorCodes.BillingSubscriptionNotFound);
             }
 
+            // Find the pending reserve transaction
+            var reserveTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+                tx => tx.Type == "reserve" && tx.CorrelationId == idempotencyKey && tx.SubscriptionId == sub.Id,
+                cancellationToken);
+
+            if (reserveTx != null)
+            {
+                reserveTx.Status = "rolled_back";
+                _unitOfWork.CreditTransactionRepository.Update(reserveTx);
+            }
+
             sub.CreditsRemaining += reservation.Amount;
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
 
+            var refundTx = new CreditTransaction
+            {
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId, // Realistically from context, but fallback to subscription owner
+                Amount = reservation.Amount,
+                Type = "refund",
+                Description = "AI Real-time refund (canceled or failed)",
+                ReferenceId = null,
+                ReferenceType = "CreditReservation",
+                CorrelationId = idempotencyKey,
+                Status = "committed",
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _unitOfWork.CreditTransactionRepository.AddAsync(refundTx, cancellationToken);
+
+            try
+            {
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            {
+                _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during refund. Assuming already refunded.", idempotencyKey);
+                return Result.Success(true);
+            }
 
             return Result.Success(true);
         }
@@ -371,6 +506,61 @@ public class CreditService : ICreditService
         {
             _logger.LogError(ex, "Error refunding credits for {IdempotencyKey}", idempotencyKey);
             return Result.Failure<bool>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
+        Guid subscriptionId,
+        int amount,
+        string reason,
+        string adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(subscriptionId, cancellationToken);
+            if (sub == null)
+            {
+                return Result.Failure<CreditTransactionDto>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+            }
+
+            sub.CreditsRemaining += amount;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            var adjustmentTx = new CreditTransaction
+            {
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId, // User whose credits are affected
+                Amount = amount,
+                Type = "adjustment",
+                Description = string.IsNullOrEmpty(reason) ? "Manual credit adjustment" : reason,
+                ReferenceType = "manual_adjustment",
+                ReferenceId = null,
+                CorrelationId = $"adj_{Guid.NewGuid():N}",
+                Status = "committed",
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(new CreditTransactionDto(
+                adjustmentTx.Id,
+                adjustmentTx.Amount,
+                adjustmentTx.Type,
+                adjustmentTx.Description,
+                adjustmentTx.ReferenceType,
+                adjustmentTx.ReferenceId,
+                adjustmentTx.BalanceAfter,
+                adjustmentTx.CreatedAt
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error manually adjusting credits for SubscriptionId {SubscriptionId}", subscriptionId);
+            return Result.Failure<CreditTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

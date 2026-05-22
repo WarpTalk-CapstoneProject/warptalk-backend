@@ -7,6 +7,7 @@ using WarpTalk.Shared;
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
+[AllowAnonymous] // Added for FE testing
 [ApiController]
 [Route("api/v1/payments")]
 public class PaymentsController : ControllerBase
@@ -33,4 +34,44 @@ public class PaymentsController : ControllerBase
 
         return Ok(result.Value);
     }
+
+    /// <summary>
+    /// Create a pending payment checkout for a subscription.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost]
+    public async Task<ActionResult<PaymentTransactionDto>> CreatePayment(
+        [FromBody] CreatePaymentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return StatusCode(201, result.Value);
+    }
+
+    /// <summary>
+    /// Simulate or receive a payment provider webhook to activate a subscription.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("webhook")]
+    public async Task<IActionResult> HandleWebhook(
+        [FromBody] PaymentWebhookRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _paymentService.HandleWebhookAsync(request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(new { message = "Webhook processed successfully." });
+    }
+
+    private ActionResult HandleFailure<T>(Result<T> result) =>
+        result.ErrorCode switch
+        {
+            ErrorCodes.BillingSubscriptionNotFound      => NotFound(new { message = result.Error }),
+            ErrorCodes.BillingPlanNotFound              => BadRequest(new { message = result.Error }),
+            "FEATURE_NOT_AVAILABLE"                     => StatusCode(403, new { message = result.Error }),
+            _                                           => StatusCode(500, new { message = result.Error })
+        };
 }
+

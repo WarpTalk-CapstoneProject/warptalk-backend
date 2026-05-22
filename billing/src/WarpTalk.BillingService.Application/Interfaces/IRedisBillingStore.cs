@@ -17,7 +17,7 @@ public interface IRedisBillingStore
 {
     Task SetReservationAsync(RedisCreditReservation reservation, TimeSpan ttl, CancellationToken cancellationToken = default);
     Task<RedisCreditReservation?> GetAndRemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default);
-    Task<IEnumerable<RedisCreditReservation>> GetAndRemoveExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
+
     
     Task SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default);
     Task<IEnumerable<Guid>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);

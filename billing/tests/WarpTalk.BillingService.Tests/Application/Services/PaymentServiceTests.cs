@@ -33,6 +33,9 @@ public class PaymentServiceTests
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
 
+        var _mockCreditTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
+        _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockCreditTxRepo.Object);
+
         _paymentService = new PaymentService(_mockUnitOfWork.Object, new Mock<ILogger<PaymentService>>().Object);
     }
 

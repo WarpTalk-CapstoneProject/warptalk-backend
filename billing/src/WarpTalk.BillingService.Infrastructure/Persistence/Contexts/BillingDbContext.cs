@@ -184,6 +184,10 @@ public partial class BillingDbContext : DbContext
 
             entity.ToTable("credit_transactions", "subscription");
 
+            entity.HasIndex(e => new { e.CorrelationId, e.Type })
+                .IsUnique()
+                .HasDatabaseName("ix_credit_transactions_correlation_type");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")
                 .HasColumnName("id");
@@ -202,6 +206,13 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.ReferenceType)
                 .HasMaxLength(30)
                 .HasColumnName("reference_type");
+            entity.Property(e => e.CorrelationId)
+                .HasMaxLength(100)
+                .HasColumnName("correlation_id");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValue("committed")
+                .HasColumnName("status");
             entity.Property(e => e.BalanceAfter).HasColumnName("balance_after");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")

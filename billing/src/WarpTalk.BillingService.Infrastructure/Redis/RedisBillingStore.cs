@@ -46,30 +46,7 @@ public class RedisBillingStore : IRedisBillingStore
         return JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
     }
 
-    public async Task<IEnumerable<RedisCreditReservation>> GetAndRemoveExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
-    {
-        var maxScore = now.ToUnixTimeMilliseconds();
-        var expiredKeys = await _db.SortedSetRangeByScoreAsync(ReservationZSetKey, 0, maxScore);
-        
-        if (expiredKeys.Length == 0) return Array.Empty<RedisCreditReservation>();
 
-        var reservations = new List<RedisCreditReservation>();
-        var tasks = new List<Task>();
-        foreach (var key in expiredKeys)
-        {
-            var json = await _db.HashGetAsync(ReservationHashKey, key);
-            if (!json.IsNullOrEmpty)
-            {
-                var res = JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
-                if (res != null) reservations.Add(res);
-            }
-            tasks.Add(_db.SortedSetRemoveAsync(ReservationZSetKey, key));
-            tasks.Add(_db.HashDeleteAsync(ReservationHashKey, key));
-        }
-        
-        await Task.WhenAll(tasks);
-        return reservations;
-    }
 
     public async Task SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default)
     {

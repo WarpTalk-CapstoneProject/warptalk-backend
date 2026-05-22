@@ -44,4 +44,11 @@ public interface ICreditService
         CancellationToken cancellationToken = default);
 
     Task TakeSnapshotAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
+
+    Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
+        Guid subscriptionId,
+        int amount,
+        string reason,
+        string adminUserId,
+        CancellationToken cancellationToken = default);
 }

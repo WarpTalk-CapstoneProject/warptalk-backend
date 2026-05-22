@@ -32,15 +32,16 @@ public class SessionHeartbeatService : ISessionHeartbeatService
             return Result.Failure<Guid>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
 
         var sessionId = Guid.NewGuid();
-        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(15), cancellationToken);
+        // 15s active TTL + 60s Grace Period = 75s total TTL
+        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
 
         return Result.Success(sessionId);
     }
 
     public async Task<Result<bool>> ProcessHeartbeatAsync(Guid sessionId, Guid workspaceId, CancellationToken cancellationToken = default)
     {
-        // Just refresh the TTL in Redis
-        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(15), cancellationToken);
+        // Just refresh the TTL in Redis (15s active + 60s grace = 75s)
+        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
 
         return Result.Success(true);
     }
