@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
@@ -58,28 +58,28 @@ public class PaymentService : IPaymentService
     }
 
     public async Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
-        Guid subscriptionId, Guid userId, decimal amount, decimal taxAmount,
-        string currency, string paymentMethod, string provider,
+        CreatePaymentRequest request,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var now = DateTime.UtcNow;
-            var payment = new Payment
+            var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(request.SubscriptionId, cancellationToken);
+            if (sub == null) return Result.Failure<PaymentTransactionDto>("Subscription not found.", "NOT_FOUND");
+
+            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            if (plan == null) return Result.Failure<PaymentTransactionDto>("Plan not found.", "NOT_FOUND");
+
+            decimal finalAmount = plan.Price;
+            if (plan.BillingCycle.Equals("semiannual", StringComparison.OrdinalIgnoreCase))
             {
-                Id = Guid.NewGuid(),
-                SubscriptionId = subscriptionId,
-                UserId = userId,
-                Amount = amount,
-                TaxAmount = taxAmount,
-                TotalAmount = amount + taxAmount,
-                Currency = currency,
-                PaymentMethod = paymentMethod,
-                Provider = provider,
-                Status = "pending",
-                CreatedAt = now,
-                UpdatedAt = now
-            };
+                finalAmount *= 0.9m; // 10% discount
+            }
+            else if (plan.BillingCycle.Equals("yearly", StringComparison.OrdinalIgnoreCase))
+            {
+                finalAmount *= 0.8m; // 20% discount
+            }
+
+            var payment = request.ToEntity(finalAmount, plan.Currency);
 
             await _unitOfWork.PaymentRepository.AddAsync(payment, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -88,7 +88,7 @@ public class PaymentService : IPaymentService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating payment for SubscriptionId {SubscriptionId}", subscriptionId);
+            _logger.LogError(ex, "Error creating payment for SubscriptionId {SubscriptionId}", request.SubscriptionId);
             return Result.Failure<PaymentTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
@@ -122,6 +122,92 @@ public class PaymentService : IPaymentService
         {
             _logger.LogError(ex, "Error updating payment status for PaymentId {PaymentId}", paymentId);
             return Result.Failure<PaymentTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+    public async Task<Result<bool>> HandleWebhookAsync(
+        PaymentWebhookRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (!Guid.TryParse(request.OrderCode, out var paymentId))
+                return Result.Failure<bool>("Invalid OrderCode.", "INVALID_REQUEST");
+
+
+            var payment = await _unitOfWork.PaymentRepository.GetByIdAsync(paymentId, cancellationToken);
+            if (payment == null)
+            {
+                return Result.Failure<bool>("Payment not found.", "NOT_FOUND");
+            }
+
+            // Idempotent Check
+            if (payment.Status == "paid")
+            {
+                return Result.Success(true); // Already processed
+            }
+
+            if (request.Status.Equals("PAID", StringComparison.OrdinalIgnoreCase))
+            {
+                payment.Status = "paid";
+                payment.PaidAt = DateTime.UtcNow;
+                payment.ProviderTransactionId = request.TransactionId;
+                _unitOfWork.PaymentRepository.Update(payment);
+
+                var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(payment.SubscriptionId, cancellationToken);
+                if (sub != null)
+                {
+                    var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+                    if (plan != null)
+                    {
+                        if (sub.Status == "pending")
+                        {
+                            // Deactivate any existing active subscriptions for this user
+                            var existingSubs = await _unitOfWork.SubscriptionRepository.GetPagedAsync(
+                                s => s.UserId == sub.UserId && s.IsActive && s.Id != sub.Id,
+                                0, 10, null, cancellationToken);
+                            foreach (var oldSub in existingSubs)
+                            {
+                                oldSub.AutoRenew = false;
+                                oldSub.Status = "cancelled";
+                                oldSub.UpdatedAt = DateTime.UtcNow;
+                                _unitOfWork.SubscriptionRepository.Update(oldSub);
+                            }
+
+                            sub.Status = "active";
+                            sub.IsActive = true;
+                            sub.CurrentPeriodStart = DateTime.UtcNow;
+                            sub.CurrentPeriodEnd = plan.BillingCycle switch
+                            {
+                                "yearly" => DateTime.UtcNow.AddYears(1),
+                                "semiannual" => DateTime.UtcNow.AddMonths(6),
+                                _ => DateTime.UtcNow.AddMonths(1)
+                            };
+                            sub.CreditsRemaining += plan.CreditsPerCycle; // += to keep carry-over
+                            sub.CreditsUsedThisCycle = 0;
+                            sub.UpdatedAt = DateTime.UtcNow;
+                            _unitOfWork.SubscriptionRepository.Update(sub);
+                        }
+                        else
+                        {
+                            return Result.Failure<bool>("Auto-renew is not supported at this time.", "NOT_SUPPORTED");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                payment.Status = "failed";
+                payment.FailureReason = request.Status;
+                payment.UpdatedAt = DateTime.UtcNow;
+                _unitOfWork.PaymentRepository.Update(payment);
+            }
+
+            return Result.Success(true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling webhook for OrderCode {OrderCode}", request.OrderCode);
+            return Result.Failure<bool>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 }

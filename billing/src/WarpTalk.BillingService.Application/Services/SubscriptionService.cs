@@ -60,12 +60,12 @@ public class SubscriptionService : ISubscriptionService
                     ErrorCodes.BillingPlanNotFound);
 
             var existing = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
+                s => s.UserId == request.UserId && s.IsActive && s.DeletedAt == null,
                 cancellationToken);
 
             if (existing is not null)
                 return Result.Failure<SubscriptionDto>(
-                    "This workspace already has an active subscription.",
+                    "This user already has an active subscription.",
                     ErrorCodes.BillingSubscriptionAlreadyActive);
 
             var subscription = request.ToEntity(plan);
@@ -84,7 +84,7 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
-    public async Task<Result<SubscriptionDto>> CancelSubscriptionAsync(
+    public async Task<Result<bool>> CancelSubscriptionAsync(
         Guid workspaceId, string? reason, CancellationToken cancellationToken = default)
     {
         try
@@ -94,7 +94,7 @@ public class SubscriptionService : ISubscriptionService
                 cancellationToken);
 
             if (sub is null)
-                return Result.Failure<SubscriptionDto>(
+                return Result.Failure<bool>(
                     "No active subscription found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
@@ -107,12 +107,12 @@ public class SubscriptionService : ISubscriptionService
             
             await PublishRealtimeUpdateAsync(sub.UserId, "cancelled", plan?.Name ?? "Unknown Plan", cancellationToken);
 
-            return Result.Success(sub.ToDto(plan?.Name ?? string.Empty));
+            return Result.Success(true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error cancelling subscription for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<SubscriptionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<bool>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

@@ -18,29 +18,20 @@ public partial class BillingDbContext
         {
             entity.Property(e => e.Status)
                 .HasColumnName("status")
-                .HasConversion(
-                    v => v.ToLowerInvariant(),
-                    v => Enum.Parse<SubscriptionStatus>(v, true))
-                .HasDefaultValue(SubscriptionStatus.Active);
+                .HasDefaultValue("active");
         });
 
         modelBuilder.Entity<Payment>(entity =>
         {
             entity.Property(e => e.Status)
                 .HasColumnName("status")
-                .HasConversion(
-                    v => v.ToLowerInvariant(),
-                    v => Enum.Parse<PaymentStatus>(v, true))
-                .HasDefaultValue(PaymentStatus.Pending);
+                .HasDefaultValue("pending");
         });
 
         modelBuilder.Entity<CreditTransaction>(entity =>
         {
             entity.Property(e => e.Type)
-                .HasColumnName("type")
-                .HasConversion(
-                    v => v.ToLowerInvariant(),
-                    v => Enum.Parse<CreditTransactionType>(v, true));
+                .HasColumnName("type");
         });
 
         modelBuilder.Entity<Refund>(entity =>

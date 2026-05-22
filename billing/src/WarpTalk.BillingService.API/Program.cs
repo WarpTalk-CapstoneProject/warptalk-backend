@@ -39,7 +39,12 @@ builder.Services.AddScoped<IPlanService, PlanService>();
 builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
 builder.Services.AddScoped<ICreditService, CreditService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
-
+builder.Services.AddScoped<IRealtimeCostCalculator, RealtimeCostCalculator>();
+builder.Services.AddScoped<ISessionHeartbeatService, SessionHeartbeatService>();
+builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
+// --- Background Workers ---
+builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.SessionMonitorWorker>();
+builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.SubscriptionExpirationWorker>();
 // --- Messaging (Redis) ---
 var redisConnString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(

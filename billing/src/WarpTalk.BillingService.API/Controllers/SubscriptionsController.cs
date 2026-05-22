@@ -50,7 +50,7 @@ public class SubscriptionsController : ControllerBase
     /// Cancel the active subscription for a workspace.
     /// </summary>
     [HttpDelete("workspace/{workspaceId:guid}")]
-    public async Task<ActionResult<SubscriptionDto>> CancelSubscription(
+    public async Task<IActionResult> CancelSubscription(
         Guid workspaceId,
         [FromBody] CancelSubscriptionRequest request,
         CancellationToken cancellationToken)
@@ -58,7 +58,7 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, request.Reason, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
 
-        return Ok(result.Value);
+        return NoContent();
     }
 
     /// <summary>

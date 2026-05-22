@@ -48,13 +48,13 @@ public static class BillingMapper
             UserId = request.UserId,
             WorkspaceId = request.WorkspaceId,
             PlanId = request.PlanId,
-            Status = "active",
-            CreditsRemaining = plan.CreditsPerCycle,
+            Status = "pending",
+            CreditsRemaining = 0,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
-            CurrentPeriodEnd = now.AddMonths(1),
+            CurrentPeriodEnd = now, // Will be updated on activation
             AutoRenew = true,
-            IsActive = true,
+            IsActive = false,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -69,13 +69,13 @@ public static class BillingMapper
             UserId = oldSub.UserId,
             WorkspaceId = oldSub.WorkspaceId,
             PlanId = newPlan.Id,
-            Status = "active",
-            CreditsRemaining = newPlan.CreditsPerCycle + oldSub.CreditsRemaining,
+            Status = "pending",
+            CreditsRemaining = oldSub.CreditsRemaining, // Only carry over old for now, new plan credits added on webhook
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
-            CurrentPeriodEnd = now.AddMonths(1),
+            CurrentPeriodEnd = now,
             AutoRenew = true,
-            IsActive = true,
+            IsActive = false,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -87,7 +87,8 @@ public static class BillingMapper
         sub.Status = "cancelled";
         sub.CancellationReason = reason;
         sub.CancelledAt = now;
-        sub.IsActive = false;
+        sub.AutoRenew = false;
+        // Do not set IsActive = false here, allow user to use until current_period_end
         sub.UpdatedAt = now;
     }
 
@@ -153,6 +154,26 @@ public static class BillingMapper
         payment.PaidAt,
         payment.CreatedAt
     );
+
+    public static Payment ToEntity(this CreatePaymentRequest request, decimal amount, string currency, decimal taxAmount = 0)
+    {
+        var now = DateTime.UtcNow;
+        return new Payment
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = request.SubscriptionId,
+            UserId = request.UserId,
+            Amount = amount,
+            TaxAmount = taxAmount,
+            TotalAmount = amount + taxAmount,
+            Currency = currency,
+            PaymentMethod = request.PaymentMethod,
+            Provider = request.Provider,
+            Status = "pending",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
 
     public static CreditTransaction ToCreditTransaction(this RecordUsageRequest request, Subscription sub) => new()
     {

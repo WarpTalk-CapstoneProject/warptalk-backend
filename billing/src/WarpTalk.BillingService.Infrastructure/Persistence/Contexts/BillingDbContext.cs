@@ -40,7 +40,7 @@ public partial class BillingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("plans_pkey");
 
-            entity.ToTable("plans", "subscription");
+            entity.ToTable("plans", "subscription", t => t.HasCheckConstraint("chk_billing_cycle", "billing_cycle IN ('monthly', 'semiannual', 'yearly')"));
 
             entity.HasIndex(e => e.Slug, "plans_slug_key").IsUnique();
 
@@ -119,7 +119,10 @@ public partial class BillingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("subscriptions_pkey");
 
-            entity.ToTable("subscriptions", "subscription");
+            entity.ToTable("subscriptions", "subscription", t => {
+                t.HasCheckConstraint("chk_subscription_status", "status IN ('pending', 'active', 'cancelled', 'expired')");
+                t.HasCheckConstraint("chk_subscription_credits", "credits_remaining >= 0");
+            });
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")

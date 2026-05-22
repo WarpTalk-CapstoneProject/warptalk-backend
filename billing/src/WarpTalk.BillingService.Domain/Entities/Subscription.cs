@@ -6,14 +6,8 @@ public partial class Subscription
 {
     public Guid Id { get; set; }
 
-    /// <summary>
-    /// External AuthService user id. No physical FK.
-    /// </summary>
     public Guid UserId { get; set; }
 
-    /// <summary>
-    /// External AuthService workspace id. No physical FK.
-    /// </summary>
     public Guid? WorkspaceId { get; set; }
 
     public Guid PlanId { get; set; }

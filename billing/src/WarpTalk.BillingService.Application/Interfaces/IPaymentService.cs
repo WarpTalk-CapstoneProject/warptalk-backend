@@ -1,4 +1,4 @@
-﻿using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
@@ -12,13 +12,7 @@ public interface IPaymentService
         CancellationToken cancellationToken = default);
 
     Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
-        Guid subscriptionId,
-        Guid userId,
-        decimal amount,
-        decimal taxAmount,
-        string currency,
-        string paymentMethod,
-        string provider,
+        CreatePaymentRequest request,
         CancellationToken cancellationToken = default);
 
     Task<Result<PaymentTransactionDto>> UpdatePaymentStatusAsync(
@@ -26,5 +20,9 @@ public interface IPaymentService
         string status,
         string? providerTransactionId,
         string? failureReason,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<bool>> HandleWebhookAsync(
+        PaymentWebhookRequest request,
         CancellationToken cancellationToken = default);
 }

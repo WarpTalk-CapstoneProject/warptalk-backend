@@ -268,7 +268,11 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!result.IsSuccess)
             return new Shared.Protos.SubscriptionResponse { ErrorMessage = result.Error };
 
-        return ToSubscriptionResponse(result.Value!);
+        return new Shared.Protos.SubscriptionResponse 
+        { 
+            WorkspaceId = request.WorkspaceId,
+            Status = "cancelled"
+        };
     }
 
     // ─── Plans ────────────────────────────────────────────────────────────

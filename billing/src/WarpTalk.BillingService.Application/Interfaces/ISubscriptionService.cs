@@ -13,7 +13,7 @@ public interface ISubscriptionService
         CreateSubscriptionRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<Result<SubscriptionDto>> CancelSubscriptionAsync(
+    Task<Result<bool>> CancelSubscriptionAsync(
         Guid workspaceId,
         string? reason,
         CancellationToken cancellationToken = default);

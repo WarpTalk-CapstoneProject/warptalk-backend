@@ -8,19 +8,10 @@ public partial class UsageRecord
 
     public Guid SubscriptionId { get; set; }
 
-    /// <summary>
-    /// External AuthService user id. No physical FK.
-    /// </summary>
     public Guid UserId { get; set; }
 
-    /// <summary>
-    /// External AuthService workspace id. No physical FK.
-    /// </summary>
     public Guid? WorkspaceId { get; set; }
 
-    /// <summary>
-    /// External TranslationRoomService room id. No physical FK.
-    /// </summary>
     public Guid? TranslationRoomId { get; set; }
 
     public string UsageType { get; set; } = null!;

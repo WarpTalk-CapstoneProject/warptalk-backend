@@ -29,5 +29,19 @@ public interface ICreditService
         int pageSize,
         CancellationToken cancellationToken = default);
 
+    Task<Result<CreditReservationDto>> ReserveCreditsAsync(
+        ReserveCreditsRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CreditTransactionDto>> ConfirmConsumeAsync(
+        Guid workspaceId,
+        string idempotencyKey,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<bool>> RefundReservationAsync(
+        Guid workspaceId,
+        string idempotencyKey,
+        CancellationToken cancellationToken = default);
+
     Task TakeSnapshotAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
 }
