@@ -1,6 +1,11 @@
+<<<<<<< HEAD
 using System;
 using System.Collections.Generic;
 using WarpTalk.TranslationRoomService.Domain.Enums;
+=======
+﻿using System;
+using System.Collections.Generic;
+>>>>>>> development
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -36,9 +41,9 @@ public partial class TranslationRoomParticipant
 
     public string SpeakLanguage { get; set; } = null!;
 
-    public string ConnectionType { get; set; } = null!;
-
     public string Status { get; set; } = null!;
+
+    public string ConnectionType { get; set; } = null!;
 
     public bool IsTranslationAudioEnabled { get; set; }
 

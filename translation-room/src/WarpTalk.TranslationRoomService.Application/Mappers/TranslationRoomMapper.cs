@@ -37,6 +37,7 @@ public static class TranslationRoomMapper
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
+            room.DurationSeconds,
             room.CreatedAt,
             settings
         );
@@ -58,7 +59,12 @@ public static class TranslationRoomMapper
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
             Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval, ArtifactAccess = request.Settings.ArtifactAccess }) : "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}",
+<<<<<<< HEAD
             ScheduledAt = request.ScheduledAt
+=======
+            ScheduledAt = request.ScheduledAt,
+            IsActive = true
+>>>>>>> development
         };
     }
 
@@ -91,6 +97,10 @@ public static class TranslationRoomMapper
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
+<<<<<<< HEAD
+=======
+            room.DurationSeconds,
+>>>>>>> development
             room.CreatedAt,
             settings,
             artifacts

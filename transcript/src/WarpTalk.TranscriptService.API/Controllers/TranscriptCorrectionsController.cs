@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -11,7 +12,7 @@ namespace WarpTalk.TranscriptService.API.Controllers;
 
 [Authorize]
 [ApiController]
-[Route("api/segments/{segmentId}/corrections")]
+[Route("api/v1/transcripts/{transcriptId}/segments/{segmentId}")]
 public class TranscriptCorrectionsController : ControllerBase
 {
     private readonly ITranscriptCorrectionService _correctionService;
@@ -22,12 +23,17 @@ public class TranscriptCorrectionsController : ControllerBase
     }
 
     [HttpPost]
+    [Route("correct")]
     public async Task<ActionResult> SubmitCorrection(
+        Guid transcriptId,
         Guid segmentId,
         [FromBody] CreateCorrectionDto request,
         CancellationToken cancellationToken)
     {
-        var result = await _correctionService.SubmitCorrectionAsync(segmentId, request, cancellationToken);
+        if (!TryGetUserId(out var userId))
+            return Unauthorized();
+
+        var result = await _correctionService.SubmitCorrectionAsync(transcriptId, segmentId, userId, request, cancellationToken);
         
         if (!result.IsSuccess)
         {
@@ -44,17 +50,33 @@ public class TranscriptCorrectionsController : ControllerBase
     }
 
     [HttpGet]
+    [Route("corrections")]
     public async Task<ActionResult<IEnumerable<TranscriptCorrectionDto>>> GetCorrections(
+        Guid transcriptId,
         Guid segmentId,
         CancellationToken cancellationToken)
     {
-        var result = await _correctionService.GetCorrectionsBySegmentIdAsync(segmentId, cancellationToken);
+        if (!TryGetUserId(out var userId))
+            return Unauthorized();
+
+        var result = await _correctionService.GetCorrectionsBySegmentIdAsync(transcriptId, segmentId, userId, cancellationToken);
         
         if (!result.IsSuccess)
         {
-            return StatusCode(500, result.Error);
+            return result.ErrorCode switch
+            {
+                "NOT_FOUND" => NotFound(result.Error),
+                "UNAUTHORIZED" => StatusCode(403, result.Error),
+                _ => StatusCode(500, result.Error)
+            };
         }
 
         return Ok(result.Value);
+    }
+
+    private bool TryGetUserId(out Guid userId)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return Guid.TryParse(userIdString, out userId);
     }
 }

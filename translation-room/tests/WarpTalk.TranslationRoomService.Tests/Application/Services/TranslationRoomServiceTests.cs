@@ -274,6 +274,7 @@ public class TranslationRoomServiceTests
         _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
     }
 
+<<<<<<< HEAD
     [Fact]
     public async Task GetRoomHistoryAsync_ShouldReturnAllTerminalRooms_ForBothHostAndParticipant()
     {
@@ -323,5 +324,8 @@ public class TranslationRoomServiceTests
         result.Value![0].Title.Should().Be("Host Room");
         result.Value![1].Title.Should().Be("Participant Room");
     }
+=======
+
+>>>>>>> development
 }
 

@@ -26,6 +26,23 @@ public class TranslationRoomsController : ControllerBase
     {
         _translationRoomService = translationRoomService;
         _artifactService = artifactService;
+<<<<<<< HEAD
+=======
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> GetTranslationRooms([FromQuery] GetTranslationRoomsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomsAsync(request, userId.Value, ct);
+        if (!result.IsSuccess)
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return Ok(result.Value!);
+>>>>>>> development
     }
 
     [HttpPost]
@@ -90,6 +107,7 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
+<<<<<<< HEAD
     [HttpPost("{id}/start")]
     public async Task<IActionResult> StartTranslationRoom(Guid id, CancellationToken ct)
     {
@@ -101,6 +119,8 @@ public class TranslationRoomsController : ControllerBase
 
         return NoContent();
     }
+=======
+>>>>>>> development
 
     [HttpPost("{id}/pause")]
     public async Task<IActionResult> PauseTranslationRoom(Guid id, CancellationToken ct)
@@ -126,6 +146,7 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
+<<<<<<< HEAD
     [HttpPost("{id}/cancel")]
     public async Task<IActionResult> CancelTranslationRoom(Guid id, CancellationToken ct)
     {
@@ -137,6 +158,8 @@ public class TranslationRoomsController : ControllerBase
 
         return NoContent();
     }
+=======
+>>>>>>> development
 
     [HttpPost("{id}/end")]
     public async Task<IActionResult> EndTranslationRoom(Guid id, CancellationToken ct)
@@ -150,6 +173,126 @@ public class TranslationRoomsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
         return NoContent();
+    }
+
+    [HttpPost("{id}/start")]
+    public async Task<IActionResult> StartTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.StartTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpPost("{id}/cancel")]
+    public async Task<IActionResult> CancelTranslationRoom(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.CancelTranslationRoomAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpGet("history")]
+    public async Task<IActionResult> GetTranslationRoomHistory([FromQuery] GetTranslationRoomsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomHistoryAsync(request, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpGet("{id}/artifacts")]
+    public async Task<IActionResult> GetTranslationRoomArtifacts(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomArtifactsAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpGet("{id}/feedback/me")]
+    public async Task<IActionResult> GetMyFeedback(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetFeedbackStateAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpPost("{id}/feedback")]
+    public async Task<IActionResult> SubmitFeedback(Guid id, [FromBody] SubmitTranslationRoomFeedbackRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.SubmitFeedbackAsync(id, userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return CreatedAtAction(nameof(GetMyFeedback), new { id }, result.Value!);
     }
 //Chua co enpoint PATCH nen tach rieng settings
     [HttpPut("{id}/settings")]
@@ -170,6 +313,7 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
+<<<<<<< HEAD
     [HttpGet("history")]
     public async Task<IActionResult> GetRoomHistory([FromQuery] int limit = 50, [FromQuery] int offset = 0, CancellationToken ct = default)
     {
@@ -202,4 +346,6 @@ public class TranslationRoomsController : ControllerBase
 
         return Ok(result.Value);
     }
+=======
+>>>>>>> development
 }

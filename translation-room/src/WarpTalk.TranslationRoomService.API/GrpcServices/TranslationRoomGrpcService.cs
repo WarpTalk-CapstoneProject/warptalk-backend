@@ -33,6 +33,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         return new GetTranslationRoomResponse
         {
             Id = result.Value!.Id.ToString(),
+            WorkspaceId = result.Value!.WorkspaceId.ToString(),
             Title = result.Value!.Title,
             HostId = result.Value!.HostId.ToString(),
             Status = result.Value!.Status.ToString()

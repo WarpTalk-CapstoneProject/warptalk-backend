@@ -4,15 +4,16 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Grpc.Core;
 using StackExchange.Redis;
 using WarpTalk.Shared;
-using WarpTalk.Shared.Protos;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Application.Mappers;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Enums;
 using WarpTalk.TranscriptService.Domain.Interfaces;
+using GetParticipantsByRoomIdRequest = WarpTalk.Shared.Protos.GetParticipantsByRoomIdRequest;
 using TranslationRoomServiceClient = WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient;
 using GetTranslationRoomRequest = WarpTalk.Shared.Protos.GetTranslationRoomRequest;
 
@@ -37,7 +38,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         _logger = logger;
     }
 
-    public async Task<Result> SubmitCorrectionAsync(Guid segmentId, CreateCorrectionDto dto, CancellationToken cancellationToken = default)
+    public async Task<Result> SubmitCorrectionAsync(Guid transcriptId, Guid segmentId, Guid userId, CreateCorrectionDto dto, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -45,19 +46,18 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             if (segment == null)
                 return Result.Failure($"Segment with ID {segmentId} not found.", "NOT_FOUND");
 
-            var transcript = await _unitOfWork.Transcripts.GetByIdAsync(segment.TranscriptId, cancellationToken);
+            if (segment.TranscriptId != transcriptId)
+                return Result.Failure($"Segment {segmentId} does not belong to transcript {transcriptId}.", "NOT_FOUND");
+
+            var transcript = await _unitOfWork.Transcripts.GetByIdAsync(transcriptId, cancellationToken);
             if (transcript == null)
                 return Result.Failure($"Transcript with ID {segment.TranscriptId} not found.", "NOT_FOUND");
 
             if (transcript.Status != TranscriptStatus.Finalized)
                 return Result.Failure("Corrections can only be submitted for finalized transcripts.", "BAD_REQUEST");
 
-            var roomResponse = await _roomClient.GetTranslationRoomByIdAsync(
-                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
-                cancellationToken: cancellationToken);
-
-            if (roomResponse == null)
-                return Result.Failure("Unable to verify room permissions.", "UNAUTHORIZED");
+            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+                return Result.Failure("You do not have access to this transcript.", "UNAUTHORIZED");
 
             var correction = dto.ToEntity(segmentId);
 
@@ -93,10 +93,21 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         }
     }
 
-    public async Task<Result<IEnumerable<TranscriptCorrectionDto>>> GetCorrectionsBySegmentIdAsync(Guid segmentId, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<TranscriptCorrectionDto>>> GetCorrectionsBySegmentIdAsync(Guid transcriptId, Guid segmentId, Guid userId, CancellationToken cancellationToken = default)
     {
         try
         {
+            var segment = await _unitOfWork.TranscriptSegments.GetByIdAsync(segmentId, cancellationToken);
+            if (segment == null || segment.TranscriptId != transcriptId)
+                return Result.Failure<IEnumerable<TranscriptCorrectionDto>>($"Segment with ID {segmentId} not found.", "NOT_FOUND");
+
+            var transcript = await _unitOfWork.Transcripts.GetByIdAsync(transcriptId, cancellationToken);
+            if (transcript == null)
+                return Result.Failure<IEnumerable<TranscriptCorrectionDto>>($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
+
+            if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
+                return Result.Failure<IEnumerable<TranscriptCorrectionDto>>("You do not have access to this transcript.", "UNAUTHORIZED");
+
             var corrections = await _unitOfWork.TranscriptCorrections.FindAsync(c => c.SegmentId == segmentId, cancellationToken);
             return Result.Success(corrections.Select(c => c.ToDto()));
         }
@@ -104,6 +115,31 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         {
             _logger.LogError(ex, "Error getting corrections for segment {SegmentId}", segmentId);
             return Result.Failure<IEnumerable<TranscriptCorrectionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    private async Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var room = await _roomClient.GetTranslationRoomByIdAsync(
+                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
+                cancellationToken: cancellationToken);
+
+            if (Guid.TryParse(room.HostId, out var hostId) && hostId == userId)
+                return true;
+
+            var participants = await _roomClient.GetParticipantsByRoomIdAsync(
+                new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() },
+                cancellationToken: cancellationToken);
+
+            return participants.Participants.Any(p =>
+                Guid.TryParse(p.Id, out var participantUserId) &&
+                participantUserId == userId);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return false;
         }
     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
@@ -28,13 +29,18 @@ public class TranscriptSegmentsController : ControllerBase
         [FromQuery] int take = 50,
         CancellationToken cancellationToken = default)
     {
-        var result = await _transcriptQueryService.GetSegmentsAsync(transcriptId, skip, take, cancellationToken);
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdString, out var userId))
+            return Unauthorized();
+
+        var result = await _transcriptQueryService.GetSegmentsAsync(transcriptId, userId, skip, take, cancellationToken);
         
         if (!result.IsSuccess)
         {
             return result.ErrorCode switch
             {
                 "NOT_FOUND" => NotFound(new { Message = result.Error }),
+                "FORBIDDEN" => Forbid(),
                 _ => StatusCode(500, new { Message = result.Error })
             };
         }
