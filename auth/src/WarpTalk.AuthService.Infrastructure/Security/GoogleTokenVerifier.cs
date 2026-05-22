@@ -1,15 +1,15 @@
 using Google.Apis.Auth;
 using Microsoft.Extensions.Configuration;
-using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Application.Interfaces.Security;
 using WarpTalk.AuthService.Application.DTOs;
 
 namespace WarpTalk.AuthService.Infrastructure.Security;
 
-public class GoogleAuthService : IGoogleAuthService
+public class GoogleTokenVerifier : IGoogleTokenVerifier
 {
     private readonly string _clientId;
 
-    public GoogleAuthService(IConfiguration configuration)
+    public GoogleTokenVerifier(IConfiguration configuration)
     {
         _clientId = configuration["Authentication:Google:ClientId"] 
             ?? throw new InvalidOperationException("Google ClientId is not configured.");

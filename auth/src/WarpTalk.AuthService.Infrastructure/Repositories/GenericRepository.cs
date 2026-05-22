@@ -52,6 +52,4 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
     public void Update(T entity) => _set.Update(entity);
 
     public void Remove(T entity) => _set.Remove(entity);
-
-    public IQueryable<T> Query() => _set.AsQueryable();
 }

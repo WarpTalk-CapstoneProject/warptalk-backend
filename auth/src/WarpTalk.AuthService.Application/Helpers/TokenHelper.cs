@@ -26,6 +26,6 @@ public static class TokenHelper
         string? ip, 
         string? device)
     {
-        return AuthMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device);
+        return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device);
     }
 }

@@ -26,6 +26,8 @@ public static class ErrorCodes
     public const string AccountPending = "ACCOUNT_PENDING";
     public const string CooldownActive = "COOLDOWN_ACTIVE";
     public const string RateLimitExceeded = "RATE_LIMIT_EXCEEDED";
+    public const string EmailNotVerified = "EMAIL_NOT_VERIFIED";
+    public const string MinAuthMethodRequired = "MIN_AUTH_METHOD_REQUIRED";
 
     // ── TranslationRoom ──────────────────────────────────────────
     public const string TranslationRoomNotActive = "MEETING_NOT_ACTIVE";

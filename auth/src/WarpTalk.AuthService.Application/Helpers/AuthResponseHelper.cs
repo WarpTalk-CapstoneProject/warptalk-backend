@@ -26,6 +26,6 @@ public static class AuthResponseHelper
         await refreshTokenRepository.AddAsync(token, ct);
         await unitOfWork.SaveChangesAsync(ct);
 
-        return new AuthResponse(accessToken, refreshToken, expiresAt, AuthMapper.ToDto(user, roles));
+        return new AuthResponse(accessToken, refreshToken, expiresAt, UserMapper.ToDto(user, roles));
     }
 }
