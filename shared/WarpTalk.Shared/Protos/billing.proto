@@ -44,6 +44,26 @@ service BillingService {
   // ── Payments ─────────────────────────────────────────────
   // Payment / transaction history (paginated)
   rpc GetTransactionHistory (GetHistoryRequest) returns (TransactionHistoryResponse);
+
+  // Process a successful payment (Internal)
+  rpc ProcessPaymentSuccess (ProcessPaymentRequest) returns (ProcessPaymentResponse);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payment Processing
+// ─────────────────────────────────────────────────────────────
+
+message ProcessPaymentRequest {
+  string user_id          = 1;
+  double amount           = 2;
+  string currency         = 3;
+  string payment_type     = 4;
+  string stripe_session_id= 5;
+}
+
+message ProcessPaymentResponse {
+  bool   success       = 1;
+  string error_message = 2;
 }
 
 // ─────────────────────────────────────────────────────────────

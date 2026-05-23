@@ -15,6 +15,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
     private readonly ISubscriptionService _subscriptionService;
     private readonly IPlanService         _planService;
     private readonly IPaymentService      _paymentService;
+    private readonly WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork _unitOfWork;
     private readonly ILogger<BillingGrpcService> _logger;
 
     public BillingGrpcService(
@@ -22,12 +23,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         ISubscriptionService subscriptionService,
         IPlanService         planService,
         IPaymentService      paymentService,
+        WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork unitOfWork,
         ILogger<BillingGrpcService> logger)
     {
         _creditService       = creditService;
         _subscriptionService = subscriptionService;
         _planService         = planService;
         _paymentService      = paymentService;
+        _unitOfWork          = unitOfWork;
         _logger              = logger;
     }
 
@@ -313,18 +316,28 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid workspace_id."));
 
-        var result = await _paymentService.GetPaymentHistoryAsync(
-            workspaceId, request.PageNumber, request.PageSize, context.CancellationToken);
+        // Get Subscriptions for Workspace to filter Payments
+        var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
+            s => s.WorkspaceId == workspaceId, context.CancellationToken);
+        
+        var subIds = subs.Select(s => s.Id).ToList();
 
-        if (!result.IsSuccess)
-            return new Shared.Protos.TransactionHistoryResponse { TotalCount = 0 };
+        var totalCount = await _unitOfWork.PaymentRepository.CountAsync(
+            p => subIds.Contains(p.SubscriptionId), context.CancellationToken);
+
+        var items = await _unitOfWork.PaymentRepository.GetPagedAsync(
+            p => subIds.Contains(p.SubscriptionId),
+            (request.PageNumber - 1) * request.PageSize,
+            request.PageSize,
+            q => q.OrderByDescending(x => x.CreatedAt),
+            context.CancellationToken);
 
         var response = new Shared.Protos.TransactionHistoryResponse
         {
-            TotalCount = result.Value!.TotalCount
+            TotalCount = totalCount
         };
 
-        foreach (var p in result.Value.Items)
+        foreach (var p in items)
         {
             response.Items.Add(new Shared.Protos.PaymentTransaction
             {
@@ -345,6 +358,120 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         }
 
         return response;
+    }
+
+    public override async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentSuccess(
+        Shared.Protos.ProcessPaymentRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.UserId, out var userId))
+            return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Invalid user_id." };
+
+        _logger.LogInformation("Processing payment success via gRPC for User {UserId}, Amount: {Amount}", userId, request.Amount);
+
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.UserId == userId && s.DeletedAt == null && s.IsActive, 
+            context.CancellationToken);
+
+        if (sub == null)
+        {
+            var oldSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.UserId == userId && s.DeletedAt == null,
+                context.CancellationToken);
+
+            if (oldSub == null)
+            {
+                _logger.LogWarning("No subscription found for User {UserId}. Cannot process payment.", userId);
+                return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Subscription not found." };
+            }
+            sub = oldSub;
+        }
+
+        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        if (!planResult.IsSuccess || planResult.Value == null)
+        {
+            return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Plan not found." };
+        }
+        var plan = planResult.Value;
+
+        if (!sub.IsActive)
+        {
+            var activeSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
+                s => s.UserId == userId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
+            foreach(var activeSub in activeSubs)
+            {
+                activeSub.IsActive = false;
+                activeSub.Status = "cancelled";
+                activeSub.CancelledAt = DateTime.UtcNow;
+                _unitOfWork.SubscriptionRepository.Update(activeSub);
+            }
+            
+            sub.Status = "active";
+            sub.IsActive = true;
+            sub.CurrentPeriodStart = DateTime.UtcNow;
+            sub.CurrentPeriodEnd = plan.BillingCycle switch
+            {
+                "yearly" => DateTime.UtcNow.AddYears(1),
+                "semiannual" => DateTime.UtcNow.AddMonths(6),
+                _ => DateTime.UtcNow.AddMonths(1)
+            };
+        }
+        
+        var existingTopup = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+            c => c.CorrelationId == request.StripeSessionId,
+            context.CancellationToken
+        );
+
+        if (existingTopup == null)
+        {
+            sub.CreditsRemaining += plan.CreditsPerCycle; 
+            sub.CreditsUsedThisCycle = 0;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            var topupTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
+            {
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId,
+                Amount = plan.CreditsPerCycle,
+                Type = "top_up",
+                Description = "Stripe Payment Success (gRPC)",
+                ReferenceId = Guid.NewGuid(),
+                CorrelationId = request.StripeSessionId,
+                ReferenceType = "stripe_payment",
+                Status = "committed",
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx);
+            
+            var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId,
+                Amount = (decimal)request.Amount,
+                TaxAmount = 0m,
+                TotalAmount = (decimal)request.Amount,
+                Currency = request.Currency,
+                PaymentMethod = request.PaymentType,
+                Provider = "stripe",
+                ProviderTransactionId = request.StripeSessionId,
+                Status = "paid",
+                PaidAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.PaymentRepository.AddAsync(paymentTx);
+
+            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+            _logger.LogInformation("Successfully updated subscription and added credits for User {UserId} via gRPC", userId);
+        }
+        else
+        {
+            _logger.LogInformation("Payment already processed for Stripe Session {SessionId}", request.StripeSessionId);
+        }
+
+        return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────

@@ -79,7 +79,31 @@ public class CreditService : ICreditService
 
             var tx = request.ToEntity(sub);
 
+            var usage = new WarpTalk.BillingService.Domain.Entities.UsageRecord
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId,
+                WorkspaceId = sub.WorkspaceId,
+                UsageType = request.ReferenceType,
+                Unit = "request",
+                Quantity = 1,
+                CreditsConsumed = request.Amount,
+                RecordedAt = DateTime.UtcNow
+            };
+
+            var snapshot = new WarpTalk.BillingService.Domain.Entities.CreditBalanceSnapshot
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                CreditsRemaining = sub.CreditsRemaining,
+                CreditsUsedThisCycle = sub.CreditsUsedThisCycle,
+                SnapshotAt = DateTime.UtcNow
+            };
+
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
+            await _unitOfWork.CreditBalanceSnapshotRepository.AddAsync(snapshot, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 

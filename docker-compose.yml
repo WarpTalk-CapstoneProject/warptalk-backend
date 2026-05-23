@@ -194,6 +194,7 @@ services:
       ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
       ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5105"
+      ReverseProxy__Clusters__payment-cluster__Destinations__payment-service__Address: "http://payment-service:8080"
       AllowedOrigins__0: "http://localhost:3000"
       AllowedOrigins__1: "http://localhost:5173"
       AllowedOrigins__2: "https://warptalk.vn"
@@ -214,6 +215,27 @@ services:
         condition: service_started
       meeting-service:
         condition: service_started
+      payment-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
+  # ── Payment Service (Stripe integration) ────────────────────────────────
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment/Dockerfile
+    container_name: warptalk-payment
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+
+
+      Stripe__SecretKey: "sk_test_placeholder"
+    ports:
+      - "5106:8080"
+    volumes:
+      - payment_dataprotection:/root/.aspnet/DataProtection-Keys
+
     networks:
       - warptalk-net
 
@@ -226,6 +248,7 @@ volumes:
   notification_dataprotection:
   meeting_dataprotection:
   gateway_dataprotection:
+  payment_dataprotection:
 
 networks:
   warptalk-net:
