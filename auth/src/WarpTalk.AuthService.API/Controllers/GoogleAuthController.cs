@@ -1,16 +1,16 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.AuthService.API.Helpers;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
-[Route("api/auth")]
-public class GoogleAuthController : ControllerBase
+[Route("api/v1/auth")]
+public class GoogleAuthController : BaseApiController
 {
     private readonly IGoogleAuthService _googleAuthService;
 
@@ -20,39 +20,24 @@ public class GoogleAuthController : ControllerBase
     }
 
     [HttpPost("google-login")]
-    public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request, CancellationToken ct)
+    public async Task<Result<AuthResponse>> GoogleLogin([FromBody] GoogleLoginRequest request, CancellationToken ct)
     {
         var loginRequest = request with
         {
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             DeviceInfo = Request.Headers.UserAgent.ToString()
         };
-
-        var result = await _googleAuthService.GoogleLoginAsync(loginRequest, ct);
-        if (!result.IsSuccess)
-            return AuthResultHelper.HandleAuthFailure(this, result);
-        return Ok(result.Value);
+        return await _googleAuthService.GoogleLoginAsync(loginRequest, ct);
     }
 
     [Authorize]
     [HttpPost("google/link")]
-    public async Task<IActionResult> LinkGoogle([FromBody] LinkGoogleRequest request, CancellationToken ct)
-    {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _googleAuthService.LinkGoogleAsync(userId, request, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok();
-    }
+    public async Task<Result> LinkGoogle([FromBody] LinkGoogleRequest request, CancellationToken ct)
+        => await _googleAuthService.LinkGoogleAsync(CurrentUserId, request, ct);
 
     [Authorize]
     [HttpPost("google/unlink")]
-    public async Task<IActionResult> UnlinkGoogle(CancellationToken ct)
-    {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _googleAuthService.UnlinkGoogleAsync(userId, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok();
-    }
+    public async Task<Result> UnlinkGoogle(CancellationToken ct)
+        => await _googleAuthService.UnlinkGoogleAsync(CurrentUserId, ct);
 }
+

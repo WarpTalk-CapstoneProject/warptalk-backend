@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -43,7 +44,8 @@ public class ProfileServiceTests
         _profileService = new ProfileService(
             _unitOfWork,
             _passwordHasher,
-            _authSettingsOptions
+            _authSettingsOptions,
+            Substitute.For<ILogger<ProfileService>>()
         );
     }
 

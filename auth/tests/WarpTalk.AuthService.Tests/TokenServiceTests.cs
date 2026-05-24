@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -45,7 +46,8 @@ public class TokenServiceTests
         _tokenService = new WarpTalk.AuthService.Application.Services.TokenService(
             _unitOfWork,
             _jwtGenerator,
-            _authSettingsOptions
+            _authSettingsOptions,
+            Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.TokenService>>()
         );
     }
 

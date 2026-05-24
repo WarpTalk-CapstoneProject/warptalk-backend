@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Services;
@@ -29,7 +30,8 @@ public class UserSettingsServiceTests
         _unitOfWork.UserSettingRepository.Returns(_userSettingRepository);
 
         _userSettingsService = new UserSettingsService(
-            _unitOfWork
+            _unitOfWork,
+            Substitute.For<ILogger<UserSettingsService>>()
         );
     }
 

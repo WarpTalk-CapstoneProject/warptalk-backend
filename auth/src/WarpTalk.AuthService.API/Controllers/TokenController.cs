@@ -1,16 +1,16 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.AuthService.API.Helpers;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
-[Route("api/auth")]
-public class TokenController : ControllerBase
+[Route("api/v1/auth")]
+public class TokenController : BaseApiController
 {
     private readonly ITokenService _tokenService;
 
@@ -20,28 +20,19 @@ public class TokenController : ControllerBase
     }
 
     [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest request, CancellationToken ct)
+    public async Task<Result<AuthResponse>> Refresh([FromBody] RefreshTokenRequest request, CancellationToken ct)
     {
         var refreshRequest = request with
         {
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             DeviceInfo = Request.Headers.UserAgent.ToString()
         };
-
-        var result = await _tokenService.RefreshTokenAsync(refreshRequest, ct);
-        if (!result.IsSuccess)
-            return AuthResultHelper.HandleAuthFailure(this, result);
-        return Ok(result.Value);
+        return await _tokenService.RefreshTokenAsync(refreshRequest, ct);
     }
 
     [Authorize]
     [HttpPost("logout")]
-    public async Task<IActionResult> Logout([FromBody] LogoutRequest request, CancellationToken ct)
-    {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _tokenService.LogoutAsync(userId, request.RefreshToken, ct);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, null));
-        return NoContent();
-    }
+    public async Task<Result> Logout([FromBody] LogoutRequest request, CancellationToken ct)
+        => await _tokenService.LogoutAsync(CurrentUserId, request.RefreshToken, ct);
 }
+

@@ -9,7 +9,7 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 
 public class UserSettingRepository : GenericRepository<UserSetting>, IUserSettingRepository
 {
-    public UserSettingRepository(AuthDbContext db) : base(db)
+    public UserSettingRepository(AuthDbContext context) : base(context)
     {
     }
 
@@ -20,7 +20,6 @@ public class UserSettingRepository : GenericRepository<UserSetting>, IUserSettin
 
     public void Add(UserSetting entity)
     {
-        _set.Add(entity);
+        _dbSet.Add(entity);
     }
 }
-

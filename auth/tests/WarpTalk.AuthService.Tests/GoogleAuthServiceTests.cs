@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -51,7 +52,8 @@ public class GoogleAuthServiceTests
             _jwtGenerator,
             _googleTokenVerifier,
             _cache,
-            _authSettingsOptions
+            _authSettingsOptions,
+            Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.GoogleAuthService>>()
         );
     }
 

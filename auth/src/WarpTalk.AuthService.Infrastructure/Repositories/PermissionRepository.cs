@@ -6,7 +6,7 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 
 public class PermissionRepository : GenericRepository<Permission>, IPermissionRepository
 {
-    public PermissionRepository(AuthDbContext db) : base(db)
+    public PermissionRepository(AuthDbContext context) : base(context)
     {
     }
 }

@@ -6,7 +6,7 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 
 public class RoleRepository : GenericRepository<Role>, IRoleRepository
 {
-    public RoleRepository(AuthDbContext db) : base(db)
+    public RoleRepository(AuthDbContext context) : base(context)
     {
     }
 }

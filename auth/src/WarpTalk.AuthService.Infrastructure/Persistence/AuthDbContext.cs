@@ -445,6 +445,10 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.Slug)
                 .HasMaxLength(100)
                 .HasColumnName("slug");
+            entity.Property(e => e.Type)
+                .HasMaxLength(50)
+                .HasDefaultValueSql("'business'::character varying")
+                .HasColumnName("type");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");

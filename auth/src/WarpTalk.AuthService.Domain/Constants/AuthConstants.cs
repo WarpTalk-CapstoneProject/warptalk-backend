@@ -56,5 +56,9 @@ public static class AuthConstants
 
     // Regex Patterns
     public const string LanguageCodeRegex = @"^[a-zA-Z]{2}(-[a-zA-Z]{2})?$";
+
+    // Workspace Plan Tiers
+    public const string PlanTierFree = "free";
+    public const string PlanTierBusiness = "business";
 }
 

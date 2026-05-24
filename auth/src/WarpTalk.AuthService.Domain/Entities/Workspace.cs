@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.AuthService.Domain.Entities;
@@ -21,6 +21,8 @@ public partial class Workspace
     public string PlanTier { get; set; } = null!;
 
     public string Settings { get; set; } = null!;
+
+    public string Type { get; set; } = null!;
 
     public bool IsActive { get; set; }
 
