@@ -4,15 +4,6 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.AuthService.API.Validators;
 
-public class GoogleLoginRequestValidator : AbstractValidator<GoogleLoginRequest>
-{
-    public GoogleLoginRequestValidator()
-    {
-        RuleFor(x => x.IdToken)
-            .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.GoogleIdTokenRequired);
-    }
-}
-
 public class LinkGoogleRequestValidator : AbstractValidator<LinkGoogleRequest>
 {
     public LinkGoogleRequestValidator()

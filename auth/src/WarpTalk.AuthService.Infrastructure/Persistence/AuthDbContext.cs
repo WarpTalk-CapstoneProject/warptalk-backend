@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.AuthService.Domain.Entities;
+using WarpTalk.AuthService.Domain.Enums;
 
 namespace WarpTalk.AuthService.Infrastructure.Persistence;
 

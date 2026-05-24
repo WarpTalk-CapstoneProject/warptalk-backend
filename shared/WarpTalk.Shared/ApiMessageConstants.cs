@@ -16,7 +16,7 @@ public static class ApiMessageConstants
 
         // Auth & Profiles
         public const string EmailRequired = "Email is required.";
-        public const string EmailInvalidFormat = "Invalid email format.";
+        public const string EmailInvalidFormat = "Email must be a valid @gmail.com address.";
         public const string PasswordRequired = "Password is required.";
         public const string PasswordMinLength = "Password must be at least 6 characters long.";
         public const string FullNameRequired = "Full name is required.";

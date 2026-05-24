@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.Tokens;
 
 namespace WarpTalk.Shared.Middleware;
-
+//validate sign of X-Internal-Context
 public class InternalContextMiddleware
 {
     private readonly RequestDelegate _next;

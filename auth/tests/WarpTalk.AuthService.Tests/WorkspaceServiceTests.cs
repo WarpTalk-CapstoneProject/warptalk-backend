@@ -9,7 +9,9 @@ using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Entities;
+using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Application.Interfaces.Caching;
 using WarpTalk.Shared;
 using Xunit;
@@ -345,7 +347,7 @@ public class WorkspaceServiceTests
             Id = Guid.NewGuid(), 
             WorkspaceId = workspaceId, 
             Email = "invitee@warptalk.vn", 
-            Status = "PENDING", 
+            Status = InvitationStatus.PENDING.ToString(), 
             ExpiresAt = DateTime.UtcNow.AddDays(1) 
         };
 
@@ -363,7 +365,7 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal("REPLACED", oldInvitation.Status);
+        Assert.Equal(InvitationStatus.REPLACED.ToString(), oldInvitation.Status);
         invitationRepo.Received(1).Update(oldInvitation);
         await invitationRepo.Received(1).AddAsync(Arg.Any<WorkspaceInvitation>(), Arg.Any<CancellationToken>());
     }
@@ -398,7 +400,7 @@ public class WorkspaceServiceTests
             WorkspaceId = workspaceId,
             RoleId = roleId,
             Email = "invitee@warptalk.vn",
-            Status = "PENDING",
+            Status = InvitationStatus.PENDING.ToString(),
             ExpiresAt = DateTime.UtcNow.AddDays(5)
         };
 
@@ -430,7 +432,7 @@ public class WorkspaceServiceTests
             RoleId = roleId,
             Role = role,
             Email = "invitee@warptalk.vn",
-            Status = "PENDING",
+            Status = InvitationStatus.PENDING.ToString(),
             ExpiresAt = DateTime.UtcNow.AddDays(5)
         };
 
@@ -447,7 +449,7 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal("ACCEPTED", invitation.Status);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
         invitationRepo.Received(1).Update(invitation);
         await _workspaceMemberRepository.Received(1).AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
@@ -468,7 +470,7 @@ public class WorkspaceServiceTests
             RoleId = roleId,
             Role = role,
             Email = "deepmind@warptalk.vn",
-            Status = "PENDING",
+            Status = InvitationStatus.PENDING.ToString(),
             ExpiresAt = DateTime.UtcNow.AddDays(2)
         };
 
@@ -486,6 +488,129 @@ public class WorkspaceServiceTests
         Assert.Equal("Admin", result.Value.RoleName);
         Assert.Equal("de***@warptalk.vn", result.Value.MaskedEmail);
         Assert.Equal("PENDING", result.Value.Status);
+    }
+
+    #endregion
+
+    #region Workspace Settings Tests
+
+    [Fact]
+    public async Task GetWorkspaceSettingsAsync_ShouldReturnParsedSettings_WhenUserIsMember()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId };
+        var expectedSettings = new WorkspaceConfiguration
+        {
+            DefaultLanguage = "vi",
+            Timezone = "Asia/Ho_Chi_Minh",
+            VoiceCloningEnabled = false
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(member);
+        _workspaceRepository.GetSettingsAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(expectedSettings);
+
+        // Act
+        var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal("vi", result.Value.DefaultLanguage);
+        Assert.Equal("Asia/Ho_Chi_Minh", result.Value.Timezone);
+        Assert.False(result.Value.VoiceCloningEnabled);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettingsAsync_ShouldReturnDefaultSettings_WhenSettingsColumnIsEmpty()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId };
+        var expectedSettings = new WorkspaceConfiguration();
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(member);
+        _workspaceRepository.GetSettingsAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(expectedSettings);
+
+        // Act
+        var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal("en", result.Value.DefaultLanguage);
+        Assert.True(result.Value.VoiceCloningEnabled);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotMember()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember)null);
+
+        // Act
+        var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsOwnerOrAdmin()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceConfiguration
+        {
+            DefaultLanguage = "vi",
+            Timezone = "Asia/Ho_Chi_Minh",
+            VoiceCloningEnabled = false
+        };
+
+        _workspaceMemberRepository.IsOwnerOrAdminAsync(workspaceId, userId, Arg.Any<CancellationToken>())
+            .Returns(true);
+        _workspaceRepository.UpdateSettingsAsync(workspaceId, newSettings, userId, Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(workspaceId, newSettings, userId, Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+
+        _workspaceMemberRepository.IsOwnerOrAdminAsync(workspaceId, userId, Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     #endregion

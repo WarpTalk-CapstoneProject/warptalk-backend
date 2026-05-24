@@ -8,6 +8,7 @@ using NSubstitute;
 using WarpTalk.AuthService.API.Controllers;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -164,6 +165,59 @@ public class WorkspacesControllerTests
 
         // Assert
         var actionResult = Assert.IsType<Result<SelectWorkspaceResponse>>(result);
+        Assert.False(actionResult.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, actionResult.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettings_ShouldReturnSettings_WhenSuccessful()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var expectedSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(expectedSettings));
+
+        // Act
+        var result = await _controller.GetWorkspaceSettings(workspaceId, CancellationToken.None);
+
+        // Assert
+        var actionResult = Assert.IsType<Result<WorkspaceConfiguration>>(result);
+        Assert.True(actionResult.IsSuccess);
+        Assert.Equal(expectedSettings, actionResult.Value);
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettings_ShouldReturnSuccess_WhenSuccessful()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        // Act
+        var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
+
+        // Assert
+        var actionResult = Assert.IsType<Result>(result);
+        Assert.True(actionResult.IsSuccess);
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettings_ShouldReturnForbidden_WhenUnauthorized()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Failure("Forbidden", ErrorCodes.Forbidden));
+
+        // Act
+        var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
+
+        // Assert
+        var actionResult = Assert.IsType<Result>(result);
         Assert.False(actionResult.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, actionResult.ErrorCode);
     }

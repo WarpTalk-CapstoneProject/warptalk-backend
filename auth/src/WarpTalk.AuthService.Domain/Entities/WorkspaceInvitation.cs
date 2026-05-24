@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using WarpTalk.AuthService.Domain.Enums;
 
 namespace WarpTalk.AuthService.Domain.Entities;
 

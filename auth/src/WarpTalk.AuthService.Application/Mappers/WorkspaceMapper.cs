@@ -38,7 +38,7 @@ public static class WorkspaceMapper
             Slug = slug,
             LogoUrl = request.LogoUrl,
             OwnerId = ownerId,
-            PlanTier = AuthConstants.PlanTierFree,
+            PlanTier = WorkspaceConstants.PlanTierFree,
             Settings = "{}",
             Type = WorkspaceType.Business.ToString().ToLower(),
             IsActive = true,
@@ -56,7 +56,7 @@ public static class WorkspaceMapper
             Slug = slug,
             LogoUrl = null,
             OwnerId = ownerId,
-            PlanTier = AuthConstants.PlanTierFree,
+            PlanTier = WorkspaceConstants.PlanTierFree,
             Settings = "{}",
             Type = WorkspaceType.Personal.ToString().ToLower(),
             IsActive = true,
@@ -88,10 +88,26 @@ public static class WorkspaceMapper
             invitation.WorkspaceId,
             invitation.Email,
             invitation.Role.Name,
-            invitation.Status,
+            invitation.Status.ToString(),
             invitation.ExpiresAt,
             invitation.CreatedAt,
             invitation.AcceptedAt
         );
     }
+
+    public static WorkspaceMemberDto ToDto(this WorkspaceMember member)
+    {
+        return new WorkspaceMemberDto(
+            member.Id,
+            member.WorkspaceId,
+            member.UserId,
+            member.User?.FullName ?? "Unknown",
+            member.User?.Email ?? "Unknown",
+            member.User?.AvatarUrl,
+            member.Role?.Name ?? "Member",
+            member.Status,
+            member.JoinedAt
+        );
+    }
 }
+

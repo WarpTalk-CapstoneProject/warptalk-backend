@@ -7,6 +7,8 @@ using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
 
+using WarpTalk.AuthService.Domain.Settings;
+
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
@@ -46,5 +48,19 @@ public class WorkspacesController : BaseApiController
     public async Task<Result<SelectWorkspaceResponse>> SelectWorkspace(Guid id, CancellationToken ct)
     {
         return await _workspaceService.SelectWorkspaceAsync(id, CurrentUserId, ct);
+    }
+
+    [Authorize]
+    [HttpGet("{id:guid}/settings")]
+    public async Task<Result<WorkspaceConfiguration>> GetWorkspaceSettings(Guid id, CancellationToken ct)
+    {
+        return await _workspaceService.GetWorkspaceSettingsAsync(id, CurrentUserId, ct);
+    }
+
+    [Authorize]
+    [HttpPut("{id:guid}/settings")]
+    public async Task<Result> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceConfiguration settings, CancellationToken ct)
+    {
+        return await _workspaceService.UpdateWorkspaceSettingsAsync(id, settings, CurrentUserId, ct);
     }
 }

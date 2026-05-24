@@ -402,7 +402,7 @@ public class AuthServiceTests
         Assert.NotNull(capturedWorkspace);
         Assert.Equal("New User's Workspace", capturedWorkspace.Name);
         Assert.Equal("personal", capturedWorkspace.Type);
-        Assert.Equal(AuthConstants.PlanTierFree, capturedWorkspace.PlanTier);
+        Assert.Equal(WorkspaceConstants.PlanTierFree, capturedWorkspace.PlanTier);
 
         // Verify WorkspaceMember Owner is created
         await _unitOfWork.WorkspaceMemberRepository.Received(1).AddAsync(

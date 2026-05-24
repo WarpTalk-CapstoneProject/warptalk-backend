@@ -6,8 +6,11 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Entities;
+using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.Shared.Extensions;
 using WarpTalk.AuthService.Infrastructure.Persistence;
+
 
 namespace WarpTalk.AuthService.Infrastructure.Repositories;
 
@@ -31,7 +34,7 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
             .FirstOrDefaultAsync(i => 
                 i.WorkspaceId == workspaceId && 
                 i.Email == email && 
-                i.Status == InvitationStatus.Pending && 
+                i.Status == InvitationStatus.PENDING.ToString() && 
                 i.ExpiresAt > DateTime.UtcNow, 
                 ct);
     }
@@ -43,12 +46,7 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
             .Where(i => i.WorkspaceId == workspaceId)
             .OrderByDescending(i => i.CreatedAt);
 
-        var totalCount = await query.CountAsync(ct);
-        var items = await query
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync(ct);
-
-        return (items, totalCount);
+        return await query.ToPagedListAsync(page, pageSize, ct);
     }
 }
+
