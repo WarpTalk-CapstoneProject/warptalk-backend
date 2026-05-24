@@ -56,9 +56,9 @@ public class WorkspaceMembersControllerTests
         var result = await _controller.ListMembers(workspaceId, query, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<PagedResult<WorkspaceMemberDto>>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedPagedResult, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<PagedResult<WorkspaceMemberDto>>(okResult.Value);
+        Assert.Equal(expectedPagedResult, value);
     }
 
     [Fact]
@@ -75,8 +75,7 @@ public class WorkspaceMembersControllerTests
         var result = await _controller.RemoveMember(workspaceId, targetUserId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result>(result);
-        Assert.True(actionResult.IsSuccess);
+        Assert.IsType<NoContentResult>(result);
     }
 
     [Fact]
@@ -94,7 +93,6 @@ public class WorkspaceMembersControllerTests
         var result = await _controller.ChangeMemberRole(workspaceId, targetUserId, request, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result>(result);
-        Assert.True(actionResult.IsSuccess);
+        Assert.IsType<NoContentResult>(result);
     }
 }

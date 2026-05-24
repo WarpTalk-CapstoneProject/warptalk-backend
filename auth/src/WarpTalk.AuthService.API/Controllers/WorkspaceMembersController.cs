@@ -6,12 +6,13 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/workspaces")]
-public class WorkspaceMembersController : BaseApiController
+public class WorkspaceMembersController : ControllerBase
 {
     private readonly IWorkspaceService _workspaceService;
 
@@ -22,22 +23,52 @@ public class WorkspaceMembersController : BaseApiController
 
     [Authorize]
     [HttpGet("{workspaceId:guid}/members")]
-    public async Task<Result<PagedResult<WorkspaceMemberDto>>> ListMembers(Guid workspaceId, [FromQuery] GetWorkspacesQuery query, CancellationToken ct)
+    public async Task<IActionResult> ListMembers(Guid workspaceId, [FromQuery] GetWorkspacesQuery query, CancellationToken ct)
     {
-        return await _workspaceService.ListMembersAsync(workspaceId, query, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.ListMembersAsync(workspaceId, query, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpDelete("{workspaceId:guid}/members/{userId:guid}")]
-    public async Task<Result> RemoveMember(Guid workspaceId, Guid userId, CancellationToken ct)
+    public async Task<IActionResult> RemoveMember(Guid workspaceId, Guid userId, CancellationToken ct)
     {
-        return await _workspaceService.RemoveMemberAsync(workspaceId, userId, CurrentUserId, ct);
+        var currentUserId = User.GetUserId();
+        if (currentUserId == null) return Unauthorized();
+
+        var result = await _workspaceService.RemoveMemberAsync(workspaceId, userId, currentUserId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
     }
 
     [Authorize]
     [HttpPut("{workspaceId:guid}/members/{userId:guid}/role")]
-    public async Task<Result> ChangeMemberRole(Guid workspaceId, Guid userId, [FromBody] ChangeMemberRoleRequest request, CancellationToken ct)
+    public async Task<IActionResult> ChangeMemberRole(Guid workspaceId, Guid userId, [FromBody] ChangeMemberRoleRequest request, CancellationToken ct)
     {
-        return await _workspaceService.ChangeMemberRoleAsync(workspaceId, userId, request.RoleName, CurrentUserId, ct);
+        var currentUserId = User.GetUserId();
+        if (currentUserId == null) return Unauthorized();
+
+        var result = await _workspaceService.ChangeMemberRoleAsync(workspaceId, userId, request.RoleName, currentUserId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
     }
 }

@@ -51,9 +51,9 @@ public class WorkspacesControllerTests
         var result = await _controller.CreateWorkspace(request, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<WorkspaceDto>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedDto, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<WorkspaceDto>(okResult.Value);
+        Assert.Equal(expectedDto, value);
     }
 
     [Fact]
@@ -68,10 +68,10 @@ public class WorkspacesControllerTests
         var result = await _controller.CreateWorkspace(request, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<WorkspaceDto>>(result);
-        Assert.False(actionResult.IsSuccess);
-        Assert.Equal(ErrorCodes.ValidationError, actionResult.ErrorCode);
-        Assert.Equal("Workspace name is required.", actionResult.Error);
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        Assert.Equal(ErrorCodes.ValidationError, value.Code);
+        Assert.Equal("Workspace name is required.", value.Error);
     }
 
     [Fact]
@@ -92,9 +92,9 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaces(query, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<PagedResult<WorkspaceDto>>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedPagedResult, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<PagedResult<WorkspaceDto>>(okResult.Value);
+        Assert.Equal(expectedPagedResult, value);
     }
 
     [Fact]
@@ -111,9 +111,9 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<WorkspaceDto>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedDto, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<WorkspaceDto>(okResult.Value);
+        Assert.Equal(expectedDto, value);
     }
 
     [Fact]
@@ -128,9 +128,10 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<WorkspaceDto>>(result);
-        Assert.False(actionResult.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, actionResult.ErrorCode);
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(objectResult.Value);
+        Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
     [Fact]
@@ -147,9 +148,9 @@ public class WorkspacesControllerTests
         var result = await _controller.SelectWorkspace(workspaceId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<SelectWorkspaceResponse>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedResponse, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<SelectWorkspaceResponse>(okResult.Value);
+        Assert.Equal(expectedResponse, value);
     }
 
     [Fact]
@@ -164,9 +165,10 @@ public class WorkspacesControllerTests
         var result = await _controller.SelectWorkspace(workspaceId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<SelectWorkspaceResponse>>(result);
-        Assert.False(actionResult.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, actionResult.ErrorCode);
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(objectResult.Value);
+        Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
     [Fact]
@@ -182,9 +184,9 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaceSettings(workspaceId, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result<WorkspaceConfiguration>>(result);
-        Assert.True(actionResult.IsSuccess);
-        Assert.Equal(expectedSettings, actionResult.Value);
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<WorkspaceConfiguration>(okResult.Value);
+        Assert.Equal(expectedSettings, value);
     }
 
     [Fact]
@@ -200,8 +202,7 @@ public class WorkspacesControllerTests
         var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result>(result);
-        Assert.True(actionResult.IsSuccess);
+        Assert.IsType<NoContentResult>(result);
     }
 
     [Fact]
@@ -217,8 +218,9 @@ public class WorkspacesControllerTests
         var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
 
         // Assert
-        var actionResult = Assert.IsType<Result>(result);
-        Assert.False(actionResult.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, actionResult.ErrorCode);
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(objectResult.Value);
+        Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 }

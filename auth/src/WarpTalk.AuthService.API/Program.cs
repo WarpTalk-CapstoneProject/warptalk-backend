@@ -95,10 +95,7 @@ builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>()
 builder.Services.AddFluentValidationAutoValidation();
 builder.Services.AddCustomApiBehavior();
 
-builder.Services.AddControllers(options =>
-{
-    options.Filters.Add<WarpTalk.Shared.Filters.WarpTalkResultFilter>();
-});
+builder.Services.AddControllers();
 builder.Services.AddGrpc();
 
 var app = builder.Build();

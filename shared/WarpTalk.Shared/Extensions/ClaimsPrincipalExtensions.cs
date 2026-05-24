@@ -13,7 +13,7 @@ public static class ClaimsPrincipalExtensions
         }
         return null;
     }
-
+//OAuth2
     public static bool IsEmailVerified(this ClaimsPrincipal principal)
     {
         var claim = principal.FindFirst("email_verified")?.Value;

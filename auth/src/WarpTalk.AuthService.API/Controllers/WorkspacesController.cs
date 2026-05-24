@@ -6,14 +6,14 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
-
+using WarpTalk.Shared.Extensions;
 using WarpTalk.AuthService.Domain.Settings;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/workspaces")]
-public class WorkspacesController : BaseApiController
+public class WorkspacesController : ControllerBase
 {
     private readonly IWorkspaceService _workspaceService;
 
@@ -24,43 +24,115 @@ public class WorkspacesController : BaseApiController
 
     [Authorize]
     [HttpPost]
-    public async Task<Result<WorkspaceDto>> CreateWorkspace([FromBody] CreateWorkspaceRequest request, CancellationToken ct)
+    public async Task<IActionResult> CreateWorkspace([FromBody] CreateWorkspaceRequest request, CancellationToken ct)
     {
-        return await _workspaceService.CreateWorkspaceAsync(request, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpGet]
-    public async Task<Result<PagedResult<WorkspaceDto>>> GetWorkspaces([FromQuery] GetWorkspacesQuery query, CancellationToken ct)
+    public async Task<IActionResult> GetWorkspaces([FromQuery] GetWorkspacesQuery query, CancellationToken ct)
     {
-        return await _workspaceService.GetWorkspacesAsync(query, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.GetWorkspacesAsync(query, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpGet("{id:guid}")]
-    public async Task<Result<WorkspaceDto>> GetWorkspaceById(Guid id, CancellationToken ct)
+    public async Task<IActionResult> GetWorkspaceById(Guid id, CancellationToken ct)
     {
-        return await _workspaceService.GetWorkspaceByIdAsync(id, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(403, errorResponse);
+            }
+            if (result.ErrorCode == ErrorCodes.NotFound || result.ErrorCode == ErrorCodes.UserNotFound)
+            {
+                return NotFound(errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpPost("{id:guid}/select")]
-    public async Task<Result<SelectWorkspaceResponse>> SelectWorkspace(Guid id, CancellationToken ct)
+    public async Task<IActionResult> SelectWorkspace(Guid id, CancellationToken ct)
     {
-        return await _workspaceService.SelectWorkspaceAsync(id, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.SelectWorkspaceAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(403, errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpGet("{id:guid}/settings")]
-    public async Task<Result<WorkspaceConfiguration>> GetWorkspaceSettings(Guid id, CancellationToken ct)
+    public async Task<IActionResult> GetWorkspaceSettings(Guid id, CancellationToken ct)
     {
-        return await _workspaceService.GetWorkspaceSettingsAsync(id, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.GetWorkspaceSettingsAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(403, errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpPut("{id:guid}/settings")]
-    public async Task<Result> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceConfiguration settings, CancellationToken ct)
+    public async Task<IActionResult> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceConfiguration settings, CancellationToken ct)
     {
-        return await _workspaceService.UpdateWorkspaceSettingsAsync(id, settings, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(id, settings, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(403, errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
     }
 }

@@ -5,12 +5,13 @@ using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/auth")]
-public class ProfileController : BaseApiController
+public class ProfileController : ControllerBase
 {
     private readonly IProfileService _profileService;
 
@@ -21,17 +22,61 @@ public class ProfileController : BaseApiController
 
     [Authorize]
     [HttpGet("me")]
-    public async Task<Result<UserDto>> GetProfile(CancellationToken ct)
-        => await _profileService.GetProfileAsync(CurrentUserId, ct);
+    public async Task<IActionResult> GetProfile(CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _profileService.GetProfileAsync(userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.NotFound || result.ErrorCode == ErrorCodes.UserNotFound)
+            {
+                return NotFound(errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
+    }
 
     [Authorize]
     [HttpPut("me")]
-    public async Task<Result<UserDto>> UpdateProfile([FromBody] UpdateProfileRequest request, CancellationToken ct)
-        => await _profileService.UpdateProfileAsync(CurrentUserId, request, ct);
+    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _profileService.UpdateProfileAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.NotFound || result.ErrorCode == ErrorCodes.UserNotFound)
+            {
+                return NotFound(errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
+    }
 
     [Authorize]
     [HttpPost("change-password")]
-    public async Task<Result> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken ct)
-        => await _profileService.ChangePasswordAsync(CurrentUserId, request, ct);
-}
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
 
+        var result = await _profileService.ChangePasswordAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.InvalidCredentials || result.ErrorCode == ErrorCodes.Unauthorized)
+            {
+                return Unauthorized(errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
+    }
+}

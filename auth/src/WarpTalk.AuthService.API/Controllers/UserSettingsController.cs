@@ -5,12 +5,13 @@ using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/auth/settings")]
-public class UserSettingsController : BaseApiController
+public class UserSettingsController : ControllerBase
 {
     private readonly IUserSettingsService _userSettingsService;
 
@@ -21,12 +22,31 @@ public class UserSettingsController : BaseApiController
 
     [Authorize]
     [HttpGet]
-    public async Task<Result<UserSettingsDto>> GetSettings(CancellationToken ct)
-        => await _userSettingsService.GetSettingsAsync(CurrentUserId, ct);
+    public async Task<IActionResult> GetSettings(CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _userSettingsService.GetSettingsAsync(userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
 
     [Authorize]
     [HttpPut]
-    public async Task<Result<UserSettingsDto>> UpdateSettings([FromBody] UpdateUserSettingsRequest request, CancellationToken ct)
-        => await _userSettingsService.UpdateSettingsAsync(CurrentUserId, request, ct);
-}
+    public async Task<IActionResult> UpdateSettings([FromBody] UpdateUserSettingsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
 
+        var result = await _userSettingsService.UpdateSettingsAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+}

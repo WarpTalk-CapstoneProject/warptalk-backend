@@ -5,12 +5,13 @@ using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/auth")]
-public class TokenController : BaseApiController
+public class TokenController : ControllerBase
 {
     private readonly ITokenService _tokenService;
 
@@ -20,19 +21,33 @@ public class TokenController : BaseApiController
     }
 
     [HttpPost("refresh")]
-    public async Task<Result<AuthResponse>> Refresh([FromBody] RefreshTokenRequest request, CancellationToken ct)
+    public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest request, CancellationToken ct)
     {
         var refreshRequest = request with
         {
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             DeviceInfo = Request.Headers.UserAgent.ToString()
         };
-        return await _tokenService.RefreshTokenAsync(refreshRequest, ct);
+        var result = await _tokenService.RefreshTokenAsync(refreshRequest, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpPost("logout")]
-    public async Task<Result> Logout([FromBody] LogoutRequest request, CancellationToken ct)
-        => await _tokenService.LogoutAsync(CurrentUserId, request.RefreshToken, ct);
-}
+    public async Task<IActionResult> Logout([FromBody] LogoutRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
 
+        var result = await _tokenService.LogoutAsync(userId.Value, request.RefreshToken, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+}

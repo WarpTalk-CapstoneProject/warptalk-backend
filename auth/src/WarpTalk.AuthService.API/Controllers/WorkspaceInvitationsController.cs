@@ -7,12 +7,13 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
 [Route("api/v1/workspaces")]
-public class WorkspaceInvitationsController : BaseApiController
+public class WorkspaceInvitationsController : ControllerBase
 {
     private readonly IWorkspaceService _workspaceService;
 
@@ -23,42 +24,92 @@ public class WorkspaceInvitationsController : BaseApiController
 
     [Authorize]
     [HttpPost("{workspaceId:guid}/invitations")]
-    public async Task<Result<InviteMemberResponse>> InviteMember(Guid workspaceId, [FromBody] InviteMemberRequest request, CancellationToken ct)
+    public async Task<IActionResult> InviteMember(Guid workspaceId, [FromBody] InviteMemberRequest request, CancellationToken ct)
     {
-        return await _workspaceService.InviteMemberAsync(workspaceId, request, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.InviteMemberAsync(workspaceId, request, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpGet("{workspaceId:guid}/invitations")]
-    public async Task<Result<PagedResult<WorkspaceInvitationDto>>> ListInvitations(Guid workspaceId, [FromQuery] GetWorkspacesQuery query, CancellationToken ct)
+    public async Task<IActionResult> ListInvitations(Guid workspaceId, [FromQuery] GetWorkspacesQuery query, CancellationToken ct)
     {
-        return await _workspaceService.ListInvitationsAsync(workspaceId, query, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.ListInvitationsAsync(workspaceId, query, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpDelete("{workspaceId:guid}/invitations/{invitationId:guid}")]
-    public async Task<Result> RevokeInvitation(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    public async Task<IActionResult> RevokeInvitation(Guid workspaceId, Guid invitationId, CancellationToken ct)
     {
-        return await _workspaceService.RevokeInvitationAsync(workspaceId, invitationId, CurrentUserId, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.RevokeInvitationAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
     }
 
     [AllowAnonymous]
     [HttpGet("invitations/preview")]
-    public async Task<Result<PreviewInvitationResponse>> PreviewInvitation([FromQuery] string token, CancellationToken ct)
+    public async Task<IActionResult> PreviewInvitation([FromQuery] string token, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(token)) 
-            return Result.Failure<PreviewInvitationResponse>("Token is required.", ErrorCodes.ValidationError);
+            return BadRequest(new ApiErrorResponse("Token is required.", ErrorCodes.ValidationError));
 
-        return await _workspaceService.PreviewInvitationAsync(token, ct);
+        var result = await _workspaceService.PreviewInvitationAsync(token, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.NotFound || result.ErrorCode == ErrorCodes.UserNotFound)
+            {
+                return NotFound(errorResponse);
+            }
+            return BadRequest(errorResponse);
+        }
+        return Ok(result.Value);
     }
 
     [Authorize]
     [HttpPost("invitations/accept")]
-    public async Task<ActionResult<Result>> AcceptInvitation([FromBody] AcceptInvitationRequest request, CancellationToken ct)
+    public async Task<IActionResult> AcceptInvitation([FromBody] AcceptInvitationRequest request, CancellationToken ct)
     {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
         var userEmail = User.FindFirstValue(ClaimTypes.Email);
         if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized();
 
-        return await _workspaceService.AcceptInvitationAsync(request, CurrentUserId, userEmail, ct);
+        var result = await _workspaceService.AcceptInvitationAsync(request, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
+            return BadRequest(errorResponse);
+        }
+        return NoContent();
     }
 }

@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.IdentityModel.Tokens;
+using WarpTalk.Shared.Interfaces;
 
 namespace WarpTalk.Shared.Middleware;
 //validate sign of X-Internal-Context
@@ -37,16 +38,27 @@ public class InternalContextMiddleware
                         IssuerSigningKey = new SymmetricSecurityKey(key),
                         ValidateIssuer = false,
                         ValidateAudience = false,
+                        ValidateLifetime = true,
                         ClockSkew = TimeSpan.Zero
                     };
 
                     var principal = tokenHandler.ValidateToken(token, validationParameters, out _);
+
+                    context.User = principal;
 
                     var subClaim = principal.FindFirst("sub")?.Value ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                     var workspaceIdClaim = principal.FindFirst("workspace_id")?.Value;
 
                     if (Guid.TryParse(subClaim, out var userId) && Guid.TryParse(workspaceIdClaim, out var workspaceId))
                     {
+                        // Check if user is blacklisted (revoked/banned)
+                        var blacklistService = context.RequestServices.GetService(typeof(ITokenBlacklistService)) as ITokenBlacklistService;
+                        if (blacklistService != null && await blacklistService.IsUserBlacklistedAsync(userId))
+                        {
+                            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                            return;
+                        }
+
                         var workspaceContext = context.RequestServices.GetService(typeof(IWorkspaceContext)) as IWorkspaceContext;
                         workspaceContext?.SetContext(userId, workspaceId);
                     }

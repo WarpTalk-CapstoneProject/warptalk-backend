@@ -9,7 +9,7 @@ namespace WarpTalk.AuthService.Tests;
 
 public static class TokenGeneratorHelper
 {
-    public static string GenerateInternalSignedToken(Guid userId, Guid workspaceId, string secret)
+    public static string GenerateInternalSignedToken(Guid userId, Guid workspaceId, string secret, DateTime? expires = null)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.UTF8.GetBytes(secret);
@@ -20,9 +20,16 @@ public static class TokenGeneratorHelper
                 new Claim("sub", userId.ToString()),
                 new Claim("workspace_id", workspaceId.ToString())
             }),
-            Expires = DateTime.UtcNow.AddMinutes(5),
+            Expires = expires ?? DateTime.UtcNow.AddMinutes(5),
             SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
         };
+
+        if (expires.HasValue && expires.Value < DateTime.UtcNow)
+        {
+            tokenDescriptor.NotBefore = expires.Value.AddMinutes(-5);
+            tokenDescriptor.IssuedAt = expires.Value.AddMinutes(-5);
+        }
+
         var token = tokenHandler.CreateToken(tokenDescriptor);
         return tokenHandler.WriteToken(token);
     }
