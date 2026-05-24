@@ -10,16 +10,16 @@ public record PagedResult<T>(
 
 
 public record SubscriptionDto(
-    Guid   Id,
-    Guid?  WorkspaceId,
-    Guid   PlanId,
+    Guid Id,
+    Guid? WorkspaceId,
+    Guid PlanId,
     string PlanName,
     string Status,
-    int    CreditsRemaining,
-    int    CreditsUsedThisCycle,
+    int CreditsRemaining,
+    int CreditsUsedThisCycle,
     DateTime CurrentPeriodStart,
     DateTime CurrentPeriodEnd,
-    bool   AutoRenew,
+    bool AutoRenew,
     DateTime CreatedAt,
     DateTime? CancelledAt
 );

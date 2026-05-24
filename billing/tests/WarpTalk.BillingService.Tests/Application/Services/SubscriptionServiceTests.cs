@@ -40,12 +40,12 @@ public class SubscriptionServiceTests
         var plan = new Plan { Id = request.PlanId, Name = "Pro", CreditsPerCycle = 1000, BillingCycle = "monthly" };
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription)null);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
 
         var result = await _subscriptionService.CreateSubscriptionAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value.Status.Should().Be("pending");
+        result.Value!.Status.Should().Be("pending");
         _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s => s.Status == "pending" && !s.IsActive && s.CreditsRemaining == 0), default), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }

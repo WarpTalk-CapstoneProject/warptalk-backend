@@ -51,7 +51,7 @@ public class LedgerBalanceService : ILedgerBalanceService
                 case "adjustment":
                     netChange += entry.Amount;
                     break;
-                
+
                 case "consume":
                     netChange -= entry.Amount;
                     break;

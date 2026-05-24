@@ -19,7 +19,7 @@ public class RedisBillingMessagePublisher : IBillingMessagePublisher
     {
         var db = _redis.GetDatabase();
         var json = JsonSerializer.Serialize(message);
-        
+
         await db.PublishAsync(RedisChannel.Literal(topic), json);
     }
 }

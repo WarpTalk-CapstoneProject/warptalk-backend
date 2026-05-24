@@ -104,7 +104,7 @@ public class SubscriptionService : ISubscriptionService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            
+
             await PublishRealtimeUpdateAsync(sub.UserId, "cancelled", plan?.Name ?? "Unknown Plan", cancellationToken);
 
             return Result.Success(true);

@@ -2,12 +2,16 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
+using Microsoft.AspNetCore.SignalR;
 using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Hubs.Filters;
 using WarpTalk.Gateway.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddMemoryCache();
 
 // 1. Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -124,6 +128,7 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
     options.MaximumReceiveMessageSize = 128 * 1024; // 128 KB — voice-cloned audio chunks
+    options.AddFilter<AntiAbuseHubFilter>();
 });
 
 // Optional: Use Redis backplane for horizontal scaling

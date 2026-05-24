@@ -106,7 +106,7 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditBalanceSnapshotRepository.AddAsync(snapshot, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
                 "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
 
             return Result.Success(tx.ToDto());
@@ -141,7 +141,7 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining, 
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
                 "Credits Topped Up", $"You have successfully added {request.Amount} credits.", cancellationToken);
 
             return Result.Success(sub.ToCreditBalanceDto(workspaceId));
@@ -167,8 +167,8 @@ public class CreditService : ICreditService
                     "No active subscription found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var size  = pageSize > 0 ? pageSize : 20;
-            var skip  = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+            var size = pageSize > 0 ? pageSize : 20;
+            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
 
             var items = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
                 t => t.SubscriptionId == sub.Id,
@@ -212,7 +212,7 @@ public class CreditService : ICreditService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error taking snapshot for SubscriptionId {SubscriptionId}", subscriptionId);
-            throw;  
+            throw;
         }
     }
 
@@ -600,8 +600,8 @@ public class CreditService : ICreditService
             PayloadJson = $"{{\"new_balance\": {newBalance}}}",
             CreatedAt = DateTime.UtcNow.ToString("O")
         };
-        
-        try 
+
+        try
         {
             await _messagePublisher.PublishAsync("warptalk:notifications:new", msg, cancellationToken);
         }

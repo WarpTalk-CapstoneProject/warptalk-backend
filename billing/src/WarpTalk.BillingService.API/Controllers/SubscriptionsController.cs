@@ -82,9 +82,9 @@ public class SubscriptionsController : ControllerBase
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {
-            ErrorCodes.BillingSubscriptionNotFound        => NotFound(new { Message = result.Error }),
-            ErrorCodes.BillingSubscriptionAlreadyActive   => Conflict(new { Message = result.Error }),
-            ErrorCodes.BillingPlanNotFound                => BadRequest(new { Message = result.Error }),
-            _                                             => StatusCode(500, new { Message = result.Error })
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { Message = result.Error }),
+            ErrorCodes.BillingSubscriptionAlreadyActive => Conflict(new { Message = result.Error }),
+            ErrorCodes.BillingPlanNotFound => BadRequest(new { Message = result.Error }),
+            _ => StatusCode(500, new { Message = result.Error })
         };
 }

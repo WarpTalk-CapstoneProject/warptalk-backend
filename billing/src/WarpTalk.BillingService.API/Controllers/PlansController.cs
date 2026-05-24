@@ -57,6 +57,6 @@ public class PlansController : ControllerBase
         result.ErrorCode switch
         {
             ErrorCodes.BillingPlanNotFound => NotFound(new { Message = result.Error }),
-            _                              => StatusCode(500, new { Message = result.Error })
+            _ => StatusCode(500, new { Message = result.Error })
         };
 }

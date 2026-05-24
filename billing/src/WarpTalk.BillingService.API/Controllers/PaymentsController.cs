@@ -26,7 +26,7 @@ public class PaymentsController : ControllerBase
     public async Task<ActionResult<PagedResult<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize   = 20,
+        [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
         var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, pageNumber, pageSize, cancellationToken);
@@ -68,10 +68,10 @@ public class PaymentsController : ControllerBase
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {
-            ErrorCodes.BillingSubscriptionNotFound      => NotFound(new { message = result.Error }),
-            ErrorCodes.BillingPlanNotFound              => BadRequest(new { message = result.Error }),
-            "FEATURE_NOT_AVAILABLE"                     => StatusCode(403, new { message = result.Error }),
-            _                                           => StatusCode(500, new { message = result.Error })
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = result.Error }),
+            ErrorCodes.BillingPlanNotFound => BadRequest(new { message = result.Error }),
+            "FEATURE_NOT_AVAILABLE" => StatusCode(403, new { message = result.Error }),
+            _ => StatusCode(500, new { message = result.Error })
         };
 }
 

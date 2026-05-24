@@ -5,10 +5,10 @@ namespace WarpTalk.BillingService.Application.DTOs;
 
 
 public record CreditBalanceDto(
-    Guid     WorkspaceId,
-    int      CurrentCredits,
-    int      CreditsUsedThisCycle,
-    string   Status,
+    Guid WorkspaceId,
+    int CurrentCredits,
+    int CreditsUsedThisCycle,
+    string Status,
     DateTime CurrentPeriodStart,
     DateTime CurrentPeriodEnd
 );
@@ -40,12 +40,12 @@ public record TopUpRequest(
 
 
 public record CreditTransactionDto(
-    Guid     Id,
-    int      Amount,        // negative = consumption, positive = top-up
-    string   Type,          // "consumption" | "top_up"
-    string?  Description,
-    string?  ReferenceType,
-    Guid?    ReferenceId,
-    int      BalanceAfter,
+    Guid Id,
+    int Amount,        // negative = consumption, positive = top-up
+    string Type,          // "consumption" | "top_up"
+    string? Description,
+    string? ReferenceType,
+    Guid? ReferenceId,
+    int BalanceAfter,
     DateTime CreatedAt
 );

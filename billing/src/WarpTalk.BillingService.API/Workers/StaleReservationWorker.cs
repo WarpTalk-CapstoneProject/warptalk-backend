@@ -60,7 +60,7 @@ public class StaleReservationWorker : BackgroundService
             if (string.IsNullOrEmpty(reserveTx.CorrelationId)) continue;
 
             // Since the Redis reservation might have already expired, we process the refund directly in the database/ledger.
-            
+
             var existingRefund = await unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
                 tx => tx.CorrelationId == reserveTx.CorrelationId && tx.Type == "refund", cancellationToken);
 

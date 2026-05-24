@@ -38,7 +38,7 @@ public class RealtimeCostCalculator : IRealtimeCostCalculator
 
         // Apply Multiplier based on Plan and Voice Clone
         var multiplier = 1.0m;
-        
+
         if (isVoiceClone)
         {
             if (plan.Tier.Equals("Pro", System.StringComparison.OrdinalIgnoreCase))
@@ -52,7 +52,7 @@ public class RealtimeCostCalculator : IRealtimeCostCalculator
             else if (plan.Tier.Equals("Free", System.StringComparison.OrdinalIgnoreCase))
             {
                 // Voice clone not supported on Free, but if somehow passed, charge high or throw
-                multiplier = 2.0m; 
+                multiplier = 2.0m;
             }
         }
 

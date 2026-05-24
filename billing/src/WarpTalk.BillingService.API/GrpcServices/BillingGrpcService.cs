@@ -11,27 +11,30 @@ namespace WarpTalk.BillingService.API.GrpcServices;
 /// </summary>
 public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBase
 {
-    private readonly ICreditService       _creditService;
+    private readonly ICreditService _creditService;
     private readonly ISubscriptionService _subscriptionService;
-    private readonly IPlanService         _planService;
-    private readonly IPaymentService      _paymentService;
+    private readonly IPlanService _planService;
+    private readonly IPaymentService _paymentService;
     private readonly WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork _unitOfWork;
+    private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
     private readonly ILogger<BillingGrpcService> _logger;
 
     public BillingGrpcService(
-        ICreditService       creditService,
+        ICreditService creditService,
         ISubscriptionService subscriptionService,
-        IPlanService         planService,
-        IPaymentService      paymentService,
+        IPlanService planService,
+        IPaymentService paymentService,
         WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork unitOfWork,
+        StackExchange.Redis.IConnectionMultiplexer redis,
         ILogger<BillingGrpcService> logger)
     {
-        _creditService       = creditService;
+        _creditService = creditService;
         _subscriptionService = subscriptionService;
-        _planService         = planService;
-        _paymentService      = paymentService;
-        _unitOfWork          = unitOfWork;
-        _logger              = logger;
+        _planService = planService;
+        _paymentService = paymentService;
+        _unitOfWork = unitOfWork;
+        _redis = redis;
+        _logger = logger;
     }
 
     // ─── Credits ──────────────────────────────────────────────────────────
@@ -47,20 +50,20 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!result.IsSuccess)
             return new Shared.Protos.GetCreditsResponse
             {
-                WorkspaceId    = request.WorkspaceId,
+                WorkspaceId = request.WorkspaceId,
                 CurrentCredits = 0,
-                Status         = "no_subscription"
+                Status = "no_subscription"
             };
 
         var dto = result.Value!;
         return new Shared.Protos.GetCreditsResponse
         {
-            WorkspaceId          = request.WorkspaceId,
-            CurrentCredits       = dto.CurrentCredits,
-            Status               = dto.Status,
+            WorkspaceId = request.WorkspaceId,
+            CurrentCredits = dto.CurrentCredits,
+            Status = dto.Status,
             CreditsUsedThisCycle = dto.CreditsUsedThisCycle,
-            CurrentPeriodStart   = dto.CurrentPeriodStart.ToString("O"),
-            CurrentPeriodEnd     = dto.CurrentPeriodEnd.ToString("O")
+            CurrentPeriodStart = dto.CurrentPeriodStart.ToString("O"),
+            CurrentPeriodEnd = dto.CurrentPeriodEnd.ToString("O")
         };
     }
 
@@ -81,13 +84,13 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!result.IsSuccess)
             return new Shared.Protos.ConsumeCreditsResponse
             {
-                Success      = false,
+                Success = false,
                 ErrorMessage = result.Error
             };
 
         return new Shared.Protos.ConsumeCreditsResponse
         {
-            Success    = true,
+            Success = true,
             NewBalance = result.Value!.BalanceAfter
         };
     }
@@ -112,12 +115,12 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         var dto = result.Value!;
         return new Shared.Protos.GetCreditsResponse
         {
-            WorkspaceId          = request.WorkspaceId,
-            CurrentCredits       = dto.CurrentCredits,
-            Status               = dto.Status,
+            WorkspaceId = request.WorkspaceId,
+            CurrentCredits = dto.CurrentCredits,
+            Status = dto.Status,
             CreditsUsedThisCycle = dto.CreditsUsedThisCycle,
-            CurrentPeriodStart   = dto.CurrentPeriodStart.ToString("O"),
-            CurrentPeriodEnd     = dto.CurrentPeriodEnd.ToString("O")
+            CurrentPeriodStart = dto.CurrentPeriodStart.ToString("O"),
+            CurrentPeriodEnd = dto.CurrentPeriodEnd.ToString("O")
         };
     }
 
@@ -128,6 +131,38 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid host_workspace_id."));
         if (!Guid.TryParse(request.UserId, out var userId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid user_id."));
+
+        // Anti-Abuse Validations
+        if (request.DurationSeconds > 4 * 3600) // 4 hours
+        {
+            _logger.LogWarning("[ABUSE_DETECTED] RecordUsage duration excessively high: {DurationSeconds}s for WorkspaceId: {WorkspaceId}", request.DurationSeconds, request.HostWorkspaceId);
+            return new Shared.Protos.RecordUsageGrpcResponse { Success = false, ErrorMessage = "Duration exceeds maximum allowed limit." };
+        }
+        if (request.CreditsConsumed < 0)
+        {
+            _logger.LogWarning("[ABUSE_DETECTED] RecordUsage credits consumed is negative: {Credits} for WorkspaceId: {WorkspaceId}", request.CreditsConsumed, request.HostWorkspaceId);
+            return new Shared.Protos.RecordUsageGrpcResponse { Success = false, ErrorMessage = "Credits consumed cannot be negative." };
+        }
+
+        // Check for anomalies via Redis (e.g. > 10,000 credits in 1 minute)
+        try
+        {
+            var db = _redis.GetDatabase();
+            var anomalyKey = $"anomaly:usage:{request.HostWorkspaceId}";
+            var recentUsage = await db.StringIncrementAsync(anomalyKey, request.CreditsConsumed);
+            if (recentUsage == request.CreditsConsumed) // First increment
+            {
+                await db.KeyExpireAsync(anomalyKey, TimeSpan.FromMinutes(1));
+            }
+            else if (recentUsage > 10000)
+            {
+                _logger.LogCritical("[ANOMALY_CREDIT_SPIKE] Workspace {WorkspaceId} attempted to consume {Amount} credits in 1 minute, exceeding safety thresholds.", request.HostWorkspaceId, recentUsage);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to check anomaly rate limit in Redis");
+        }
 
         Guid? translationRoomId = Guid.TryParse(request.TranslationRoomId, out var trId) ? trId : null;
 
@@ -180,14 +215,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         {
             response.Items.Add(new Shared.Protos.CreditTransaction
             {
-                Id           = tx.Id.ToString(),
-                Amount       = tx.Amount,
-                Type         = tx.Type,
-                Description  = tx.Description ?? string.Empty,
+                Id = tx.Id.ToString(),
+                Amount = tx.Amount,
+                Type = tx.Type,
+                Description = tx.Description ?? string.Empty,
                 ReferenceType = tx.ReferenceType ?? string.Empty,
-                ReferenceId  = tx.ReferenceId?.ToString() ?? string.Empty,
+                ReferenceId = tx.ReferenceId?.ToString() ?? string.Empty,
                 BalanceAfter = tx.BalanceAfter,
-                CreatedAt    = tx.CreatedAt.ToString("O")
+                CreatedAt = tx.CreatedAt.ToString("O")
             });
         }
 
@@ -248,14 +283,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         return new Shared.Protos.GetFeatureAccessResponse
         {
             HasActiveSubscription = true,
-            PlanTier             = plan.Tier ?? string.Empty,
-            MaxParticipants      = plan.MaxParticipants,
-            MaxLanguages         = plan.MaxLanguages,
-            VoiceCloneEnabled    = plan.VoiceCloneEnabled,
-            AiAssistantEnabled   = plan.AiAssistantEnabled,
-            GlossaryEnabled      = plan.GlossaryEnabled,
-            DedicatedGpu         = plan.DedicatedGpu,
-            FeaturesJson         = plan.Features ?? "{}"
+            PlanTier = plan.Tier ?? string.Empty,
+            MaxParticipants = plan.MaxParticipants,
+            MaxLanguages = plan.MaxLanguages,
+            VoiceCloneEnabled = plan.VoiceCloneEnabled,
+            AiAssistantEnabled = plan.AiAssistantEnabled,
+            GlossaryEnabled = plan.GlossaryEnabled,
+            DedicatedGpu = plan.DedicatedGpu,
+            FeaturesJson = plan.Features ?? "{}"
         };
     }
 
@@ -271,8 +306,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!result.IsSuccess)
             return new Shared.Protos.SubscriptionResponse { ErrorMessage = result.Error };
 
-        return new Shared.Protos.SubscriptionResponse 
-        { 
+        return new Shared.Protos.SubscriptionResponse
+        {
             WorkspaceId = request.WorkspaceId,
             Status = "cancelled"
         };
@@ -319,7 +354,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         // Get Subscriptions for Workspace to filter Payments
         var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
             s => s.WorkspaceId == workspaceId, context.CancellationToken);
-        
+
         var subIds = subs.Select(s => s.Id).ToList();
 
         var totalCount = await _unitOfWork.PaymentRepository.CountAsync(
@@ -341,19 +376,19 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         {
             response.Items.Add(new Shared.Protos.PaymentTransaction
             {
-                Id                    = p.Id.ToString(),
-                SubscriptionId        = p.SubscriptionId.ToString(),
-                Amount                = (double)p.Amount,
-                TaxAmount             = (double)p.TaxAmount,
-                TotalAmount           = (double)p.TotalAmount,
-                Currency              = p.Currency,
-                PaymentMethod         = p.PaymentMethod,
-                Provider              = p.Provider,
+                Id = p.Id.ToString(),
+                SubscriptionId = p.SubscriptionId.ToString(),
+                Amount = (double)p.Amount,
+                TaxAmount = (double)p.TaxAmount,
+                TotalAmount = (double)p.TotalAmount,
+                Currency = p.Currency,
+                PaymentMethod = p.PaymentMethod,
+                Provider = p.Provider,
                 ProviderTransactionId = p.ProviderTransactionId ?? string.Empty,
-                Status                = p.Status,
-                FailureReason         = p.FailureReason ?? string.Empty,
-                PaidAt                = p.PaidAt?.ToString("O") ?? string.Empty,
-                CreatedAt             = p.CreatedAt.ToString("O")
+                Status = p.Status,
+                FailureReason = p.FailureReason ?? string.Empty,
+                PaidAt = p.PaidAt?.ToString("O") ?? string.Empty,
+                CreatedAt = p.CreatedAt.ToString("O")
             });
         }
 
@@ -369,7 +404,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         _logger.LogInformation("Processing payment success via gRPC for User {UserId}, Amount: {Amount}", userId, request.Amount);
 
         var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.UserId == userId && s.DeletedAt == null && s.IsActive, 
+            s => s.UserId == userId && s.DeletedAt == null && s.IsActive,
             context.CancellationToken);
 
         if (sub == null)
@@ -397,14 +432,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         {
             var activeSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
                 s => s.UserId == userId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
-            foreach(var activeSub in activeSubs)
+            foreach (var activeSub in activeSubs)
             {
                 activeSub.IsActive = false;
                 activeSub.Status = "cancelled";
                 activeSub.CancelledAt = DateTime.UtcNow;
                 _unitOfWork.SubscriptionRepository.Update(activeSub);
             }
-            
+
             sub.Status = "active";
             sub.IsActive = true;
             sub.CurrentPeriodStart = DateTime.UtcNow;
@@ -415,7 +450,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 _ => DateTime.UtcNow.AddMonths(1)
             };
         }
-        
+
         var existingTopup = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
             c => c.CorrelationId == request.StripeSessionId,
             context.CancellationToken
@@ -423,7 +458,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         if (existingTopup == null)
         {
-            sub.CreditsRemaining += plan.CreditsPerCycle; 
+            sub.CreditsRemaining += plan.CreditsPerCycle;
             sub.CreditsUsedThisCycle = 0;
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
@@ -443,7 +478,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx);
-            
+
             var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
             {
                 Id = Guid.NewGuid(),
@@ -474,39 +509,137 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
 
+    public override async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentEvent(
+        Shared.Protos.ProcessPaymentEventRequest request, ServerCallContext context)
+    {
+        var providerTxId = string.IsNullOrEmpty(request.ProviderTransactionId) ? request.StripeSessionId : request.ProviderTransactionId;
+        if (string.IsNullOrEmpty(providerTxId))
+        {
+            return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Missing provider transaction ID." };
+        }
+
+        _logger.LogInformation("Processing payment event for ProviderTxId: {ProviderTxId}, Status: {Status}", providerTxId, request.Status);
+
+        var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
+            p => p.ProviderTransactionId == providerTxId,
+            context.CancellationToken);
+
+        if (existingPayment != null)
+        {
+            if (existingPayment.Status == request.Status)
+            {
+                _logger.LogInformation("Payment {ProviderTxId} already in status {Status}. Ignoring (Idempotent).", providerTxId, request.Status);
+                return new Shared.Protos.ProcessPaymentResponse { Success = true };
+            }
+
+            existingPayment.Status = request.Status;
+            existingPayment.FailureReason = request.FailureReason;
+            existingPayment.UpdatedAt = DateTime.UtcNow;
+
+            if (request.Status == "paid") existingPayment.PaidAt = DateTime.UtcNow;
+
+            _unitOfWork.PaymentRepository.Update(existingPayment);
+
+            if (request.Status == "refunded")
+            {
+                var refundTx = new WarpTalk.BillingService.Domain.Entities.Refund
+                {
+                    Id = Guid.NewGuid(),
+                    PaymentId = existingPayment.Id,
+                    Amount = (decimal)request.Amount,
+                    Reason = request.FailureReason ?? "User requested refund",
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.RefundRepository.AddAsync(refundTx, context.CancellationToken);
+            }
+
+            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+            return new Shared.Protos.ProcessPaymentResponse { Success = true };
+        }
+
+        if (request.Status == "paid")
+        {
+            // Call the legacy ProcessPaymentSuccess logic
+            return await ProcessPaymentSuccess(new Shared.Protos.ProcessPaymentRequest
+            {
+                UserId = request.UserId,
+                Amount = request.Amount,
+                Currency = request.Currency,
+                PaymentType = request.PaymentType,
+                StripeSessionId = providerTxId
+            }, context);
+        }
+
+        if (request.Status == "failed" && !string.IsNullOrEmpty(request.UserId))
+        {
+            // Record failed payment even if it doesn't exist
+            if (Guid.TryParse(request.UserId, out var userId))
+            {
+                var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                    s => s.UserId == userId && s.DeletedAt == null && s.IsActive,
+                    context.CancellationToken);
+
+                if (sub != null)
+                {
+                    var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
+                    {
+                        Id = Guid.NewGuid(),
+                        SubscriptionId = sub.Id,
+                        UserId = userId,
+                        Amount = (decimal)request.Amount,
+                        TaxAmount = 0m,
+                        TotalAmount = (decimal)request.Amount,
+                        Currency = request.Currency,
+                        PaymentMethod = request.PaymentType,
+                        Provider = "stripe",
+                        ProviderTransactionId = providerTxId,
+                        Status = "failed",
+                        FailureReason = request.FailureReason,
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                    await _unitOfWork.PaymentRepository.AddAsync(paymentTx, context.CancellationToken);
+                    await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+                }
+            }
+        }
+
+        return new Shared.Protos.ProcessPaymentResponse { Success = true };
+    }
+
     // ─── Private helpers ──────────────────────────────────────────────────
 
     private static Shared.Protos.SubscriptionResponse ToSubscriptionResponse(SubscriptionDto dto) => new()
     {
-        SubscriptionId      = dto.Id.ToString(),
-        Status              = dto.Status,
-        PlanId              = dto.PlanId.ToString(),
-        PlanName            = dto.PlanName,
-        WorkspaceId         = dto.WorkspaceId?.ToString() ?? string.Empty,
-        CreditsRemaining    = dto.CreditsRemaining,
-        CurrentPeriodStart  = dto.CurrentPeriodStart.ToString("O"),
-        CurrentPeriodEnd    = dto.CurrentPeriodEnd.ToString("O"),
-        AutoRenew           = dto.AutoRenew,
-        CancelledAt         = dto.CancelledAt?.ToString("O") ?? string.Empty
+        SubscriptionId = dto.Id.ToString(),
+        Status = dto.Status,
+        PlanId = dto.PlanId.ToString(),
+        PlanName = dto.PlanName,
+        WorkspaceId = dto.WorkspaceId?.ToString() ?? string.Empty,
+        CreditsRemaining = dto.CreditsRemaining,
+        CurrentPeriodStart = dto.CurrentPeriodStart.ToString("O"),
+        CurrentPeriodEnd = dto.CurrentPeriodEnd.ToString("O"),
+        AutoRenew = dto.AutoRenew,
+        CancelledAt = dto.CancelledAt?.ToString("O") ?? string.Empty
     };
 
     private static Shared.Protos.PlanResponse ToPlanResponse(PlanDto dto) => new()
     {
-        PlanId              = dto.Id.ToString(),
-        Name                = dto.Name,
-        Slug                = dto.Slug,
-        Tier                = dto.Tier,
-        Price               = (double)dto.Price,
-        Currency            = dto.Currency,
-        BillingCycle        = dto.BillingCycle,
-        CreditsPerCycle     = dto.CreditsPerCycle,
-        MaxParticipants     = dto.MaxParticipants,
-        MaxLanguages        = dto.MaxLanguages,
-        VoiceCloneEnabled   = dto.VoiceCloneEnabled,
-        AiAssistantEnabled  = dto.AiAssistantEnabled,
-        GlossaryEnabled     = dto.GlossaryEnabled,
-        DedicatedGpu        = dto.DedicatedGpu,
-        Features            = dto.Features,
-        SortOrder           = dto.SortOrder
+        PlanId = dto.Id.ToString(),
+        Name = dto.Name,
+        Slug = dto.Slug,
+        Tier = dto.Tier,
+        Price = (double)dto.Price,
+        Currency = dto.Currency,
+        BillingCycle = dto.BillingCycle,
+        CreditsPerCycle = dto.CreditsPerCycle,
+        MaxParticipants = dto.MaxParticipants,
+        MaxLanguages = dto.MaxLanguages,
+        VoiceCloneEnabled = dto.VoiceCloneEnabled,
+        AiAssistantEnabled = dto.AiAssistantEnabled,
+        GlossaryEnabled = dto.GlossaryEnabled,
+        DedicatedGpu = dto.DedicatedGpu,
+        Features = dto.Features,
+        SortOrder = dto.SortOrder
     };
 }

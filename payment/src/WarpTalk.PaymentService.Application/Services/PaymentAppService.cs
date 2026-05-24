@@ -29,19 +29,20 @@ public class PaymentAppService : IPaymentAppService
         );
     }
 
-    public async Task ProcessCheckoutSessionCompletedAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string paymentType)
+    public async Task ProcessPaymentEventAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string paymentType, string status, string failureReason = "")
     {
-        // Call Billing API via gRPC directly without saving locally
-        // Idempotency check is handled on the Billing side.
-        var request = new ProcessPaymentRequest
+        var request = new ProcessPaymentEventRequest
         {
             UserId = userId,
             Amount = (double)amount,
-            Currency = currency,
-            PaymentType = paymentType,
-            StripeSessionId = stripeSessionId
+            Currency = currency ?? "usd",
+            PaymentType = paymentType ?? "Unknown",
+            StripeSessionId = stripeSessionId ?? string.Empty,
+            ProviderTransactionId = paymentIntentId ?? string.Empty,
+            Status = status,
+            FailureReason = failureReason ?? string.Empty
         };
-        
-        await _billingClient.ProcessPaymentSuccessAsync(request);
+
+        await _billingClient.ProcessPaymentEventAsync(request);
     }
 }

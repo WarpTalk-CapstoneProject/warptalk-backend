@@ -12,10 +12,10 @@ public class RedisBillingStore : IRedisBillingStore
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IDatabase _db;
-    
+
     private const string ReservationZSetKey = "warptalk:billing:reservations_zset";
     private const string ReservationHashKey = "warptalk:billing:reservations_hash";
-    
+
     private const string SessionZSetKey = "warptalk:billing:sessions_zset";
 
     public RedisBillingStore(IConnectionMultiplexer redis)
@@ -28,7 +28,7 @@ public class RedisBillingStore : IRedisBillingStore
     {
         var expireTime = DateTimeOffset.UtcNow.Add(ttl).ToUnixTimeMilliseconds();
         var json = JsonSerializer.Serialize(reservation);
-        
+
         var t1 = _db.SortedSetAddAsync(ReservationZSetKey, reservation.IdempotencyKey, expireTime);
         var t2 = _db.HashSetAsync(ReservationHashKey, reservation.IdempotencyKey, json);
         await Task.WhenAll(t1, t2);
@@ -38,7 +38,7 @@ public class RedisBillingStore : IRedisBillingStore
     {
         var json = await _db.HashGetAsync(ReservationHashKey, idempotencyKey);
         if (json.IsNullOrEmpty) return null;
-        
+
         var t1 = _db.SortedSetRemoveAsync(ReservationZSetKey, idempotencyKey);
         var t2 = _db.HashDeleteAsync(ReservationHashKey, idempotencyKey);
         await Task.WhenAll(t1, t2);
@@ -58,7 +58,7 @@ public class RedisBillingStore : IRedisBillingStore
     {
         var maxScore = now.ToUnixTimeMilliseconds();
         var expiredKeys = await _db.SortedSetRangeByScoreAsync(SessionZSetKey, 0, maxScore);
-        
+
         var sessions = new List<Guid>();
         foreach (var key in expiredKeys)
         {

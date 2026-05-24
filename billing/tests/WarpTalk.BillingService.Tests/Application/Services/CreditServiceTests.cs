@@ -36,7 +36,7 @@ public class CreditServiceTests
         _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        
+
         _mockCostCalculator = new Mock<IRealtimeCostCalculator>();
         _mockRedisStore = new Mock<IRedisBillingStore>();
 
@@ -46,10 +46,10 @@ public class CreditServiceTests
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
 
         _creditService = new CreditService(
-            _mockUnitOfWork.Object, 
-            new Mock<ILogger<CreditService>>().Object, 
-            _mockMessagePublisher.Object, 
-            _mockCostCalculator.Object, 
+            _mockUnitOfWork.Object,
+            new Mock<ILogger<CreditService>>().Object,
+            _mockMessagePublisher.Object,
+            _mockCostCalculator.Object,
             _mockRedisStore.Object);
     }
 
@@ -74,7 +74,7 @@ public class CreditServiceTests
         _mockTxRepo.Verify(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockUsageRepo.Verify(r => r.AddAsync(It.IsAny<UsageRecord>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
-        
+
         _mockMessagePublisher.Verify(p => p.PublishAsync("warptalk:notifications:new", It.Is<WarpTalk.Shared.Models.RealtimeNotificationMessage>(m => m.UserId == hostWorkspaceId.ToString() && m.Type == "billing.credits_updated"), It.IsAny<CancellationToken>()), Times.Once);
     }
 

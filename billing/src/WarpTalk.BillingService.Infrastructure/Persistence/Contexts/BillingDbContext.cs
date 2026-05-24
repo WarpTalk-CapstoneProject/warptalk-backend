@@ -119,7 +119,8 @@ public partial class BillingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("subscriptions_pkey");
 
-            entity.ToTable("subscriptions", "subscription", t => {
+            entity.ToTable("subscriptions", "subscription", t =>
+            {
                 t.HasCheckConstraint("chk_subscription_status", "status IN ('pending', 'active', 'cancelled', 'expired')");
                 t.HasCheckConstraint("chk_subscription_credits", "credits_remaining >= 0");
             });

@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\WarpTalk.BillingService.Application\WarpTalk.BillingService.Application.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.BillingService.Domain\WarpTalk.BillingService.Domain.csproj" />
+    <ProjectReference Include="..\..\src\WarpTalk.BillingService.API\WarpTalk.BillingService.API.csproj" />
   </ItemGroup>
 
 </Project>

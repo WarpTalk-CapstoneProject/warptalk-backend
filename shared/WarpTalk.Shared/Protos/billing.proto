@@ -45,8 +45,11 @@ service BillingService {
   // Payment / transaction history (paginated)
   rpc GetTransactionHistory (GetHistoryRequest) returns (TransactionHistoryResponse);
 
-  // Process a successful payment (Internal)
+  // Process a successful payment (Internal) - Legacy
   rpc ProcessPaymentSuccess (ProcessPaymentRequest) returns (ProcessPaymentResponse);
+
+  // Process payment events including success, failures, and refunds
+  rpc ProcessPaymentEvent (ProcessPaymentEventRequest) returns (ProcessPaymentResponse);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -59,6 +62,17 @@ message ProcessPaymentRequest {
   string currency         = 3;
   string payment_type     = 4;
   string stripe_session_id= 5;
+}
+
+message ProcessPaymentEventRequest {
+  string user_id                 = 1;
+  double amount                  = 2;
+  string currency                = 3;
+  string payment_type            = 4;
+  string stripe_session_id       = 5;
+  string provider_transaction_id = 6;
+  string status                  = 7; // "paid", "failed", "refunded"
+  string failure_reason          = 8;
 }
 
 message ProcessPaymentResponse {
