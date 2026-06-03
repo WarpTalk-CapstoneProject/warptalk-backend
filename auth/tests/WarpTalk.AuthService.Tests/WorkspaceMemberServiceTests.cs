@@ -22,6 +22,7 @@ public class WorkspaceMemberServiceTests
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
     private readonly IRoleRepository _roleRepository;
+    private readonly IUserRepository _userRepository;
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly WorkspaceService _workspaceService;
 
@@ -31,11 +32,13 @@ public class WorkspaceMemberServiceTests
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
         _roleRepository = Substitute.For<IRoleRepository>();
+        _userRepository = Substitute.For<IUserRepository>();
         _workspaceCache = Substitute.For<IWorkspaceCacheService>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.RoleRepository.Returns(_roleRepository);
+        _unitOfWork.UserRepository.Returns(_userRepository);
 
         _workspaceService = new WorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<WorkspaceService>>());
     }
@@ -54,6 +57,17 @@ public class WorkspaceMemberServiceTests
         _workspaceMemberRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<CancellationToken>())
             .Returns(true);
 
+        var requesterUser = new User { Id = requesterUserId, Email = "requester@warptalk.vn" };
+        _userRepository.GetByIdAsync(requesterUserId, Arg.Any<CancellationToken>()).Returns(requesterUser);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace 
+            { 
+                Id = workspaceId, 
+                Type = "enterprise",
+                Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}"
+            });
+
         var members = new List<WorkspaceMember>
         {
             new() 
@@ -68,7 +82,7 @@ public class WorkspaceMemberServiceTests
             }
         };
 
-        _workspaceMemberRepository.GetMembersByWorkspaceAsync(workspaceId, query.Page, query.PageSize, query.Search, Arg.Any<CancellationToken>())
+        _workspaceMemberRepository.GetMembersByWorkspaceAsync(workspaceId, query.Page, query.PageSize, query.Search, Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns((members, 1));
 
         // Act
@@ -80,6 +94,59 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(1, result.Value.Total);
         Assert.Single(result.Value.Items);
         Assert.Equal("John Doe", result.Value.Items[0].FullName);
+    }
+
+    [Fact]
+    public async Task ListMembersAsync_ShouldFilterDirectory_WhenRequesterIsExternalMember()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var requesterUserId = Guid.NewGuid();
+        var query = new GetWorkspacesQuery(Page: 1, PageSize: 10);
+
+        var requesterUser = new User { Id = requesterUserId, Email = "external@gmail.com" };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Type = "enterprise",
+            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"]}"
+        };
+
+        // Mock requester is member
+        _workspaceMemberRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        _userRepository.GetByIdAsync(requesterUserId, Arg.Any<CancellationToken>())
+            .Returns(requesterUser);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        var adminUser = new User { FullName = "Admin User", Email = "admin@enterprise.com" };
+        var members = new List<WorkspaceMember>
+        {
+            new() 
+            { 
+                Id = Guid.NewGuid(), 
+                WorkspaceId = workspaceId, 
+                UserId = Guid.NewGuid(), 
+                Status = "Active", 
+                JoinedAt = DateTime.UtcNow,
+                User = adminUser,
+                Role = new Role { Name = "Admin" }
+            }
+        };
+
+        // When listing, onlyAdminsAndOwners should be true
+        _workspaceMemberRepository.GetMembersByWorkspaceAsync(workspaceId, query.Page, query.PageSize, query.Search, true, Arg.Any<CancellationToken>())
+            .Returns((members, 1));
+
+        // Act
+        var result = await _workspaceService.ListMembersAsync(workspaceId, query, requesterUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Single(result.Value.Items);
+        Assert.Equal("Admin User", result.Value.Items[0].FullName);
     }
 
     [Fact]
@@ -106,24 +173,7 @@ public class WorkspaceMemberServiceTests
 
     #region RemoveMemberAsync Tests
 
-    [Fact]
-    public async Task RemoveMemberAsync_ShouldFail_WhenWorkspaceIsPersonal()
-    {
-        // Arrange
-        var workspaceId = Guid.NewGuid();
-        var memberUserId = Guid.NewGuid();
-        var execUserId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Type = "personal" };
 
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-
-        // Act
-        var result = await _workspaceService.RemoveMemberAsync(workspaceId, memberUserId, execUserId);
-
-        // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-    }
 
     [Fact]
     public async Task RemoveMemberAsync_ShouldSucceed_WhenOwnerRemovesMember()
@@ -250,24 +300,7 @@ public class WorkspaceMemberServiceTests
 
     #region ChangeMemberRoleAsync Tests
 
-    [Fact]
-    public async Task ChangeMemberRoleAsync_ShouldFail_WhenWorkspaceIsPersonal()
-    {
-        // Arrange
-        var workspaceId = Guid.NewGuid();
-        var memberUserId = Guid.NewGuid();
-        var execUserId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Type = "personal" };
 
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-
-        // Act
-        var result = await _workspaceService.ChangeMemberRoleAsync(workspaceId, memberUserId, "Admin", execUserId);
-
-        // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-    }
 
     [Fact]
     public async Task ChangeMemberRoleAsync_ShouldSucceed_WhenOwnerPromotesMemberToAdmin()

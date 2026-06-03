@@ -68,19 +68,6 @@ public class GoogleAuthService : IGoogleAuthService
                 var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
                 _unitOfWork.UserSettingRepository.Add(settings);
 
-                // Create default Personal Workspace
-                var personalWorkspaceName = $"{user.FullName}'s Workspace";
-                var baseSlug = SlugHelper.GenerateSlug(personalWorkspaceName);
-                var slug = await SlugHelper.ResolveSlugCollisionAsync(baseSlug, _unitOfWork.WorkspaceRepository, ct);
-
-                var personalWorkspace = WorkspaceMapper.CreatePersonalWorkspace(user.FullName, slug, user.Id);
-                var ownerRoleName = WorkspaceUserRole.Owner.ToRoleName();
-                var ownerRole = await _unitOfWork.RoleRepository.FirstOrDefaultAsync(r => r.Name == ownerRoleName, "", ct);
-                var workspaceMember = WorkspaceMapper.CreateOwnerMember(personalWorkspace.Id, user.Id, ownerRole);
-
-                await _unitOfWork.WorkspaceRepository.AddAsync(personalWorkspace, ct);
-                await _unitOfWork.WorkspaceMemberRepository.AddAsync(workspaceMember, ct);
-
                 await _unitOfWork.SaveChangesAsync(ct);
             }
             else
@@ -130,22 +117,6 @@ public class GoogleAuthService : IGoogleAuthService
 
             _userRepository.Update(user);
 
-            // Fallback: Ensure user has a Personal Workspace (useful for existing accounts created before this feature)
-            var hasPersonal = await _unitOfWork.WorkspaceRepository.AnyAsync(w => w.OwnerId == user.Id && w.Type == "personal", ct);
-            if (!hasPersonal)
-            {
-                var personalWorkspaceName = $"{user.FullName}'s Workspace";
-                var baseSlug = SlugHelper.GenerateSlug(personalWorkspaceName);
-                var slug = await SlugHelper.ResolveSlugCollisionAsync(baseSlug, _unitOfWork.WorkspaceRepository, ct);
-
-                var personalWorkspace = WorkspaceMapper.CreatePersonalWorkspace(user.FullName, slug, user.Id);
-                var ownerRoleName = WorkspaceUserRole.Owner.ToRoleName();
-                var ownerRole = await _unitOfWork.RoleRepository.FirstOrDefaultAsync(r => r.Name == ownerRoleName, "", ct);
-                var workspaceMember = WorkspaceMapper.CreateOwnerMember(personalWorkspace.Id, user.Id, ownerRole);
-
-                await _unitOfWork.WorkspaceRepository.AddAsync(personalWorkspace, ct);
-                await _unitOfWork.WorkspaceMemberRepository.AddAsync(workspaceMember, ct);
-            }
             await _unitOfWork.SaveChangesAsync(ct);
 
             var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);

@@ -176,7 +176,17 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var expectedSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        var expectedSettings = new WorkspaceSettingsDto(
+            "vi",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string>(),
+            true
+        );
         _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedSettings));
 
@@ -185,7 +195,7 @@ public class WorkspacesControllerTests
 
         // Assert
         var okResult = Assert.IsType<OkObjectResult>(result);
-        var value = Assert.IsType<WorkspaceConfiguration>(okResult.Value);
+        var value = Assert.IsType<WorkspaceSettingsDto>(okResult.Value);
         Assert.Equal(expectedSettings, value);
     }
 
@@ -194,7 +204,17 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var newSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        var newSettings = new WorkspaceSettingsDto(
+            "vi",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string>(),
+            true
+        );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
 
@@ -210,7 +230,17 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var newSettings = new WorkspaceConfiguration { DefaultLanguage = "vi" };
+        var newSettings = new WorkspaceSettingsDto(
+            "vi",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string>(),
+            true
+        );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Failure("Forbidden", ErrorCodes.Forbidden));
 

@@ -371,46 +371,5 @@ public class AuthServiceTests
         );
     }
 
-    [Fact]
-    public async Task RegisterAsync_ShouldCreateDefaultPersonalWorkspace_WhenRegistrationSucceeds()
-    {
-        // Arrange
-        var request = new RegisterRequest("newuser@warptalk.vn", "password123", "New User");
-        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(false);
-        
-        // Mock role repository
-        var role = new Role { Id = Guid.NewGuid(), Name = "Owner" };
-        _unitOfWork.RoleRepository.FirstOrDefaultAsync(Arg.Any<System.Linq.Expressions.Expression<Func<Role, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(role);
 
-        // Mock workspace repository for Slug collision checks
-        _unitOfWork.WorkspaceRepository.AnyAsync(Arg.Any<System.Linq.Expressions.Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
-
-        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_pwd");
-
-        Workspace? capturedWorkspace = null;
-        _unitOfWork.WorkspaceRepository.AddAsync(Arg.Do<Workspace>(w => capturedWorkspace = w), Arg.Any<CancellationToken>())
-            .Returns(Task.CompletedTask);
-
-        // Act
-        var result = await _authService.RegisterAsync(request);
-
-        // Assert
-        Assert.True(result.IsSuccess);
-
-        Assert.NotNull(capturedWorkspace);
-        Assert.Equal("New User's Workspace", capturedWorkspace.Name);
-        Assert.Equal("personal", capturedWorkspace.Type);
-        Assert.Equal(WorkspaceConstants.PlanTierFree, capturedWorkspace.PlanTier);
-
-        // Verify WorkspaceMember Owner is created
-        await _unitOfWork.WorkspaceMemberRepository.Received(1).AddAsync(
-            Arg.Is<WorkspaceMember>(m => m.Status == "Active"),
-            Arg.Any<CancellationToken>()
-        );
-
-        // Verify UnitOfWork saved changes three times (once for user, once for workspace, once for token)
-        await _unitOfWork.Received(3).SaveChangesAsync(Arg.Any<CancellationToken>());
-    }
 }

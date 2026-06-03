@@ -8,7 +8,7 @@ namespace WarpTalk.AuthService.Domain.Interfaces;
 public interface IWorkspaceMemberRepository : IGenericRepository<WorkspaceMember>
 {
     Task<bool> IsOwnerOrAdminAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
-    Task<(List<WorkspaceMember> Items, int TotalCount)> GetMembersByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? search, CancellationToken ct = default);
+    Task<(List<WorkspaceMember> Items, int TotalCount)> GetMembersByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? search, bool onlyAdminsAndOwners = false, CancellationToken ct = default);
     Task<int> CountActiveOwnersAsync(Guid workspaceId, CancellationToken ct = default);
 }
 

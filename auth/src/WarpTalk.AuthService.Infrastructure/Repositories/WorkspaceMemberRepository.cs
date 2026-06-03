@@ -30,12 +30,17 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
         return roleName == "Owner" || roleName == "Admin";
     }
 
-    public async Task<(List<WorkspaceMember> Items, int TotalCount)> GetMembersByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? search, CancellationToken ct = default)
+    public async Task<(List<WorkspaceMember> Items, int TotalCount)> GetMembersByWorkspaceAsync(Guid workspaceId, int page, int pageSize, string? search, bool onlyAdminsAndOwners = false, CancellationToken ct = default)
     {
         var query = _dbSet
             .Include(m => m.User)
             .Include(m => m.Role)
             .Where(m => m.WorkspaceId == workspaceId && m.RemovedAt == null);
+
+        if (onlyAdminsAndOwners)
+        {
+            query = query.Where(m => m.Role.Name == "Owner" || m.Role.Name == "Admin");
+        }
 
         if (!string.IsNullOrWhiteSpace(search))
         {

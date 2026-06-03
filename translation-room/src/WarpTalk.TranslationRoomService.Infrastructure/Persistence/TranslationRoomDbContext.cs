@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Domain.Entities;
@@ -31,14 +31,7 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
 
-<<<<<<< HEAD
-    public virtual DbSet<TranslationRoomArtifact> TranslationRoomArtifacts { get; set; }
-
-
-
-=======
     public virtual DbSet<UserSetting> UserSettings { get; set; }
->>>>>>> development
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -403,11 +396,10 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasConstraintName("translation_room_participants_translation_room_id_fkey");
         });
 
-<<<<<<< HEAD
         modelBuilder.HasPostgresEnum<RoomStatus>("translation_room", "room_status");
         modelBuilder.HasPostgresEnum<TranslationRoomParticipantStatus>("translation_room", "participant_status");
         modelBuilder.HasPostgresEnum<ArtifactType>("translation_room", "artifact_type");
-=======
+
         modelBuilder.Entity<UserSetting>(entity =>
         {
             entity
@@ -422,7 +414,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("default_speak_language");
             entity.Property(e => e.UserId).HasColumnName("user_id");
         });
->>>>>>> development
 
         modelBuilder.Entity<TranslationRoomArtifact>(entity =>
         {
@@ -489,5 +480,9 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .HasConstraintName("translation_room_artifacts_translation_room_id_fkey");
         });
+
+        OnModelCreatingPartial(modelBuilder);
     }
+
+    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
 }

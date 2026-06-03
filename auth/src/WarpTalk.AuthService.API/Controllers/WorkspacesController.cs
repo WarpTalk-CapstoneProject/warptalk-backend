@@ -118,7 +118,7 @@ public class WorkspacesController : ControllerBase
 
     [Authorize]
     [HttpPut("{id:guid}/settings")]
-    public async Task<IActionResult> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceConfiguration settings, CancellationToken ct)
+    public async Task<IActionResult> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceSettingsDto settings, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();

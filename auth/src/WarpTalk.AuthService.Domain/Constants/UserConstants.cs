@@ -33,5 +33,5 @@ public static class UserConstants
 
     // Regex Patterns
     public const string LanguageCodeRegex = @"^[a-zA-Z]{2}(-[a-zA-Z]{2})?$";
-    public const string PermittedEmailRegex = @"^(?i)[a-zA-Z0-9._%+-]+@gmail\.com$";
+    public const string PermittedEmailRegex = @"^(?i)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$";
 }

@@ -19,24 +19,12 @@ public interface ITranslationRoomService
     
     // Lifecycle Controls
     Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
-<<<<<<< HEAD
-    Task<Result> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
-    Task<Result> PauseTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
-    Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
-    Task<Result> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
-    Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
-    
-    // History
-    Task<Result<List<TranslationRoomDto>>> GetRoomHistoryAsync(Guid userId, int limit = 50, int offset = 0, CancellationToken ct = default);
-=======
     Task<Result> PauseTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
-    
     
     Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, CancellationToken ct = default);
     Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackDto>> SubmitFeedbackAsync(Guid translationRoomId, Guid userId, SubmitTranslationRoomFeedbackRequest request, CancellationToken ct = default);
->>>>>>> development
 }

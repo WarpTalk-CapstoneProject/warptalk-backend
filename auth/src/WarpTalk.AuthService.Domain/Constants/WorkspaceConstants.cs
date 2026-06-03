@@ -12,3 +12,9 @@ public static class WorkspaceConstants
     public const int DefaultWorkspaceMaxActiveRooms = 5;
     public const int DefaultWorkspaceArtifactRetentionDays = 30;
 }
+
+public static class WorkspaceMemberStatus
+{
+    public const string Active = "Active";
+    public const string Removed = "Removed";
+}

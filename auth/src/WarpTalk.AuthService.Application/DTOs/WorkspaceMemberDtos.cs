@@ -11,7 +11,8 @@ public record WorkspaceMemberDto(
     string? AvatarUrl,
     string RoleName,
     string Status,
-    DateTime JoinedAt
+    DateTime JoinedAt,
+    string MembershipType
 );
 
 public record ChangeMemberRoleRequest(

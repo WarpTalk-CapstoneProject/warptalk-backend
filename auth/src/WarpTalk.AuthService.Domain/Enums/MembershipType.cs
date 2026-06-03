@@ -3,7 +3,8 @@ using System.Text.Json.Serialization;
 namespace WarpTalk.AuthService.Domain.Enums;
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum WorkspaceType
+public enum MembershipType
 {
-    Enterprise
+    Internal,
+    External
 }

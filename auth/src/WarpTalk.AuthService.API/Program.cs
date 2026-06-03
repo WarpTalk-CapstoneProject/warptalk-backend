@@ -39,6 +39,7 @@ builder.Services.AddDbContext<AuthDbContext>(options =>
 // --- Configuration ---
 builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
 builder.Services.Configure<WorkspaceSystemSettings>(builder.Configuration.GetSection("WorkspaceSettings"));
+builder.Services.Configure<PasswordHasherSettings>(builder.Configuration.GetSection("PasswordHasherSettings"));
 
 // --- Repositories ---
 builder.Services.AddScoped<IUserRepository, UserRepository>();

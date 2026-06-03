@@ -19,11 +19,11 @@ public interface IWorkspaceService
     Task<Result> RevokeInvitationAsync(Guid workspaceId, Guid invitationId, Guid userId, CancellationToken ct = default);
     Task<Result<PreviewInvitationResponse>> PreviewInvitationAsync(string token, CancellationToken ct = default);
     Task<Result> AcceptInvitationAsync(AcceptInvitationRequest request, Guid userId, string userEmail, CancellationToken ct = default);
-    Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, CancellationToken ct = default);
+    Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid executingUserId, CancellationToken ct = default);
     Task<Result<PagedResult<WorkspaceMemberDto>>> ListMembersAsync(Guid workspaceId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default);
     Task<Result> RemoveMemberAsync(Guid workspaceId, Guid memberUserId, Guid executingUserId, CancellationToken ct = default);
     Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default);
-    Task<Result<WorkspaceConfiguration>> GetWorkspaceSettingsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
-    Task<Result> UpdateWorkspaceSettingsAsync(Guid workspaceId, WorkspaceConfiguration settings, Guid userId, CancellationToken ct = default);
+    Task<Result<WorkspaceSettingsDto>> GetWorkspaceSettingsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+    Task<Result> UpdateWorkspaceSettingsAsync(Guid workspaceId, WorkspaceSettingsDto settings, Guid userId, CancellationToken ct = default);
 }
 

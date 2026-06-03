@@ -48,6 +48,8 @@ public class InternalContextMiddleware
 
                     var subClaim = principal.FindFirst("sub")?.Value ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                     var workspaceIdClaim = principal.FindFirst("workspace_id")?.Value;
+                    var roleClaim = principal.FindFirst("role")?.Value;
+                    var membershipTypeClaim = principal.FindFirst("membership_type")?.Value;
 
                     if (Guid.TryParse(subClaim, out var userId) && Guid.TryParse(workspaceIdClaim, out var workspaceId))
                     {
@@ -60,7 +62,7 @@ public class InternalContextMiddleware
                         }
 
                         var workspaceContext = context.RequestServices.GetService(typeof(IWorkspaceContext)) as IWorkspaceContext;
-                        workspaceContext?.SetContext(userId, workspaceId);
+                        workspaceContext?.SetContext(userId, workspaceId, roleClaim, membershipTypeClaim);
                     }
                 }
                 catch

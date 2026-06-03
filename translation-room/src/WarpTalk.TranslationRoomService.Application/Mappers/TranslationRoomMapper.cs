@@ -30,7 +30,7 @@ public static class TranslationRoomMapper
             room.Description,
             room.TranslationRoomCode,
             room.Status,
-            Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
+            string.IsNullOrEmpty(room.TranslationRoomType) ? TranslationRoomType.INSTANT : Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,
             Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
@@ -59,12 +59,8 @@ public static class TranslationRoomMapper
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
             Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval, ArtifactAccess = request.Settings.ArtifactAccess }) : "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}",
-<<<<<<< HEAD
-            ScheduledAt = request.ScheduledAt
-=======
             ScheduledAt = request.ScheduledAt,
             IsActive = true
->>>>>>> development
         };
     }
 
@@ -90,17 +86,14 @@ public static class TranslationRoomMapper
             room.Description,
             room.TranslationRoomCode,
             room.Status,
-            Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
+            string.IsNullOrEmpty(room.TranslationRoomType) ? TranslationRoomType.INSTANT : Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,
             Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
             room.ScheduledAt,
             room.StartedAt,
             room.EndedAt,
-<<<<<<< HEAD
-=======
             room.DurationSeconds,
->>>>>>> development
             room.CreatedAt,
             settings,
             artifacts

@@ -19,7 +19,10 @@ public class RegisterRequestValidatorTests
     [InlineData("test.user@gmail.com")]
     [InlineData("TEST@GMAIL.COM")]
     [InlineData("Someone.Else+Label@Gmail.com")]
-    public void Validate_ShouldPass_WhenGmailEmailIsValid(string email)
+    [InlineData("test.user@yahoo.com")]
+    [InlineData("test.user@warptalk.vn")]
+    [InlineData("test@gmail.co")]
+    public void Validate_ShouldPass_WhenEmailIsValid(string email)
     {
         // Arrange
         var request = new RegisterRequest(email, "password123", "John Doe");
@@ -32,12 +35,10 @@ public class RegisterRequestValidatorTests
     }
 
     [Theory]
-    [InlineData("test.user@yahoo.com")]
-    [InlineData("test.user@warptalk.vn")]
-    [InlineData("test@gmail.co")]
-    [InlineData("test@gmail.com.vn")]
     [InlineData("not-an-email")]
-    public void Validate_ShouldFail_WhenEmailIsNotGmail(string email)
+    [InlineData("test@invalid")]
+    [InlineData("@domain.com")]
+    public void Validate_ShouldFail_WhenEmailIsInvalid(string email)
     {
         // Arrange
         var request = new RegisterRequest(email, "password123", "John Doe");

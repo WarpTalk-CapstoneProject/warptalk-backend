@@ -6,7 +6,8 @@ namespace WarpTalk.AuthService.Application.DTOs;
 public record CreateWorkspaceRequest(
     string Name,
     string? Description,
-    string? LogoUrl
+    string? LogoUrl,
+    string? Type = null
 );
 
 public record GetWorkspacesQuery

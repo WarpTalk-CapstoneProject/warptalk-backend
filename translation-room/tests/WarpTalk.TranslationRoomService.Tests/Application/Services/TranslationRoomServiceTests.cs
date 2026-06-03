@@ -161,7 +161,7 @@ public class TranslationRoomServiceTests
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be(nameof(RoomStatus.IN_PROGRESS));
         room.StartedAt.Should().NotBeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
@@ -172,14 +172,14 @@ public class TranslationRoomServiceTests
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = nameof(RoomStatus.SCHEDULED), Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}" };
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = nameof(RoomStatus.ENDED), Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}" };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToInProgress);
+        result.IsSuccess.Should().BeFalse(result.Error);
+        result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToStart);
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
     }
 
@@ -273,59 +273,5 @@ public class TranslationRoomServiceTests
         participant3.Status.Should().Be(nameof(TranslationRoomParticipantStatus.INVITED)); // unchanged
         _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
     }
-
-<<<<<<< HEAD
-    [Fact]
-    public async Task GetRoomHistoryAsync_ShouldReturnAllTerminalRooms_ForBothHostAndParticipant()
-    {
-        // Arrange
-        var userId = Guid.NewGuid();
-        var hostRoom = new TranslationRoom
-        {
-            Id = Guid.NewGuid(),
-            HostId = userId,
-            Title = "Host Room",
-            TranslationRoomCode = "ABCDEF123456",
-            Status = nameof(RoomStatus.ENDED),
-            TranslationRoomType = "Instant",
-            MaxParticipants = 5,
-            SourceLanguage = "en",
-            TargetLanguages = "[\"vi\"]",
-            Settings = "{\"requires_approval\":true}",
-            CreatedAt = DateTime.UtcNow
-        };
-
-        var participantRoom = new TranslationRoom
-        {
-            Id = Guid.NewGuid(),
-            HostId = Guid.NewGuid(),
-            Title = "Participant Room",
-            TranslationRoomCode = "XYZ123456789",
-            Status = nameof(RoomStatus.ENDED),
-            TranslationRoomType = "Instant",
-            MaxParticipants = 5,
-            SourceLanguage = "en",
-            TargetLanguages = "[\"vi\"]",
-            Settings = "{\"requires_approval\":true}",
-            CreatedAt = DateTime.UtcNow
-        };
-
-        var rooms = new List<TranslationRoom> { hostRoom, participantRoom };
-
-        _mockRoomRepo.Setup(r => r.GetHistoryByUserIdAsync(userId, It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(rooms);
-
-        // Act
-        var result = await _service.GetRoomHistoryAsync(userId);
-
-        // Assert
-        result.IsSuccess.Should().BeTrue();
-        result.Value!.Should().HaveCount(2);
-        result.Value![0].Title.Should().Be("Host Room");
-        result.Value![1].Title.Should().Be("Participant Room");
-    }
-=======
-
->>>>>>> development
 }
 

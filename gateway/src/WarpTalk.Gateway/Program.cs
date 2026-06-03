@@ -6,6 +6,8 @@ using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Services;
+using WarpTalk.Gateway.Transforms;
+using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -114,6 +116,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // 4. Configure YARP Reverse Proxy
+builder.Services.AddTransient<Yarp.ReverseProxy.Transforms.Builder.ITransformProvider, InternalContextTransformProvider>();
 builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 

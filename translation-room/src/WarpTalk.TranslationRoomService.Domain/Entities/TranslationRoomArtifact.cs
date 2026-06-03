@@ -1,11 +1,6 @@
-<<<<<<< HEAD
 using System;
 using System.Collections.Generic;
 using WarpTalk.TranslationRoomService.Domain.Enums;
-=======
-﻿using System;
-using System.Collections.Generic;
->>>>>>> development
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -17,14 +12,7 @@ public partial class TranslationRoomArtifact
 
     public string? FileUrl { get; set; }
 
-<<<<<<< HEAD
-    public ArtifactType ArtifactType { get; set; }
-
-
-    public string? FileUrl { get; set; }
-=======
     public string? FileFormat { get; set; }
->>>>>>> development
 
     public long? FileSizeBytes { get; set; }
 

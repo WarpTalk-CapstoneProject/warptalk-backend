@@ -26,8 +26,6 @@ public class TranslationRoomsController : ControllerBase
     {
         _translationRoomService = translationRoomService;
         _artifactService = artifactService;
-<<<<<<< HEAD
-=======
     }
 
     [HttpGet]
@@ -42,7 +40,6 @@ public class TranslationRoomsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
         return Ok(result.Value!);
->>>>>>> development
     }
 
     [HttpPost]
@@ -107,20 +104,7 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
-<<<<<<< HEAD
-    [HttpPost("{id}/start")]
-    public async Task<IActionResult> StartTranslationRoom(Guid id, CancellationToken ct)
-    {
-        var hostId = User.GetUserId();
-        if (hostId == null) return Unauthorized();
 
-        var result = await _translationRoomService.StartTranslationRoomAsync(id, hostId.Value, ct);
-        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        return NoContent();
-    }
-=======
->>>>>>> development
 
     [HttpPost("{id}/pause")]
     public async Task<IActionResult> PauseTranslationRoom(Guid id, CancellationToken ct)
@@ -146,20 +130,7 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
-<<<<<<< HEAD
-    [HttpPost("{id}/cancel")]
-    public async Task<IActionResult> CancelTranslationRoom(Guid id, CancellationToken ct)
-    {
-        var hostId = User.GetUserId();
-        if (hostId == null) return Unauthorized();
 
-        var result = await _translationRoomService.CancelTranslationRoomAsync(id, hostId.Value, ct);
-        if (!result.IsSuccess) return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        return NoContent();
-    }
-=======
->>>>>>> development
 
     [HttpPost("{id}/end")]
     public async Task<IActionResult> EndTranslationRoom(Guid id, CancellationToken ct)
@@ -313,39 +284,5 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
-<<<<<<< HEAD
-    [HttpGet("history")]
-    public async Task<IActionResult> GetRoomHistory([FromQuery] int limit = 50, [FromQuery] int offset = 0, CancellationToken ct = default)
-    {
-        var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
 
-        var result = await _translationRoomService.GetRoomHistoryAsync(userId.Value, limit, offset, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        
-        return Ok(result.Value);
-    }
-
-    [HttpGet("{id}/artifacts")]
-    public async Task<IActionResult> GetRoomArtifacts(Guid id, CancellationToken ct = default)
-    {
-        var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
-
-        var result = await _artifactService.GetRoomArtifactsAsync(id, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Unauthorized) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
-    }
-=======
->>>>>>> development
 }

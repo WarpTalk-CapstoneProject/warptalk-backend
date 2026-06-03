@@ -43,7 +43,7 @@ public class InternalContextMiddlewareTests
 
         // Assert
         await _next.Received(1).Invoke(context);
-        workspaceContext.Received(1).SetContext(userId, workspaceId);
+        workspaceContext.Received(1).SetContext(userId, workspaceId, Arg.Any<string?>(), Arg.Any<string?>());
     }
 
     [Fact]
@@ -143,7 +143,7 @@ public class InternalContextMiddlewareTests
         // Assert
         Assert.Equal(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
         await _next.DidNotReceive().Invoke(Arg.Any<HttpContext>());
-        workspaceContext.DidNotReceive().SetContext(Arg.Any<Guid>(), Arg.Any<Guid>());
+        workspaceContext.DidNotReceive().SetContext(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<string?>());
     }
 
     [Fact]
@@ -160,6 +160,6 @@ public class InternalContextMiddlewareTests
 
         // Assert
         await _next.Received(1).Invoke(context);
-        workspaceContext.DidNotReceive().SetContext(Arg.Any<Guid>(), Arg.Any<Guid>());
+        workspaceContext.DidNotReceive().SetContext(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<string?>(), Arg.Any<string?>());
     }
 }

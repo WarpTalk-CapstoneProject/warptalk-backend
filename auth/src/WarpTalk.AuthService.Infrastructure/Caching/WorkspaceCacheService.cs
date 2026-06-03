@@ -16,12 +16,19 @@ public class WorkspaceCacheService : IWorkspaceCacheService
         _cache = cache;
     }
 
-    public async Task SetActiveWorkspaceAsync(Guid userId, Guid workspaceId, CancellationToken ct = default)
+    public async Task SetActiveWorkspaceDetailsAsync(Guid userId, Guid workspaceId, string role, string membershipType, CancellationToken ct = default)
     {
         var cacheKey = $"{ActiveWorkspaceKeyPrefix}{userId}";
+        var roleKey = $"{ActiveWorkspaceKeyPrefix}{userId}:role";
+        var membershipTypeKey = $"{ActiveWorkspaceKeyPrefix}{userId}:membership_type";
         
-        // Use SetStringAsync to avoid manual byte serialization and keep infrastructure logic encapsulated
-        await _cache.SetStringAsync(cacheKey, workspaceId.ToString(), new DistributedCacheEntryOptions(), ct);
+        var options = new DistributedCacheEntryOptions
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7)
+        };
+        await _cache.SetStringAsync(cacheKey, workspaceId.ToString(), options, ct);
+        await _cache.SetStringAsync(roleKey, role, options, ct);
+        await _cache.SetStringAsync(membershipTypeKey, membershipType, options, ct);
     }
 
     public async Task<Guid?> GetActiveWorkspaceAsync(Guid userId, CancellationToken ct = default)

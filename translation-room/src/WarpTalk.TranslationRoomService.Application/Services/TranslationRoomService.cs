@@ -268,29 +268,11 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-<<<<<<< HEAD
-    public async Task<Result> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
-=======
     public async Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
->>>>>>> development
     {
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-<<<<<<< HEAD
-            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
-            
-            if (translationRoom.Status != nameof(RoomStatus.WAITING))
-                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
-
-            translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
-            
-            if (!translationRoom.StartedAt.HasValue)
-                translationRoom.StartedAt = DateTime.UtcNow;
-                
-            translationRoom.UpdatedAt = DateTime.UtcNow;
-=======
 
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
@@ -299,35 +281,25 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>("Only the host can start the room.", ErrorCodes.Forbidden);
 
             if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
-                return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be started.", ErrorCodes.InvalidState);
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
             translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
             translationRoom.StartedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
->>>>>>> development
 
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
 
-<<<<<<< HEAD
             // WT-67: Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error starting translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
-=======
             return Result.Success(translationRoom.ToResponseDto());
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while starting the room.", ErrorCodes.InternalServerError);
->>>>>>> development
         }
     }
 
@@ -389,24 +361,25 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-<<<<<<< HEAD
-    public async Task<Result> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
-=======
     public async Task<Result<TranslationRoomDto>> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
->>>>>>> development
     {
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-<<<<<<< HEAD
-            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
-            
+
+            if (translationRoom == null)
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (translationRoom.HostId != hostId)
+                return Result.Failure<TranslationRoomDto>("Only the host can cancel the room.", ErrorCodes.Forbidden);
+
             if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
-                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToCancelled, ErrorCodes.InvalidState);
+                return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be cancelled.", ErrorCodes.InvalidState);
 
             translationRoom.Status = nameof(RoomStatus.CANCELLED);
+            translationRoom.EndedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
+            translationRoom.UpdatedBy = hostId;
 
             _translationRoomRepository.Update(translationRoom);
 
@@ -427,30 +400,6 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error cancelling translation room. RoomId: {RoomId}", translationRoomId);
-            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
-=======
-
-            if (translationRoom == null)
-                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-
-            if (translationRoom.HostId != hostId)
-                return Result.Failure<TranslationRoomDto>("Only the host can cancel the room.", ErrorCodes.Forbidden);
-
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
-                return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be cancelled.", ErrorCodes.InvalidState);
-
-            translationRoom.Status = nameof(RoomStatus.CANCELLED);
-            translationRoom.EndedAt ??= DateTime.UtcNow;
-            translationRoom.UpdatedAt = DateTime.UtcNow;
-            translationRoom.UpdatedBy = hostId;
-
-            _translationRoomRepository.Update(translationRoom);
-            await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(translationRoom.ToResponseDto());
         }
@@ -458,7 +407,6 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while cancelling translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while cancelling the room.", ErrorCodes.InternalServerError);
->>>>>>> development
         }
     }
 
@@ -519,12 +467,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
-<<<<<<< HEAD
-=======
             if (translationRoom.Status == nameof(RoomStatus.ENDED))
                 return Result.Success();
-
->>>>>>> development
             if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS) && translationRoom.Status != nameof(RoomStatus.PAUSED))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
@@ -627,27 +571,6 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while updating translation room settings. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
-<<<<<<< HEAD
-        }
-    }
-
-    public async Task<Result<List<TranslationRoomDto>>> GetRoomHistoryAsync(Guid userId, int limit = 50, int offset = 0, CancellationToken ct = default)
-    {
-        try
-        {
-            var userRooms = await _translationRoomRepository.GetHistoryByUserIdAsync(userId, limit, offset, ct);
-            var dtos = userRooms.Select(room => room.ToHistoryDto()).ToList();
-            
-            return Result<List<TranslationRoomDto>>.Success(dtos);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error getting room history for user {UserId}", userId);
-            return Result.Failure<List<TranslationRoomDto>>("An unexpected error occurred.", ErrorCodes.InternalServerError);
-        }
-    }
-}
-=======
         }
     }
 
@@ -923,4 +846,3 @@ public class TranslationRoomService : ITranslationRoomService
         );
     }
 }
->>>>>>> development

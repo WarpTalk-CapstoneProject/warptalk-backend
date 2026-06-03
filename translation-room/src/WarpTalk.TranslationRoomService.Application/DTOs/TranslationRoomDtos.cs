@@ -70,8 +70,6 @@ public record TranslationRoomDto(
     DateTime CreatedAt,
     RoomSettingsResponse Settings,
     List<RoomArtifactDto>? Artifacts = null
-<<<<<<< HEAD
-=======
 );
 
 public record TranslationRoomListItemDto(
@@ -101,7 +99,6 @@ public record TranslationRoomListResponse(
     int Total,
     int Page,
     int PageSize
->>>>>>> development
 );
 
 public record JoinTranslationRoomResponse(
@@ -122,8 +119,6 @@ public record RoomArtifactDto(
     DateTime CreatedAt
 );
 
-<<<<<<< HEAD
-=======
 public record TranslationRoomArtifactDto(
     Guid Id,
     Guid TranslationRoomId,
@@ -140,7 +135,6 @@ public record TranslationRoomArtifactDto(
     DateTime CreatedAt
 );
 
->>>>>>> development
 public record CreateArtifactRequest(
     Guid RoomId,
     ArtifactType ArtifactType,
@@ -152,8 +146,6 @@ public record CreateArtifactRequest(
     bool ConsentRequired,
     DateTime? RetentionUntil = null
 );
-<<<<<<< HEAD
-=======
 
 public record TranslationRoomHistoryItemDto(
     TranslationRoomListItemDto Room,
@@ -196,4 +188,3 @@ public record TranslationRoomFeedbackStateDto(
     bool HasSubmitted,
     TranslationRoomFeedbackDto? Feedback
 );
->>>>>>> development

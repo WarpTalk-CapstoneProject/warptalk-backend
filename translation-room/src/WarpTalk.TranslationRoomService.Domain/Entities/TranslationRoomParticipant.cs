@@ -1,11 +1,6 @@
-<<<<<<< HEAD
 using System;
 using System.Collections.Generic;
 using WarpTalk.TranslationRoomService.Domain.Enums;
-=======
-﻿using System;
-using System.Collections.Generic;
->>>>>>> development
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
