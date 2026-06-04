@@ -63,13 +63,39 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtSecret)),
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+
+        // SignalR: Extract JWT from query string for WebSocket handshake
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/api/v1/meetings/chat-hub"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
+        };
     });
+
+builder.Services.AddSignalR();
 
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
+
+// Chat repositories and services
+builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
+builder.Services.AddScoped<IMeetingChatTranslationRepository, MeetingChatTranslationRepository>();
+builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAssistantRequestRepository>();
+builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
+builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
+builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
+
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
@@ -92,5 +118,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub");
 
 app.Run();
