@@ -11,7 +11,7 @@ public class GoogleAuthService : IGoogleAuthService
 
     public GoogleAuthService(IConfiguration configuration)
     {
-        _clientId = configuration["Authentication:Google:ClientId"] 
+        _clientId = configuration["Authentication:Google:ClientId"]
             ?? throw new InvalidOperationException("Google ClientId is not configured.");
     }
 

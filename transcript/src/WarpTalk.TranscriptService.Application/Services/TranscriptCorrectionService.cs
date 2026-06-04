@@ -73,7 +73,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
 
             var db = _redis.GetDatabase();
             var streamKey = $"translate:requests:{transcript.TranslationRoomId}";
-            
+
             await db.StreamAddAsync(streamKey, new NameValueEntry[]
             {
                 new("segment_id", segmentId.ToString()),

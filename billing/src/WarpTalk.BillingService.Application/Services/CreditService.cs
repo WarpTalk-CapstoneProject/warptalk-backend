@@ -5,7 +5,6 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
-using Microsoft.EntityFrameworkCore;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -350,7 +349,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (DbUpdateException ex)
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
             {
                 // Concurrency Race Condition Handle (Unique Constraint Violation)
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey}. Assuming already reserved.", request.IdempotencyKey);
@@ -437,7 +436,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (DbUpdateException ex)
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
             {
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during consume. Assuming already consumed.", idempotencyKey);
                 var existingDto = new CreditTransactionDto(tx.Id, -tx.Amount, tx.Type, tx.Description ?? "", tx.ReferenceType ?? "", tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt);
@@ -519,7 +518,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (DbUpdateException ex)
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
             {
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during refund. Assuming already refunded.", idempotencyKey);
                 return Result.Success(true);

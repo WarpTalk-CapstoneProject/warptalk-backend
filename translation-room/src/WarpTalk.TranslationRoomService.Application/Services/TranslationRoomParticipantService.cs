@@ -38,7 +38,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
-            
+
             if (room.HostId != requestedByUserId && (requester == null || requester.Status != nameof(TranslationRoomParticipantStatus.CONNECTED)))
             {
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);

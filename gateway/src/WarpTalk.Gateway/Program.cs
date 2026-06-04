@@ -101,7 +101,7 @@ builder.Services.AddRateLimiter(options =>
                 PermitLimit = 100,
                 Window = TimeSpan.FromMinutes(1)
             }));
-    
+
     // Specific policy for login
     options.AddFixedWindowLimiter("LoginPolicy", opt =>
     {
@@ -187,9 +187,9 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
     // [Security] Zero-Trust Inter-service Authentication: Inject internal secret to gRPC requests.
     var config = serviceProvider.GetRequiredService<IConfiguration>();
     var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    
+
     var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
+    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) ||
                              rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                              rawGrpcSecret.Length < 32;
 
@@ -198,10 +198,10 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
     }
 
-    var secret = isDefaultOrInvalid 
-        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
+    var secret = isDefaultOrInvalid
+        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!"
         : rawGrpcSecret!;
-        
+
     metadata.Add("x-internal-token", secret);
     return Task.CompletedTask;
 });
@@ -214,7 +214,8 @@ app.UseCors();
 
 // Security Headers Middleware
 // [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
-app.Use(async (context, next) => {
+app.Use(async (context, next) =>
+{
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";

@@ -37,7 +37,7 @@ public class TranscriptExportService : ITranscriptExportService
             throw new UnauthorizedAccessException("You do not have access to this transcript.");
 
         var exportId = Guid.NewGuid(); // Alternatively, rely on DB to generate UUID
-        
+
         var includedLanguages = JsonSerializer.Serialize(request.IncludedLanguages ?? new List<string>());
 
         var export = new TranscriptExport
@@ -79,7 +79,7 @@ public class TranscriptExportService : ITranscriptExportService
             throw new UnauthorizedAccessException("You do not have access to this transcript export.");
 
         var segments = await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId);
-        
+
         var segmentIds = segments.Select(s => s.Id).ToList();
         var translations = await _unitOfWork.TranscriptTranslations.FindAsync(t => segmentIds.Contains(t.SegmentId));
 
@@ -89,9 +89,9 @@ public class TranscriptExportService : ITranscriptExportService
         }
 
         var orderedSegments = segments.OrderBy(s => s.SequenceOrder).ToList();
-        
+
         List<string> includedLangs = new();
-        try 
+        try
         {
             includedLangs = JsonSerializer.Deserialize<List<string>>(export.IncludedLanguages) ?? new List<string>();
         }
@@ -119,7 +119,7 @@ public class TranscriptExportService : ITranscriptExportService
     private byte[] GenerateTxt(List<TranscriptSegment> segments, List<string> includedLangs)
     {
         var sb = new StringBuilder();
-        
+
         foreach (var segment in segments)
         {
             // Add original text
@@ -145,7 +145,7 @@ public class TranscriptExportService : ITranscriptExportService
     private byte[] GenerateCsv(List<TranscriptSegment> segments, List<string> includedLangs)
     {
         var sb = new StringBuilder();
-        
+
         // Header
         var headers = new List<string> { "StartTime", "EndTime", "Speaker", "OriginalLanguage", "OriginalText" };
         headers.AddRange(includedLangs.Select(lang => $"Translated_{lang}"));

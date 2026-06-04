@@ -9,16 +9,16 @@ public static class TranslationRoomParticipantMapper
 {
     public static TranslationRoomParticipant ToParticipantEntity(
         this JoinTranslationRoomRequest request,
-        Guid translationRoomId, 
-        Guid userId, 
+        Guid translationRoomId,
+        Guid userId,
         string speakLanguage,
         string listenLanguage,
         bool requiresApproval,
         bool isHost)
     {
         var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
-        var initialStatus = (requiresApproval && !isHost) 
-            ? nameof(TranslationRoomParticipantStatus.WAITING) 
+        var initialStatus = (requiresApproval && !isHost)
+            ? nameof(TranslationRoomParticipantStatus.WAITING)
             : nameof(TranslationRoomParticipantStatus.CONNECTED);
 
         return new TranslationRoomParticipant
@@ -37,24 +37,24 @@ public static class TranslationRoomParticipantMapper
     }
 
     public static void UpdateFrom(
-        this TranslationRoomParticipant participant, 
-        JoinTranslationRoomRequest request, 
-        string speakLanguage, 
-        string listenLanguage, 
-        bool requiresApproval, 
+        this TranslationRoomParticipant participant,
+        JoinTranslationRoomRequest request,
+        string speakLanguage,
+        string listenLanguage,
+        bool requiresApproval,
         bool isHost)
     {
         participant.DisplayName = request.DisplayName;
         participant.ListenLanguage = listenLanguage;
         participant.SpeakLanguage = speakLanguage;
-        
+
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
         if (participant.Status == nameof(TranslationRoomParticipantStatus.DISCONNECTED) ||
             participant.Status == nameof(TranslationRoomParticipantStatus.LEFT) ||
             participant.Status == nameof(TranslationRoomParticipantStatus.INVITED))
         {
-            participant.Status = (requiresApproval && !isHost) 
-                ? nameof(TranslationRoomParticipantStatus.WAITING) 
+            participant.Status = (requiresApproval && !isHost)
+                ? nameof(TranslationRoomParticipantStatus.WAITING)
                 : nameof(TranslationRoomParticipantStatus.CONNECTED);
         }
 
@@ -64,7 +64,7 @@ public static class TranslationRoomParticipantMapper
             participant.Role = nameof(TranslationRoomParticipantRole.HOST);
             participant.Status = nameof(TranslationRoomParticipantStatus.CONNECTED);
         }
-        
+
         participant.UpdatedAt = DateTime.UtcNow;
     }
 

@@ -204,7 +204,7 @@ public class AuthService : IAuthService
             user = new User
             {
                 Email = email,
-                PasswordHash = "", 
+                PasswordHash = "",
                 FullName = payload.Name ?? "Google User",
                 AvatarUrl = payload.Picture,
                 EmailVerified = payload.EmailVerified,
@@ -231,7 +231,7 @@ public class AuthService : IAuthService
 
         user.LastLoginAt = DateTime.UtcNow;
         user.LastLoginIp = request.IpAddress;
-        
+
         // We know we must save in case of new user or updated
         if (user.Id != Guid.Empty) _unitOfWork.Users.Update(user);
         await _unitOfWork.SaveChangesAsync(ct);

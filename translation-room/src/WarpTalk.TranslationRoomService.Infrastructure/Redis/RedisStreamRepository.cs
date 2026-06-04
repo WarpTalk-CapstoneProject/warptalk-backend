@@ -31,10 +31,10 @@ public class RedisStreamRepository : IRedisStreamRepository
     }
 
     public async Task<List<RedisStreamMessage>> ReadGroupAsync(
-        string streamName, 
-        string groupName, 
-        string consumerName, 
-        string position = ">", 
+        string streamName,
+        string groupName,
+        string consumerName,
+        string position = ">",
         int count = 10)
     {
         var entries = await GetDb().StreamReadGroupAsync(streamName, groupName, consumerName, position, count);

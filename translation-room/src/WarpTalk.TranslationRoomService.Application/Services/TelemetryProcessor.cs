@@ -22,7 +22,7 @@ public class TelemetryProcessor : ITelemetryProcessor
     private readonly IOptionsMonitor<TelemetrySettings> _optionsMonitor;
 
     public TelemetryProcessor(
-        IRedisStateRepository redisStateRepo, 
+        IRedisStateRepository redisStateRepo,
         ILogger<TelemetryProcessor> logger,
         IAudioRouteEventProcessor eventProcessor,
         IOptionsMonitor<TelemetrySettings> optionsMonitor)
@@ -51,7 +51,7 @@ public class TelemetryProcessor : ITelemetryProcessor
 
             // 2. Fetch centralized telemetry state from Redis Hash via Repository
             var stateEntries = await _redisStateRepo.GetHashAllAsync(hashKey);
-            
+
             double oldSttEma = 0, oldTranslationEma = 0, oldTtsEma = 0;
             bool isSttDegraded = false, isTranslationDegraded = false, isTtsDegraded = false;
             int warmupCount = 0;
@@ -70,7 +70,7 @@ public class TelemetryProcessor : ITelemetryProcessor
             if (warmupCount < warmupThreshold)
             {
                 warmupCount++;
-                _logger.LogInformation("Room {RoomId} Telemetry warmup count: {Count}/{WarmupThreshold}. Latency: {LatencyMs}ms (Worker: {Worker})", 
+                _logger.LogInformation("Room {RoomId} Telemetry warmup count: {Count}/{WarmupThreshold}. Latency: {LatencyMs}ms (Worker: {Worker})",
                     payload.RoomId, warmupCount, warmupThreshold, payload.LatencyMs, payload.WorkerType);
 
                 var warmupUpdates = new Dictionary<string, string>
@@ -169,7 +169,7 @@ public class TelemetryProcessor : ITelemetryProcessor
 
             // 6. Save updated telemetry metrics back to Redis Hash
             await _redisStateRepo.HashSetAsync(hashKey, updates);
-            
+
             // Set 24 hour TTL on telemetry key for automated lifecycle cleanup
             await _redisStateRepo.KeyExpireAsync(hashKey, TimeSpan.FromHours(24));
 
@@ -184,7 +184,7 @@ public class TelemetryProcessor : ITelemetryProcessor
                 voiceCloneStatus,
                 deliveryMode);
 
-            _logger.LogInformation("Resolved effective status {Status} for Room {RoomId} / Route {RouteId}", 
+            _logger.LogInformation("Resolved effective status {Status} for Room {RoomId} / Route {RouteId}",
                 resolvedStatus, payload.RoomId, payload.RouteId);
 
             // Synchronize the resolved canonical status to PostgreSQL

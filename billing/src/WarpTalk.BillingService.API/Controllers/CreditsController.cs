@@ -21,6 +21,7 @@ public class CreditsController : ControllerBase
     /// <summary>
     /// Get the current credit balance for a workspace.
     /// </summary>
+    [AllowAnonymous]
     [HttpGet("workspace/{workspaceId:guid}")]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(
         Guid workspaceId,
@@ -35,6 +36,7 @@ public class CreditsController : ControllerBase
     /// <summary>
     /// Deduct credits from a workspace subscription.
     /// </summary>
+    [AllowAnonymous]
     [HttpPost("workspace/{workspaceId:guid}/consume")]
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCredits(
         Guid workspaceId,

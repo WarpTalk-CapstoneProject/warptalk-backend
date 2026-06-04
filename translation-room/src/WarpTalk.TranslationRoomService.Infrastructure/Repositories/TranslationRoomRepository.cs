@@ -44,7 +44,7 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
     public async Task<List<TranslationRoom>> GetHistoryByUserIdAsync(Guid userId, int limit, int offset, CancellationToken ct = default)
     {
         var terminalStatuses = TranslationRoomConstants.TerminalStatuses;
-        
+
         var query = _dbSet
             .Include(r => r.TranslationRoomParticipants)
             .Include(r => r.TranslationRoomArtifacts)

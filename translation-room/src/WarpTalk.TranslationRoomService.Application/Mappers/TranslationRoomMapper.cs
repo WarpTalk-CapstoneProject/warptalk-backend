@@ -18,7 +18,7 @@ public static class TranslationRoomMapper
         }
 
         RoomSettingsResponse settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
-            room.Settings, 
+            room.Settings,
             new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidOperationException($"Failed to deserialize Settings for TranslationRoom {room.Id}");
 
@@ -72,7 +72,7 @@ public static class TranslationRoomMapper
         }
 
         RoomSettingsResponse settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
-            room.Settings, 
+            room.Settings,
             new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidOperationException($"Failed to deserialize Settings for TranslationRoom {room.Id}");
 

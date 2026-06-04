@@ -139,7 +139,7 @@ public partial class AuthDbContext : DbContext
             entity.HasIndex(e => e.Email, "idx_users_email").HasFilter("(deleted_at IS NULL)");
 
             entity.HasIndex(e => e.Email, "users_email_key").IsUnique();
-            
+
             entity.HasIndex(e => e.GoogleId, "users_google_id_key").IsUnique();
 
             entity.Property(e => e.Id)

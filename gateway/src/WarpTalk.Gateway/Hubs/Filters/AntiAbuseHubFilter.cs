@@ -19,7 +19,7 @@ public class AntiAbuseHubFilter : IHubFilter
     }
 
     public async ValueTask<object?> InvokeMethodAsync(
-        HubInvocationContext invocationContext, 
+        HubInvocationContext invocationContext,
         Func<HubInvocationContext, ValueTask<object?>> next)
     {
         var connectionId = invocationContext.Context.ConnectionId;
@@ -33,9 +33,9 @@ public class AntiAbuseHubFilter : IHubFilter
 
         if (count >= MaxMessagesPerSecond)
         {
-            _logger.LogWarning("[ABUSE_DETECTED] Hub method spam from ConnectionId: {ConnectionId}. Method: {MethodName}", 
+            _logger.LogWarning("[ABUSE_DETECTED] Hub method spam from ConnectionId: {ConnectionId}. Method: {MethodName}",
                 connectionId, invocationContext.HubMethodName);
-            
+
             // Abort the connection entirely to stop abuse
             invocationContext.Context.Abort();
             throw new HubException("Rate limit exceeded.");
@@ -48,7 +48,7 @@ public class AntiAbuseHubFilter : IHubFilter
 
     public async Task OnConnectedAsync(HubLifetimeContext context, Func<HubLifetimeContext, Task> next)
     {
-        var userId = context.Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+        var userId = context.Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
                   ?? context.Context.User?.FindFirst("sub")?.Value;
 
         if (!string.IsNullOrEmpty(userId))

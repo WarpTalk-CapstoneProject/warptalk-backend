@@ -71,19 +71,19 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
             AudioRouteStatus.AUDIO_ROUTING_ACTIVE => eventType switch
             {
                 AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-                
+
                 // Degraded / Latency transitions
                 AudioRoutingEventType.stt_latency_high => Result.Success(AudioRouteStatus.STT_DEGRADED),
                 AudioRoutingEventType.translation_latency_high => Result.Success(AudioRouteStatus.TRANSLATION_DEGRADED),
                 AudioRoutingEventType.tts_latency_high => Result.Success(AudioRouteStatus.TTS_DEGRADED),
-                
+
                 // Voice clone fallback path (technical or token exhaustion)
                 AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
                 AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-                
+
                 // Complete audio failure
                 AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                
+
                 _ => InvalidTransition(currentState, eventType)
             },
 
@@ -199,7 +199,7 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
     private Result<AudioRouteStatus> InvalidTransition(AudioRouteStatus current, AudioRoutingEventType eventType)
     {
         return Result.Failure<AudioRouteStatus>(
-            $"Invalid transition from {current} via event {eventType}", 
+            $"Invalid transition from {current} via event {eventType}",
             ErrorCodes.InvalidState);
     }
 }

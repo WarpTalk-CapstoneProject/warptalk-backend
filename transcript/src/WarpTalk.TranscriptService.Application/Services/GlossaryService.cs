@@ -129,7 +129,7 @@ public class GlossaryService : IGlossaryService
             var term = dto.ToEntity(glossaryId);
 
             await _unitOfWork.GlossaryTerms.AddAsync(term, cancellationToken);
-            
+
             glossary.TermCount++;
             glossary.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.Glossaries.Update(glossary);

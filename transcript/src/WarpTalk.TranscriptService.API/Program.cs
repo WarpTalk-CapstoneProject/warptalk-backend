@@ -53,9 +53,9 @@ builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 
 // --- Redis ---
-var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString));
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();

@@ -23,7 +23,7 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
         var pref = await _unitOfWork.NotificationPreferenceRepository.GetByUserIdAsync(userId, ct);
-        
+
         if (pref == null)
         {
             pref = NotificationPreferenceMapper.CreateDefaultEntity(userId);
@@ -68,15 +68,15 @@ public class NotificationService : INotificationService
     public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
     {
         var notification = await _unitOfWork.NotificationMessageRepository.GetByIdAndUserIdAsync(notificationId, userId, ct);
-        
+
         if (notification == null)
             return Result.Failure(NotificationConstants.ErrorNotificationNotFound, ErrorCodes.NotFound);
-            
+
         if (!notification.IsRead)
         {
             await _unitOfWork.NotificationMessageRepository.MarkAsReadAsync(notificationId, userId, ct);
         }
-        
+
         return Result.Success();
     }
 
@@ -89,12 +89,12 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(CreateNotificationMessageDto dto, CancellationToken ct = default)
     {
         var notification = NotificationMessageMapper.ToEntity(dto);
-        
+
         await _unitOfWork.NotificationMessageRepository.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
-        
+
         var resultDto = NotificationMessageMapper.ToDto(notification);
-        
+
         return Result.Success(resultDto);
     }
 

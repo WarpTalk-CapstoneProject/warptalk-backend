@@ -47,7 +47,7 @@ builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>(
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
 var rawJwtSecret = builder.Configuration["Jwt:Secret"];
-var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) || 
+var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) ||
                          rawJwtSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                          rawJwtSecret.Length < 32;
 
@@ -58,8 +58,8 @@ if (builder.Environment.IsProduction() && isDefaultOrInvalid)
 }
 
 // In non-production, fallback to default if invalid
-var validatedSecret = isDefaultOrInvalid 
-    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!" 
+var validatedSecret = isDefaultOrInvalid
+    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
     : rawJwtSecret;
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -78,7 +78,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 // [Security] Register global interceptor to enforce Zero-Trust Authentication for all incoming gRPC calls.
-builder.Services.AddGrpc(options => 
+builder.Services.AddGrpc(options =>
 {
     options.Interceptors.Add<WarpTalk.NotificationService.API.Interceptors.InternalAuthInterceptor>();
 });

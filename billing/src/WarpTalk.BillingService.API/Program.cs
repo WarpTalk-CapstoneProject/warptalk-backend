@@ -27,7 +27,7 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
-// --- DbContext ---
+
 builder.Services.AddDbContext<BillingDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("BillingDb")));
 
@@ -99,6 +99,16 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddOpenApi();
 builder.Services.AddGrpc();
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins("http://localhost:3000")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -107,7 +117,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-
+app.UseCors("AllowFrontend");
 app.UseRateLimiter();
 
 app.UseAuthentication();
