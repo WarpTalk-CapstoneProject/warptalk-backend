@@ -23,10 +23,7 @@ public class AudioRouteTransitionProcessor : IAudioRouteTransitionProcessor
 
     public bool ProcessTransition(TranslationRoomAudioRoute route, AudioRoutingEventType eventType, string? payloadJson = null)
     {
-        if (!Enum.TryParse<AudioRouteStatus>(route.Status, true, out var currentState))
-        {
-            currentState = AudioRouteStatus.IDLE;
-        }
+        var currentState = ParseStatus(route.Status);
 
         var result = _stateMachine.GetNextState(currentState, eventType, payloadJson);
         if (result.IsSuccess && result.Value != currentState)
@@ -35,13 +32,13 @@ public class AudioRouteTransitionProcessor : IAudioRouteTransitionProcessor
             route.Status = nextState.ToString();
             route.UpdatedAt = DateTime.UtcNow;
             
-            if (nextState == AudioRouteStatus.AUDIO_ROUTING_ACTIVE && currentState == AudioRouteStatus.ROUTING_READY)
+            if (nextState == AudioRouteStatus.BROADCASTING && currentState == AudioRouteStatus.READY)
             {
                 route.StartedAt = DateTime.UtcNow;
             }
 
             // Rule 4: Distinguished logging for Technical vs Billing forced voice clone fallback
-            if (nextState == AudioRouteStatus.VOICE_CLONE_FALLBACK)
+            if (nextState == AudioRouteStatus.STANDARD_VOICE)
             {
                 if (eventType == AudioRoutingEventType.token_exhausted)
                 {
@@ -68,5 +65,30 @@ public class AudioRouteTransitionProcessor : IAudioRouteTransitionProcessor
             _logger.LogInformation("State transition rejected for Route {RouteId}: {Reason}", route.Id, result.Error);
         }
         return false;
+    }
+
+    private static AudioRouteStatus ParseStatus(string? status)
+    {
+        if (Enum.TryParse<AudioRouteStatus>(status, true, out var parsed))
+        {
+            return parsed;
+        }
+
+        return status?.ToUpperInvariant() switch
+        {
+            "IDLE" => AudioRouteStatus.PENDING,
+            "ROUTING_READY" => AudioRouteStatus.READY,
+            "AUDIO_ROUTING_ACTIVE" => AudioRouteStatus.BROADCASTING,
+            "AUDIO_ROUTING_PAUSED" => AudioRouteStatus.PAUSED,
+            "STT_DEGRADED" => AudioRouteStatus.SPEECH_DELAYED,
+            "TRANSLATION_DEGRADED" => AudioRouteStatus.TRANSLATION_DELAYED,
+            "TTS_DEGRADED" => AudioRouteStatus.VOICE_DELAYED,
+            "VOICE_CLONE_FALLBACK" => AudioRouteStatus.STANDARD_VOICE,
+            "TEXT_ONLY_MODE" => AudioRouteStatus.CAPTION_ONLY,
+            "STOPPING" => AudioRouteStatus.ENDING,
+            "FINALIZING_ARTIFACTS" => AudioRouteStatus.SAVING_OUTPUTS,
+            "FINALIZING_ARTIFACTS_FAILED" => AudioRouteStatus.SAVE_FAILED,
+            _ => AudioRouteStatus.PENDING
+        };
     }
 }

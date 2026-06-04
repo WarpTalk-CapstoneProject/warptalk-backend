@@ -28,7 +28,7 @@ Implement audio route data used by real-time translation and voice output.
 - **Diff and Upsert Logic (Continuity Rule)**: 
   - The generation process MUST use an upsert strategy rather than a clear-and-recreate approach.
   - **Stable Logical Key**: A route is uniquely identified by `(RoomId, SourceParticipantId, TargetParticipantId, SourceLanguage, TargetLanguage)`.
-  - **Unchanged routes** that still match the active room policy are kept intact (`ACTIVE`) without modifying their underlying identity/StreamId. This ensures the AI worker does not drop or cut off ongoing streams across recomputes.
+  - **Unchanged routes** that still match the active room policy are kept intact (`BROADCASTING` once the session is live) without modifying their underlying identity/StreamId. This ensures the AI worker does not drop or cut off ongoing streams across recomputes.
   - **New combinations** are created as new routes.
   - **Obsolete routes** (e.g., participants left, or changed languages) are explicitly marked as `INACTIVE` rather than hard-deleted.
 
@@ -43,11 +43,11 @@ Implement audio route data used by real-time translation and voice output.
   - Room is in `SCHEDULED` or `WAITING` state.
   - Participant has not joined yet.
   - Streams or runtime context are not fully available yet.
-- **`ACTIVE`**:
+- **`BROADCASTING`**:
   - Room is running realtime (`IN_PROGRESS`).
   - Participant is ready/connected.
   - Route is valid, complete, and ready to be used by the realtime pipeline.
-- **`INACTIVE`**:
+- **`COMPLETED` / removed route**:
   - Room is closed/ended (terminal status such as `ENDED`, `CANCELLED`, `FAILED`).
   - Participant left the room.
   - Route is replaced by a new configuration or becomes invalid.
@@ -65,7 +65,7 @@ Implement audio route data used by real-time translation and voice output.
   - **Redis Cache Key**: `translationRoom:{roomId}:audio_routes`.
   - **Redis Cache Value Structure**: A JSON object containing `routes` (array of routes), `version` (int/guid), `generated_at` (timestamp), and `room_status`.
   - **Pub/Sub Payload**: Upon update, the Backend MUST publish an event to Redis Pub/Sub. The event payload MUST package the full JSON of the new routes. This allows the AI Worker to apply the routes immediately without an extra round-trip to Redis or HTTP.
-  - The AI Worker strictly consumes only routes with `status = active` (or `pending` awaiting bind) from this payload/cache.
+  - The AI Worker strictly consumes only routes with `status = BROADCASTING` (or `PENDING` awaiting bind) from this payload/cache.
 - **Separation of Concerns (Generation vs. Consumption)**:
   - **Route Generation Layer (Route Service)**: Applies core room policies. It computes and persists the routes as the absolute source of truth and is the sole owner of `audio_route.status`.
   - **Realtime Pipeline**: Must consume precomputed audio routes as the source of truth from Redis. It strictly processes only valid, provided routes.
@@ -125,12 +125,12 @@ To handle the complexity of realtime audio routing (including degraded states an
 
 ### 3. State Machine Engine (13-State Deterministic Model)
 The routing context follows a strict 13-state deterministic engine applied to individual routes:
-- **Allowed States**: `IDLE`, `ROUTING_READY`, `AUDIO_ROUTING_ACTIVE`, `AUDIO_ROUTING_PAUSED`, `STT_DEGRADED`, `TRANSLATION_DEGRADED`, `TTS_DEGRADED`, `VOICE_CLONE_FALLBACK`, `TEXT_ONLY_MODE`, `STOPPING`, `FINALIZING_ARTIFACTS`, `FINALIZING_ARTIFACTS_FAILED`, `COMPLETED`.
+- **Allowed States**: `PENDING`, `READY`, `BROADCASTING`, `PAUSED`, `SPEECH_DELAYED`, `TRANSLATION_DELAYED`, `VOICE_DELAYED`, `STANDARD_VOICE`, `CAPTION_ONLY`, `ENDING`, `SAVING_OUTPUTS`, `SAVE_FAILED`, `COMPLETED`.
 - **Telemetry Priority Resolution**: A background telemetry sweep evaluates granular volatile latency and availability flags stored in Redis (e.g. `stt_degraded`, `translation_degraded`, `tts_degraded`, `voice_clone_status`, `delivery_mode`). It uses `AudioRoutePriorityResolver` to compute the effective status on a strict priority scale:
-  `TEXT_ONLY_MODE` > `VOICE_CLONE_FALLBACK` > `TTS_DEGRADED` > `TRANSLATION_DEGRADED` > `STT_DEGRADED` > `AUDIO_ROUTING_ACTIVE`.
+  `CAPTION_ONLY` > `STANDARD_VOICE` > `VOICE_DELAYED` > `TRANSLATION_DELAYED` > `SPEECH_DELAYED` > `BROADCASTING`.
   A single event `telemetry_state_updated` transitions PostgreSQL and Redis cache atomically.
-- **Update Protection Rule**: During `AUDIO_ROUTING_PAUSED` state, background telemetry updates are **prevented** from modifying the PostgreSQL canonical state. When `room_resume` is triggered, the database state resets to `AUDIO_ROUTING_ACTIVE`, allowing subsequent telemetry updates to evaluate the state.
-- **Locks & Sweeper Recovery**: `COMPLETED` is a terminal sink state. `FINALIZING_ARTIFACTS_FAILED` routes are automatically scanned by a recovery sweeper to retry or trigger `finalization_abandoned` if recovery limits (dynamic sweeps) are exhausted.
+- **Update Protection Rule**: During `PAUSED` state, background telemetry updates are **prevented** from modifying the PostgreSQL canonical state. When `room_resume` is triggered, the database state resets to `BROADCASTING`, allowing subsequent telemetry updates to evaluate the state.
+- **Locks & Sweeper Recovery**: `COMPLETED` is a terminal sink state. `SAVE_FAILED` routes are automatically scanned by a recovery sweeper to retry or trigger `finalization_abandoned` if recovery limits (dynamic sweeps) are exhausted.
 - **Immediate RAM Cache Cleanup**: Upon entering `COMPLETED` or aborting via `finalization_abandoned`, the system executes **Unified Redis Cache Cleanup**, deleting both telemetry and transcript keys immediately from memory, avoiding any TTL leakage.
 
 ### 4. Data Model Strategy

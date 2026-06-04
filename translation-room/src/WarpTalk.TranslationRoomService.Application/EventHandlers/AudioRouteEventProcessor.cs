@@ -148,7 +148,7 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                 // Publish updates through the standard pipeline (decoupled inside helper, handles external connection natively)
                 await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
 
-                if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.STOPPING.ToString()))
+                if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.ENDING.ToString()))
                 {
                     _finalizationQueue.QueueFinalization(roomId);
                 }

@@ -11,37 +11,37 @@ public static class AudioRoutePriorityResolver
         string voiceCloneStatus,
         string deliveryMode)
     {
-        // 1. TEXT_ONLY_MODE - Most severe (audio transport or TTS unavailable)
+        // 1. CAPTION_ONLY - Most severe: translated audio is unavailable.
         if (deliveryMode == DeliveryMode.TEXT_ONLY.ToString())
         {
-            return AudioRouteStatus.TEXT_ONLY_MODE;
+            return AudioRouteStatus.CAPTION_ONLY;
         }
 
-        // 2. VOICE_CLONE_FALLBACK - Voice clone failed/exhausted, standard voice fallback
+        // 2. STANDARD_VOICE - Voice clone failed/exhausted, standard voice fallback.
         if (voiceCloneStatus == VoiceCloneStatus.FALLBACK.ToString())
         {
-            return AudioRouteStatus.VOICE_CLONE_FALLBACK;
+            return AudioRouteStatus.STANDARD_VOICE;
         }
 
-        // 3. TTS_DEGRADED - TTS pipeline is slow
+        // 3. VOICE_DELAYED - TTS or voice output is slow.
         if (isTtsDegraded)
         {
-            return AudioRouteStatus.TTS_DEGRADED;
+            return AudioRouteStatus.VOICE_DELAYED;
         }
 
-        // 4. TRANSLATION_DEGRADED - Translation pipeline is slow
+        // 4. TRANSLATION_DELAYED - Translation pipeline is slow.
         if (isTranslationDegraded)
         {
-            return AudioRouteStatus.TRANSLATION_DEGRADED;
+            return AudioRouteStatus.TRANSLATION_DELAYED;
         }
 
-        // 5. STT_DEGRADED - STT pipeline is slow
+        // 5. SPEECH_DELAYED - Speech recognition is slow.
         if (isSttDegraded)
         {
-            return AudioRouteStatus.STT_DEGRADED;
+            return AudioRouteStatus.SPEECH_DELAYED;
         }
 
-        // 6. Healthy - All stages operational
-        return AudioRouteStatus.AUDIO_ROUTING_ACTIVE;
+        // 6. BROADCASTING - All stages are operational.
+        return AudioRouteStatus.BROADCASTING;
     }
 }

@@ -20,6 +20,7 @@ public class NotificationRedisSubscriberServiceTests
     
     private readonly NotificationRedisSubscriberService _service;
     private Action<RedisChannel, RedisValue>? _messageHandler;
+    private RedisChannel _subscribedChannel;
 
     public NotificationRedisSubscriberServiceTests()
     {
@@ -41,6 +42,7 @@ public class NotificationRedisSubscriberServiceTests
             It.IsAny<CommandFlags>()))
         .Callback<RedisChannel, Action<RedisChannel, RedisValue>, CommandFlags>((c, h, f) =>
         {
+            _subscribedChannel = c;
             _messageHandler = h;
         })
         .Returns(Task.CompletedTask);
@@ -63,10 +65,11 @@ public class NotificationRedisSubscriberServiceTests
 
         // Assert
         _mockSubscriber.Verify(s => s.SubscribeAsync(
-            It.Is<RedisChannel>(c => c.ToString() == "warptalk:notifications:new"),
+            It.IsAny<RedisChannel>(),
             It.IsAny<Action<RedisChannel, RedisValue>>(),
             It.IsAny<CommandFlags>()), Times.Once);
             
+        Assert.Equal(RedisChannel.Literal("warptalk:notifications:new"), _subscribedChannel);
         Assert.NotNull(_messageHandler);
     }
 

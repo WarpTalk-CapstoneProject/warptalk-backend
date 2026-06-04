@@ -10,7 +10,7 @@ public class UpdateAudioRouteRuntimeContextValidator : AbstractValidator<UpdateA
     public UpdateAudioRouteRuntimeContextValidator()
     {
         RuleFor(x => x.StreamId)
-            .NotEmpty().When(x => x.Status == AudioRouteStatus.AUDIO_ROUTING_ACTIVE)
+            .NotEmpty().When(x => x.Status == AudioRouteStatus.BROADCASTING)
             .WithMessage(AudioRouteConstants.ValidationStreamIdRequiredForActive);
     }
 }

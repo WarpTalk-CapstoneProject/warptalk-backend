@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranscriptService.Domain.Entities;
@@ -19,6 +19,8 @@ public partial class TranscriptDbContext : DbContext
     public virtual DbSet<Glossary> Glossaries { get; set; }
 
     public virtual DbSet<GlossaryTerm> GlossaryTerms { get; set; }
+
+
 
     public virtual DbSet<Transcript> Transcripts { get; set; }
 
@@ -44,9 +46,6 @@ public partial class TranscriptDbContext : DbContext
             .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
             .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
             .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
-            .HasPostgresEnum("transcript", "correction_status", new[] { "PENDING", "ACCEPTED", "REJECTED" })
-            .HasPostgresEnum("transcript", "correction_type", new[] { "STT", "TRANSLATION" })
-            .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
 
         modelBuilder.Entity<Glossary>(entity =>
@@ -176,6 +175,10 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.SourceLanguage)
                 .HasMaxLength(15)
                 .HasColumnName("source_language");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'recording'::character varying")
+                .HasColumnName("status");
             entity.Property(e => e.TotalDurationMs).HasColumnName("total_duration_ms");
             entity.Property(e => e.TotalSegments).HasColumnName("total_segments");
             entity.Property(e => e.TranslationRoomId)
@@ -205,6 +208,9 @@ public partial class TranscriptDbContext : DbContext
                 .HasDefaultValueSql("uuidv7()")
                 .HasColumnName("id");
             entity.Property(e => e.CorrectedText).HasColumnName("corrected_text");
+            entity.Property(e => e.CorrectionType)
+                .HasMaxLength(20)
+                .HasColumnName("correction_type");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
@@ -214,6 +220,10 @@ public partial class TranscriptDbContext : DbContext
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("reviewed_by");
             entity.Property(e => e.SegmentId).HasColumnName("segment_id");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'accepted'::character varying")
+                .HasColumnName("status");
             entity.Property(e => e.TriggeredRetranslation).HasColumnName("triggered_retranslation");
             entity.Property(e => e.UserId)
                 .HasComment("External AuthService user id. No physical FK.")
