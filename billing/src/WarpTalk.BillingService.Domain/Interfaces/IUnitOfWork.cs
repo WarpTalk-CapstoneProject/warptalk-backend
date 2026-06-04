@@ -13,8 +13,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<CreditBalanceSnapshot> CreditBalanceSnapshotRepository { get; }
     IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     IGenericRepository<Payment> PaymentRepository { get; }
-    IGenericRepository<Refund> RefundRepository { get; }
-    IGenericRepository<Invoice> InvoiceRepository { get; }
+
     IGenericRepository<SchemaMigration> SchemaMigrationRepository { get; }
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);

@@ -10,6 +10,8 @@ public partial class CreditTransaction
 
     public Guid UserId { get; set; }
 
+    public Guid WorkspaceId { get; set; }
+
     public int Amount { get; set; }
 
     public string Type { get; set; } = null!;

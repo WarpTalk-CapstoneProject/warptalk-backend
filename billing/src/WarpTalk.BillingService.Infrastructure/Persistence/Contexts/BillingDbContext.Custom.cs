@@ -34,18 +34,5 @@ public partial class BillingDbContext
                 .HasColumnName("type");
         });
 
-        modelBuilder.Entity<Refund>(entity =>
-        {
-            entity.Property(e => e.Status)
-                .HasColumnName("status")
-                .HasDefaultValue("pending");
-        });
-
-        modelBuilder.Entity<Invoice>(entity =>
-        {
-            entity.Property(e => e.Status)
-                .HasColumnName("status")
-                .HasDefaultValue("issued");
-        });
     }
 }

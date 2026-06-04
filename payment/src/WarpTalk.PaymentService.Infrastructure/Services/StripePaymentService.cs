@@ -8,7 +8,7 @@ namespace WarpTalk.PaymentService.Infrastructure.Services;
 
 public class StripePaymentService : IStripePaymentService
 {
-    public async Task<string> CreateCheckoutSessionAsync(Guid userId, decimal amount, string currency, string paymentType)
+    public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType)
     {
         var options = new SessionCreateOptions
         {
@@ -37,12 +37,14 @@ public class StripePaymentService : IStripePaymentService
                 Metadata = new Dictionary<string, string>
                 {
                     { "UserId", userId.ToString() },
+                    { "WorkspaceId", workspaceId.ToString() },
                     { "PaymentType", paymentType }
                 }
             },
             Metadata = new Dictionary<string, string>
             {
                 { "UserId", userId.ToString() },
+                { "WorkspaceId", workspaceId.ToString() },
                 { "PaymentType", paymentType }
             }
         };

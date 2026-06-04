@@ -57,6 +57,7 @@ public class PaymentsController : ControllerBase
                         (session.AmountTotal ?? 0) / 100m,
                         session.Currency,
                         session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
+                        session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,
                         session.Metadata.ContainsKey("PaymentType") ? session.Metadata["PaymentType"] : string.Empty,
                         "paid"
                     );
@@ -73,6 +74,7 @@ public class PaymentsController : ControllerBase
                         intent.Amount / 100m,
                         intent.Currency,
                         intent.Metadata.ContainsKey("UserId") ? intent.Metadata["UserId"] : string.Empty,
+                        intent.Metadata.ContainsKey("WorkspaceId") ? intent.Metadata["WorkspaceId"] : string.Empty,
                         intent.Metadata.ContainsKey("PaymentType") ? intent.Metadata["PaymentType"] : string.Empty,
                         "failed",
                         intent.LastPaymentError?.Message ?? "Payment failed"
@@ -90,6 +92,7 @@ public class PaymentsController : ControllerBase
                         charge.AmountRefunded / 100m,
                         charge.Currency,
                         charge.Metadata.ContainsKey("UserId") ? charge.Metadata["UserId"] : string.Empty,
+                        charge.Metadata.ContainsKey("WorkspaceId") ? charge.Metadata["WorkspaceId"] : string.Empty,
                         charge.Metadata.ContainsKey("PaymentType") ? charge.Metadata["PaymentType"] : string.Empty,
                         "refunded"
                     );

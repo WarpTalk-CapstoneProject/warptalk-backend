@@ -21,15 +21,19 @@ public class PaymentAppService : IPaymentAppService
 
     public async Task<string> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request)
     {
+        if (request.WorkspaceId == Guid.Empty)
+            throw new ArgumentException("WorkspaceId is required.", nameof(request.WorkspaceId));
+
         return await _stripePaymentService.CreateCheckoutSessionAsync(
             request.UserId,
+            request.WorkspaceId,
             request.Amount,
             request.Currency,
             request.PaymentType
         );
     }
 
-    public async Task ProcessPaymentEventAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string paymentType, string status, string failureReason = "")
+    public async Task ProcessPaymentEventAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string workspaceId, string paymentType, string status, string failureReason = "")
     {
         var request = new ProcessPaymentEventRequest
         {
@@ -40,7 +44,8 @@ public class PaymentAppService : IPaymentAppService
             StripeSessionId = stripeSessionId ?? string.Empty,
             ProviderTransactionId = paymentIntentId ?? string.Empty,
             Status = status,
-            FailureReason = failureReason ?? string.Empty
+            FailureReason = failureReason ?? string.Empty,
+            WorkspaceId = workspaceId ?? string.Empty
         };
 
         await _billingClient.ProcessPaymentEventAsync(request);

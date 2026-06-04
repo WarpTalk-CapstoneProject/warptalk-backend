@@ -28,9 +28,7 @@ public partial class BillingDbContext : DbContext
 
     public virtual DbSet<Payment> Payments { get; set; }
 
-    public virtual DbSet<Refund> Refunds { get; set; }
 
-    public virtual DbSet<Invoice> Invoices { get; set; }
 
     public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
@@ -196,6 +194,9 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.UserId)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
             entity.Property(e => e.Amount).HasColumnName("amount");
             entity.Property(e => e.Type)
                 .HasMaxLength(20)
@@ -307,6 +308,9 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.UserId)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
             entity.Property(e => e.Amount)
                 .HasPrecision(12, 2)
                 .HasColumnName("amount");
@@ -359,100 +363,6 @@ public partial class BillingDbContext : DbContext
                 .HasConstraintName("payments_subscription_id_fkey");
         });
 
-        modelBuilder.Entity<Refund>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("refunds_pkey");
-
-            entity.ToTable("refunds", "subscription");
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
-            entity.Property(e => e.UserId)
-                .HasComment("External AuthService user id. No physical FK.")
-                .HasColumnName("user_id");
-            entity.Property(e => e.Amount)
-                .HasPrecision(12, 2)
-                .HasColumnName("amount");
-            entity.Property(e => e.Reason)
-                .HasMaxLength(500)
-                .HasColumnName("reason");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValue("pending")
-                .HasColumnName("status");
-            entity.Property(e => e.ProviderRefundId)
-                .HasMaxLength(255)
-                .HasColumnName("provider_refund_id");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
-
-            entity.HasOne(d => d.Payment).WithMany(p => p.Refunds)
-                .HasForeignKey(d => d.PaymentId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("refunds_payment_id_fkey");
-        });
-
-        modelBuilder.Entity<Invoice>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("invoices_pkey");
-
-            entity.ToTable("invoices", "subscription");
-
-            entity.HasIndex(e => e.InvoiceNumber, "invoices_invoice_number_key").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
-            entity.Property(e => e.UserId)
-                .HasComment("External AuthService user id. No physical FK.")
-                .HasColumnName("user_id");
-            entity.Property(e => e.InvoiceNumber)
-                .HasMaxLength(30)
-                .HasColumnName("invoice_number");
-            entity.Property(e => e.Subtotal)
-                .HasPrecision(12, 2)
-                .HasColumnName("subtotal");
-            entity.Property(e => e.Tax)
-                .HasPrecision(12, 2)
-                .HasDefaultValue(0m)
-                .HasColumnName("tax");
-            entity.Property(e => e.Total)
-                .HasPrecision(12, 2)
-                .HasColumnName("total");
-            entity.Property(e => e.Currency)
-                .HasMaxLength(3)
-                .HasDefaultValue("VND")
-                .HasColumnName("currency");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValue("issued")
-                .HasColumnName("status");
-            entity.Property(e => e.PdfUrl)
-                .HasMaxLength(500)
-                .HasColumnName("pdf_url");
-            entity.Property(e => e.LineItems)
-                .HasDefaultValueSql("'[]'::jsonb")
-                .HasColumnType("jsonb")
-                .HasColumnName("line_items");
-            entity.Property(e => e.IssuedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("issued_at");
-            entity.Property(e => e.DueAt).HasColumnName("due_at");
-            entity.Property(e => e.PaidAt).HasColumnName("paid_at");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-
-            entity.HasOne(d => d.Payment).WithMany(p => p.Invoices)
-                .HasForeignKey(d => d.PaymentId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("invoices_payment_id_fkey");
-        });
 
         modelBuilder.Entity<SchemaMigration>(entity =>
         {

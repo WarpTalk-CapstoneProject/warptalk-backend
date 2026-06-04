@@ -32,7 +32,7 @@ public class BillingGrpcServiceTests
         _mockSubscriptionService = new Mock<ISubscriptionService>();
         _mockPlanService = new Mock<IPlanService>();
         _mockPaymentService = new Mock<IPaymentService>();
-        _mockUnitOfWork = new Mock<IUnitOfWork>();
+        _mockUnitOfWork = new Mock<IUnitOfWork> { DefaultValue = DefaultValue.Mock };
         _mockRedis = new Mock<IConnectionMultiplexer>();
         _mockRedisDb = new Mock<IDatabase>();
         _mockLogger = new Mock<ILogger<BillingGrpcService>>();
@@ -94,6 +94,34 @@ public class BillingGrpcServiceTests
         result.Success.Should().BeFalse();
         result.ErrorMessage.Should().Contain("Credits consumed cannot be negative");
         _mockCreditService.Verify(x => x.RecordUsageAsync(It.IsAny<WarpTalk.BillingService.Application.DTOs.RecordUsageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+
+    [Fact]
+    public async Task ProcessPaymentEvent_ShouldReturnError_WhenWorkspaceIdIsMissing()
+    {
+        // Arrange
+        var request = new ProcessPaymentEventRequest
+        {
+            StripeSessionId = "cs_test_123",
+            Status = "paid"
+        };
+        var contextMock = new Mock<ServerCallContext>();
+
+        var mockPaymentRepo = new Mock<IGenericRepository<WarpTalk.BillingService.Domain.Entities.Payment>>();
+        _mockUnitOfWork.Setup(u => u.PaymentRepository).Returns(mockPaymentRepo.Object);
+
+        mockPaymentRepo.Setup(u => u.FirstOrDefaultAsync(
+            It.IsAny<System.Linq.Expressions.Expression<System.Func<WarpTalk.BillingService.Domain.Entities.Payment, bool>>>(),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync((WarpTalk.BillingService.Domain.Entities.Payment)null);
+
+        // Act
+        var result = await _service.ProcessPaymentEvent(request, contextMock.Object);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("Invalid workspace_id");
     }
 
 

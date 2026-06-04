@@ -33,6 +33,7 @@ public class PaymentAppServiceTests
         var request = new CreateCheckoutSessionRequest
         {
             UserId = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(), // Add this
             Amount = 10m,
             Currency = "usd",
             PaymentType = "Credits"
@@ -40,7 +41,7 @@ public class PaymentAppServiceTests
         var expectedUrl = "https://checkout.stripe.com/test";
         
         _mockStripePaymentService.Setup(x => x.CreateCheckoutSessionAsync(
-                request.UserId, request.Amount, request.Currency, request.PaymentType))
+                request.UserId, request.WorkspaceId, request.Amount, request.Currency, request.PaymentType))
             .ReturnsAsync(expectedUrl);
 
         // Act
@@ -49,7 +50,28 @@ public class PaymentAppServiceTests
         // Assert
         result.Should().Be(expectedUrl);
         _mockStripePaymentService.Verify(x => x.CreateCheckoutSessionAsync(
-            request.UserId, request.Amount, request.Currency, request.PaymentType), Times.Once);
+            request.UserId, request.WorkspaceId, request.Amount, request.Currency, request.PaymentType), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateCheckoutSessionAsync_ShouldThrowException_WhenWorkspaceIdIsEmpty()
+    {
+        // Arrange
+        var request = new CreateCheckoutSessionRequest
+        {
+            UserId = Guid.NewGuid(),
+            WorkspaceId = Guid.Empty, // Invalid
+            Amount = 10m,
+            Currency = "usd",
+            PaymentType = "Credits"
+        };
+
+        // Act
+        Func<Task> act = async () => await _service.CreateCheckoutSessionAsync(request);
+
+        // Assert
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*WorkspaceId is required.*");
     }
 
     [Fact]
@@ -61,6 +83,7 @@ public class PaymentAppServiceTests
         var amount = 10m;
         var currency = "usd";
         var userId = Guid.NewGuid().ToString();
+        var workspaceId = Guid.NewGuid().ToString();
         var paymentType = "Credits";
         var status = "success";
         var failureReason = "";
@@ -78,12 +101,13 @@ public class PaymentAppServiceTests
                 () => { }));
 
         // Act
-        await _service.ProcessPaymentEventAsync(stripeSessionId, paymentIntentId, amount, currency, userId, paymentType, status, failureReason);
+        await _service.ProcessPaymentEventAsync(stripeSessionId, paymentIntentId, amount, currency, userId, workspaceId, paymentType, status, failureReason);
 
         // Assert
         _mockBillingClient.Verify(x => x.ProcessPaymentEventAsync(
             It.Is<ProcessPaymentEventRequest>(req => 
                 req.UserId == userId &&
+                req.WorkspaceId == workspaceId &&
                 req.Amount == 10.0 &&
                 req.StripeSessionId == stripeSessionId &&
                 req.ProviderTransactionId == paymentIntentId &&

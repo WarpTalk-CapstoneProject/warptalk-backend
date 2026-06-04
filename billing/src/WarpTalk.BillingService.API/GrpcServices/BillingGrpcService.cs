@@ -395,27 +395,29 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         return response;
     }
 
-    public override async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentSuccess(
-        Shared.Protos.ProcessPaymentRequest request, ServerCallContext context)
+    private async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentSuccessInternal(
+        Shared.Protos.ProcessPaymentEventRequest request, ServerCallContext context)
     {
-        if (!Guid.TryParse(request.UserId, out var userId))
-            return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Invalid user_id." };
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Invalid workspace_id." };
 
-        _logger.LogInformation("Processing payment success via gRPC for User {UserId}, Amount: {Amount}", userId, request.Amount);
+        Guid.TryParse(request.UserId, out var userId); // Still good to have but workspace is primary
+
+        _logger.LogInformation("Processing payment success via gRPC for Workspace {WorkspaceId}, User {UserId}, Amount: {Amount}", workspaceId, userId, request.Amount);
 
         var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-            s => s.UserId == userId && s.DeletedAt == null && s.IsActive,
+            s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
             context.CancellationToken);
 
         if (sub == null)
         {
             var oldSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.UserId == userId && s.DeletedAt == null,
+                s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
                 context.CancellationToken);
 
             if (oldSub == null)
             {
-                _logger.LogWarning("No subscription found for User {UserId}. Cannot process payment.", userId);
+                _logger.LogWarning("No subscription found for Workspace {WorkspaceId}. Cannot process payment.", workspaceId);
                 return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Subscription not found." };
             }
             sub = oldSub;
@@ -431,7 +433,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!sub.IsActive)
         {
             var activeSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
-                s => s.UserId == userId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
             foreach (var activeSub in activeSubs)
             {
                 activeSub.IsActive = false;
@@ -466,7 +468,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             var topupTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
             {
                 SubscriptionId = sub.Id,
-                UserId = sub.UserId,
+                UserId = userId,
+                WorkspaceId = workspaceId,
                 Amount = plan.CreditsPerCycle,
                 Type = "top_up",
                 Description = "Stripe Payment Success (gRPC)",
@@ -483,7 +486,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 Id = Guid.NewGuid(),
                 SubscriptionId = sub.Id,
-                UserId = sub.UserId,
+                UserId = userId,
+                WorkspaceId = workspaceId,
                 Amount = (decimal)request.Amount,
                 TaxAmount = 0m,
                 TotalAmount = (decimal)request.Amount,
@@ -499,7 +503,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             await _unitOfWork.PaymentRepository.AddAsync(paymentTx);
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-            _logger.LogInformation("Successfully updated subscription and added credits for User {UserId} via gRPC", userId);
+            _logger.LogInformation("Successfully updated subscription and added credits for Workspace {WorkspaceId} via gRPC", workspaceId);
         }
         else
         {
@@ -540,43 +544,22 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             _unitOfWork.PaymentRepository.Update(existingPayment);
 
-            if (request.Status == "refunded")
-            {
-                var refundTx = new WarpTalk.BillingService.Domain.Entities.Refund
-                {
-                    Id = Guid.NewGuid(),
-                    PaymentId = existingPayment.Id,
-                    Amount = (decimal)request.Amount,
-                    Reason = request.FailureReason ?? "User requested refund",
-                    CreatedAt = DateTime.UtcNow
-                };
-                await _unitOfWork.RefundRepository.AddAsync(refundTx, context.CancellationToken);
-            }
-
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             return new Shared.Protos.ProcessPaymentResponse { Success = true };
         }
 
         if (request.Status == "paid")
         {
-            // Call the legacy ProcessPaymentSuccess logic
-            return await ProcessPaymentSuccess(new Shared.Protos.ProcessPaymentRequest
-            {
-                UserId = request.UserId,
-                Amount = request.Amount,
-                Currency = request.Currency,
-                PaymentType = request.PaymentType,
-                StripeSessionId = providerTxId
-            }, context);
+            return await ProcessPaymentSuccessInternal(request, context);
         }
 
-        if (request.Status == "failed" && !string.IsNullOrEmpty(request.UserId))
+        if (request.Status == "failed" && !string.IsNullOrEmpty(request.WorkspaceId))
         {
             // Record failed payment even if it doesn't exist
-            if (Guid.TryParse(request.UserId, out var userId))
+            if (Guid.TryParse(request.WorkspaceId, out var workspaceId))
             {
                 var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                    s => s.UserId == userId && s.DeletedAt == null && s.IsActive,
+                    s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
                     context.CancellationToken);
 
                 if (sub != null)
@@ -585,7 +568,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                     {
                         Id = Guid.NewGuid(),
                         SubscriptionId = sub.Id,
-                        UserId = userId,
+                        UserId = Guid.TryParse(request.UserId, out var uid) ? uid : Guid.Empty,
+                        WorkspaceId = workspaceId,
                         Amount = (decimal)request.Amount,
                         TaxAmount = 0m,
                         TotalAmount = (decimal)request.Amount,

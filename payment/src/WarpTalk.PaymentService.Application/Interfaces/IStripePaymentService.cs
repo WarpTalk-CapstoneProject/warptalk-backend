@@ -5,5 +5,5 @@ namespace WarpTalk.PaymentService.Application.Interfaces;
 
 public interface IStripePaymentService
 {
-    Task<string> CreateCheckoutSessionAsync(Guid userId, decimal amount, string currency, string paymentType);
+    Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType);
 }
