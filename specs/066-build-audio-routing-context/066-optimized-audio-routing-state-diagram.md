@@ -14,37 +14,37 @@ To handle high-frequency events (like latency spikes) without causing database w
 
 ```mermaid
 stateDiagram-v2
-    [*] --> IDLE: START
-    IDLE --> ROUTING_READY: config_ready (Verify languages)
-    ROUTING_READY --> AUDIO_ROUTING_ACTIVE: session_starts (Host clicks Start)
+    [*] --> PENDING: START
+    PENDING --> READY: config_ready (Verify languages)
+    READY --> BROADCASTING: session_starts (Host clicks Start)
 
     %% Pause / Resume Transitions
     state StreamingStates {
-        AUDIO_ROUTING_ACTIVE
-        STT_DEGRADED
-        TRANSLATION_DEGRADED
-        TTS_DEGRADED
-        VOICE_CLONE_FALLBACK
-        TEXT_ONLY_MODE
+        BROADCASTING
+        SPEECH_DELAYED
+        TRANSLATION_DELAYED
+        VOICE_DELAYED
+        STANDARD_VOICE
+        CAPTION_ONLY
     }
     
-    StreamingStates --> AUDIO_ROUTING_PAUSED: room_pause (Update Protection active)
-    AUDIO_ROUTING_PAUSED --> AUDIO_ROUTING_ACTIVE: room_resume (Resets to Active, then Telemetry re-evaluates)
+    StreamingStates --> PAUSED: room_pause (Update Protection active)
+    PAUSED --> BROADCASTING: room_resume (Resets to Active, then Telemetry re-evaluates)
 
     %% Priority Resolution Dynamic transitions
     StreamingStates --> StreamingStates: telemetry_state_updated (Resolved via AudioRoutePriorityResolver)
 
     %% Termination Lifecycle
-    StreamingStates --> STOPPING: session_ends / system_disabled
-    AUDIO_ROUTING_PAUSED --> STOPPING: session_ends / system_disabled
+    StreamingStates --> ENDING: session_ends / system_disabled
+    PAUSED --> ENDING: session_ends / system_disabled
 
-    STOPPING --> FINALIZING_ARTIFACTS: flush_runtime
-    FINALIZING_ARTIFACTS --> COMPLETED: outputs_linked (Success - Unified Cache Cleanup)
-    FINALIZING_ARTIFACTS --> FINALIZING_ARTIFACTS_FAILED: finalization_failed
-    FINALIZING_ARTIFACTS --> COMPLETED: finalization_abandoned (Error/Exceeded retries - Unified Cache Cleanup)
+    ENDING --> SAVING_OUTPUTS: flush_runtime
+    SAVING_OUTPUTS --> COMPLETED: outputs_linked (Success - Unified Cache Cleanup)
+    SAVING_OUTPUTS --> SAVE_FAILED: finalization_failed
+    SAVING_OUTPUTS --> COMPLETED: finalization_abandoned (Error/Exceeded retries - Unified Cache Cleanup)
     
-    FINALIZING_ARTIFACTS_FAILED --> FINALIZING_ARTIFACTS: flush_runtime (Retry Sweep)
-    FINALIZING_ARTIFACTS_FAILED --> COMPLETED: finalization_abandoned (Exceeded sweeps - Unified Cache Cleanup)
+    SAVE_FAILED --> SAVING_OUTPUTS: flush_runtime (Retry Sweep)
+    SAVE_FAILED --> COMPLETED: finalization_abandoned (Exceeded sweeps - Unified Cache Cleanup)
     
     COMPLETED --> [*]: END
 ```
@@ -75,55 +75,55 @@ For each active room, Redis stores granular status flags:
 
 ### 3.2. Priority Resolver Hierarchy
 The `AudioRoutePriorityResolver` evaluates volatile flags according to their actual impact on the user output:
-1.  **`TEXT_ONLY_MODE` (Priority 1):** Worst case. No voice output is possible. Bypasses TTS and sends plain captions to client UI.
-2.  **`VOICE_CLONE_FALLBACK` (Priority 2):** High priority. Custom voice clone failed; falls back immediately to gender-matched generic standard voice.
-3.  **`TTS_DEGRADED` (Priority 3):** Synthesis is slow but still delivers audio.
-4.  **`TRANSLATION_DEGRADED` (Priority 4):** Translation model is slow; falls back to dictionary/cached terms.
-5.  **`STT_DEGRADED` (Priority 5):** STT is slow; worker drops beam size/temperature checks to catch up.
-6.  **`AUDIO_ROUTING_ACTIVE` (Priority 6):** Perfectly healthy. All systems running optimally.
+1.  **`CAPTION_ONLY` (Priority 1):** Worst case. No voice output is possible. Bypasses TTS and sends plain captions to client UI.
+2.  **`STANDARD_VOICE` (Priority 2):** High priority. Custom voice clone failed; falls back immediately to gender-matched generic standard voice.
+3.  **`VOICE_DELAYED` (Priority 3):** Synthesis is slow but still delivers audio.
+4.  **`TRANSLATION_DELAYED` (Priority 4):** Translation model is slow; falls back to dictionary/cached terms.
+5.  **`SPEECH_DELAYED` (Priority 5):** STT is slow; worker drops beam size/temperature checks to catch up.
+6.  **`BROADCASTING` (Priority 6):** Perfectly healthy. All systems running optimally.
 
 ---
 
 ## 4. Technical Event & Action Definitions
 
-### Event 1: `config ready` (IDLE $\rightarrow$ ROUTING_READY)
+### Event 1: `config ready` (PENDING $\rightarrow$ READY)
 *   **Trigger:** Participant configuration, default languages, and translation paths are verified.
 *   **C# Component Action:** [TranslationRoomAudioRouteService.cs](file:///c:/Users/Admin/Documents/WarpTalk%20-%20Capstone%20Project/warptalk-backend/translation-room/src/WarpTalk.TranslationRoomService.Application/Services/TranslationRoomAudioRouteService.cs) validates settings and writes active routes to the database.
 *   **Redis Operation:** Updates `"translationRoom:{roomId}:audio_routes"` cache and broadcasts `AUDIO_ROUTES_UPDATED`.
 *   **Python Worker Reaction:** Workers pre-warm translation models for the room.
 
-### Event 2: `session starts` (ROUTING_READY $\rightarrow$ AUDIO_ROUTING_ACTIVE)
+### Event 2: `session starts` (READY $\rightarrow$ BROADCASTING)
 *   **Trigger:** Host clicks "Start Session".
-*   **C# Component Action:** Transitions route status to `AUDIO_ROUTING_ACTIVE`.
+*   **C# Component Action:** Transitions route status to `BROADCASTING`.
 *   **Redis Operation:** Set cache state and publishes `AUDIO_ROUTES_UPDATED` with `IN_PROGRESS` room status.
 *   **Python Worker Reaction:** Workers begin polling audio streams and executing GPU processing.
 
 ### Event 3: `room pause` & `room resume` (StreamingStates $\leftrightarrow$ PAUSED)
 *   **Trigger:** Host pauses/resumes the session.
-*   **C# Component Action:** Transitions status to `PAUSED` / `AUDIO_ROUTING_ACTIVE`.
-*   **Telemetry Protection Rule:** During `AUDIO_ROUTING_PAUSED`, telemetry processor updates volatile flags in Redis but is **blocked** from updating PostgreSQL canonical states. This prevents background noise/latency telemetry from corrupting the paused status. On `room_resume`, the database is reset to `AUDIO_ROUTING_ACTIVE`, and the next telemetry sweep calculates the new correct state.
+*   **C# Component Action:** Transitions status to `PAUSED` / `BROADCASTING`.
+*   **Telemetry Protection Rule:** During `PAUSED`, telemetry processor updates volatile flags in Redis but is **blocked** from updating PostgreSQL canonical states. This prevents background noise/latency telemetry from corrupting the paused status. On `room_resume`, the database is reset to `BROADCASTING`, and the next telemetry sweep calculates the new correct state.
 *   **Python Worker Reaction:** Workers drop audio buffers in paused state to conserve GPU memory.
 
 ### Event 4: `telemetry_state_updated` (StreamingStates $\rightarrow$ StreamingStates)
 *   **Trigger:** Live telemetry sweep computes a new effective status via `AudioRoutePriorityResolver`.
-*   **C# Component Action:** Emits a single `telemetry_state_updated` event containing a JSON payload like `{"status": "TRANSLATION_DEGRADED"}`. The state machine parses and transitions PostgreSQL and Redis cache seamlessly.
+*   **C# Component Action:** Emits a single `telemetry_state_updated` event containing a JSON payload like `{"status": "TRANSLATION_DELAYED"}`. The state machine parses and transitions PostgreSQL and Redis cache seamlessly.
 *   **Benefits:** Bypasses individual high-frequency alerts, avoiding DB locks and reducing pub-sub noise.
 
-### Event 5: `session ends` (StreamingStates/PAUSED $\rightarrow$ STOPPING)
+### Event 5: `session ends` (StreamingStates/PAUSED $\rightarrow$ ENDING)
 *   **Trigger:** Host ends session or maximum room duration timer expires.
-*   **C# Component Action:** Changes route status to `STOPPING`.
+*   **C# Component Action:** Changes route status to `ENDING`.
 *   **Redis Operation:** Sets status cache and publishes `AUDIO_ROUTES_UPDATED` with `ENDED`.
 *   **Python Worker Reaction:** Workers flush memory buffers, save persistent transcripts, and exit.
 
-### Event 6: `flush runtime` (STOPPING $\rightarrow$ FINALIZING_ARTIFACTS)
+### Event 6: `flush runtime` (ENDING $\rightarrow$ SAVING_OUTPUTS)
 *   **Trigger:** All real-time streams are confirmed as flushed.
 *   **C# Component Action:** Background `ArtifactsFinalizationWorker` coordinates compilation of transcripts, summaries, and recordings.
 
-### Event 7: `outputs linked` (FINALIZING_ARTIFACTS $\rightarrow$ COMPLETED)
+### Event 7: `outputs linked` (SAVING_OUTPUTS $\rightarrow$ COMPLETED)
 *   **Trigger:** Artifacts generated successfully and saved to PostgreSQL.
 *   **Immediate Cache Cleanup:** Instead of waiting for a 24h TTL, the system executes a **Unified Redis Cache Cleanup** immediately upon transitioning to `COMPLETED`. Both `"translationRoom:{roomId}:transcript"` and `"translationRoom:{roomId}:telemetry"` cache keys are deleted (`db.KeyDeleteAsync`), instantly freeing RAM.
 
-### Event 8: `finalization failed` (FINALIZING $\rightarrow$ FINALIZING_ARTIFACTS_FAILED)
+### Event 8: `finalization failed` (FINALIZING $\rightarrow$ SAVE_FAILED)
 *   **Trigger:** Transient finalization failure (e.g. gRPC service outage) exhausts local retries (default `3` attempts with exponential backoff).
 *   **Recovery Sweep:** Background `ArtifactsRecoveryWorker` sweeps the DB every 5 minutes and emits `flush_runtime` to retry.
 

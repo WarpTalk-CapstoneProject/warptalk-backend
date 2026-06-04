@@ -59,7 +59,7 @@ public class ArtifactsRecoveryWorker : BackgroundService
         
         var db = _redis.GetDatabase();
 
-        var failedRoutes = await repository.GetRoutesByStatusAsync(AudioRouteStatus.FINALIZING_ARTIFACTS_FAILED, ct);
+        var failedRoutes = await repository.GetRoutesByStatusAsync(AudioRouteStatus.SAVE_FAILED, ct);
 
         if (!failedRoutes.Any())
         {
@@ -69,7 +69,7 @@ public class ArtifactsRecoveryWorker : BackgroundService
         // Distinct by Room ID in case multiple routes exist for the same room
         var failedRoomIds = failedRoutes.Select(r => r.TranslationRoomId).Distinct().ToList();
 
-        _logger.LogInformation("Found {Count} rooms in FINALIZING_ARTIFACTS_FAILED state for recovery", failedRoomIds.Count);
+        _logger.LogInformation("Found {Count} rooms in SAVE_FAILED state for recovery", failedRoomIds.Count);
 
         foreach (var roomId in failedRoomIds)
         {
@@ -98,7 +98,7 @@ public class ArtifactsRecoveryWorker : BackgroundService
                     attempts++;
                     await db.StringSetAsync(attemptsKey, attempts, TimeSpan.FromDays(7));
                     
-                    _logger.LogInformation("Attempt {Attempt}/{MaxAttempts}: Pushing Room {RoomId} back to FINALIZING_ARTIFACTS queue.", attempts, _settings.MaxRecoverySweeps, roomId);
+                    _logger.LogInformation("Attempt {Attempt}/{MaxAttempts}: Pushing Room {RoomId} back to SAVING_OUTPUTS queue.", attempts, _settings.MaxRecoverySweeps, roomId);
                     
                     await eventProcessor.ProcessEventAsync(
                         roomId, 

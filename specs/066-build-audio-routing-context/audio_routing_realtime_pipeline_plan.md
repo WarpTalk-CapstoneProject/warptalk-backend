@@ -82,15 +82,15 @@ Tài liệu này mô tả kiến trúc kỹ thuật đầy đủ và kế hoạc
 
 | # | Status | Ý nghĩa | Ai chịu trách nhiệm |
 |---|--------|---------|---------------------|
-| 1 | `IDLE` | Route chưa được kích hoạt, phòng chưa bắt đầu | Backend (khởi tạo khi tạo phòng) |
-| 2 | `ROUTING_READY` | Participants & languages đã cấu hình, sẵn sàng | Backend (sau khi join đủ thành phần) |
-| 3 | `AUDIO_ROUTING_ACTIVE` | AI pipeline đang chạy full công suất | Backend (khi host start) |
-| 4 | `TRANSLATION_DEGRADED` | STT hoặc MT latency cao, chất lượng dịch giảm | AI Worker (phát hiện) → Backend (đổi state) |
+| 1 | `PENDING` | Route chưa được kích hoạt, phòng chưa bắt đầu | Backend (khởi tạo khi tạo phòng) |
+| 2 | `READY` | Participants & languages đã cấu hình, sẵn sàng | Backend (sau khi join đủ thành phần) |
+| 3 | `BROADCASTING` | AI pipeline đang chạy full công suất | Backend (khi host start) |
+| 4 | `TRANSLATION_DELAYED` | STT hoặc MT latency cao, chất lượng dịch giảm | AI Worker (phát hiện) → Backend (đổi state) |
 | 5 | `VOICE_OUTPUT_DEGRADED` | TTS hoặc Voice Clone gặp sự cố | AI Worker (phát hiện) → Backend (đổi state) |
-| 6 | `TEXT_ONLY_MODE` | Audio output hoàn toàn không khả dụng | AI Worker (phát hiện) → Backend (đổi state) |
+| 6 | `CAPTION_ONLY` | Audio output hoàn toàn không khả dụng | AI Worker (phát hiện) → Backend (đổi state) |
 | 7 | `PAUSED` | Host tạm dừng phiên, pipeline dừng xử lý | Backend (khi host pause) |
-| 8 | `STOPPING` | Host kết thúc phiên, đang flush dữ liệu | Backend (khi host end) |
-| 9 | `FINALIZING_ARTIFACTS` | Đang xử lý transcript, recording, summary | Backend hoặc AI Worker (artifacts job) |
+| 8 | `ENDING` | Host kết thúc phiên, đang flush dữ liệu | Backend (khi host end) |
+| 9 | `SAVING_OUTPUTS` | Đang xử lý transcript, recording, summary | Backend hoặc AI Worker (artifacts job) |
 | 10 | `COMPLETED` | Toàn bộ hoàn tất, terminal state | Backend (sau khi artifacts linked) |
 
 ### 3.2 Phân loại và Định nghĩa Sự kiện (Event Definitions by Actor)
@@ -102,44 +102,44 @@ Các sự kiện này phát sinh trực tiếp từ thao tác bấm nút của H
 
 | Sự kiện (Event) | Hành động kích hoạt (Triggering User Action) | Trạng thái bắt đầu | Trạng thái đích |
 |:---|:---|:---:|:---:|
-| `host_pauses_session` | Host click nút **Tạm dừng** (Pause) phiên dịch trên UI. | `AUDIO_ROUTING_ACTIVE`<br/>`TRANSLATION_DEGRADED`<br/>`VOICE_OUTPUT_DEGRADED`<br/>`TEXT_ONLY_MODE` | `PAUSED` |
-| `host_resumes_session` | Host click nút **Tiếp tục** (Resume) phiên dịch trên UI. | `PAUSED` | `AUDIO_ROUTING_ACTIVE` |
-| `host_ends_session` | Host click nút **Kết thúc** (End Session) phòng họp trên UI. | Bất kỳ trạng thái nào (trừ terminal `COMPLETED`) | `STOPPING` |
+| `host_pauses_session` | Host click nút **Tạm dừng** (Pause) phiên dịch trên UI. | `BROADCASTING`<br/>`TRANSLATION_DELAYED`<br/>`VOICE_OUTPUT_DEGRADED`<br/>`CAPTION_ONLY` | `PAUSED` |
+| `host_resumes_session` | Host click nút **Tiếp tục** (Resume) phiên dịch trên UI. | `PAUSED` | `BROADCASTING` |
+| `host_ends_session` | Host click nút **Kết thúc** (End Session) phòng họp trên UI. | Bất kỳ trạng thái nào (trừ terminal `COMPLETED`) | `ENDING` |
 
 #### B. Nhóm Sự kiện do Hệ thống tính toán (C# Backend / Telemetry Actions)
 Các sự kiện này được kích hoạt tự động bởi thuật toán nội bộ của Backend C# (EMA, Hysteresis, Background Jobs, Room Controls):
 
 | Sự kiện (Event) | Hành động kích hoạt (Triggering System Logic) | Trạng thái bắt đầu | Trạng thái đích |
 |:---|:---|:---:|:---:|
-| `participants_and_languages_configured` | Người dùng cấu hình xong vai trò, ngôn ngữ nguồn/đích của tất cả thành viên trong phòng. | `IDLE` | `ROUTING_READY` |
-| `session_starts` | Host bấm Start Session $\Rightarrow$ C# khởi tạo các Redis stream và cho phép định tuyến âm thanh. | `ROUTING_READY` | `AUDIO_ROUTING_ACTIVE` |
-| `stt_or_translation_latency_high` | Bộ xử lý telemetry EMA tại Backend phát hiện độ trễ trượt STT/MT của phòng họp vượt ngưỡng **3000ms**. | `AUDIO_ROUTING_ACTIVE` | `TRANSLATION_DEGRADED` |
-| `tts_latency_high` | Bộ xử lý telemetry EMA tại Backend phát hiện độ trễ trượt TTS của phòng họp vượt ngưỡng **6000ms**. | `AUDIO_ROUTING_ACTIVE` | `VOICE_OUTPUT_DEGRADED` |
-| `pipeline_recovered` | Bộ xử lý telemetry EMA phát hiện độ trễ STT/MT giảm sâu xuống dưới ngưỡng **1500ms**. | `TRANSLATION_DEGRADED` | `AUDIO_ROUTING_ACTIVE` |
-| `stop_routing_and_flush_data` | Background job phát hiện đã hoàn tất việc flush toàn bộ audio chunk còn sót trong hàng đợi (quá 30s timeout). | `STOPPING` | `FINALIZING_ARTIFACTS` |
-| `transcript_recording_summary_linked` | Hệ thống hoàn tất việc liên kết Transcript, file ghi âm cuộc họp, và AI Summary thành công vào Database. | `FINALIZING_ARTIFACTS` | `COMPLETED` |
+| `participants_and_languages_configured` | Người dùng cấu hình xong vai trò, ngôn ngữ nguồn/đích của tất cả thành viên trong phòng. | `PENDING` | `READY` |
+| `session_starts` | Host bấm Start Session $\Rightarrow$ C# khởi tạo các Redis stream và cho phép định tuyến âm thanh. | `READY` | `BROADCASTING` |
+| `stt_or_translation_latency_high` | Bộ xử lý telemetry EMA tại Backend phát hiện độ trễ trượt STT/MT của phòng họp vượt ngưỡng **3000ms**. | `BROADCASTING` | `TRANSLATION_DELAYED` |
+| `tts_latency_high` | Bộ xử lý telemetry EMA tại Backend phát hiện độ trễ trượt TTS của phòng họp vượt ngưỡng **6000ms**. | `BROADCASTING` | `VOICE_OUTPUT_DEGRADED` |
+| `pipeline_recovered` | Bộ xử lý telemetry EMA phát hiện độ trễ STT/MT giảm sâu xuống dưới ngưỡng **1500ms**. | `TRANSLATION_DELAYED` | `BROADCASTING` |
+| `stop_routing_and_flush_data` | Background job phát hiện đã hoàn tất việc flush toàn bộ audio chunk còn sót trong hàng đợi (quá 30s timeout). | `ENDING` | `SAVING_OUTPUTS` |
+| `transcript_recording_summary_linked` | Hệ thống hoàn tất việc liên kết Transcript, file ghi âm cuộc họp, và AI Summary thành công vào Database. | `SAVING_OUTPUTS` | `COMPLETED` |
 
 #### C. Nhóm Sự kiện do AI Workers phát hiện sự cố mô hình (AI Worker Actions)
 Các sự kiện này phát sinh từ các Exception / Cảnh báo phần cứng hoặc tài nguyên VRAM trong quá trình AI Workers chạy inference:
 
 | Sự kiện (Event) | Hành động kích hoạt (AI Worker Exception / Event) | Trạng thái bắt đầu | Trạng thái đích |
 |:---|:---|:---:|:---:|
-| `voice_clone_unavailable` | AI Worker chạy XTTS gặp lỗi OOM (CUDA OutOfMemory), thiếu mẫu giọng nói (<3s) hoặc model crash $\Rightarrow$ Chuyển sang giọng Edge-TTS mặc định. | `AUDIO_ROUTING_ACTIVE` | `VOICE_OUTPUT_DEGRADED` |
-| `edge_tts_unavailable` | AI Worker không thể kết xuất được bất kỳ âm thanh nào (XTTS đã sập, **Edge-TTS cũng lỗi**) $\Rightarrow$ Cắt bỏ hoàn toàn luồng phát tiếng. | `AUDIO_ROUTING_ACTIVE` | `TEXT_ONLY_MODE` |
-| `voice_recovered` | AI Worker khôi phục được mô hình XTTS v2, giải phóng đủ VRAM hoặc kết nối lại thành công dịch vụ Voice Clone. | `VOICE_OUTPUT_DEGRADED` | `AUDIO_ROUTING_ACTIVE` |
+| `voice_clone_unavailable` | AI Worker chạy XTTS gặp lỗi OOM (CUDA OutOfMemory), thiếu mẫu giọng nói (<3s) hoặc model crash $\Rightarrow$ Chuyển sang giọng Edge-TTS mặc định. | `BROADCASTING` | `VOICE_OUTPUT_DEGRADED` |
+| `edge_tts_unavailable` | AI Worker không thể kết xuất được bất kỳ âm thanh nào (XTTS đã sập, **Edge-TTS cũng lỗi**) $\Rightarrow$ Cắt bỏ hoàn toàn luồng phát tiếng. | `BROADCASTING` | `CAPTION_ONLY` |
+| `voice_recovered` | AI Worker khôi phục được mô hình XTTS v2, giải phóng đủ VRAM hoặc kết nối lại thành công dịch vụ Voice Clone. | `VOICE_OUTPUT_DEGRADED` | `BROADCASTING` |
 
 > [!NOTE]
 > **Phân biệt với User Action (Tắt Audio Clone thủ công):**
 > Khi người dùng hoặc Host tắt tính năng Voice Clone một cách chủ động thông qua nút bấm trên UI (kích hoạt API của `TranslationRoomAudioRouteService`), Backend sẽ cập nhật flag `VoiceCloneEnabled = false` trong DB và sync cache Redis. 
-> Hành động này **không** làm chuyển trạng thái Route sang `VOICE_OUTPUT_DEGRADED` (Route vẫn giữ trạng thái chạy bình thường `AUDIO_ROUTING_ACTIVE` nhưng không clone giọng). Trạng thái `VOICE_OUTPUT_DEGRADED` chỉ được kích hoạt khi AI Worker gặp sự cố mô hình thực tế và phát ra telemetry event `voice_clone_unavailable`.
+> Hành động này **không** làm chuyển trạng thái Route sang `VOICE_OUTPUT_DEGRADED` (Route vẫn giữ trạng thái chạy bình thường `BROADCASTING` nhưng không clone giọng). Trạng thái `VOICE_OUTPUT_DEGRADED` chỉ được kích hoạt khi AI Worker gặp sự cố mô hình thực tế và phát ra telemetry event `voice_clone_unavailable`.
 
 #### D. Nhóm Sự kiện do Thiết bị / Trình duyệt Client (Client Device / WebRTC Actions)
 Các sự kiện này phát sinh từ lỗi thiết bị của người dùng ở frontend:
 
 | Sự kiện (Event) | Hành động kích hoạt (Client UI/WebRTC Action) | Trạng thái bắt đầu | Trạng thái đích |
 |:---|:---|:---:|:---:|
-| `audio_output_unavailable` | Trình duyệt của client chặn tự động phát âm thanh (Autoplay block) hoặc thiết bị loa của client bị mất kết nối WebRTC. | `AUDIO_ROUTING_ACTIVE` | `TEXT_ONLY_MODE` |
-| `audio_recovered` | Client cấp quyền autoplay thành công hoặc thiết bị âm thanh được cắm lại $\Rightarrow$ WebRTC kết nối lại thành công. | `TEXT_ONLY_MODE` | `AUDIO_ROUTING_ACTIVE` |
+| `audio_output_unavailable` | Trình duyệt của client chặn tự động phát âm thanh (Autoplay block) hoặc thiết bị loa của client bị mất kết nối WebRTC. | `BROADCASTING` | `CAPTION_ONLY` |
+| `audio_recovered` | Client cấp quyền autoplay thành công hoặc thiết bị âm thanh được cắm lại $\Rightarrow$ WebRTC kết nối lại thành công. | `CAPTION_ONLY` | `BROADCASTING` |
 
 ---
 
@@ -160,7 +160,7 @@ Các sự kiện này phát sinh từ lỗi thiết bị của người dùng �
   ```csharp
   AudioRouteStatus.PAUSED => eventType switch
   {
-      AudioRoutingEventType.host_resumes_session => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+      AudioRoutingEventType.host_resumes_session => Result.Success(AudioRouteStatus.BROADCASTING),
       _ => InvalidTransition(currentState, eventType)
   },
   ```
@@ -172,9 +172,9 @@ Các sự kiện này phát sinh từ lỗi thiết bị của người dùng �
 - `ResumeTranslationRoomAsync` → trigger `host_resumes_session`.
 
 #### 1.5 Implement Artifacts Finalization Job
-- Khi Route chuyển sang `STOPPING`, backend auto-trigger một background job:
+- Khi Route chuyển sang `ENDING`, backend auto-trigger một background job:
   - Flush Redis buffer (đợi các segment còn sót).
-  - Trigger event `stop_routing_and_flush_data` → chuyển sang `FINALIZING_ARTIFACTS`.
+  - Trigger event `stop_routing_and_flush_data` → chuyển sang `SAVING_OUTPUTS`.
   - Sau khi transcript, recording, summary được linked vào DB → trigger `transcript_recording_summary_linked` → `COMPLETED`.
 
 ---
@@ -199,8 +199,8 @@ var consumerName = $"backend-{Environment.MachineName}-{Guid.NewGuid():N[..8]}";
   {
     "roomId": "...",
     "routeId": "...",
-    "oldStatus": "AUDIO_ROUTING_ACTIVE",
-    "newStatus": "TRANSLATION_DEGRADED",
+    "oldStatus": "BROADCASTING",
+    "newStatus": "TRANSLATION_DELAYED",
     "timestamp": "2026-05-17T..."
   }
   ```
@@ -410,17 +410,17 @@ async def _on_route_status_changed(self, room_id: str, new_status: str):
     match new_status:
         case "PAUSED":
             self._paused_rooms.add(room_id)  # Tạm ngừng xử lý audio chunk của room này
-        case "AUDIO_ROUTING_ACTIVE":
+        case "BROADCASTING":
             self._paused_rooms.discard(room_id)
         case "VOICE_OUTPUT_DEGRADED":
             # TTS Worker: XTTS sập hoặc chậm, chủ động fallback dùng Edge-TTS mặc định
             if self.worker_name == "tts":
                 self.use_edge_tts_fallback(room_id, True)
-        case "TEXT_ONLY_MODE":
+        case "CAPTION_ONLY":
             # TTS Worker: Dừng hẳn model sinh giọng nói để tiết kiệm điện/VRAM GPU
             if self.worker_name == "tts":
                 self.shutdown_tts_for_room(room_id)
-        case "STOPPING" | "COMPLETED":
+        case "ENDING" | "COMPLETED":
             # Tất cả các Workers giải phóng hoàn toàn bộ đệm và state của phòng
             self._cleanup_room(room_id)
 ```
@@ -447,13 +447,13 @@ await _hubContext.Clients
 **Mapping từ Status → UI Message:**
 | Status | Message hiển thị trên Client |
 |--------|------------------------------|
-| `TRANSLATION_DEGRADED` | ⚠️ "Đường truyền chậm, chất lượng dịch có thể giảm" |
+| `TRANSLATION_DELAYED` | ⚠️ "Đường truyền chậm, chất lượng dịch có thể giảm" |
 | `VOICE_OUTPUT_DEGRADED` | ⚠️ "Giọng nói bị ảnh hưởng, đang cố gắng khôi phục" |
-| `TEXT_ONLY_MODE` | ⚠️ "Chỉ còn chế độ văn bản, âm thanh không khả dụng" |
+| `CAPTION_ONLY` | ⚠️ "Chỉ còn chế độ văn bản, âm thanh không khả dụng" |
 | `PAUSED` | ⏸️ "Phiên dịch đã tạm dừng" |
-| `AUDIO_ROUTING_ACTIVE` | ✅ "Đường truyền đã ổn định" |
-| `STOPPING` | 🔄 "Đang kết thúc phiên..." |
-| `FINALIZING_ARTIFACTS` | 🔄 "Đang lưu transcript và bản ghi..." |
+| `BROADCASTING` | ✅ "Đường truyền đã ổn định" |
+| `ENDING` | 🔄 "Đang kết thúc phiên..." |
+| `SAVING_OUTPUTS` | 🔄 "Đang lưu transcript và bản ghi..." |
 | `COMPLETED` | ✅ "Phiên đã kết thúc" |
 
 ---
@@ -466,10 +466,10 @@ await _hubContext.Clients
 if (eventType == AudioRoutingEventType.host_pauses_session)
 {
     var pauseableStates = new[] {
-        AudioRouteStatus.AUDIO_ROUTING_ACTIVE,
-        AudioRouteStatus.TRANSLATION_DEGRADED,
+        AudioRouteStatus.BROADCASTING,
+        AudioRouteStatus.TRANSLATION_DELAYED,
         AudioRouteStatus.VOICE_OUTPUT_DEGRADED,
-        AudioRouteStatus.TEXT_ONLY_MODE,
+        AudioRouteStatus.CAPTION_ONLY,
     };
     if (pauseableStates.Contains(currentState))
         return Result.Success(AudioRouteStatus.PAUSED);
@@ -478,7 +478,7 @@ if (eventType == AudioRoutingEventType.host_pauses_session)
 // Trong switch expression:
 AudioRouteStatus.PAUSED => eventType switch
 {
-    AudioRoutingEventType.host_resumes_session => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+    AudioRoutingEventType.host_resumes_session => Result.Success(AudioRouteStatus.BROADCASTING),
     _ => InvalidTransition(currentState, eventType)
 },
 ```
@@ -496,13 +496,13 @@ EndRoom API Call
 Room.Status = ENDED
      │
      ▼
-Trigger: host_ends_session → AudioRoute.Status = STOPPING
+Trigger: host_ends_session → AudioRoute.Status = ENDING
      │
      ▼ (Auto-trigger ngay sau)
 Background Job: ArtifactsFinalizationJob
      │
      ├── Đợi STT buffer flush (30s timeout)
-     ├── Trigger: stop_routing_and_flush_data → FINALIZING_ARTIFACTS
+     ├── Trigger: stop_routing_and_flush_data → SAVING_OUTPUTS
      │
      ├── [Parallel Jobs]
      │    ├── Link Transcript records → TranscriptService gRPC
@@ -515,19 +515,19 @@ Background Job: ArtifactsFinalizationJob
 
 #### 6.2 Files cần tạo mới
 - `translation-room/src/.../Services/ArtifactsFinalizationService.cs` — Xử lý logic job
-- `translation-room/src/.../HostedServices/ArtifactsFinalizationBackgroundService.cs` — Hosted Service lắng nghe STOPPING event
+- `translation-room/src/.../HostedServices/ArtifactsFinalizationBackgroundService.cs` — Hosted Service lắng nghe ENDING event
 
 #### 6.3 Đặc tả cơ chế kiểm tra các điều kiện hệ thống đặc thù
 
-##### A. Kiểm tra Graceful Flush (Event-Driven kết hợp 30s Timeout Fallback) sau khi Host dừng phòng (`host_ends_session` -> `STOPPING` -> `FINALIZING_ARTIFACTS`)
-Khi Host bấm nút **Kết thúc** phòng họp, `TranslationRoomService` cập nhật trạng thái phòng họp thành `ENDED` và gửi sự kiện `host_ends_session`. Trạng thái Audio Route chuyển sang `STOPPING`.
+##### A. Kiểm tra Graceful Flush (Event-Driven kết hợp 30s Timeout Fallback) sau khi Host dừng phòng (`host_ends_session` -> `ENDING` -> `SAVING_OUTPUTS`)
+Khi Host bấm nút **Kết thúc** phòng họp, `TranslationRoomService` cập nhật trạng thái phòng họp thành `ENDED` và gửi sự kiện `host_ends_session`. Trạng thái Audio Route chuyển sang `ENDING`.
 
 Để tối ưu hóa hiệu năng và loại bỏ tải Polling vô ích lên Redis, hệ thống kết hợp **luồng Event-Driven chủ động** với **cơ chế Timeout cứu hộ 30 giây**:
 
 1. **API Gateway gắn cờ Kết thúc:** Chặn không cho client push thêm chunk mới, đồng thời gắn cờ `is_final_chunk = true` vào chunk âm thanh cuối cùng được nhận tại stream `audio:chunks:{roomId}`.
 2. **AI Workers forward tín hiệu hoàn tất:** STT Worker và TTS Worker khi hoàn tất xử lý chunk mang cờ `is_final_chunk` này sẽ publish một sự kiện đặc thù mang tên `final_chunk_processed` lên stream sự kiện hệ thống `translationRoom:system_events`.
 3. **Hosted Service xử lý Song song:** 
-   `ArtifactsFinalizationBackgroundService` khi chuyển Route sang `STOPPING` sẽ:
+   `ArtifactsFinalizationBackgroundService` khi chuyển Route sang `ENDING` sẽ:
    - **Tuyến chủ động (Event-Driven):** Đăng ký lắng nghe sự kiện `final_chunk_processed` của phòng họp từ Redis. Khi nhận đủ tín hiệu hoàn tất từ TTS/STT, lập tức phát lệnh `stop_routing_and_flush_data`.
    - **Tuyến cứu hộ (Timeout Guard):** Khởi tạo một Timer đếm ngược 30 giây. Nếu sau 30 giây (vì lý do AI Worker crash, network drop giữa chừng) không nhận đủ sự kiện `final_chunk_processed`, Timer tự động phát tín hiệu `stop_routing_and_flush_data` để cứu nguy, đảm bảo phòng họp không bao giờ bị nghẽn trạng thái vĩnh viễn.
 
@@ -568,7 +568,7 @@ public class ArtifactsFinalizationBackgroundService : BackgroundService
         {
             await subscriber.UnsubscribeAsync(channel);
             
-            // 3. Chuyển tiếp sang FINALIZING_ARTIFACTS
+            // 3. Chuyển tiếp sang SAVING_OUTPUTS
             await _eventProcessor.ProcessEventAsync(
                 roomId, 
                 null, 
@@ -581,8 +581,8 @@ public class ArtifactsFinalizationBackgroundService : BackgroundService
 }
 ```
 
-##### B. Kiểm tra hoàn thành lưu trữ Transcript & AI Summary vào DB (`FINALIZING_ARTIFACTS` -> `COMPLETED`)
-Khi Audio Route ở trạng thái `FINALIZING_ARTIFACTS`, backend thực thi tác vụ kết xuất và lưu trữ tài nguyên cuộc họp. Để tối ưu hiệu năng, backend chạy song song các tác vụ thông qua cơ chế bất đồng bộ của C#:
+##### B. Kiểm tra hoàn thành lưu trữ Transcript & AI Summary vào DB (`SAVING_OUTPUTS` -> `COMPLETED`)
+Khi Audio Route ở trạng thái `SAVING_OUTPUTS`, backend thực thi tác vụ kết xuất và lưu trữ tài nguyên cuộc họp. Để tối ưu hiệu năng, backend chạy song song các tác vụ thông qua cơ chế bất đồng bộ của C#:
 
 ```csharp
 public async Task FinalizeRoomArtifactsAsync(Guid roomId, CancellationToken ct)
@@ -609,12 +609,12 @@ public async Task FinalizeRoomArtifactsAsync(Guid roomId, CancellationToken ct)
     catch (Exception ex)
     {
         _logger.LogError(ex, "Lỗi xảy ra khi lưu trữ transcript/summary cuối phòng {RoomId}", roomId);
-        // Giữ nguyên trạng thái FINALIZING_ARTIFACTS để đảm bảo không mất mát dữ liệu và cho phép retry
+        // Giữ nguyên trạng thái SAVING_OUTPUTS để đảm bảo không mất mát dữ liệu và cho phép retry
     }
 }
 ```
 
-##### C. Kiểm tra cấu hình Ngôn ngữ/Vai trò trước khi chạy phòng (`IDLE` -> `ROUTING_READY`)
+##### C. Kiểm tra cấu hình Ngôn ngữ/Vai trò trước khi chạy phòng (`PENDING` -> `READY`)
 Routing âm thanh không thể hoạt động nếu thiếu thông tin cấu hình ngôn ngữ nguồn, đích hoặc thiếu các vai trò kết nối phù hợp (Speaker/Listener).
 
 Khi Host lưu thiết lập ngôn ngữ qua API (`UpdateTranslationRoomSettingsAsync`) hoặc khi một người tham gia cập nhật ngôn ngữ nói/nghe thành công:
@@ -631,7 +631,7 @@ Khi Host lưu thiết lập ngôn ngữ qua API (`UpdateTranslationRoomSettingsA
    ```csharp
    await _audioRouteEventProcessor.ProcessEventAsync(room.Id, null, AudioRoutingEventType.participants_and_languages_configured.ToString(), "{}", ct);
    ```
-   Trạng thái chuyển từ `IDLE` sang `ROUTING_READY`.
+   Trạng thái chuyển từ `PENDING` sang `READY`.
 
 ---
 
@@ -675,7 +675,7 @@ Khi Host lưu thiết lập ngôn ngữ qua API (`UpdateTranslationRoomSettingsA
 | AI Worker bị die, không ai phát hiện recovery | Trung | Backend chạy Health Check định kỳ 30s, tự trigger recovery nếu không thấy event |
 | Race condition: nhiều event cùng lúc | Trung | `AudioRouteStateMachine` là deterministic, chỉ có 1 thread xử lý per route |
 | VRAM hết khi TTS crash | Cao | Fallback về `edge-tts` (Cloud TTS) khi XTTS không khả dụng |
-| Billing sai khi crash ở `FINALIZING_ARTIFACTS` | Cao | Idempotent job ID — kiểm tra trạng thái trước khi tính tiền |
+| Billing sai khi crash ở `SAVING_OUTPUTS` | Cao | Idempotent job ID — kiểm tra trạng thái trước khi tính tiền |
 
 ---
 

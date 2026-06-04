@@ -88,25 +88,25 @@ stateDiagram-v2
 ### 2. `WAITING`
 - **Mô tả:** Phòng đang mở cửa đón Participant tham gia, nhưng phiên dịch thuật thực sự chưa bắt đầu.
 - **PostgreSQL:** Status = `WAITING`. `StartedAt` chưa được set.
-- **Hành vi:** Participant có thể join vào. Nếu `requiresApproval = true`, họ sẽ ở trạng thái `WAITING` cho đến khi Host duyệt. Audio Routing routes ở trạng thái `ROUTING_READY`.
+- **Hành vi:** Participant có thể join vào. Nếu `requiresApproval = true`, họ sẽ ở trạng thái `WAITING` cho đến khi Host duyệt. Audio Routing routes ở trạng thái `READY`.
 - **Settings Lock:** Settings **vẫn có thể chỉnh sửa** ở trạng thái này. Sau khi chuyển sang `IN_PROGRESS`, settings bị khoá (`ErrorSettingsLocked`).
 
 ### 3. `IN_PROGRESS`
 - **Mô tả:** Phiên dịch thuật đang diễn ra trực tiếp. Âm thanh đang được xử lý qua AI Pipeline.
 - **PostgreSQL:** Status = `IN_PROGRESS`. `StartedAt` được ghi nhận lần đầu tiên khi chuyển vào trạng thái này.
-- **Audio Routing:** Tự động phát sự kiện `session_starts` → các Audio Routes chuyển từ `ROUTING_READY` sang `AUDIO_ROUTING_ACTIVE`.
+- **Audio Routing:** Tự động phát sự kiện `session_starts` → các Audio Routes chuyển từ `READY` sang `BROADCASTING`.
 - **Hành vi:** AI Workers (STT, NMT, TTS) bắt đầu xử lý luồng âm thanh thời gian thực.
 
 ### 4. `PAUSED`
 - **Mô tả:** Host tạm dừng phiên họp. AI pipeline ngừng xử lý để tiết kiệm GPU.
 - **PostgreSQL:** Status = `PAUSED`.
-- **Audio Routing:** Tự động phát sự kiện `room_pause` → **tất cả** Audio Routes trong phòng chuyển sang `AUDIO_ROUTING_PAUSED`. Kích hoạt **Update Protection Guard** trên toàn bộ routes.
-- **Hành vi:** AI Workers drop toàn bộ gói âm thanh đến phòng này. Telemetry sweep bị block khỏi việc ghi đè trạng thái `AUDIO_ROUTING_PAUSED`.
+- **Audio Routing:** Tự động phát sự kiện `room_pause` → **tất cả** Audio Routes trong phòng chuyển sang `PAUSED`. Kích hoạt **Update Protection Guard** trên toàn bộ routes.
+- **Hành vi:** AI Workers drop toàn bộ gói âm thanh đến phòng này. Telemetry sweep bị block khỏi việc ghi đè trạng thái `PAUSED`.
 
 ### 5. `ENDED`
 - **Mô tả:** Phiên họp kết thúc chính thức. Trạng thái terminal.
 - **PostgreSQL:** Status = `ENDED`. `EndedAt` và `DurationSeconds` được ghi nhận.
-- **Audio Routing:** Tự động phát sự kiện `session_ends` → các Audio Routes chuyển sang `STOPPING` → `FINALIZING_ARTIFACTS` → `COMPLETED`.
+- **Audio Routing:** Tự động phát sự kiện `session_ends` → các Audio Routes chuyển sang `ENDING` → `SAVING_OUTPUTS` → `COMPLETED`.
 - **Hành vi:** Phòng không thể thay đổi trạng thái thêm. Room code được giải phóng để tái sử dụng.
 
 ### 6. `CANCELLED`
@@ -204,10 +204,10 @@ Nếu request join/create không cung cấp ngôn ngữ, hệ thống tự độ
 
 ### E. Audio Routing Coupling Rule (WT-67)
 Vòng đời phòng được gắn kết chặt với Audio Routing State Machine:
-- `StartRoom` → `session_starts` → tất cả routes: `ROUTING_READY` → `AUDIO_ROUTING_ACTIVE`
-- `PauseRoom` → `room_pause` → tất cả routes: bất kỳ streaming state → `AUDIO_ROUTING_PAUSED`
-- `ResumeRoom` → `room_resume` → tất cả routes: `AUDIO_ROUTING_PAUSED` → `AUDIO_ROUTING_ACTIVE`
-- `EndRoom` → `session_ends` → tất cả routes: bất kỳ state → `STOPPING` → finalization chain
+- `StartRoom` → `session_starts` → tất cả routes: `READY` → `BROADCASTING`
+- `PauseRoom` → `room_pause` → tất cả routes: bất kỳ streaming state → `PAUSED`
+- `ResumeRoom` → `room_resume` → tất cả routes: `PAUSED` → `BROADCASTING`
+- `EndRoom` → `session_ends` → tất cả routes: bất kỳ state → `ENDING` → finalization chain
 
 ---
 
@@ -230,9 +230,9 @@ Vòng đời phòng được gắn kết chặt với Audio Routing State Machin
 
 ### Kịch Bản 3: Tạm Dừng Và Tiếp Tục Phòng Họp
 1. Phòng đang `IN_PROGRESS`. Host cần ngắt quãng.
-2. Host bấm Pause → Phòng chuyển sang `PAUSED`. Audio Routing phát `room_pause` → tất cả routes sang `AUDIO_ROUTING_PAUSED`. **Update Protection** kích hoạt.
+2. Host bấm Pause → Phòng chuyển sang `PAUSED`. Audio Routing phát `room_pause` → tất cả routes sang `PAUSED`. **Update Protection** kích hoạt.
 3. AI Workers ngừng xử lý gói âm thanh. GPU được giải phóng.
-4. Host bấm Resume → Phòng quay lại `IN_PROGRESS`. Audio Routing phát `room_resume` → routes trở về `AUDIO_ROUTING_ACTIVE`.
+4. Host bấm Resume → Phòng quay lại `IN_PROGRESS`. Audio Routing phát `room_resume` → routes trở về `BROADCASTING`.
 
 ### Kịch Bản 4: Participant Bị Mất Kết Nối Và Rejoin
 1. Participant đang `CONNECTED` bị mất mạng → Hệ thống WebRTC phát hiện ngắt kết nối → Status chuyển sang `DISCONNECTED`.
@@ -250,7 +250,7 @@ Vòng đời phòng được gắn kết chặt với Audio Routing State Machin
 ### Kịch Bản 6: Kết Thúc Phòng Và Finalization
 1. Phòng đang `IN_PROGRESS` (hoặc `PAUSED`). Host bấm End.
 2. Backend ghi `EndedAt`, tính `DurationSeconds`, chuyển phòng sang `ENDED`.
-3. Audio Routing nhận sự kiện `session_ends` → routes chuyển sang `STOPPING` → `FINALIZING_ARTIFACTS`.
+3. Audio Routing nhận sự kiện `session_ends` → routes chuyển sang `ENDING` → `SAVING_OUTPUTS`.
 4. `ArtifactsFinalizationService` xử lý: tạo file ghi âm, biên bản dịch, tóm tắt.
 5. Nếu thành công → routes chuyển sang `COMPLETED` → Redis cache cleanup ngay lập tức.
-6. Nếu lỗi → routes chuyển sang `FINALIZING_ARTIFACTS_FAILED` → `ArtifactsRecoveryWorker` quét và retry mỗi 5 phút (tối đa 5 lần) → nếu hết lần → `finalization_abandoned` → `COMPLETED`.
+6. Nếu lỗi → routes chuyển sang `SAVE_FAILED` → `ArtifactsRecoveryWorker` quét và retry mỗi 5 phút (tối đa 5 lần) → nếu hết lần → `finalization_abandoned` → `COMPLETED`.

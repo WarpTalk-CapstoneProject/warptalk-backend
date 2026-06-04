@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.DTOs;
@@ -57,9 +58,9 @@ public class TelemetryProcessor : ITelemetryProcessor
             int warmupCount = 0;
             long lastTimestamp = 0;
 
-            if (stateEntries.TryGetValue("stt_ema", out var sttEmaStr) && double.TryParse(sttEmaStr, out var sttEmaVal)) oldSttEma = sttEmaVal;
-            if (stateEntries.TryGetValue("translation_ema", out var transEmaStr) && double.TryParse(transEmaStr, out var transEmaVal)) oldTranslationEma = transEmaVal;
-            if (stateEntries.TryGetValue("tts_ema", out var ttsEmaStr) && double.TryParse(ttsEmaStr, out var ttsEmaVal)) oldTtsEma = ttsEmaVal;
+            if (stateEntries.TryGetValue("stt_ema", out var sttEmaStr) && double.TryParse(sttEmaStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var sttEmaVal)) oldSttEma = sttEmaVal;
+            if (stateEntries.TryGetValue("translation_ema", out var transEmaStr) && double.TryParse(transEmaStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var transEmaVal)) oldTranslationEma = transEmaVal;
+            if (stateEntries.TryGetValue("tts_ema", out var ttsEmaStr) && double.TryParse(ttsEmaStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var ttsEmaVal)) oldTtsEma = ttsEmaVal;
             if (stateEntries.TryGetValue("is_stt_degraded", out var sttDegradedStr) && bool.TryParse(sttDegradedStr, out var sttDegradedVal)) isSttDegraded = sttDegradedVal;
             if (stateEntries.TryGetValue("is_translation_degraded", out var transDegradedStr) && bool.TryParse(transDegradedStr, out var transDegradedVal)) isTranslationDegraded = transDegradedVal;
             if (stateEntries.TryGetValue("is_tts_degraded", out var ttsDegradedStr) && bool.TryParse(ttsDegradedStr, out var ttsDegradedVal)) isTtsDegraded = ttsDegradedVal;
@@ -109,7 +110,7 @@ public class TelemetryProcessor : ITelemetryProcessor
             if (payload.WorkerType.Equals("stt", StringComparison.OrdinalIgnoreCase))
             {
                 double newSttEma = oldSttEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldSttEma * (1 - alpha));
-                updates["stt_ema"] = newSttEma.ToString();
+                updates["stt_ema"] = newSttEma.ToString(CultureInfo.InvariantCulture);
 
                 _logger.LogDebug("STT Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newSttEma, alpha, payload.RoomId);
 
@@ -129,7 +130,7 @@ public class TelemetryProcessor : ITelemetryProcessor
             else if (payload.WorkerType.Equals("translation", StringComparison.OrdinalIgnoreCase))
             {
                 double newTranslationEma = oldTranslationEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTranslationEma * (1 - alpha));
-                updates["translation_ema"] = newTranslationEma.ToString();
+                updates["translation_ema"] = newTranslationEma.ToString(CultureInfo.InvariantCulture);
 
                 _logger.LogDebug("Translation Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTranslationEma, alpha, payload.RoomId);
 
@@ -149,7 +150,7 @@ public class TelemetryProcessor : ITelemetryProcessor
             else if (payload.WorkerType.Equals("tts", StringComparison.OrdinalIgnoreCase))
             {
                 double newTtsEma = oldTtsEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTtsEma * (1 - alpha));
-                updates["tts_ema"] = newTtsEma.ToString();
+                updates["tts_ema"] = newTtsEma.ToString(CultureInfo.InvariantCulture);
 
                 _logger.LogDebug("TTS Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTtsEma, alpha, payload.RoomId);
 

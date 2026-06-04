@@ -67,8 +67,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 _logger.LogInformation("Received event-driven final_processed completion signal for room {RoomId}", roomId);
             }
 
-            // 2. Transition Route state to FINALIZING_ARTIFACTS
-            _logger.LogInformation("Transitioning room {RoomId} state to FINALIZING_ARTIFACTS", roomId);
+            // 2. Transition route state to SAVING_OUTPUTS.
+            _logger.LogInformation("Transitioning room {RoomId} state to SAVING_OUTPUTS", roomId);
             var transitionResult = await _eventProcessor.ProcessEventAsync(
                 roomId,
                 null,
@@ -84,7 +84,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             }
             else
             {
-                _logger.LogError("Failed to transition room {RoomId} to FINALIZING_ARTIFACTS. Error: {Error}", roomId, transitionResult.Error);
+                _logger.LogError("Failed to transition room {RoomId} to SAVING_OUTPUTS. Error: {Error}", roomId, transitionResult.Error);
             }
         }
         catch (Exception ex)

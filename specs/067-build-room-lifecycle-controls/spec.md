@@ -4,10 +4,10 @@
 Implement actual room lifecycle actions and legal state transitions.
 
 ## 2. Implementation Scope
-* Add start room action (MUST activate runtime audio routing by transitioning related routes to `AUDIO_ROUTING_ACTIVE`).
-* Add pause room action (MUST transition routes to `AUDIO_ROUTING_PAUSED` and activate telemetry update protection on database writes to safeguard paused status).
-* Add resume room action (MUST transition routes back to `AUDIO_ROUTING_ACTIVE`, resuming telemetry evaluation).
-* Add end room action (MUST wind down streams via `STOPPING` -> `FINALIZING_ARTIFACTS` -> `COMPLETED` and invoke **Unified Redis Cache Cleanup** immediately to free RAM).
+* Add start room action (MUST activate runtime audio routing by transitioning related routes to `BROADCASTING`).
+* Add pause room action (MUST transition routes to `PAUSED` and activate telemetry update protection on database writes to safeguard paused status).
+* Add resume room action (MUST transition routes back to `BROADCASTING`, resuming telemetry evaluation).
+* Add end room action (MUST wind down streams via `ENDING` -> `SAVING_OUTPUTS` -> `COMPLETED` and invoke **Unified Redis Cache Cleanup** immediately to free RAM).
 * Add cancel room action.
 * Add expire room handling.
 * Update timestamps: `started_at`, `ended_at`, `duration_seconds`.
@@ -32,7 +32,7 @@ Implement actual room lifecycle actions and legal state transitions.
 **Acceptance Scenarios**:
 
 1. **Given** a scheduled room, **When** the host opens waiting mode, **Then** status changes from `SCHEDULED` to `WAITING`.
-2. **Given** a waiting room, **When** the host starts the session, **Then** status changes to `IN_PROGRESS`, `started_at` is set, and associated audio routes transition to `AUDIO_ROUTING_ACTIVE`.
+2. **Given** a waiting room, **When** the host starts the session, **Then** status changes to `IN_PROGRESS`, `started_at` is set, and associated audio routes transition to `BROADCASTING`.
 3. **Given** an in-progress room, **When** the host ends the session, **Then** status changes to `ENDED`, `ended_at` is set, and `duration_seconds` is calculated.
 4. **Given** an illegal transition, **When** the action is requested, **Then** the system rejects it without changing the room state.
 
@@ -40,7 +40,7 @@ Implement actual room lifecycle actions and legal state transitions.
 
 * **FR-1.5-001**: System MUST enforce the approved room lifecycle states and transitions.
 * **FR-1.5-002**: System MUST update lifecycle timestamps consistently when rooms start, end, cancel, or expire.
-* **FR-1.5-002b**: System MUST broadcast `AUDIO_ROUTING_ACTIVE` to relevant audio routes when the room successfully starts.
+* **FR-1.5-002b**: System MUST broadcast `BROADCASTING` to relevant audio routes when the room successfully starts.
 * **FR-1.5-003**: System MUST reject illegal transitions with clear error responses.
 * **FR-1.5-004**: System MUST not preserve discarded draft rooms as lifecycle records.
 

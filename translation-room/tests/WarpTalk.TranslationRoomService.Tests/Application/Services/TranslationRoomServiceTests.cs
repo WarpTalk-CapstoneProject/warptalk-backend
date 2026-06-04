@@ -155,7 +155,21 @@ public class TranslationRoomServiceTests
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = nameof(RoomStatus.WAITING), Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}" };
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            WorkspaceId = Guid.NewGuid(),
+            HostId = hostId,
+            Title = "Test room",
+            TranslationRoomCode = "ABC-DEF-GHI",
+            Status = nameof(RoomStatus.WAITING),
+            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            MaxParticipants = 10,
+            SourceLanguage = "vi",
+            TargetLanguages = "[\"en\"]",
+            CreatedAt = DateTime.UtcNow,
+            Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
+        };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
@@ -172,14 +186,28 @@ public class TranslationRoomServiceTests
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = nameof(RoomStatus.SCHEDULED), Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}" };
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            WorkspaceId = Guid.NewGuid(),
+            HostId = hostId,
+            Title = "Ended room",
+            TranslationRoomCode = "ABC-DEF-GHI",
+            Status = nameof(RoomStatus.ENDED),
+            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            MaxParticipants = 10,
+            SourceLanguage = "vi",
+            TargetLanguages = "[\"en\"]",
+            CreatedAt = DateTime.UtcNow,
+            Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
+        };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeFalse();
-        result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToInProgress);
+        result.Error.Should().Be("Only scheduled or waiting rooms can be started.");
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
     }
 
@@ -276,4 +304,3 @@ public class TranslationRoomServiceTests
 
 
 }
-
