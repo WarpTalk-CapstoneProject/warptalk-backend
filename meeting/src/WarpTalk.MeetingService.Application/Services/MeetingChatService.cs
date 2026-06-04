@@ -9,7 +9,6 @@ using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.Shared;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
-using WarpTalk.MeetingService.Domain.Interfaces;
 
 namespace WarpTalk.MeetingService.Application.Services;
 

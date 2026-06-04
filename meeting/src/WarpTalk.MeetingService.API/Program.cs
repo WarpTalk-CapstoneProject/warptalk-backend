@@ -96,6 +96,9 @@ builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatMod
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
 
+// History service
+builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
+
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
