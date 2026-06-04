@@ -4,10 +4,19 @@ using System.Threading.Tasks;
 using Stripe.Checkout;
 using WarpTalk.PaymentService.Application.Interfaces;
 
+using Microsoft.Extensions.Configuration;
+
 namespace WarpTalk.PaymentService.Infrastructure.Services;
 
 public class StripePaymentService : IStripePaymentService
 {
+    private readonly IConfiguration _configuration;
+
+    public StripePaymentService(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+
     public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType)
     {
         var options = new SessionCreateOptions
@@ -30,8 +39,8 @@ public class StripePaymentService : IStripePaymentService
                 },
             },
             Mode = "payment",
-            SuccessUrl = "http://localhost:3000/sandbox/workspace-billing?session_id={CHECKOUT_SESSION_ID}",
-            CancelUrl = "http://localhost:3000/payment-cancelled",
+            SuccessUrl = _configuration["Stripe:SuccessUrl"] ?? "http://localhost:3000/sandbox/workspace-billing?session_id={CHECKOUT_SESSION_ID}",
+            CancelUrl = _configuration["Stripe:CancelUrl"] ?? "http://localhost:3000/payment-cancelled",
             PaymentIntentData = new SessionPaymentIntentDataOptions
             {
                 Metadata = new Dictionary<string, string>

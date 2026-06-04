@@ -5,6 +5,7 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using Microsoft.EntityFrameworkCore;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -349,7 +350,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            catch (DbUpdateException ex)
             {
                 // Concurrency Race Condition Handle (Unique Constraint Violation)
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey}. Assuming already reserved.", request.IdempotencyKey);
@@ -419,7 +420,7 @@ public class CreditService : ICreditService
             var tx = new CreditTransaction
             {
                 SubscriptionId = sub.Id,
-                UserId = sub.UserId, // Realistically from context, but fallback to subscription owner
+                UserId = sub.UserId, // Explicitly charged to the workspace owner
                 Amount = reservation.Amount,
                 Type = "consume",
                 Description = "AI Real-time consumption",
@@ -436,7 +437,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            catch (DbUpdateException ex)
             {
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during consume. Assuming already consumed.", idempotencyKey);
                 var existingDto = new CreditTransactionDto(tx.Id, -tx.Amount, tx.Type, tx.Description ?? "", tx.ReferenceType ?? "", tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt);
@@ -500,7 +501,7 @@ public class CreditService : ICreditService
             var refundTx = new CreditTransaction
             {
                 SubscriptionId = sub.Id,
-                UserId = sub.UserId, // Realistically from context, but fallback to subscription owner
+                UserId = sub.UserId, // Explicitly refunded to the workspace owner
                 Amount = reservation.Amount,
                 Type = "refund",
                 Description = "AI Real-time refund (canceled or failed)",
@@ -518,7 +519,7 @@ public class CreditService : ICreditService
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
+            catch (DbUpdateException ex)
             {
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during refund. Assuming already refunded.", idempotencyKey);
                 return Result.Success(true);
