@@ -10,8 +10,6 @@ using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.AuthService.Infrastructure.Persistence;
 using WarpTalk.AuthService.Infrastructure.Repositories;
 using WarpTalk.AuthService.Infrastructure.Security;
-using WarpTalk.AuthService.Infrastructure.Caching;
-using WarpTalk.AuthService.Application.Interfaces.Caching;
 using WarpTalk.AuthService.API.GrpcServices;
 using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Settings;
@@ -38,7 +36,6 @@ builder.Services.AddDbContext<AuthDbContext>(options =>
 
 // --- Configuration ---
 builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
-builder.Services.Configure<WorkspaceSystemSettings>(builder.Configuration.GetSection("WorkspaceSettings"));
 builder.Services.Configure<PasswordHasherSettings>(builder.Configuration.GetSection("PasswordHasherSettings"));
 
 // --- Repositories ---
@@ -48,9 +45,6 @@ builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
 builder.Services.AddScoped<IUserRoleRepository, UserRoleRepository>();
 builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
-builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
-builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
-builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // --- Application Services ---
@@ -61,13 +55,11 @@ builder.Services.AddScoped<ITokenService, WarpTalk.AuthService.Application.Servi
 builder.Services.AddScoped<IProfileService, WarpTalk.AuthService.Application.Services.ProfileService>();
 builder.Services.AddScoped<IUserSettingsService, WarpTalk.AuthService.Application.Services.UserSettingsService>();
 builder.Services.AddScoped<IGoogleAuthService, WarpTalk.AuthService.Application.Services.GoogleAuthService>();
-builder.Services.AddScoped<IWorkspaceService, WarpTalk.AuthService.Application.Services.WorkspaceService>();
 
 // --- Infrastructure Services ---
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
-builder.Services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
 
 // --- JWT Authentication ---
 var jwtSecret = builder.Configuration["Jwt:Secret"]
@@ -98,6 +90,12 @@ builder.Services.AddCustomApiBehavior();
 
 builder.Services.AddControllers();
 builder.Services.AddGrpc();
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService.WorkspaceInvitationServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056");
+});
+builder.Services.AddScoped<IWorkspaceInvitationClient, WarpTalk.AuthService.Infrastructure.Clients.WorkspaceInvitationGrpcClient>();
 
 var app = builder.Build();
 

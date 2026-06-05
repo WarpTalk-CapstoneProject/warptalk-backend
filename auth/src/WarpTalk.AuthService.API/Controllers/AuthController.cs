@@ -31,6 +31,17 @@ public class AuthController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpPost("register-invited")]
+    public async Task<IActionResult> RegisterInvited([FromBody] RegisterInvitedRequest request, CancellationToken ct)
+    {
+        var result = await _authService.RegisterInvitedAsync(request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request, CancellationToken ct)
     {

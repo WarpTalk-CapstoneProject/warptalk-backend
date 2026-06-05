@@ -97,18 +97,4 @@ public partial class User
     public virtual ICollection<UserRole> UserRoleUsers { get; set; } = new List<UserRole>();
 
     public virtual ICollection<UserSetting> UserSettings { get; set; } = new List<UserSetting>();
-
-    public virtual ICollection<Workspace> WorkspaceCreatedByNavigations { get; set; } = new List<Workspace>();
-
-    public virtual ICollection<Workspace> WorkspaceDeletedByNavigations { get; set; } = new List<Workspace>();
-
-    public virtual ICollection<WorkspaceInvitation> WorkspaceInvitations { get; set; } = new List<WorkspaceInvitation>();
-
-    public virtual ICollection<WorkspaceMember> WorkspaceMemberRemovedByNavigations { get; set; } = new List<WorkspaceMember>();
-
-    public virtual ICollection<WorkspaceMember> WorkspaceMemberUsers { get; set; } = new List<WorkspaceMember>();
-
-    public virtual ICollection<Workspace> WorkspaceOwners { get; set; } = new List<Workspace>();
-
-    public virtual ICollection<Workspace> WorkspaceUpdatedByNavigations { get; set; } = new List<Workspace>();
 }

@@ -15,7 +15,6 @@ using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Enums;
-using WarpTalk.AuthService.Domain.Extensions;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
 
@@ -32,6 +31,7 @@ public class AuthService : IAuthService
     private readonly AuthSettings _authSettings;
     private readonly ILogger<AuthService> _logger;
     private readonly TimeSpan _lockoutDuration;
+    private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
 
     public AuthService(
         IUnitOfWork unitOfWork,
@@ -39,7 +39,8 @@ public class AuthService : IAuthService
         IJwtTokenGenerator jwtGenerator,
         IDistributedCache cache,
         IOptions<AuthSettings> authSettings,
-        ILogger<AuthService> logger)
+        ILogger<AuthService> logger,
+        IWorkspaceInvitationClient workspaceInvitationClient)
     {
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
@@ -50,6 +51,7 @@ public class AuthService : IAuthService
         _lockoutDuration = TimeSpan.FromMinutes(_authSettings.LockoutDurationMinutes);
         _userRepository = _unitOfWork.UserRepository;
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
+        _workspaceInvitationClient = workspaceInvitationClient;
     }
 
     public async Task<Result<AuthResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
@@ -204,6 +206,85 @@ public class AuthService : IAuthService
         {
             _logger.LogError(ex, "Error occurred while resending verification email. UserId: {UserId}", userId);
             return Result.Failure("An unexpected error occurred while resending verification email.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<AuthResponse>> RegisterInvitedAsync(RegisterInvitedRequest request, CancellationToken ct = default)
+    {
+        try
+        {
+            // 1. Verify invitation token via gRPC
+            var inviteResult = await _workspaceInvitationClient.VerifyInvitationTokenAsync(request.Token, ct);
+            if (!inviteResult.IsValid)
+            {
+                return Result.Failure<AuthResponse>(inviteResult.ErrorMessage ?? "Invalid invitation token.", ErrorCodes.ValidationError);
+            }
+
+            var email = inviteResult.Email!.ToLowerInvariant().Trim();
+
+            // 2. Check if user already exists
+            if (await _userRepository.ExistsByEmailAsync(email, ct))
+            {
+                return Result.Failure<AuthResponse>(AuthConstants.ErrorEmailExists, ErrorCodes.EmailExists);
+            }
+
+            // 3. Begin Transaction
+            await _unitOfWork.BeginTransactionAsync(ct);
+
+            // 4. Create User
+            var passwordHash = _passwordHasher.Hash(request.Password);
+            var user = new User
+            {
+                Id = Guid.NewGuid(),
+                Email = email,
+                PasswordHash = passwordHash,
+                FullName = request.FullName.Trim(),
+                EmailVerified = true,
+                EmailVerifiedAt = DateTime.UtcNow,
+                IsActive = true,
+                IsLocked = false,
+                FailedLoginAttempts = 0,
+                PreferredLanguage = "vi-VN",
+                Timezone = "UTC",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            await _userRepository.AddAsync(user, ct);
+
+            // Create default user settings
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // 5. Accept invitation via gRPC
+            var acceptResult = await _workspaceInvitationClient.AcceptInvitationAsync(request.Token, user.Id, email, ct);
+            if (!acceptResult.Success)
+            {
+                await _unitOfWork.RollbackTransactionAsync(ct);
+                return Result.Failure<AuthResponse>(acceptResult.ErrorMessage ?? "Failed to join workspace.", ErrorCodes.Forbidden);
+            }
+
+            // 6. Commit Transaction
+            await _unitOfWork.CommitTransactionAsync(ct);
+
+            // 7. Create Auth response
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            return Result.Success(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred during register-invited. Token: {Token}", request.Token);
+            try
+            {
+                await _unitOfWork.RollbackTransactionAsync(ct);
+            }
+            catch
+            {
+                // Ignore rollback errors
+            }
+            return Result.Failure<AuthResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
         }
     }
 }

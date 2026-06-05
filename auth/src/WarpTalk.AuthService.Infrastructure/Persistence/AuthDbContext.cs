@@ -2,27 +2,38 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.AuthService.Domain.Entities;
-using WarpTalk.AuthService.Domain.Enums;
 
 namespace WarpTalk.AuthService.Infrastructure.Persistence;
 
 public partial class AuthDbContext : DbContext
 {
+    public AuthDbContext()
+    {
+    }
+
     public AuthDbContext(DbContextOptions<AuthDbContext> options)
         : base(options)
     {
     }
 
     public virtual DbSet<Permission> Permissions { get; set; }
+
     public virtual DbSet<RefreshToken> RefreshTokens { get; set; }
+
     public virtual DbSet<Role> Roles { get; set; }
+
     public virtual DbSet<RolePermission> RolePermissions { get; set; }
+
+
     public virtual DbSet<User> Users { get; set; }
+
     public virtual DbSet<UserRole> UserRoles { get; set; }
+
     public virtual DbSet<UserSetting> UserSettings { get; set; }
-    public virtual DbSet<Workspace> Workspaces { get; set; }
-    public virtual DbSet<WorkspaceInvitation> WorkspaceInvitations { get; set; }
-    public virtual DbSet<WorkspaceMember> WorkspaceMembers { get; set; }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+#warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
+        => optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=auth,public");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -296,8 +307,6 @@ public partial class AuthDbContext : DbContext
 
             entity.ToTable("user_roles", "auth");
 
-            entity.HasIndex(e => new { e.UserId, e.RoleId, e.WorkspaceId }, "user_roles_user_id_role_id_workspace_id_idx").IsUnique();
-
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")
                 .HasColumnName("id");
@@ -313,9 +322,6 @@ public partial class AuthDbContext : DbContext
                 .HasColumnName("revoked_by");
             entity.Property(e => e.RoleId).HasColumnName("role_id");
             entity.Property(e => e.UserId).HasColumnName("user_id");
-            entity.Property(e => e.WorkspaceId)
-                .HasComment("Internal AuthService workspace reference. Nullable for global roles.")
-                .HasColumnName("workspace_id");
 
             entity.HasOne(d => d.AssignedByNavigation).WithMany(p => p.UserRoleAssignedByNavigations)
                 .HasForeignKey(d => d.AssignedBy)
@@ -334,10 +340,6 @@ public partial class AuthDbContext : DbContext
                 .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("user_roles_user_id_fkey");
-
-            entity.HasOne(d => d.Workspace).WithMany(p => p.UserRoles)
-                .HasForeignKey(d => d.WorkspaceId)
-                .HasConstraintName("user_roles_workspace_id_fkey");
         });
 
         modelBuilder.Entity<UserSetting>(entity =>
@@ -400,175 +402,6 @@ public partial class AuthDbContext : DbContext
             entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.UserSettings)
                 .HasForeignKey(d => d.UpdatedBy)
                 .HasConstraintName("user_settings_updated_by_fkey");
-        });
-
-        modelBuilder.Entity<Workspace>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("workspaces_pkey");
-
-            entity.ToTable("workspaces", "auth");
-
-            entity.HasIndex(e => e.Slug, "workspaces_slug_key").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.CreatedBy)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("created_by");
-            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
-            entity.Property(e => e.DeletedBy)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("deleted_by");
-            entity.Property(e => e.IsActive)
-                .HasDefaultValue(true)
-                .HasColumnName("is_active");
-            entity.Property(e => e.LogoUrl)
-                .HasMaxLength(500)
-                .HasColumnName("logo_url");
-            entity.Property(e => e.Name)
-                .HasMaxLength(150)
-                .HasColumnName("name");
-            entity.Property(e => e.OwnerId)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("owner_id");
-            entity.Property(e => e.PlanTier)
-                .HasMaxLength(30)
-                .HasDefaultValueSql("'free'::character varying")
-                .HasColumnName("plan_tier");
-            entity.Property(e => e.Settings)
-                .HasDefaultValueSql("'{}'::jsonb")
-                .HasColumnType("jsonb")
-                .HasColumnName("settings");
-            entity.Property(e => e.Slug)
-                .HasMaxLength(100)
-                .HasColumnName("slug");
-            entity.Property(e => e.Type)
-                .HasMaxLength(50)
-                .HasDefaultValueSql("'business'::character varying")
-                .HasColumnName("type");
-            entity.Property(e => e.UpdatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("updated_at");
-            entity.Property(e => e.UpdatedBy)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("updated_by");
-
-            entity.HasOne(d => d.CreatedByNavigation).WithMany(p => p.WorkspaceCreatedByNavigations)
-                .HasForeignKey(d => d.CreatedBy)
-                .HasConstraintName("workspaces_created_by_fkey");
-
-            entity.HasOne(d => d.DeletedByNavigation).WithMany(p => p.WorkspaceDeletedByNavigations)
-                .HasForeignKey(d => d.DeletedBy)
-                .HasConstraintName("workspaces_deleted_by_fkey");
-
-            entity.HasOne(d => d.Owner).WithMany(p => p.WorkspaceOwners)
-                .HasForeignKey(d => d.OwnerId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspaces_owner_id_fkey");
-
-            entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.WorkspaceUpdatedByNavigations)
-                .HasForeignKey(d => d.UpdatedBy)
-                .HasConstraintName("workspaces_updated_by_fkey");
-        });
-
-        modelBuilder.Entity<WorkspaceInvitation>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("workspace_invitations_pkey");
-
-            entity.ToTable("workspace_invitations", "auth");
-
-            entity.HasIndex(e => e.TokenHash, "workspace_invitations_token_hash_key").IsUnique();
-
-            entity.HasIndex(e => new { e.WorkspaceId, e.Email }, "workspace_invitations_workspace_id_email_idx");
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.AcceptedAt).HasColumnName("accepted_at");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.Email)
-                .HasMaxLength(320)
-                .HasColumnName("email");
-            entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
-            entity.Property(e => e.InvitedBy)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("invited_by");
-            entity.Property(e => e.RoleId).HasColumnName("role_id");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'pending'::character varying")
-                .HasColumnName("status");
-            entity.Property(e => e.TokenHash)
-                .HasMaxLength(255)
-                .HasColumnName("token_hash");
-            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
-
-            entity.HasOne(d => d.InvitedByNavigation).WithMany(p => p.WorkspaceInvitations)
-                .HasForeignKey(d => d.InvitedBy)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_invitations_invited_by_fkey");
-
-            entity.HasOne(d => d.Role).WithMany(p => p.WorkspaceInvitations)
-                .HasForeignKey(d => d.RoleId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_invitations_role_id_fkey");
-
-            entity.HasOne(d => d.Workspace).WithMany(p => p.WorkspaceInvitations)
-                .HasForeignKey(d => d.WorkspaceId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_invitations_workspace_id_fkey");
-        });
-
-        modelBuilder.Entity<WorkspaceMember>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("workspace_members_pkey");
-
-            entity.ToTable("workspace_members", "auth");
-
-            entity.HasIndex(e => new { e.WorkspaceId, e.UserId }, "workspace_members_workspace_id_user_id_idx").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.JoinedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("joined_at");
-            entity.Property(e => e.RemovedAt).HasColumnName("removed_at");
-            entity.Property(e => e.RemovedBy)
-                .HasComment("Internal auth user reference.")
-                .HasColumnName("removed_by");
-            entity.Property(e => e.RoleId).HasColumnName("role_id");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'active'::character varying")
-                .HasColumnName("status");
-            entity.Property(e => e.UserId).HasColumnName("user_id");
-            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
-
-            entity.HasOne(d => d.RemovedByNavigation).WithMany(p => p.WorkspaceMemberRemovedByNavigations)
-                .HasForeignKey(d => d.RemovedBy)
-                .HasConstraintName("workspace_members_removed_by_fkey");
-
-            entity.HasOne(d => d.Role).WithMany(p => p.WorkspaceMembers)
-                .HasForeignKey(d => d.RoleId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_members_role_id_fkey");
-
-            entity.HasOne(d => d.User).WithMany(p => p.WorkspaceMemberUsers)
-                .HasForeignKey(d => d.UserId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_members_user_id_fkey");
-
-            entity.HasOne(d => d.Workspace).WithMany(p => p.WorkspaceMembers)
-                .HasForeignKey(d => d.WorkspaceId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("workspace_members_workspace_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

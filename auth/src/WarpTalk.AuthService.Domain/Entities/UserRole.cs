@@ -11,11 +11,6 @@ public partial class UserRole
 
     public Guid RoleId { get; set; }
 
-    /// <summary>
-    /// Internal AuthService workspace reference. Nullable for global roles.
-    /// </summary>
-    public Guid? WorkspaceId { get; set; }
-
     public DateTime AssignedAt { get; set; }
 
     /// <summary>
@@ -37,6 +32,4 @@ public partial class UserRole
     public virtual Role Role { get; set; } = null!;
 
     public virtual User User { get; set; } = null!;
-
-    public virtual Workspace? Workspace { get; set; }
 }

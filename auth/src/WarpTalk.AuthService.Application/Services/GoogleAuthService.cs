@@ -13,7 +13,6 @@ using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Domain.Entities;
 using WarpTalk.AuthService.Domain.Enums;
-using WarpTalk.AuthService.Domain.Extensions;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
 

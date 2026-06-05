@@ -29,6 +29,7 @@ public class AuthServiceTests
     private readonly IDistributedCache _cache;
     private readonly IOptions<AuthSettings> _authSettingsOptions;
     private readonly ILogger<WarpTalk.AuthService.Application.Services.AuthService> _logger;
+    private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
     private readonly WarpTalk.AuthService.Application.Services.AuthService _authService;
 
     public AuthServiceTests()
@@ -40,6 +41,7 @@ public class AuthServiceTests
         _jwtGenerator = Substitute.For<IJwtTokenGenerator>();
         _cache = Substitute.For<IDistributedCache>();
         _logger = Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.AuthService>>();
+        _workspaceInvitationClient = Substitute.For<IWorkspaceInvitationClient>();
 
         _unitOfWork.UserRepository.Returns(_userRepository);
         _unitOfWork.RefreshTokenRepository.Returns(_refreshTokenRepository);
@@ -58,7 +60,8 @@ public class AuthServiceTests
             _jwtGenerator,
             _cache,
             _authSettingsOptions,
-            _logger
+            _logger,
+            _workspaceInvitationClient
         );
     }
 

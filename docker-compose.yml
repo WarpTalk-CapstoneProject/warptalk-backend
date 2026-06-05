@@ -34,6 +34,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql
+      - ../warptalk-infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
@@ -75,6 +76,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=translation_room,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
+      GrpcSettings__TranscriptServiceUrl: "http://transcript-service:50053"
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
@@ -173,6 +175,32 @@ services:
     networks:
       - warptalk-net
 
+  # ── Workspace Service ───────────────────────────────────────────────
+  workspace-service:
+    build:
+      context: .
+      dockerfile: workspace/Dockerfile
+    container_name: warptalk-workspace
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__WorkspaceDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=workspace,public"
+      GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
+      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Issuer: "WarpTalk.AuthService"
+      Jwt__Audience: "WarpTalk"
+    ports:
+      - "5106:5106"
+      - "50056:50056"
+    volumes:
+      - workspace_dataprotection:/root/.aspnet/DataProtection-Keys
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - warptalk-net
+
   # ── API Gateway (YARP + SignalR) ────────────────────────────────────
   gateway:
     build:
@@ -185,6 +213,7 @@ services:
       Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      GrpcUrls__NotificationServiceUrl: "http://notification-service:50054"
       # Redis — shared by SignalR backplane + AI worker streams
       Redis__ConnectionString: "redis:6379"
       SignalR__Redis: "redis:6379"
@@ -194,6 +223,7 @@ services:
       ReverseProxy__Clusters__transcript-cluster__Destinations__transcript-service__Address: "http://transcript-service:5103"
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-service__Address: "http://notification-service:5104"
       ReverseProxy__Clusters__meeting-cluster__Destinations__meeting-service__Address: "http://meeting-service:5105"
+      ReverseProxy__Clusters__workspace-cluster__Destinations__workspace-service__Address: "http://workspace-service:5106"
       AllowedOrigins__0: "http://localhost:3000"
       AllowedOrigins__1: "http://localhost:5173"
       AllowedOrigins__2: "https://warptalk.vn"
@@ -205,6 +235,8 @@ services:
       redis:
         condition: service_healthy
       auth-service:
+        condition: service_started
+      workspace-service:
         condition: service_started
       translation-room-service:
         condition: service_started
@@ -221,6 +253,7 @@ volumes:
   pgdata:
   redisdata:
   auth_dataprotection:
+  workspace_dataprotection:
   translation_room_dataprotection:
   transcript_dataprotection:
   notification_dataprotection:

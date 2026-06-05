@@ -15,10 +15,7 @@ public class UnitOfWork : IUnitOfWork
         IPermissionRepository permissionRepository,
         IUserRoleRepository userRoleRepository,
         IUserSettingRepository userSettingRepository,
-        IRefreshTokenRepository refreshTokenRepository,
-        IWorkspaceRepository workspaceRepository,
-        IWorkspaceInvitationRepository workspaceInvitationRepository,
-        IWorkspaceMemberRepository workspaceMemberRepository)
+        IRefreshTokenRepository refreshTokenRepository)
     {
         _context = context;
         UserRepository = userRepository;
@@ -27,9 +24,6 @@ public class UnitOfWork : IUnitOfWork
         UserRoleRepository = userRoleRepository;
         UserSettingRepository = userSettingRepository;
         RefreshTokenRepository = refreshTokenRepository;
-        WorkspaceRepository = workspaceRepository;
-        WorkspaceInvitationRepository = workspaceInvitationRepository;
-        WorkspaceMemberRepository = workspaceMemberRepository;
     }
 
     public IUserRepository UserRepository { get; }
@@ -38,9 +32,6 @@ public class UnitOfWork : IUnitOfWork
     public IUserRoleRepository UserRoleRepository { get; }
     public IUserSettingRepository UserSettingRepository { get; }
     public IRefreshTokenRepository RefreshTokenRepository { get; }
-    public IWorkspaceRepository WorkspaceRepository { get; }
-    public IWorkspaceInvitationRepository WorkspaceInvitationRepository { get; }
-    public IWorkspaceMemberRepository WorkspaceMemberRepository { get; }
 
     public IGenericRepository<T> Repository<T>() where T : class
     {
@@ -53,8 +44,39 @@ public class UnitOfWork : IUnitOfWork
         return (IGenericRepository<T>)_repositories[type];
     }
 
+    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
+
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _context.SaveChangesAsync(ct);
 
-    public void Dispose() => _context.Dispose();
+    public async Task BeginTransactionAsync(CancellationToken ct = default)
+    {
+        _currentTransaction = await _context.Database.BeginTransactionAsync(ct);
+    }
+
+    public async Task CommitTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.CommitAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+
+    public async Task RollbackTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.RollbackAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        _currentTransaction?.Dispose();
+        _context.Dispose();
+    }
 }
