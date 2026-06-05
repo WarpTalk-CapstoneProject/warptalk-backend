@@ -24,6 +24,7 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
     {
         var query = _context.Workspaces
             .AsNoTracking()
+            .Include(w => w.WorkspaceMembers.Where(m => m.UserId == userId && m.RemovedAt == null))
             .Where(w => w.WorkspaceMembers.Any(m => m.UserId == userId && m.RemovedAt == null));
 
         if (!string.IsNullOrWhiteSpace(search))

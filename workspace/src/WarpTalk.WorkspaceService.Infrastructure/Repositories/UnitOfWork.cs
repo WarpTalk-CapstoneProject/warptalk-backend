@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
@@ -15,6 +16,9 @@ public class UnitOfWork : IUnitOfWork
     private IWorkspaceRepository? _workspaceRepository;
     private IWorkspaceMemberRepository? _workspaceMemberRepository;
     private IWorkspaceInvitationRepository? _workspaceInvitationRepository;
+    private IGenericRepository<WorkspaceDocument>? _workspaceDocumentRepository;
+    private IGenericRepository<WorkspaceDocumentAccessPolicy>? _workspaceDocumentAccessPolicyRepository;
+    private IGenericRepository<WorkspaceDocumentAudit>? _workspaceDocumentAuditRepository;
     private Dictionary<Type, object>? _repositories;
 
     public UnitOfWork(WorkspaceDbContext context)
@@ -30,6 +34,15 @@ public class UnitOfWork : IUnitOfWork
 
     public IWorkspaceInvitationRepository WorkspaceInvitationRepository => 
         _workspaceInvitationRepository ??= new WorkspaceInvitationRepository(_context);
+
+    public IGenericRepository<WorkspaceDocument> WorkspaceDocumentRepository =>
+        _workspaceDocumentRepository ??= new GenericRepository<WorkspaceDocument>(_context);
+
+    public IGenericRepository<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicyRepository =>
+        _workspaceDocumentAccessPolicyRepository ??= new GenericRepository<WorkspaceDocumentAccessPolicy>(_context);
+
+    public IGenericRepository<WorkspaceDocumentAudit> WorkspaceDocumentAuditRepository =>
+        _workspaceDocumentAuditRepository ??= new GenericRepository<WorkspaceDocumentAudit>(_context);
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

@@ -33,9 +33,7 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -50,9 +48,7 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.ListInvitationsAsync(workspaceId, query, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -67,9 +63,7 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.RevokeInvitationAsync(workspaceId, invitationId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -84,12 +78,7 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.PreviewInvitationAsync(token, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.NotFound || result.ErrorCode == ErrorCodes.UserNotFound)
-            {
-                return NotFound(errorResponse);
-            }
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -107,9 +96,7 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.AcceptInvitationAsync(request, userId.Value, userEmail, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }

@@ -4,13 +4,13 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 
-namespace WarpTalk.WorkspaceService.Application.Mappers.WorkspaceMember;
+namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceMemberMapper
 {
-    public static Domain.Entities.WorkspaceMember CreateOwnerMember(Guid workspaceId, Guid userId, Guid roleId)
+    public static WorkspaceMember CreateOwnerMember(Guid workspaceId, Guid userId, Guid roleId)
     {
-        return new Domain.Entities.WorkspaceMember
+        return new WorkspaceMember
         {
             Id = Guid.NewGuid(),
             WorkspaceId = workspaceId,
@@ -22,9 +22,9 @@ public static class WorkspaceMemberMapper
         };
     }
 
-    public static Domain.Entities.WorkspaceMember CreateInvitationMember(Guid workspaceId, Guid userId, Guid roleId, string membershipType)
+    public static WorkspaceMember CreateInvitationMember(Guid workspaceId, Guid userId, Guid roleId, string membershipType)
     {
-        return new Domain.Entities.WorkspaceMember
+        return new WorkspaceMember
         {
             Id = Guid.NewGuid(),
             WorkspaceId = workspaceId,
@@ -36,7 +36,7 @@ public static class WorkspaceMemberMapper
         };
     }
 
-    public static WorkspaceMemberDto ToDto(this Domain.Entities.WorkspaceMember member, string fullName, string email, string? avatarUrl, string roleName)
+    public static WorkspaceMemberDto ToDto(this WorkspaceMember member, string fullName, string email, string? avatarUrl, string roleName)
     {
         return new WorkspaceMemberDto(
             member.Id,

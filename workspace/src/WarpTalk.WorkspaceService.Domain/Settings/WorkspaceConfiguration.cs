@@ -51,4 +51,5 @@ public class WorkspaceConfiguration
     // 4. Enterprise & External Collaboration
     public List<string> VerifiedDomains { get; set; } = new();
     public bool AllowExternalCollaboration { get; set; } = true;
+    public int? ExternalGracePeriodHours { get; set; }
 }

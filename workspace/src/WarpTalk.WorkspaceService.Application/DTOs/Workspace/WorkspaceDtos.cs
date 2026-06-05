@@ -5,7 +5,6 @@ namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 
 public record CreateWorkspaceRequest(
     string Name,
-    string? Description,
     string? LogoUrl
 );
 
@@ -27,7 +26,6 @@ public record WorkspaceDto(
     Guid Id,
     string Name,
     string Slug,
-    string? Description,
     string? LogoUrl,
     string Role,
     DateTime CreatedAt

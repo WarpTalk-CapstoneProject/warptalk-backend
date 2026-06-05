@@ -6,12 +6,15 @@ using System.Text;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces.Caching;
 using WarpTalk.WorkspaceService.Application.Services;
+using WarpTalk.WorkspaceService.Application.Evaluators;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Infrastructure.Caching;
 using WarpTalk.WorkspaceService.Infrastructure.Clients;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.Shared.Protos;
+using StackExchange.Redis;
+using WarpTalk.WorkspaceService.API.Providers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -39,10 +42,12 @@ builder.Services.AddDbContext<WorkspaceDbContext>(options =>
 });
 
 // Cache (Redis)
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
+    options.Configuration = redisConnectionString;
 });
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString));
 builder.Services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
 
 // Auth identity (gRPC → UserService in WarpTalk.Shared, implemented by UserServiceGrpc in Auth API)
@@ -52,17 +57,29 @@ builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 });
 builder.Services.AddScoped<IAuthIdentityClient, AuthIdentityGrpcClient>();
 
+// Translation Room Service (gRPC)
+builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcSettings:TranslationRoomServiceUrl"] ?? "http://localhost:50052");
+});
+builder.Services.AddScoped<ITranslationRoomClient, TranslationRoomGrpcClient>();
+
 // Repositories & Unit of Work
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
 builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
 builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
-
 // Services
 builder.Services.AddScoped<IWorkspaceService, WorkspaceService>();
 builder.Services.AddScoped<IWorkspaceMemberService, WorkspaceMemberService>();
 builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
+builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>();
+builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
+builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, RedisDocumentEventPublisher>();
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 
 builder.Services.AddControllers();
 

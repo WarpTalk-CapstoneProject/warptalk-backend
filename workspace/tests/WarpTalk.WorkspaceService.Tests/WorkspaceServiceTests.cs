@@ -61,7 +61,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@warptalk.vn" };
-        var request = new CreateWorkspaceRequest("DeepMind Team", "AI Research", "https://cdn.com/logo.png");
+        var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png");
 
         StubUser(userId, user);
         var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
@@ -89,7 +89,7 @@ public class WorkspaceServiceTests
     {
         // Arrange
         var userId = Guid.NewGuid();
-        var request = new CreateWorkspaceRequest("", "Description", null);
+        var request = new CreateWorkspaceRequest("", null);
 
         // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
@@ -105,7 +105,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "employee@enterprise.com" };
-        var request = new CreateWorkspaceRequest("New Enterprise", "Enterprise WS", null);
+        var request = new CreateWorkspaceRequest("New Enterprise", null);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
 
@@ -141,7 +141,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@enterprise.com" };
-        var request = new CreateWorkspaceRequest("New Enterprise", "Enterprise WS", null);
+        var request = new CreateWorkspaceRequest("New Enterprise", null);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
         _workspaceMemberRepository.FindAsync(
@@ -170,7 +170,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "user@company.com" };
-        var request = new CreateWorkspaceRequest("New Work", "Desc", null);
+        var request = new CreateWorkspaceRequest("New Work", null);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
         _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())

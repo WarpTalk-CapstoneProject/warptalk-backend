@@ -32,9 +32,7 @@ public class WorkspaceMembersController : ControllerBase
         var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -49,9 +47,7 @@ public class WorkspaceMembersController : ControllerBase
         var result = await _workspaceMemberService.RemoveMemberAsync(workspaceId, userId, currentUserId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -66,9 +62,7 @@ public class WorkspaceMembersController : ControllerBase
         var result = await _workspaceMemberService.ChangeMemberRoleAsync(workspaceId, userId, request.RoleName, currentUserId.Value, ct);
         if (!result.IsSuccess)
         {
-            var errorResponse = new ApiErrorResponse(result.Error, result.ErrorCode);
-            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, errorResponse);
-            return BadRequest(errorResponse);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }

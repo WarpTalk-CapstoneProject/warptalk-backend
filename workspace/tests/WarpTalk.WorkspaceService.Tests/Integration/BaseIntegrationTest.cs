@@ -71,6 +71,8 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         using var scope = Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<WorkspaceDbContext>();
         await db.Database.ExecuteSqlRawAsync("DROP SCHEMA IF EXISTS workspace CASCADE;");
+        await db.Database.ExecuteSqlRawAsync("CREATE SCHEMA IF NOT EXISTS workspace;");
+        await db.Database.ExecuteSqlRawAsync("CREATE SCHEMA IF NOT EXISTS auth;");
 
         var createUuidV7Sql = @"
             CREATE OR REPLACE FUNCTION uuidv7() RETURNS uuid AS $$

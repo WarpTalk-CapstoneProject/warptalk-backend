@@ -8,7 +8,7 @@ using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceMember;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
-using WarpTalk.WorkspaceService.Application.Mappers.WorkspaceMember;
+using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -53,25 +53,25 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             if (workspace.OwnerId != executingUserId)
             {
-                return Result.Failure("Only the workspace owner can transfer ownership.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanTransferOwnership, ErrorCodes.Forbidden);
             }
 
             var newOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == newOwnerId && m.RemovedAt == null, "", ct);
             if (newOwnerMember == null)
             {
-                return Result.Failure("New owner must be an active member of the workspace.", ErrorCodes.ValidationError);
+                return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustBeActiveMember, ErrorCodes.ValidationError);
             }
 
             var isExternal = await WorkspaceHelper.IsUserExternalMemberAsync(_unitOfWork, workspaceId, newOwnerId, ct);
             if (isExternal)
             {
-                return Result.Failure("Cannot transfer ownership to an external member.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.CannotTransferToExternal, ErrorCodes.Forbidden);
             }
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
@@ -82,7 +82,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             if (ownerRoleId == null || adminRoleId == null)
             {
-                return Result.Failure("Required roles not found.", ErrorCodes.ValidationError);
+                return Result.Failure(WorkspaceConstants.Errors.RequiredRolesNotFound, ErrorCodes.ValidationError);
             }
 
             var currentOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
@@ -106,7 +106,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while transferring ownership. WorkspaceId: {WorkspaceId}, ExecutingUserId: {ExecutingUserId}, NewOwnerId: {NewOwnerId}", workspaceId, executingUserId, newOwnerId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -118,13 +118,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, ct);
             if (!isMember)
             {
-                return Result.Failure<PagedResult<WorkspaceMemberDto>>("User is not a member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure<PagedResult<WorkspaceMemberDto>>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure<PagedResult<WorkspaceMemberDto>>("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure<PagedResult<WorkspaceMemberDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var isExternalCaller = await WorkspaceHelper.IsUserExternalMemberAsync(_unitOfWork, workspaceId, userId, ct);
@@ -187,32 +187,32 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
-                return Result.Failure("User is not an active member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
             var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
 
             if (memberUserId == executingUserId)
             {
-                if (execRoleName == WorkspaceMemberRole.Owner.ToRoleName())
+                if (execRoleName.IsOwner())
                 {
                     var ownerRoleId = await GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
-                        return Result.Failure("Required owner role not found.", ErrorCodes.ValidationError);
+                        return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
                     }
 
                     var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
                     if (activeOwnersCount <= 1)
                     {
-                        return Result.Failure("Cannot leave the workspace as the last owner. Please transfer ownership first.", ErrorCodes.ValidationError);
+                        return Result.Failure(WorkspaceConstants.Errors.CannotLeaveAsLastOwner, ErrorCodes.ValidationError);
                     }
                 }
 
@@ -225,23 +225,23 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Success();
             }
 
-            if (execRoleName != WorkspaceMemberRole.Owner.ToRoleName() && execRoleName != WorkspaceMemberRole.Admin.ToRoleName())
+            if (!execRoleName.IsOwnerOrAdmin())
             {
-                return Result.Failure("Only Owner or Admin can remove members.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanRemoveMembers, ErrorCodes.Forbidden);
             }
 
             var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
-                return Result.Failure("Target member not found or already removed.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
             var targetRoleName = await GetRoleNameByIdAsync(targetMember.RoleId, ct);
 
-            if (targetRoleName == WorkspaceMemberRole.Owner.ToRoleName())
+            if (targetRoleName.IsOwner())
             {
-                return Result.Failure("Cannot remove the Owner of the workspace.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.CannotRemoveOwner, ErrorCodes.Forbidden);
             }
 
             targetMember.RemovedAt = DateTime.UtcNow;
@@ -255,7 +255,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while removing member. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -266,78 +266,78 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            if (roleName != WorkspaceMemberRole.Admin.ToRoleName() && roleName != WorkspaceMemberRole.Member.ToRoleName())
+            if (!roleName.IsAdmin() && roleName != WorkspaceMemberRole.Member.ToRoleName())
             {
-                return Result.Failure("Role name must be Admin or Member.", ErrorCodes.ValidationError);
+                return Result.Failure(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
             }
 
             var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
-                return Result.Failure("User is not an active member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
             var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
-            if (execRoleName != WorkspaceMemberRole.Owner.ToRoleName() && execRoleName != WorkspaceMemberRole.Admin.ToRoleName())
+            if (!execRoleName.IsOwnerOrAdmin())
             {
-                return Result.Failure("Only Owner or Admin can change member roles.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
             }
 
             var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
-                return Result.Failure("Target member not found or already removed.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
             var targetRoleName = await GetRoleNameByIdAsync(targetMember.RoleId, ct);
 
             if (memberUserId == executingUserId)
             {
-                if (targetRoleName == WorkspaceMemberRole.Owner.ToRoleName())
+                if (targetRoleName.IsOwner())
                 {
                     var ownerRoleId = await GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
-                        return Result.Failure("Required owner role not found.", ErrorCodes.ValidationError);
+                        return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
                     }
 
                     var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
                     if (activeOwnersCount <= 1)
                     {
-                        return Result.Failure("Cannot demote the last owner. Please transfer ownership first.", ErrorCodes.ValidationError);
+                        return Result.Failure(WorkspaceConstants.Errors.CannotDemoteLastOwner, ErrorCodes.ValidationError);
                     }
                 }
             }
             else
             {
-                if (targetRoleName == WorkspaceMemberRole.Owner.ToRoleName())
+                if (targetRoleName.IsOwner())
                 {
-                    return Result.Failure("Cannot change the Owner's role.", ErrorCodes.Forbidden);
+                    return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
                 }
             }
 
-            if (execRoleName == WorkspaceMemberRole.Admin.ToRoleName())
+            if (execRoleName.IsAdmin())
             {
-                if (targetRoleName == WorkspaceMemberRole.Admin.ToRoleName() && memberUserId != executingUserId)
+                if (targetRoleName.IsAdmin() && memberUserId != executingUserId)
                 {
-                    return Result.Failure("Admin cannot change another Admin's role.", ErrorCodes.Forbidden);
+                    return Result.Failure(WorkspaceConstants.Errors.AdminCannotChangeAdminRole, ErrorCodes.Forbidden);
                 }
 
-                if (roleName == WorkspaceMemberRole.Admin.ToRoleName() && memberUserId != executingUserId)
+                if (roleName.IsAdmin() && memberUserId != executingUserId)
                 {
-                    return Result.Failure("Admin cannot promote members to Admin role.", ErrorCodes.Forbidden);
+                    return Result.Failure(WorkspaceConstants.Errors.AdminCannotPromoteToAdmin, ErrorCodes.Forbidden);
                 }
             }
 
             var newRoleId = await GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
-                return Result.Failure("Role not found.", ErrorCodes.ValidationError);
+                return Result.Failure(WorkspaceConstants.Errors.RoleNotFound, ErrorCodes.ValidationError);
             }
 
             targetMember.RoleId = newRoleId.Value;
@@ -349,7 +349,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while changing member role. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 }

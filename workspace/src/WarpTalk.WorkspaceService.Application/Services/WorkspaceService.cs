@@ -9,8 +9,7 @@ using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces.Caching;
-using WarpTalk.WorkspaceService.Application.Mappers.Workspace;
-using WarpTalk.WorkspaceService.Application.Mappers.WorkspaceMember;
+using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -53,53 +52,55 @@ public class WorkspaceService : IWorkspaceService
         return role?.Id;
     }
 
+
+
     public async Task<Result<WorkspaceDto>> CreateWorkspaceAsync(CreateWorkspaceRequest request, Guid userId, CancellationToken ct = default)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(request.Name))
             {
-                return Result.Failure<WorkspaceDto>("Workspace name is required.", ErrorCodes.ValidationError);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNameRequired, ErrorCodes.ValidationError);
             }
 
             var user = await _authIdentity.GetUserByIdAsync(userId, ct);
             if (user == null)
             {
-                return Result.Failure<WorkspaceDto>("User not found.", ErrorCodes.UserNotFound);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserNotFound, ErrorCodes.UserNotFound);
             }
 
             if (!EmailAddress.TryParse(user.Email, out var emailAddress) || emailAddress == null)
             {
-                return Result.Failure<WorkspaceDto>("Invalid user email.", ErrorCodes.ValidationError);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
             }
 
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
             if (isInternalElsewhere)
             {
-                return Result.Failure<WorkspaceDto>("User is already an internal member of another Enterprise Workspace.", ErrorCodes.ValidationError);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
             }
 
             var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, emailAddress.Domain, ct);
             if (owningWorkspaceId.HasValue)
             {
-                return Result.Failure<WorkspaceDto>("This email belongs to a corporate domain registered with another workspace.", ErrorCodes.ValidationError);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
             }
 
             var baseSlug = SlugHelper.GenerateSlug(request.Name);
             var slug = await SlugHelper.ResolveSlugCollisionAsync(baseSlug, _unitOfWork.WorkspaceRepository, ct);
 
-            var workspace = request.ToEntity(slug, userId);
             var config = new WorkspaceConfiguration
             {
                 VerifiedDomains = new List<string> { emailAddress.Domain }
             };
-            workspace.Settings = JsonSerializer.Serialize(config);
+            var settingsJson = JsonSerializer.Serialize(config);
+            var workspace = request.ToEntity(slug, userId, settingsJson);
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
             var ownerRoleId = await GetRoleIdByNameAsync(ownerRoleName, ct);
             if (!ownerRoleId.HasValue)
             {
-                return Result.Failure<WorkspaceDto>("Required owner role not found.", ErrorCodes.ValidationError);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
             }
             var workspaceMember = WorkspaceMemberMapper.CreateOwnerMember(workspace.Id, userId, ownerRoleId.Value);
 
@@ -112,7 +113,7 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while creating workspace. UserId: {UserId}, WorkspaceName: {WorkspaceName}", userId, request.Name);
-            return Result.Failure<WorkspaceDto>("An unexpected error occurred while creating the workspace.", ErrorCodes.InternalServerError);
+            return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UnexpectedErrorCreatingWorkspace, ErrorCodes.InternalServerError);
         }
     }
 
@@ -125,11 +126,7 @@ public class WorkspaceService : IWorkspaceService
             var workspaceDtos = new List<WorkspaceDto>();
             foreach (var ws in workspaces)
             {
-                var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                    m => m.WorkspaceId == ws.Id && m.UserId == userId, 
-                    "", 
-                    ct
-                );
+                var member = ws.WorkspaceMembers.FirstOrDefault();
                 var defaultRoleName = WorkspaceMemberRole.Member.ToRoleName();
                 var roleName = defaultRoleName;
                 if (member != null)
@@ -139,14 +136,13 @@ public class WorkspaceService : IWorkspaceService
 
                 workspaceDtos.Add(ws.ToDto(roleName));
             }
-
             var pagedResult = new PagedResult<WorkspaceDto>(workspaceDtos, query.Page, query.PageSize, totalCount);
             return Result.Success(pagedResult);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while fetching workspaces for user. UserId: {UserId}", userId);
-            return Result.Failure<PagedResult<WorkspaceDto>>("An unexpected error occurred while fetching workspaces.", ErrorCodes.InternalServerError);
+            return Result.Failure<PagedResult<WorkspaceDto>>(WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspaces, ErrorCodes.InternalServerError);
         }
     }
 
@@ -162,13 +158,13 @@ public class WorkspaceService : IWorkspaceService
 
             if (member == null)
             {
-                return Result.Failure<WorkspaceDto>("User is not a member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure<WorkspaceDto>("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var roleName = await GetRoleNameByIdAsync(member.RoleId, ct);
@@ -177,7 +173,7 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while fetching workspace by ID. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
-            return Result.Failure<WorkspaceDto>("An unexpected error occurred while fetching the workspace.", ErrorCodes.InternalServerError);
+            return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
         }
     }
 
@@ -190,13 +186,13 @@ public class WorkspaceService : IWorkspaceService
 
             if (member == null)
             {
-                return Result.Failure<SelectWorkspaceResponse>("User is not a member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure<SelectWorkspaceResponse>("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var user = await _authIdentity.GetUserByIdAsync(userId, ct);
@@ -211,7 +207,7 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while selecting workspace. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
-            return Result.Failure<SelectWorkspaceResponse>("An unexpected error occurred while selecting the workspace.", ErrorCodes.InternalServerError);
+            return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.UnexpectedErrorSelectingWorkspace, ErrorCodes.InternalServerError);
         }
     }
 
@@ -224,7 +220,7 @@ public class WorkspaceService : IWorkspaceService
 
             if (member == null)
             {
-                return Result.Failure<WorkspaceSettingsDto>("User is not a member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
@@ -233,7 +229,7 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while fetching workspace settings. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
-            return Result.Failure<WorkspaceSettingsDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -244,33 +240,33 @@ public class WorkspaceService : IWorkspaceService
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                return Result.Failure("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
-                return Result.Failure("User is not an active member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
             var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
-            if (execRoleName != WorkspaceMemberRole.Owner.ToRoleName() && execRoleName != WorkspaceMemberRole.Admin.ToRoleName())
+            if (!execRoleName.IsOwnerOrAdmin())
             {
-                return Result.Failure("Only Owner or Admin can update workspace settings.", ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
             if (settings == null)
             {
-                return Result.Failure("Invalid settings payload.", ErrorCodes.ValidationError);
+                return Result.Failure(WorkspaceConstants.Errors.InvalidSettingsPayload, ErrorCodes.ValidationError);
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (execRoleName == WorkspaceMemberRole.Admin.ToRoleName())
+            if (execRoleName.IsAdmin())
             {
                 if (currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration)
                 {
-                    return Result.Failure("Only the workspace owner can modify AllowExternalCollaboration setting.", ErrorCodes.Forbidden);
+                    return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyExternalCollaboration, ErrorCodes.Forbidden);
                 }
             }
 
@@ -278,7 +274,7 @@ public class WorkspaceService : IWorkspaceService
             var updated = await _unitOfWork.WorkspaceRepository.UpdateSettingsAsync(workspaceId, newConfig, userId, ct);
             if (!updated)
             {
-                return Result.Failure("Workspace not found.", ErrorCodes.NotFound);
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
@@ -287,7 +283,7 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while updating workspace settings. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
-            return Result.Failure("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 }

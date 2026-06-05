@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -15,7 +15,7 @@ public partial class WorkspaceDocumentAccessPolicy
 
     public Guid? SubjectId { get; set; }
 
-    public string? RoleKey { get; set; }
+    public string? SubjectKey { get; set; }
 
     public string Permission { get; set; } = null!;
 

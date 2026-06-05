@@ -5,9 +5,9 @@ namespace WarpTalk.WorkspaceService.Application.Models;
 /// <summary>
 /// Read model for Auth role data (not persisted in workspace DB). Resolved via Auth gRPC.
 /// </summary>
-public class Role
+public record Role
 {
-    public Guid Id { get; set; }
-    public string Name { get; set; } = null!;
-    public string? Description { get; set; }
+    public Guid Id { get; init; }
+    public string Name { get; init; } = null!;
+    public string? Description { get; init; }
 }

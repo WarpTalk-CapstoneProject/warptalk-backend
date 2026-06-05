@@ -17,7 +17,7 @@ public partial class TranslationRoomDbContext : DbContext
     {
     }
 
-    public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
+
 
     public virtual DbSet<SupportedLanguage> SupportedLanguages { get; set; }
 
@@ -50,48 +50,7 @@ public partial class TranslationRoomDbContext : DbContext
             .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
 
-        modelBuilder.Entity<SchemaMigration>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("schema_migrations_pkey");
 
-            entity.ToTable("schema_migrations", "translation_room");
-
-            entity.HasIndex(e => e.MigrationKey, "schema_migrations_migration_key_key").IsUnique();
-
-            entity.HasIndex(e => e.Status, "schema_migrations_status_idx");
-
-            entity.HasIndex(e => e.Status, "schema_migrations_status_idx1");
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.AppliedBy)
-                .HasMaxLength(100)
-                .HasColumnName("applied_by");
-            entity.Property(e => e.Checksum)
-                .HasMaxLength(128)
-                .HasColumnName("checksum");
-            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
-            entity.Property(e => e.ExecutionTimeMs).HasColumnName("execution_time_ms");
-            entity.Property(e => e.MigrationKey)
-                .HasMaxLength(150)
-                .HasColumnName("migration_key");
-            entity.Property(e => e.MigrationName)
-                .HasMaxLength(255)
-                .HasColumnName("migration_name");
-            entity.Property(e => e.ScriptPath)
-                .HasMaxLength(500)
-                .HasColumnName("script_path");
-            entity.Property(e => e.StartedAt).HasColumnName("started_at");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'success'::character varying")
-                .HasColumnName("status");
-        });
 
         modelBuilder.Entity<SupportedLanguage>(entity =>
         {

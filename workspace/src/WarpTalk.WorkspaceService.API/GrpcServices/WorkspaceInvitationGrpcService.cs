@@ -3,7 +3,8 @@ using System.Threading.Tasks;
 using Grpc.Core;
 using WarpTalk.Shared.Protos;
 using WarpTalk.WorkspaceService.Application.Interfaces;
-using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
+using GrpcAcceptInvitationRequest = WarpTalk.Shared.Protos.AcceptInvitationRequest;
+using DtoAcceptInvitationRequest = WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation.AcceptInvitationRequest;
 
 namespace WarpTalk.WorkspaceService.API.GrpcServices;
 
@@ -51,7 +52,7 @@ public class WorkspaceInvitationGrpcService : WorkspaceInvitationService.Workspa
     }
 
     public override async Task<AcceptInvitationResponse> AcceptInvitation(
-        WarpTalk.Shared.Protos.AcceptInvitationRequest request, ServerCallContext context)
+        GrpcAcceptInvitationRequest request, ServerCallContext context)
     {
         var ct = context.CancellationToken;
         if (string.IsNullOrWhiteSpace(request.Token))
@@ -68,7 +69,7 @@ public class WorkspaceInvitationGrpcService : WorkspaceInvitationService.Workspa
         }
 
         var result = await _invitationService.AcceptInvitationAsync(
-            new WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation.AcceptInvitationRequest(request.Token),
+            new DtoAcceptInvitationRequest(request.Token),
             userId,
             request.Email,
             ct);
@@ -89,3 +90,4 @@ public class WorkspaceInvitationGrpcService : WorkspaceInvitationService.Workspa
         };
     }
 }
+

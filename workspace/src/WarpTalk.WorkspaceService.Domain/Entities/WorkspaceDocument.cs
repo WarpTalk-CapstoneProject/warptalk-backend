@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -28,6 +28,8 @@ public partial class WorkspaceDocument
     public string StorageKey { get; set; } = null!;
 
     public string SourceType { get; set; } = null!;
+
+    public Guid? SourceId { get; set; }
 
     public string DocumentType { get; set; } = null!;
 

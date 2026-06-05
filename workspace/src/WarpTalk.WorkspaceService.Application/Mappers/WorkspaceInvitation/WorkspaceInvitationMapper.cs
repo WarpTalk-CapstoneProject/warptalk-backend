@@ -1,16 +1,17 @@
 using System;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
 using WarpTalk.WorkspaceService.Application.Validators;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 
-namespace WarpTalk.WorkspaceService.Application.Mappers.WorkspaceInvitation;
+namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceInvitationMapper
 {
-    public static Domain.Entities.WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string tokenHash, string membershipType)
+    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string tokenHash, string membershipType)
     {
-        return new Domain.Entities.WorkspaceInvitation
+        return new WorkspaceInvitation
         {
             Id = Guid.NewGuid(),
             WorkspaceId = workspaceId,
@@ -20,12 +21,12 @@ public static class WorkspaceInvitationMapper
             TokenHash = tokenHash,
             Status = InvitationStatus.PENDING.ToString(),
             MembershipType = membershipType,
-            ExpiresAt = DateTime.UtcNow.AddDays(7),
+            ExpiresAt = DateTime.UtcNow.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
             CreatedAt = DateTime.UtcNow
         };
     }
 
-    public static WorkspaceInvitationDto ToDto(this Domain.Entities.WorkspaceInvitation invitation, string roleName)
+    public static WorkspaceInvitationDto ToDto(this WorkspaceInvitation invitation, string roleName)
     {
         WorkspaceInvitationValidator.ValidateForMapping(invitation, roleName);
 
@@ -35,9 +36,34 @@ public static class WorkspaceInvitationMapper
             invitation.Email,
             roleName,
             invitation.Status.ToString(),
+            invitation.MembershipType,
             invitation.ExpiresAt,
             invitation.CreatedAt,
             invitation.AcceptedAt
+        );
+    }
+
+    public static VerifyInvitationInternalResponse ToVerifyInternalResponse(this WorkspaceInvitation invitation, string roleName)
+    {
+        return new VerifyInvitationInternalResponse(
+            invitation.Email,
+            invitation.WorkspaceId,
+            invitation.Workspace?.Name ?? "Unknown Workspace",
+            invitation.RoleId,
+            roleName,
+            invitation.MembershipType
+        );
+    }
+
+    public static PreviewInvitationResponse ToPreviewResponse(this WorkspaceInvitation invitation, string roleName, string maskedEmail, string currentStatus, bool accountExists)
+    {
+        return new PreviewInvitationResponse(
+            invitation.Workspace?.Name ?? "Unknown Workspace",
+            roleName,
+            maskedEmail,
+            currentStatus,
+            invitation.ExpiresAt,
+            accountExists
         );
     }
 }

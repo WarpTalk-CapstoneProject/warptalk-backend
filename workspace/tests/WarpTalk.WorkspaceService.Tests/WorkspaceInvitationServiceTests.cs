@@ -12,6 +12,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.WorkspaceService.Domain.Enums;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -70,7 +71,7 @@ public class WorkspaceInvitationServiceTests
         var workspaceId = Guid.NewGuid();
         var inviterUserId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true };
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
@@ -80,7 +81,7 @@ public class WorkspaceInvitationServiceTests
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
 
-        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member");
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
         // Act
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
@@ -98,7 +99,7 @@ public class WorkspaceInvitationServiceTests
         var workspaceId = Guid.NewGuid();
         var inviterUserId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true };
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
         
         var oldInvitation = new WorkspaceInvitation 
@@ -118,7 +119,7 @@ public class WorkspaceInvitationServiceTests
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
 
-        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member");
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
         // Act
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
@@ -149,7 +150,7 @@ public class WorkspaceInvitationServiceTests
         
         StubRoleName(inviterMember.RoleId, "Owner");
 
-        var request = new InviteMemberRequest("external@gmail.com", "Member");
+        var request = new InviteMemberRequest("external@gmail.com", "Member", "External");
 
         // Act
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
@@ -160,7 +161,7 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
-    public async Task InviteMemberAsync_ShouldSucceed_AndDowngradeRoleToMember_WhenExternalInvitationAllowed()
+    public async Task InviteMemberAsync_ShouldFail_WhenExternalInvitationHasNonMemberRole()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
@@ -172,23 +173,22 @@ public class WorkspaceInvitationServiceTests
             Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"AllowExternalCollaboration\":true}"
         };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
-        var memberRoleId = Guid.NewGuid();
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
         
         StubRoleName(inviterMember.RoleId, "Owner");
-        StubRoleId("Member", memberRoleId);
 
-        // Admin tries to invite as Admin
-        var request = new InviteMemberRequest("external@gmail.com", "Admin");
+        // Try to invite as Admin under External membership type
+        var request = new InviteMemberRequest("external@gmail.com", "Admin", "External");
 
         // Act
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
 
         // Assert
-        Assert.True(result.IsSuccess);
-        Assert.Equal("Member", result.Value.Invitation.RoleName); // Downgraded
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.ExternalMemberMustHaveMemberRole, result.Error);
     }
 
     #endregion
@@ -261,6 +261,7 @@ public class WorkspaceInvitationServiceTests
             Email = userEmail,
             RoleId = Guid.NewGuid(),
             Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.Internal.ToString(),
             ExpiresAt = DateTime.UtcNow.AddDays(1)
         };
 
@@ -348,7 +349,7 @@ public class WorkspaceInvitationServiceTests
         };
 
         _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(new Workspace { Id = workspaceId, Settings = "{}" });
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(new Workspace { Id = workspaceId, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" });
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns((WorkspaceMember?)null);
 
         var request = new AcceptInvitationRequest("valid_token");

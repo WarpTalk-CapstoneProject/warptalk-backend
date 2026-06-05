@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.WorkspaceService.Domain.Entities;
 
@@ -6,15 +7,10 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
 public partial class WorkspaceDbContext : DbContext
 {
-    public WorkspaceDbContext()
-    {
-    }
-
     public WorkspaceDbContext(DbContextOptions<WorkspaceDbContext> options)
         : base(options)
     {
     }
-
 
     public virtual DbSet<Workspace> Workspaces { get; set; }
 
@@ -32,12 +28,20 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; }
 
-
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
+            .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
+            .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
+            .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
+            .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
+            .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
+            .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
+            .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
+            .HasPostgresEnum("transcript", "correction_status", new[] { "PENDING", "ACCEPTED", "REJECTED" })
+            .HasPostgresEnum("transcript", "correction_type", new[] { "STT", "TRANSLATION" })
+            .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
-
 
         modelBuilder.Entity<Workspace>(entity =>
         {
@@ -159,6 +163,7 @@ public partial class WorkspaceDbContext : DbContext
                 .HasDefaultValueSql("'active'::character varying")
                 .HasColumnName("retention_state");
             entity.Property(e => e.SizeBytes).HasColumnName("size_bytes");
+            entity.Property(e => e.SourceId).HasColumnName("source_id");
             entity.Property(e => e.SourceLanguage)
                 .HasMaxLength(20)
                 .HasColumnName("source_language");
@@ -212,10 +217,10 @@ public partial class WorkspaceDbContext : DbContext
             entity.Property(e => e.Permission)
                 .HasMaxLength(30)
                 .HasColumnName("permission");
-            entity.Property(e => e.RoleKey)
-                .HasMaxLength(30)
-                .HasColumnName("role_key");
             entity.Property(e => e.SubjectId).HasColumnName("subject_id");
+            entity.Property(e => e.SubjectKey)
+                .HasMaxLength(150)
+                .HasColumnName("subject_key");
             entity.Property(e => e.SubjectType)
                 .HasMaxLength(30)
                 .HasColumnName("subject_type");
