@@ -57,6 +57,8 @@ public class PaymentService : IPaymentService
         }
     }
 
+    // GetInvoicesAsync removed per cleanup
+
     public async Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,
         CancellationToken cancellationToken = default)
@@ -78,6 +80,9 @@ public class PaymentService : IPaymentService
             {
                 finalAmount *= 0.8m; // 20% discount
             }
+
+            if (finalAmount <= 0)
+                return Result.Failure<PaymentTransactionDto>("Payment amount must be greater than zero.", "INVALID_REQUEST");
 
             var payment = request.ToEntity(finalAmount, plan.Currency);
 
@@ -124,6 +129,7 @@ public class PaymentService : IPaymentService
             return Result.Failure<PaymentTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
+
     public async Task<Result<bool>> HandleWebhookAsync(
         PaymentWebhookRequest request,
         CancellationToken cancellationToken = default)
@@ -133,81 +139,81 @@ public class PaymentService : IPaymentService
             if (!Guid.TryParse(request.OrderCode, out var paymentId))
                 return Result.Failure<bool>("Invalid OrderCode.", "INVALID_REQUEST");
 
-
             var payment = await _unitOfWork.PaymentRepository.GetByIdAsync(paymentId, cancellationToken);
             if (payment == null)
-            {
                 return Result.Failure<bool>("Payment not found.", "NOT_FOUND");
-            }
 
-            // Idempotent Check
+            // Idempotent Check — already processed
             if (payment.Status == "paid")
-            {
-                return Result.Success(true); // Already processed
-            }
+                return Result.Success(true);
 
             if (request.Status.Equals("PAID", StringComparison.OrdinalIgnoreCase))
             {
+                var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(payment.SubscriptionId, cancellationToken);
+                if (sub == null)
+                {
+                    _logger.LogError("HandleWebhookAsync: Subscription {SubscriptionId} not found for paid payment {PaymentId}. Aborting activation.", payment.SubscriptionId, paymentId);
+                    return Result.Failure<bool>("Subscription not found for this payment.", ErrorCodes.BillingSubscriptionNotFound);
+                }
+
+                var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+                if (plan == null)
+                {
+                    _logger.LogError("HandleWebhookAsync: Plan {PlanId} not found for subscription {SubscriptionId}. Aborting activation.", sub.PlanId, sub.Id);
+                    return Result.Failure<bool>("Plan not found for this subscription.", ErrorCodes.BillingPlanNotFound);
+                }
+
+                if (sub.Status != "pending")
+                    return Result.Failure<bool>("Auto-renew is not supported at this time.", "NOT_SUPPORTED");
+
+                // Mark payment paid
                 payment.Status = "paid";
                 payment.PaidAt = DateTime.UtcNow;
                 payment.ProviderTransactionId = request.TransactionId;
                 _unitOfWork.PaymentRepository.Update(payment);
 
-                var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(payment.SubscriptionId, cancellationToken);
-                if (sub != null)
+                // Deactivate any other active subscriptions for this user
+                var existingSubs = await _unitOfWork.SubscriptionRepository.GetPagedAsync(
+                    s => s.UserId == sub.UserId && s.IsActive && s.Id != sub.Id,
+                    0, 10, null, cancellationToken);
+                foreach (var oldSub in existingSubs)
                 {
-                    var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-                    if (plan != null)
-                    {
-                        if (sub.Status == "pending")
-                        {
-                            // Deactivate any existing active subscriptions for this user
-                            var existingSubs = await _unitOfWork.SubscriptionRepository.GetPagedAsync(
-                                s => s.UserId == sub.UserId && s.IsActive && s.Id != sub.Id,
-                                0, 10, null, cancellationToken);
-                            foreach (var oldSub in existingSubs)
-                            {
-                                oldSub.AutoRenew = false;
-                                oldSub.Status = "cancelled";
-                                oldSub.UpdatedAt = DateTime.UtcNow;
-                                _unitOfWork.SubscriptionRepository.Update(oldSub);
-                            }
-
-                            sub.Status = "active";
-                            sub.IsActive = true;
-                            sub.CurrentPeriodStart = DateTime.UtcNow;
-                            sub.CurrentPeriodEnd = plan.BillingCycle switch
-                            {
-                                "yearly" => DateTime.UtcNow.AddYears(1),
-                                "semiannual" => DateTime.UtcNow.AddMonths(6),
-                                _ => DateTime.UtcNow.AddMonths(1)
-                            };
-                            sub.CreditsRemaining += plan.CreditsPerCycle; // += to keep carry-over
-                            sub.CreditsUsedThisCycle = 0;
-                            sub.UpdatedAt = DateTime.UtcNow;
-                            _unitOfWork.SubscriptionRepository.Update(sub);
-
-                            var topupTx = new CreditTransaction
-                            {
-                                SubscriptionId = sub.Id,
-                                UserId = sub.UserId,
-                                Amount = plan.CreditsPerCycle,
-                                Type = "top_up",
-                                Description = "Subscription Top-up",
-                                ReferenceId = payment.Id,
-                                ReferenceType = "payment",
-                                Status = "committed",
-                                BalanceAfter = sub.CreditsRemaining,
-                                CreatedAt = DateTime.UtcNow
-                            };
-                            await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
-                        }
-                        else
-                        {
-                            return Result.Failure<bool>("Auto-renew is not supported at this time.", "NOT_SUPPORTED");
-                        }
-                    }
+                    oldSub.AutoRenew = false;
+                    oldSub.Status = "cancelled";
+                    oldSub.UpdatedAt = DateTime.UtcNow;
+                    _unitOfWork.SubscriptionRepository.Update(oldSub);
                 }
+
+                // Activate pending subscription
+                sub.Status = "active";
+                sub.IsActive = true;
+                sub.CurrentPeriodStart = DateTime.UtcNow;
+                sub.CurrentPeriodEnd = plan.BillingCycle switch
+                {
+                    "yearly" => DateTime.UtcNow.AddYears(1),
+                    "semiannual" => DateTime.UtcNow.AddMonths(6),
+                    _ => DateTime.UtcNow.AddMonths(1)
+                };
+                sub.CreditsRemaining += plan.CreditsPerCycle;
+                sub.CreditsUsedThisCycle = 0;
+                sub.UpdatedAt = DateTime.UtcNow;
+                _unitOfWork.SubscriptionRepository.Update(sub);
+
+                var topupTx = new CreditTransaction
+                {
+                    SubscriptionId = sub.Id,
+                    UserId = sub.UserId,
+                    WorkspaceId = sub.WorkspaceId,
+                    Amount = plan.CreditsPerCycle,
+                    Type = "top_up",
+                    Description = "Subscription activation top-up",
+                    ReferenceId = payment.Id,
+                    ReferenceType = "payment",
+                    Status = "committed",
+                    BalanceAfter = sub.CreditsRemaining,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
             }
             else
             {
@@ -227,3 +233,4 @@ public class PaymentService : IPaymentService
         }
     }
 }
+

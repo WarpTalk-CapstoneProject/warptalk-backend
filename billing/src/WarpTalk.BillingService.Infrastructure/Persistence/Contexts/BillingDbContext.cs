@@ -28,7 +28,7 @@ public partial class BillingDbContext : DbContext
 
     public virtual DbSet<Payment> Payments { get; set; }
 
-
+    public virtual DbSet<Invoice> Invoices { get; set; }
 
     public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
@@ -170,6 +170,11 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.DeletedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("deleted_by");
+
+            entity.Property(e => e.Version)
+                .IsRowVersion()
+                .HasColumnName("xmin")
+                .HasColumnType("xid");
 
             entity.HasOne(d => d.Plan).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.PlanId)
@@ -401,6 +406,54 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
+        });
+
+        modelBuilder.Entity<Invoice>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("invoices_pkey");
+            entity.ToTable("invoices", "subscription");
+
+            entity.HasIndex(e => e.StripeInvoiceId, "idx_invoices_stripe_id").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.SubscriptionId).HasColumnName("subscription_id");
+            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
+            entity.Property(e => e.StripeInvoiceId)
+                .HasMaxLength(255)
+                .HasColumnName("stripe_invoice_id");
+            entity.Property(e => e.Amount)
+                .HasPrecision(12, 2)
+                .HasColumnName("amount");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(10)
+                .HasColumnName("currency");
+            entity.Property(e => e.Status)
+                .HasMaxLength(50)
+                .HasColumnName("status");
+            entity.Property(e => e.InvoicePdfUrl)
+                .HasMaxLength(1000)
+                .HasColumnName("invoice_pdf_url");
+            entity.Property(e => e.HostedInvoiceUrl)
+                .HasMaxLength(1000)
+                .HasColumnName("hosted_invoice_url");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.HasOne(d => d.Subscription)
+                .WithMany()
+                .HasForeignKey(d => d.SubscriptionId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_invoices_subscription");
+                
+            entity.HasOne(d => d.Payment)
+                .WithMany()
+                .HasForeignKey(d => d.PaymentId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("fk_invoices_payment");
         });
 
         OnModelCreatingPartial(modelBuilder);

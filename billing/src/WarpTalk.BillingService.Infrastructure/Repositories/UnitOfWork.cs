@@ -48,6 +48,11 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<SchemaMigration> SchemaMigrationRepository =>
         _schemaMigrations ??= new GenericRepository<SchemaMigration>(_context);
 
+    public void ClearTracking()
+    {
+        _context.ChangeTracker.Clear();
+    }
+
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         return await _context.SaveChangesAsync(cancellationToken);

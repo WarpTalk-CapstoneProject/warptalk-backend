@@ -29,6 +29,12 @@ public interface ICreditService
         int pageSize,
         CancellationToken cancellationToken = default);
 
+    Task<Result<BillingReportDto>> GetBillingReportAsync(
+        Guid workspaceId,
+        int year,
+        int month,
+        CancellationToken cancellationToken = default);
+
     Task<Result<CreditReservationDto>> ReserveCreditsAsync(
         ReserveCreditsRequest request,
         CancellationToken cancellationToken = default);

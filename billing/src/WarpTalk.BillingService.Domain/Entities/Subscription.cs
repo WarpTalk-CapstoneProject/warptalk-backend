@@ -53,4 +53,7 @@ public partial class Subscription
     public virtual ICollection<UsageRecord> UsageRecords { get; set; } = new List<UsageRecord>();
 
     public virtual ICollection<Payment> Payments { get; set; } = new List<Payment>();
+
+    // Concurrency Token (mapped to PostgreSQL xmin)
+    public uint Version { get; set; }
 }

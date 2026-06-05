@@ -49,6 +49,7 @@ service BillingService {
 
   // Process payment events including success, failures, and refunds
   rpc ProcessPaymentEvent (ProcessPaymentEventRequest) returns (ProcessPaymentResponse);
+  rpc GetInvoices (GetInvoicesRequest) returns (GetInvoicesResponse);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -67,11 +68,32 @@ message ProcessPaymentEventRequest {
   string status                  = 7; // "paid", "failed", "refunded"
   string failure_reason          = 8;
   string workspace_id            = 9;
+  string invoice_url             = 10;
+  string invoice_pdf             = 11;
 }
 
 message ProcessPaymentResponse {
   bool   success       = 1;
   string error_message = 2;
+}
+
+message GetInvoicesRequest {
+  string workspace_id = 1;
+}
+
+message GetInvoicesResponse {
+  repeated Invoice items = 1;
+}
+
+message Invoice {
+  string id                 = 1;
+  string stripe_invoice_id  = 2;
+  double amount             = 3;
+  string currency           = 4;
+  string status             = 5;
+  string invoice_pdf_url    = 6;
+  string hosted_invoice_url = 7;
+  string created_at         = 8;
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -91,4 +91,16 @@ public class RealtimeCostCalculatorTests
         // Assert
         cost.Should().Be(19);
     }
+
+    [Fact]
+    public void CalculateCreditCost_AllZeroInputs_ShouldReturnMinimumCost()
+    {
+        // Edge case: zero audio/token/gpu — cost should be at minimum 1 (not 0)
+        var plan = new Plan { Tier = "Pro", VoiceCloneEnabled = true };
+
+        var cost = _calculator.CalculateCreditCost(audioSeconds: 0, tokenCount: 0, gpuInferenceMs: 0, isVoiceClone: false, plan: plan);
+
+        cost.Should().BeGreaterThanOrEqualTo(1);
+    }
 }
+

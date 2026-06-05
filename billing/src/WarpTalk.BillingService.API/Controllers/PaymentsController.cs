@@ -7,7 +7,6 @@ using WarpTalk.Shared;
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
-[AllowAnonymous] // Added for FE testing
 [ApiController]
 [Route("api/v1/payments")]
 public class PaymentsController : ControllerBase
@@ -35,10 +34,11 @@ public class PaymentsController : ControllerBase
         return Ok(result.Value);
     }
 
+    // GetInvoicesAsync removed per cleanup
+
     /// <summary>
     /// Create a pending payment checkout for a subscription.
     /// </summary>
-    [AllowAnonymous]
     [HttpPost]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment(
         [FromBody] CreatePaymentRequest request,
@@ -53,7 +53,6 @@ public class PaymentsController : ControllerBase
     /// <summary>
     /// Simulate or receive a payment provider webhook to activate a subscription.
     /// </summary>
-    [AllowAnonymous]
     [HttpPost("webhook")]
     public async Task<IActionResult> HandleWebhook(
         [FromBody] PaymentWebhookRequest request,

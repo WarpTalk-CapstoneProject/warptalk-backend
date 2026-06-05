@@ -19,6 +19,8 @@ public class StripePaymentService : IStripePaymentService
 
     public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType)
     {
+        bool isSubscription = paymentType == "Subscription";
+
         var options = new SessionCreateOptions
         {
             PaymentMethodTypes = new List<string> { "card" },
@@ -34,22 +36,17 @@ public class StripePaymentService : IStripePaymentService
                         {
                             Name = paymentType == "CreditTopUp" ? "Credit Top-Up" : "Subscription Plan",
                         },
+                        Recurring = isSubscription ? new SessionLineItemPriceDataRecurringOptions
+                        {
+                            Interval = "month"
+                        } : null
                     },
                     Quantity = 1,
                 },
             },
-            Mode = "payment",
+            Mode = isSubscription ? "subscription" : "payment",
             SuccessUrl = _configuration["Stripe:SuccessUrl"] ?? "http://localhost:3000/sandbox/workspace-billing?session_id={CHECKOUT_SESSION_ID}",
             CancelUrl = _configuration["Stripe:CancelUrl"] ?? "http://localhost:3000/payment-cancelled",
-            PaymentIntentData = new SessionPaymentIntentDataOptions
-            {
-                Metadata = new Dictionary<string, string>
-                {
-                    { "UserId", userId.ToString() },
-                    { "WorkspaceId", workspaceId.ToString() },
-                    { "PaymentType", paymentType }
-                }
-            },
             Metadata = new Dictionary<string, string>
             {
                 { "UserId", userId.ToString() },
@@ -57,6 +54,31 @@ public class StripePaymentService : IStripePaymentService
                 { "PaymentType", paymentType }
             }
         };
+
+        if (isSubscription)
+        {
+            options.SubscriptionData = new SessionSubscriptionDataOptions
+            {
+                Metadata = new Dictionary<string, string>
+                {
+                    { "UserId", userId.ToString() },
+                    { "WorkspaceId", workspaceId.ToString() },
+                    { "PaymentType", paymentType }
+                }
+            };
+        }
+        else
+        {
+            options.PaymentIntentData = new SessionPaymentIntentDataOptions
+            {
+                Metadata = new Dictionary<string, string>
+                {
+                    { "UserId", userId.ToString() },
+                    { "WorkspaceId", workspaceId.ToString() },
+                    { "PaymentType", paymentType }
+                }
+            };
+        }
 
         var service = new SessionService();
         Session session = await service.CreateAsync(options);

@@ -12,14 +12,17 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class CreditsController : ControllerBase
 {
     private readonly ICreditService _creditService;
+    private readonly IWebHostEnvironment _env;
 
-    public CreditsController(ICreditService creditService)
+    public CreditsController(ICreditService creditService, IWebHostEnvironment env)
     {
         _creditService = creditService;
+        _env = env;
     }
 
     /// <summary>
     /// Get the current credit balance for a workspace.
+    /// Public read — no auth required.
     /// </summary>
     [AllowAnonymous]
     [HttpGet("workspace/{workspaceId:guid}")]
@@ -35,8 +38,8 @@ public class CreditsController : ControllerBase
 
     /// <summary>
     /// Deduct credits from a workspace subscription.
+    /// Requires [Authorize] in production; bypassed only in Development for sandbox testing.
     /// </summary>
-    [AllowAnonymous]
     [HttpPost("workspace/{workspaceId:guid}/consume")]
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCredits(
         Guid workspaceId,
@@ -44,6 +47,33 @@ public class CreditsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsAsync(workspaceId, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Record usage for a workspace.
+    /// Requires [Authorize] in production; bypassed only in Development for sandbox testing.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId:guid}/record-usage")]
+    public async Task<ActionResult> RecordUsage(
+        Guid workspaceId,
+        [FromBody] RecordUsageRequest request,
+        CancellationToken cancellationToken)
+    {
+        var actualRequest = new RecordUsageRequest(
+            workspaceId,
+            request.UserId,
+            request.UsageType,
+            request.Unit,
+            request.Quantity,
+            request.CreditsConsumed,
+            request.DurationSeconds,
+            request.TranslationRoomId,
+            request.Details);
+
+        var result = await _creditService.RecordUsageAsync(actualRequest, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
 
         return Ok(result.Value);
@@ -80,12 +110,32 @@ public class CreditsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Generate a billing report for a workspace for a specific month and year.
+    /// Public read — no auth required (dashboard access).
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("workspace/{workspaceId:guid}/report")]
+    public async Task<ActionResult<BillingReportDto>> GetBillingReport(
+        [FromServices] ISubscriptionService subscriptionService,
+        Guid workspaceId,
+        [FromQuery] int month,
+        [FromQuery] int year,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetBillingReportAsync(workspaceId, year, month, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {
             ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = result.Error }),
             ErrorCodes.BillingInsufficientCredits => UnprocessableEntity(new { message = result.Error }),
             "FEATURE_NOT_AVAILABLE" => StatusCode(403, new { message = result.Error }),
+            "INVALID_REQUEST" => BadRequest(new { message = result.Error }),
             _ => StatusCode(500, new { message = result.Error })
         };
 }

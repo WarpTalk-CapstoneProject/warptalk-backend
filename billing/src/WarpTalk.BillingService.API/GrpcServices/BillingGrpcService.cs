@@ -430,26 +430,34 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         }
         var plan = planResult.Value;
 
-        if (!sub.IsActive)
+        bool isRenewal = request.PaymentType == "SubscriptionRenewal";
+
+        if (!sub.IsActive || isRenewal)
         {
-            var activeSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
-            foreach (var activeSub in activeSubs)
+            if (!sub.IsActive)
             {
-                activeSub.IsActive = false;
-                activeSub.Status = "cancelled";
-                activeSub.CancelledAt = DateTime.UtcNow;
-                _unitOfWork.SubscriptionRepository.Update(activeSub);
+                var activeSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
+                    s => s.WorkspaceId == workspaceId && s.IsActive && s.Id != sub.Id && s.DeletedAt == null);
+                foreach (var activeSub in activeSubs)
+                {
+                    activeSub.IsActive = false;
+                    activeSub.Status = "cancelled";
+                    activeSub.CancelledAt = DateTime.UtcNow;
+                    _unitOfWork.SubscriptionRepository.Update(activeSub);
+                }
             }
 
             sub.Status = "active";
             sub.IsActive = true;
             sub.CurrentPeriodStart = DateTime.UtcNow;
+            
+            var baseDate = (isRenewal && sub.CurrentPeriodEnd > DateTime.UtcNow) ? sub.CurrentPeriodEnd : DateTime.UtcNow;
+
             sub.CurrentPeriodEnd = plan.BillingCycle switch
             {
-                "yearly" => DateTime.UtcNow.AddYears(1),
-                "semiannual" => DateTime.UtcNow.AddMonths(6),
-                _ => DateTime.UtcNow.AddMonths(1)
+                "yearly" => baseDate.AddYears(1),
+                "semiannual" => baseDate.AddMonths(6),
+                _ => baseDate.AddMonths(1)
             };
         }
 
@@ -502,6 +510,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             };
             await _unitOfWork.PaymentRepository.AddAsync(paymentTx);
 
+
+
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             _logger.LogInformation("Successfully updated subscription and added credits for Workspace {WorkspaceId} via gRPC", workspaceId);
         }
@@ -512,6 +522,59 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
+
+    private async Task ProcessPaymentRefundOrDisputeInternal(
+        WarpTalk.BillingService.Domain.Entities.Payment payment, ServerCallContext context)
+    {
+        _logger.LogInformation("Processing refund/dispute for Payment {PaymentId}, ProviderTxId: {ProviderTxId}", payment.Id, payment.ProviderTransactionId);
+
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.Id == payment.SubscriptionId,
+            context.CancellationToken);
+
+        if (sub == null) return;
+
+        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        if (!planResult.IsSuccess || planResult.Value == null) return;
+        var plan = planResult.Value;
+
+        // Cancel the subscription immediately to prevent further abuse/usage
+        if (sub.IsActive)
+        {
+            sub.IsActive = false;
+            sub.Status = "cancelled";
+            sub.CancelledAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+        }
+
+        // Deduct the equivalent credits for the cycle
+        // Allow it to go negative if they've already spent the credits.
+        sub.CreditsRemaining -= plan.CreditsPerCycle;
+        sub.UpdatedAt = DateTime.UtcNow;
+        _unitOfWork.SubscriptionRepository.Update(sub);
+
+        // Record the deduction
+        var tx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
+        {
+            SubscriptionId = sub.Id,
+            UserId = payment.UserId,
+            WorkspaceId = payment.WorkspaceId,
+            Amount = -plan.CreditsPerCycle,
+            Type = "refund_deduction",
+            Description = $"Credits deducted due to {payment.Status}",
+            ReferenceId = payment.Id,
+            CorrelationId = payment.ProviderTransactionId,
+            ReferenceType = "stripe_payment",
+            Status = "committed",
+            BalanceAfter = sub.CreditsRemaining,
+            CreatedAt = DateTime.UtcNow
+        };
+        await _unitOfWork.CreditTransactionRepository.AddAsync(tx);
+
+        _logger.LogWarning("Cancelled subscription {SubId} and deducted {Amount} credits due to {Status}. New Balance: {Balance}",
+            sub.Id, plan.CreditsPerCycle, payment.Status, sub.CreditsRemaining);
+    }
+
 
     public override async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentEvent(
         Shared.Protos.ProcessPaymentEventRequest request, ServerCallContext context)
@@ -543,6 +606,13 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             if (request.Status == "paid") existingPayment.PaidAt = DateTime.UtcNow;
 
             _unitOfWork.PaymentRepository.Update(existingPayment);
+
+            if (request.Status == "refunded" || request.Status == "disputed")
+            {
+                await ProcessPaymentRefundOrDisputeInternal(existingPayment, context);
+            }
+
+
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             return new Shared.Protos.ProcessPaymentResponse { Success = true };
@@ -590,6 +660,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
+
 
     // ─── Private helpers ──────────────────────────────────────────────────
 

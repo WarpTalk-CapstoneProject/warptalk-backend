@@ -21,7 +21,7 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 
     // HTTP/2 — gRPC (internal)
-    options.ListenAnyIP(50054, listenOptions =>
+    options.ListenAnyIP(50057, listenOptions =>
     {
         listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
     });

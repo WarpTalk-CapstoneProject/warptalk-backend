@@ -56,8 +56,8 @@ public class RealtimeCostCalculator : IRealtimeCostCalculator
             }
         }
 
-        // Final cost rounded up
-        var finalCost = Math.Ceiling(baseCost * multiplier);
+        // Final cost rounded up, minimum 1
+        var finalCost = Math.Max(1, Math.Ceiling(baseCost * multiplier));
 
         return (int)finalCost;
     }

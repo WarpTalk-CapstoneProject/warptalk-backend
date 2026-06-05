@@ -8,9 +8,26 @@ public record PagedResult<T>(
     IEnumerable<T> Items
 );
 
+public record BillingReportDto(
+    Guid WorkspaceId,
+    int Month,
+    int Year,
+    int StartingBalance,
+    int EndingBalance,
+    int TotalTopUpCredits,
+    int TotalConsumedCredits,
+    IEnumerable<UsageSummaryDto> UsageBreakdown
+);
+
+public record UsageSummaryDto(
+    string UsageType,
+    int TotalCreditsConsumed
+);
+
 
 public record SubscriptionDto(
     Guid Id,
+    Guid UserId,
     Guid? WorkspaceId,
     Guid PlanId,
     string PlanName,

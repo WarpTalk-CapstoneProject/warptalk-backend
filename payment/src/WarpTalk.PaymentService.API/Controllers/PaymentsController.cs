@@ -53,7 +53,7 @@ public class PaymentsController : ControllerBase
                 {
                     await _paymentAppService.ProcessPaymentEventAsync(
                         session.Id,
-                        session.PaymentIntentId,
+                        !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
                         (session.AmountTotal ?? 0) / 100m,
                         session.Currency,
                         session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
@@ -96,6 +96,52 @@ public class PaymentsController : ControllerBase
                         charge.Metadata.ContainsKey("PaymentType") ? charge.Metadata["PaymentType"] : string.Empty,
                         "refunded"
                     );
+                }
+            }
+            else if (stripeEvent.Type == "charge.dispute.created")
+            {
+                var dispute = stripeEvent.Data.Object as Stripe.Dispute;
+                if (dispute != null)
+                {
+                    await _paymentAppService.ProcessPaymentEventAsync(
+                        string.Empty,
+                        dispute.PaymentIntentId ?? dispute.ChargeId,
+                        dispute.Amount / 100m,
+                        dispute.Currency,
+                        string.Empty,
+                        string.Empty,
+                        string.Empty,
+                        "disputed"
+                    );
+                }
+            }
+            else if (stripeEvent.Type == "invoice.paid")
+            {
+                var invoice = stripeEvent.Data.Object as Stripe.Invoice;
+                if (invoice != null && (invoice.BillingReason == "subscription_cycle" || invoice.BillingReason == "subscription_create"))
+                {
+                    var subId = invoice.Lines?.FirstOrDefault()?.SubscriptionId;
+                    if (!string.IsNullOrEmpty(subId))
+                    {
+                        var subscriptionService = new SubscriptionService();
+                        var subscription = await subscriptionService.GetAsync(subId);
+
+                        string paymentType = invoice.BillingReason == "subscription_create" ? "Subscription" : "SubscriptionRenewal";
+
+                        await _paymentAppService.ProcessPaymentEventAsync(
+                            string.Empty,
+                            invoice.Id, // Use invoice.Id as ProviderTransactionId
+                            invoice.AmountPaid / 100m,
+                            invoice.Currency,
+                            subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
+                            subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
+                            paymentType,
+                            "paid",
+                            "",
+                            invoice.HostedInvoiceUrl,
+                            invoice.InvoicePdf
+                        );
+                    }
                 }
             }
 

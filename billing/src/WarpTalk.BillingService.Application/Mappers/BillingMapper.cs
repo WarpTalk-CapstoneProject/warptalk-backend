@@ -26,6 +26,7 @@ public static class BillingMapper
 
     public static SubscriptionDto ToDto(this Subscription sub, string planName) => new(
         sub.Id,
+        sub.UserId,
         sub.WorkspaceId,
         sub.PlanId,
         planName,
@@ -117,6 +118,7 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = sub.UserId,
+        WorkspaceId = sub.WorkspaceId,
         Amount = -request.Amount,
         Type = "consumption",
         ReferenceType = request.ReferenceType,
@@ -130,6 +132,7 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = sub.UserId,
+        WorkspaceId = sub.WorkspaceId,
         Amount = request.Amount,
         Type = "top_up",
         ReferenceType = request.ReferenceType,
@@ -180,8 +183,9 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = request.UserId,
-        Amount = request.CreditsConsumed, // Keep positive because CalculateBalanceAsync subtracts consume amounts
-        Type = "consume",
+        WorkspaceId = sub.WorkspaceId,
+        Amount = -request.CreditsConsumed, // Negative for consumption
+        Type = "consumption",
         Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
         ReferenceType = "usage_record",
         Status = "committed",

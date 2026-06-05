@@ -60,12 +60,12 @@ public class SubscriptionService : ISubscriptionService
                     ErrorCodes.BillingPlanNotFound);
 
             var existing = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.UserId == request.UserId && s.IsActive && s.DeletedAt == null,
+                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
                 cancellationToken);
 
             if (existing is not null)
                 return Result.Failure<SubscriptionDto>(
-                    "This user already has an active subscription.",
+                    "This workspace already has an active subscription.",
                     ErrorCodes.BillingSubscriptionAlreadyActive);
 
             var subscription = request.ToEntity(plan);

@@ -11,6 +11,8 @@ public interface IPaymentService
         int pageSize,
         CancellationToken cancellationToken = default);
 
+    // GetInvoicesAsync removed per cleanup
+
     Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,
         CancellationToken cancellationToken = default);

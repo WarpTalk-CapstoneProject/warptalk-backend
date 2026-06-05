@@ -7,6 +7,7 @@ using WarpTalk.Shared;
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
+[AllowAnonymous] // Added for FE testing
 [ApiController]
 [Route("api/v1/subscriptions")]
 public class SubscriptionsController : ControllerBase
