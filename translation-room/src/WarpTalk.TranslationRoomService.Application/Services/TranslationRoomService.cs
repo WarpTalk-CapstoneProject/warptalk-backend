@@ -291,6 +291,13 @@ public class TranslationRoomService : ITranslationRoomService
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            await _audioRouteEventProcessor.ProcessEventAsync(
+                translationRoomId,
+                null,
+                AudioRoutingEventType.session_starts.ToString(),
+                "{}",
+                ct);
+
             return Result.Success(translationRoom.ToResponseDto());
         }
         catch (Exception ex)

@@ -112,7 +112,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                             SourceLanguage = sourceLang,
                             TargetLanguage = targetLang,
                             VoiceCloneEnabled = true,
-                            Status = AudioRouteStatus.IDLE.ToString(),
+                            Status = AudioRouteStatus.PENDING.ToString(),
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow
                         };
@@ -205,7 +205,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             if (dto.Status.HasValue && route.Status != dto.Status.Value.ToString())
             {
                 route.Status = dto.Status.Value.ToString();
-                if (dto.Status.Value == AudioRouteStatus.AUDIO_ROUTING_ACTIVE)
+                if (dto.Status.Value == AudioRouteStatus.BROADCASTING)
                 {
                     route.StartedAt = DateTime.UtcNow;
                 }

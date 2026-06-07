@@ -26,7 +26,7 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
                         if (doc.RootElement.TryGetProperty("status", out var prop))
                         {
                             var statusStr = prop.GetString();
-                            if (System.Enum.TryParse<AudioRouteStatus>(statusStr, true, out var targetStatus))
+                            if (TryParseStatus(statusStr, out var targetStatus))
                             {
                                 if (IsStreamingState(targetStatus))
                                 {
@@ -47,118 +47,117 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
         // 3. Priority Override Triggers (Session Ends or System Disables)
         if (eventType == AudioRoutingEventType.session_ends || eventType == AudioRoutingEventType.system_disabled)
         {
-            if (currentState != AudioRouteStatus.FINALIZING_ARTIFACTS && currentState != AudioRouteStatus.COMPLETED)
+            if (currentState != AudioRouteStatus.SAVING_OUTPUTS && currentState != AudioRouteStatus.COMPLETED)
             {
-                return Result.Success(AudioRouteStatus.STOPPING);
+                return Result.Success(AudioRouteStatus.ENDING);
             }
         }
 
         // 4. State Machine Transition Table
         var transitionResult = currentState switch
         {
-            AudioRouteStatus.IDLE => eventType switch
+            AudioRouteStatus.PENDING => eventType switch
             {
-                AudioRoutingEventType.config_ready => Result.Success(AudioRouteStatus.ROUTING_READY),
+                AudioRoutingEventType.config_ready => Result.Success(AudioRouteStatus.READY),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.ROUTING_READY => eventType switch
+            AudioRouteStatus.READY => eventType switch
             {
-                AudioRoutingEventType.session_starts => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+                AudioRoutingEventType.session_starts => Result.Success(AudioRouteStatus.BROADCASTING),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.AUDIO_ROUTING_ACTIVE => eventType switch
+            AudioRouteStatus.BROADCASTING => eventType switch
             {
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
+                
                 // Degraded / Latency transitions
-                AudioRoutingEventType.stt_latency_high => Result.Success(AudioRouteStatus.STT_DEGRADED),
-                AudioRoutingEventType.translation_latency_high => Result.Success(AudioRouteStatus.TRANSLATION_DEGRADED),
-                AudioRoutingEventType.tts_latency_high => Result.Success(AudioRouteStatus.TTS_DEGRADED),
-
+                AudioRoutingEventType.stt_latency_high => Result.Success(AudioRouteStatus.SPEECH_DELAYED),
+                AudioRoutingEventType.translation_latency_high => Result.Success(AudioRouteStatus.TRANSLATION_DELAYED),
+                AudioRoutingEventType.tts_latency_high => Result.Success(AudioRouteStatus.VOICE_DELAYED),
+                
                 // Voice clone fallback path (technical or token exhaustion)
-                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-
+                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.STANDARD_VOICE),
+                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.STANDARD_VOICE),
+                
                 // Complete audio failure
-                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-
+                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.AUDIO_ROUTING_PAUSED => eventType switch
+            AudioRouteStatus.PAUSED => eventType switch
             {
-                AudioRoutingEventType.room_resume => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
+                AudioRoutingEventType.room_resume => Result.Success(AudioRouteStatus.BROADCASTING),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.STT_DEGRADED => eventType switch
+            AudioRouteStatus.SPEECH_DELAYED => eventType switch
             {
-                AudioRoutingEventType.stt_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
+                AudioRoutingEventType.stt_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
+                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
+                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.STANDARD_VOICE),
+                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.STANDARD_VOICE),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.TRANSLATION_DEGRADED => eventType switch
+            AudioRouteStatus.TRANSLATION_DELAYED => eventType switch
             {
-                AudioRoutingEventType.translation_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
+                AudioRoutingEventType.translation_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
+                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
+                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.STANDARD_VOICE),
+                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.STANDARD_VOICE),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.TTS_DEGRADED => eventType switch
+            AudioRouteStatus.VOICE_DELAYED => eventType switch
             {
-                AudioRoutingEventType.tts_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-                AudioRoutingEventType.tts_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
-                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.VOICE_CLONE_FALLBACK),
+                AudioRoutingEventType.tts_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
+                AudioRoutingEventType.tts_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
+                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
+                AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.STANDARD_VOICE),
+                AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.STANDARD_VOICE),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.VOICE_CLONE_FALLBACK => eventType switch
+            AudioRouteStatus.STANDARD_VOICE => eventType switch
             {
-                // Both technical recovery or token recharge returns route to ACTIVE
-                AudioRoutingEventType.voice_clone_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.token_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
-                AudioRoutingEventType.tts_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
-                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.TEXT_ONLY_MODE),
+                // Both technical recovery and token recharge return the route to broadcasting.
+                AudioRoutingEventType.voice_clone_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.token_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
+                AudioRoutingEventType.tts_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
+                AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.TEXT_ONLY_MODE => eventType switch
+            AudioRouteStatus.CAPTION_ONLY => eventType switch
             {
-                AudioRoutingEventType.audio_recovered => Result.Success(AudioRouteStatus.AUDIO_ROUTING_ACTIVE),
-                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.AUDIO_ROUTING_PAUSED),
+                AudioRoutingEventType.audio_recovered => Result.Success(AudioRouteStatus.BROADCASTING),
+                AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.STOPPING => eventType switch
+            AudioRouteStatus.ENDING => eventType switch
             {
-                AudioRoutingEventType.flush_runtime => Result.Success(AudioRouteStatus.FINALIZING_ARTIFACTS),
+                AudioRoutingEventType.flush_runtime => Result.Success(AudioRouteStatus.SAVING_OUTPUTS),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.FINALIZING_ARTIFACTS => eventType switch
+            AudioRouteStatus.SAVING_OUTPUTS => eventType switch
             {
                 AudioRoutingEventType.outputs_linked => Result.Success(AudioRouteStatus.COMPLETED),
-                AudioRoutingEventType.finalization_failed => Result.Success(AudioRouteStatus.FINALIZING_ARTIFACTS_FAILED),
+                AudioRoutingEventType.finalization_failed => Result.Success(AudioRouteStatus.SAVE_FAILED),
                 AudioRoutingEventType.finalization_abandoned => Result.Success(AudioRouteStatus.COMPLETED),
                 _ => InvalidTransition(currentState, eventType)
             },
 
-            AudioRouteStatus.FINALIZING_ARTIFACTS_FAILED => eventType switch
+            AudioRouteStatus.SAVE_FAILED => eventType switch
             {
-                AudioRoutingEventType.flush_runtime => Result.Success(AudioRouteStatus.FINALIZING_ARTIFACTS),
+                AudioRoutingEventType.flush_runtime => Result.Success(AudioRouteStatus.SAVING_OUTPUTS),
                 AudioRoutingEventType.finalization_abandoned => Result.Success(AudioRouteStatus.COMPLETED),
                 _ => InvalidTransition(currentState, eventType)
             },
@@ -188,12 +187,39 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
 
     private bool IsStreamingState(AudioRouteStatus status)
     {
-        return status == AudioRouteStatus.AUDIO_ROUTING_ACTIVE ||
-               status == AudioRouteStatus.STT_DEGRADED ||
-               status == AudioRouteStatus.TRANSLATION_DEGRADED ||
-               status == AudioRouteStatus.TTS_DEGRADED ||
-               status == AudioRouteStatus.VOICE_CLONE_FALLBACK ||
-               status == AudioRouteStatus.TEXT_ONLY_MODE;
+        return status == AudioRouteStatus.BROADCASTING ||
+               status == AudioRouteStatus.SPEECH_DELAYED ||
+               status == AudioRouteStatus.TRANSLATION_DELAYED ||
+               status == AudioRouteStatus.VOICE_DELAYED ||
+               status == AudioRouteStatus.STANDARD_VOICE ||
+               status == AudioRouteStatus.CAPTION_ONLY;
+    }
+
+    private static bool TryParseStatus(string? status, out AudioRouteStatus parsed)
+    {
+        if (System.Enum.TryParse<AudioRouteStatus>(status, true, out parsed))
+        {
+            return true;
+        }
+
+        parsed = status?.ToUpperInvariant() switch
+        {
+            "IDLE" => AudioRouteStatus.PENDING,
+            "ROUTING_READY" => AudioRouteStatus.READY,
+            "AUDIO_ROUTING_ACTIVE" => AudioRouteStatus.BROADCASTING,
+            "AUDIO_ROUTING_PAUSED" => AudioRouteStatus.PAUSED,
+            "STT_DEGRADED" => AudioRouteStatus.SPEECH_DELAYED,
+            "TRANSLATION_DEGRADED" => AudioRouteStatus.TRANSLATION_DELAYED,
+            "TTS_DEGRADED" => AudioRouteStatus.VOICE_DELAYED,
+            "VOICE_CLONE_FALLBACK" => AudioRouteStatus.STANDARD_VOICE,
+            "TEXT_ONLY_MODE" => AudioRouteStatus.CAPTION_ONLY,
+            "STOPPING" => AudioRouteStatus.ENDING,
+            "FINALIZING_ARTIFACTS" => AudioRouteStatus.SAVING_OUTPUTS,
+            "FINALIZING_ARTIFACTS_FAILED" => AudioRouteStatus.SAVE_FAILED,
+            _ => AudioRouteStatus.PENDING
+        };
+
+        return status is not null;
     }
 
     private Result<AudioRouteStatus> InvalidTransition(AudioRouteStatus current, AudioRoutingEventType eventType)

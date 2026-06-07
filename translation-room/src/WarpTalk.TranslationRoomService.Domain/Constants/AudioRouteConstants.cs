@@ -20,5 +20,5 @@ public static class AudioRouteConstants
     public const string ValidationSourceLanguageRequired = "Source language is required for audio routing.";
     public const string ValidationTargetLanguageRequired = "Target language is required for audio routing.";
     public const string ValidationRoomIdRequired = "Translation room identifier is required.";
-    public const string ValidationStreamIdRequiredForActive = "StreamId is required when setting route to AUDIO_ROUTING_ACTIVE.";
+    public const string ValidationStreamIdRequiredForActive = "StreamId is required when setting route to BROADCASTING.";
 }

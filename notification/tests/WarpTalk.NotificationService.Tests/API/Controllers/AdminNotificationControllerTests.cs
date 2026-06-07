@@ -11,9 +11,15 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
+using StackExchange.Redis;
+using WarpTalk.NotificationService.Application.Interfaces;
+using WarpTalk.Shared;
 
 namespace WarpTalk.NotificationService.Tests.API.Controllers;
 
@@ -29,7 +35,7 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
     {
         var claims = new[] { 
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Role, "Admin")
+            new Claim(ClaimTypes.Role, "admin")
         };
         var identity = new ClaimsIdentity(claims, "Test");
         var principal = new ClaimsPrincipal(identity);
@@ -49,6 +55,23 @@ public class AdminNotificationControllerTests : IClassFixture<WebApplicationFact
         {
             builder.ConfigureTestServices(services =>
             {
+                services.RemoveAll<IHostedService>();
+                services.RemoveAll<IConnectionMultiplexer>();
+                services.RemoveAll<IAdminNotificationService>();
+
+                var mockRedis = new Mock<IConnectionMultiplexer>();
+                services.AddSingleton(mockRedis.Object);
+
+                var mockAdminNotificationService = new Mock<IAdminNotificationService>();
+                mockAdminNotificationService
+                    .Setup(s => s.GetAdminNotificationsAsync(It.IsAny<GetAdminNotificationsQuery>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Success(new AdminNotificationPaginatedResponse([], 0, 1, 10)));
+                mockAdminNotificationService
+                    .Setup(s => s.GetAdminNotificationDetailAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Failure<AdminNotificationDetailDto>("Not found", ErrorCodes.NotFound));
+
+                services.AddSingleton(mockAdminNotificationService.Object);
+
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", options => { });
                 
