@@ -3,15 +3,17 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
-public interface IPaymentService
+public interface IPaymentAndLedgerService
 {
+    // --- Ledger Methods ---
+    Task<int> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
+
+    // --- Payment Methods ---
     Task<Result<PagedResult<PaymentTransactionDto>>> GetPaymentHistoryAsync(
         Guid workspaceId,
         int pageNumber,
         int pageSize,
         CancellationToken cancellationToken = default);
-
-    // GetInvoicesAsync removed per cleanup
 
     Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,

@@ -36,13 +36,9 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
 // --- Application Services ---
-builder.Services.AddScoped<IPlanService, PlanService>();
-builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
-builder.Services.AddScoped<ICreditService, CreditService>();
-builder.Services.AddScoped<IPaymentService, PaymentService>();
-builder.Services.AddScoped<IRealtimeCostCalculator, RealtimeCostCalculator>();
-builder.Services.AddScoped<ILedgerBalanceService, LedgerBalanceService>();
-builder.Services.AddScoped<ISessionHeartbeatService, SessionHeartbeatService>();
+builder.Services.AddScoped<ISubscriptionManagementService, SubscriptionManagementService>();
+builder.Services.AddScoped<ICreditAndUsageService, CreditAndUsageService>();
+builder.Services.AddScoped<IPaymentAndLedgerService, PaymentAndLedgerService>();
 builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
 // --- Background Workers ---
 builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.SessionMonitorWorker>();
@@ -94,6 +90,12 @@ builder.Services.AddRateLimiter(options =>
                 PermitLimit = 100,
                 Window = TimeSpan.FromMinutes(1)
             }));
+});
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>(o =>
+{
+    var url = builder.Configuration["PaymentServiceGrpcUrl"] ?? "http://localhost:50058"; // Adjust port if needed
+    o.Address = new Uri(url);
 });
 
 builder.Services.AddOpenApi();

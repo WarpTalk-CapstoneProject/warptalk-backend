@@ -21,6 +21,7 @@
     <Protobuf Include="Protos\transcript.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\notification.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\billing.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\payment.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>

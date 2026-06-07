@@ -23,7 +23,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\WarpTalk.PaymentService.API\WarpTalk.PaymentService.API.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.PaymentService.Application\WarpTalk.PaymentService.Application.csproj" />
-    <ProjectReference Include="..\..\src\WarpTalk.PaymentService.Domain\WarpTalk.PaymentService.Domain.csproj" />
     <ProjectReference Include="..\..\src\WarpTalk.PaymentService.Infrastructure\WarpTalk.PaymentService.Infrastructure.csproj" />
   </ItemGroup>
 

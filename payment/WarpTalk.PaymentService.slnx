@@ -2,7 +2,6 @@
   <Folder Name="/src/">
     <Project Path="src/WarpTalk.PaymentService.API/WarpTalk.PaymentService.API.csproj" />
     <Project Path="src/WarpTalk.PaymentService.Application/WarpTalk.PaymentService.Application.csproj" />
-    <Project Path="src/WarpTalk.PaymentService.Domain/WarpTalk.PaymentService.Domain.csproj" />
     <Project Path="src/WarpTalk.PaymentService.Infrastructure/WarpTalk.PaymentService.Infrastructure.csproj" />
   </Folder>
 </Solution>

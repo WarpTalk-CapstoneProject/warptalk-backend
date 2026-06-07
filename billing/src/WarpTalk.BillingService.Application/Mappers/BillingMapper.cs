@@ -1,5 +1,6 @@
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Application.Interfaces;
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -111,6 +112,15 @@ public static class BillingMapper
         tx.ReferenceId,
         tx.BalanceAfter,
         tx.CreatedAt
+    );
+
+    public static CreditReservationDto ToDto(this RedisCreditReservation res) => new(
+        Guid.Empty,
+        res.SubscriptionId,
+        res.IdempotencyKey,
+        res.Amount,
+        "Reserved",
+        DateTime.UtcNow.AddMinutes(5)
     );
 
     public static CreditTransaction ToEntity(this ConsumeCreditsRequest request, Subscription sub) => new()

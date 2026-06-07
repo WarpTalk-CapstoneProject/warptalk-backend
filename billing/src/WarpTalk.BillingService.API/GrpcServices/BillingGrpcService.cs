@@ -11,26 +11,23 @@ namespace WarpTalk.BillingService.API.GrpcServices;
 /// </summary>
 public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBase
 {
-    private readonly ICreditService _creditService;
-    private readonly ISubscriptionService _subscriptionService;
-    private readonly IPlanService _planService;
-    private readonly IPaymentService _paymentService;
+    private readonly ICreditAndUsageService _creditService;
+    private readonly ISubscriptionManagementService _subscriptionService;
+    private readonly IPaymentAndLedgerService _paymentService;
     private readonly WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork _unitOfWork;
     private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
     private readonly ILogger<BillingGrpcService> _logger;
 
     public BillingGrpcService(
-        ICreditService creditService,
-        ISubscriptionService subscriptionService,
-        IPlanService planService,
-        IPaymentService paymentService,
+        ICreditAndUsageService creditService,
+        ISubscriptionManagementService subscriptionService,
+        IPaymentAndLedgerService paymentService,
         WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork unitOfWork,
         StackExchange.Redis.IConnectionMultiplexer redis,
         ILogger<BillingGrpcService> logger)
     {
         _creditService = creditService;
         _subscriptionService = subscriptionService;
-        _planService = planService;
         _paymentService = paymentService;
         _unitOfWork = unitOfWork;
         _redis = redis;
@@ -275,7 +272,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!subResult.IsSuccess || subResult.Value == null)
             return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
 
-        var planResult = await _planService.GetPlanByIdAsync(subResult.Value.PlanId, context.CancellationToken);
+        var planResult = await _subscriptionService.GetPlanByIdAsync(subResult.Value.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
             return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
 
@@ -318,7 +315,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
     public override async Task<Shared.Protos.GetPlansResponse> GetPlans(
         Shared.Protos.GetPlansRequest request, ServerCallContext context)
     {
-        var result = await _planService.GetActivePlansAsync(context.CancellationToken);
+        var result = await _subscriptionService.GetActivePlansAsync(context.CancellationToken);
 
         var response = new Shared.Protos.GetPlansResponse();
         if (!result.IsSuccess) return response;
@@ -335,7 +332,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!Guid.TryParse(request.PlanId, out var planId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid plan_id."));
 
-        var result = await _planService.GetPlanByIdAsync(planId, context.CancellationToken);
+        var result = await _subscriptionService.GetPlanByIdAsync(planId, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw new RpcException(new Status(StatusCode.NotFound, result.Error ?? "Plan not found."));
@@ -423,7 +420,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             sub = oldSub;
         }
 
-        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
         {
             return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Plan not found." };
@@ -461,8 +458,10 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             };
         }
 
+        var providerTxId = string.IsNullOrEmpty(request.ProviderTransactionId) ? request.StripeSessionId : request.ProviderTransactionId;
+
         var existingTopup = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-            c => c.CorrelationId == request.StripeSessionId,
+            c => c.CorrelationId == providerTxId,
             context.CancellationToken
         );
 
@@ -482,7 +481,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 Type = "top_up",
                 Description = "Stripe Payment Success (gRPC)",
                 ReferenceId = Guid.NewGuid(),
-                CorrelationId = request.StripeSessionId,
+                CorrelationId = providerTxId,
                 ReferenceType = "stripe_payment",
                 Status = "committed",
                 BalanceAfter = sub.CreditsRemaining,
@@ -502,7 +501,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 Currency = request.Currency,
                 PaymentMethod = request.PaymentType,
                 Provider = "stripe",
-                ProviderTransactionId = request.StripeSessionId,
+                ProviderTransactionId = providerTxId,
                 Status = "paid",
                 PaidAt = DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow,
@@ -534,7 +533,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         if (sub == null) return;
 
-        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null) return;
         var plan = planResult.Value;
 
@@ -621,6 +620,26 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (request.Status == "paid")
         {
             return await ProcessPaymentSuccessInternal(request, context);
+        }
+
+        if (request.Status == "cancelled" && !string.IsNullOrEmpty(request.WorkspaceId))
+        {
+            if (Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            {
+                var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                    s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
+                    context.CancellationToken);
+
+                if (sub != null)
+                {
+                    sub.IsActive = false;
+                    sub.Status = "cancelled";
+                    sub.CancelledAt = DateTime.UtcNow;
+                    _unitOfWork.SubscriptionRepository.Update(sub);
+                    await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+                    _logger.LogWarning("Subscription for Workspace {WorkspaceId} cancelled via Stripe webhook.", workspaceId);
+                }
+            }
         }
 
         if (request.Status == "failed" && !string.IsNullOrEmpty(request.WorkspaceId))

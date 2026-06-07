@@ -30,7 +30,7 @@ public class PaymentAppServiceTests
     public async Task CreateCheckoutSessionAsync_ShouldReturnSessionUrl()
     {
         // Arrange
-        var request = new CreateCheckoutSessionRequest
+        var request = new WarpTalk.PaymentService.Application.DTOs.CreateCheckoutSessionRequest
         {
             UserId = Guid.NewGuid(),
             WorkspaceId = Guid.NewGuid(), // Add this
@@ -57,7 +57,7 @@ public class PaymentAppServiceTests
     public async Task CreateCheckoutSessionAsync_ShouldThrowException_WhenWorkspaceIdIsEmpty()
     {
         // Arrange
-        var request = new CreateCheckoutSessionRequest
+        var request = new WarpTalk.PaymentService.Application.DTOs.CreateCheckoutSessionRequest
         {
             UserId = Guid.NewGuid(),
             WorkspaceId = Guid.Empty, // Invalid

@@ -19,7 +19,7 @@ public class PaymentAppService : IPaymentAppService
         _billingClient = billingClient;
     }
 
-    public async Task<string> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request)
+    public async Task<string> CreateCheckoutSessionAsync(WarpTalk.PaymentService.Application.DTOs.CreateCheckoutSessionRequest request)
     {
         if (request.WorkspaceId == Guid.Empty)
             throw new ArgumentException("WorkspaceId is required.", nameof(request.WorkspaceId));

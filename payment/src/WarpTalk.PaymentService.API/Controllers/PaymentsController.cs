@@ -115,6 +115,23 @@ public class PaymentsController : ControllerBase
                     );
                 }
             }
+            else if (stripeEvent.Type == "customer.subscription.deleted")
+            {
+                var subscription = stripeEvent.Data.Object as Stripe.Subscription;
+                if (subscription != null)
+                {
+                    await _paymentAppService.ProcessPaymentEventAsync(
+                        string.Empty,
+                        subscription.Id,
+                        0,
+                        "usd",
+                        subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
+                        subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
+                        "Subscription",
+                        "cancelled"
+                    );
+                }
+            }
             else if (stripeEvent.Type == "invoice.paid")
             {
                 var invoice = stripeEvent.Data.Object as Stripe.Invoice;

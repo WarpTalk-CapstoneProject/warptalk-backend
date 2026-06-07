@@ -16,14 +16,14 @@ using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
-public class SubscriptionServiceTests
+public class SubscriptionManagementServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly SubscriptionService _subscriptionService;
+    private readonly SubscriptionManagementService _subscriptionService;
 
-    public SubscriptionServiceTests()
+    public SubscriptionManagementServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
@@ -32,10 +32,11 @@ public class SubscriptionServiceTests
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
 
-        _subscriptionService = new SubscriptionService(
+        _subscriptionService = new SubscriptionManagementService(
             _mockUnitOfWork.Object,
-            new Mock<ILogger<SubscriptionService>>().Object,
-            new Mock<IBillingMessagePublisher>().Object);
+            new Mock<ILogger<SubscriptionManagementService>>().Object,
+            new Mock<IBillingMessagePublisher>().Object,
+            new Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>().Object);
     }
 
     // ─────────────────────────────────────────────

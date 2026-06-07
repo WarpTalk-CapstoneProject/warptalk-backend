@@ -10,9 +10,9 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/plans")]
 public class PlansController : ControllerBase
 {
-    private readonly IPlanService _planService;
+    private readonly ISubscriptionManagementService _planService;
 
-    public PlansController(IPlanService planService)
+    public PlansController(ISubscriptionManagementService planService)
     {
         _planService = planService;
     }

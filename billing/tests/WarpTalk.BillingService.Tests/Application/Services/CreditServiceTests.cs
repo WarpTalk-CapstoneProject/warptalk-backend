@@ -11,12 +11,13 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
-public class CreditServiceTests
+public class CreditAndUsageServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IBillingMessagePublisher> _mockMessagePublisher;
@@ -25,11 +26,11 @@ public class CreditServiceTests
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IGenericRepository<CreditBalanceSnapshot>> _mockSnapshotRepo;
-    private readonly Mock<IRealtimeCostCalculator> _mockCostCalculator;
+    private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IRedisBillingStore> _mockRedisStore;
-    private readonly CreditService _creditService;
+    private readonly CreditAndUsageService _creditService;
 
-    public CreditServiceTests()
+    public CreditAndUsageServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockMessagePublisher = new Mock<IBillingMessagePublisher>();
@@ -38,7 +39,11 @@ public class CreditServiceTests
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
         _mockSnapshotRepo = new Mock<IGenericRepository<CreditBalanceSnapshot>>();
-        _mockCostCalculator = new Mock<IRealtimeCostCalculator>();
+        _mockConfig = new Mock<IConfiguration>();
+        _mockConfig.Setup(c => c["BillingRates:AudioPerSecond"]).Returns("0.5");
+        _mockConfig.Setup(c => c["BillingRates:Per1000Tokens"]).Returns("2.0");
+        _mockConfig.Setup(c => c["BillingRates:GpuPerMs"]).Returns("0.005");
+
         _mockRedisStore = new Mock<IRedisBillingStore>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
@@ -47,12 +52,12 @@ public class CreditServiceTests
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditBalanceSnapshotRepository).Returns(_mockSnapshotRepo.Object);
 
-        _creditService = new CreditService(
+        _creditService = new CreditAndUsageService(
             _mockUnitOfWork.Object,
-            new Mock<ILogger<CreditService>>().Object,
+            new Mock<ILogger<CreditAndUsageService>>().Object,
             _mockMessagePublisher.Object,
-            _mockCostCalculator.Object,
-            _mockRedisStore.Object);
+            _mockRedisStore.Object,
+            _mockConfig.Object);
     }
 
     // ─────────────────────────────────────────────
@@ -203,15 +208,14 @@ public class CreditServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
-        _mockCostCalculator.Setup(c => c.CalculateCreditCost(10, 0, 0, false, plan)).Returns(50);
         _mockTxRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<CreditTransaction, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync((CreditTransaction?)null);
 
         var request = new ReserveCreditsRequest(hostWorkspaceId, "idempotency_123", 10, 0, 0, false);
         var result = await _creditService.ReserveCreditsAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value!.Amount.Should().Be(50);
-        _mockRedisStore.Verify(r => r.SetReservationAsync(It.Is<RedisCreditReservation>(res => res.Amount == 50 && res.IdempotencyKey == "idempotency_123"), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value!.Amount.Should().Be(5);
+        _mockRedisStore.Verify(r => r.SetReservationAsync(It.Is<RedisCreditReservation>(res => res.IdempotencyKey == "idempotency_123"), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -220,12 +224,11 @@ public class CreditServiceTests
     {
         var hostWorkspaceId = Guid.NewGuid();
         var planId = Guid.NewGuid();
-        var subscription = new Subscription { Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId, PlanId = planId, IsActive = true, CreditsRemaining = 10 };
+        var subscription = new Subscription { Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId, PlanId = planId, IsActive = true, CreditsRemaining = 1 };
         var plan = new Plan { Id = planId, VoiceCloneEnabled = true, Name = "Pro" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
-        _mockCostCalculator.Setup(c => c.CalculateCreditCost(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<bool>(), plan)).Returns(100);
         _mockTxRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<CreditTransaction, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync((CreditTransaction?)null);
 
         var result = await _creditService.ReserveCreditsAsync(new ReserveCreditsRequest(hostWorkspaceId, "key_x", 10, 0, 0, false));

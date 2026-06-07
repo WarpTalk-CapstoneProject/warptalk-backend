@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
@@ -9,22 +10,106 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Services;
 
-public class CreditService : ICreditService
+public class CreditAndUsageService : ICreditAndUsageService
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly ILogger<CreditService> _logger;
+    private readonly ILogger<CreditAndUsageService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
-    private readonly IRealtimeCostCalculator _costCalculator;
     private readonly IRedisBillingStore _redisStore;
+    private readonly IConfiguration _configuration;
 
-    public CreditService(IUnitOfWork unitOfWork, ILogger<CreditService> logger, IBillingMessagePublisher messagePublisher, IRealtimeCostCalculator costCalculator, IRedisBillingStore redisStore)
+    public CreditAndUsageService(
+        IUnitOfWork unitOfWork, 
+        ILogger<CreditAndUsageService> logger, 
+        IBillingMessagePublisher messagePublisher, 
+        IRedisBillingStore redisStore,
+        IConfiguration configuration)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
-        _costCalculator = costCalculator;
         _redisStore = redisStore;
+        _configuration = configuration;
     }
+
+    // --- Session Heartbeat ---
+
+    public async Task<Result<Guid>> StartSessionAsync(Guid workspaceId, CancellationToken cancellationToken = default)
+    {
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        if (sub is null)
+            return Result.Failure<Guid>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+
+        var sessionId = Guid.NewGuid();
+        // 15s active TTL + 60s Grace Period = 75s total TTL
+        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
+
+        return Result.Success(sessionId);
+    }
+
+    public async Task<Result<bool>> ProcessHeartbeatAsync(Guid sessionId, Guid workspaceId, CancellationToken cancellationToken = default)
+    {
+        // Just refresh the TTL in Redis (15s active + 60s grace = 75s)
+        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
+
+        return Result.Success(true);
+    }
+
+    // --- Cost Calculation ---
+
+    public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
+    {
+        // Get rates from configuration or use defaults
+        var audioRateStr = _configuration["BillingRates:AudioPerSecond"] ?? "0.5";
+        var tokenRateStr = _configuration["BillingRates:Per1000Tokens"] ?? "2.0";
+        var gpuRateMsStr = _configuration["BillingRates:GpuPerMs"] ?? "0.005";
+
+        var audioRate = decimal.Parse(audioRateStr, System.Globalization.CultureInfo.InvariantCulture);
+        var tokenRate = decimal.Parse(tokenRateStr, System.Globalization.CultureInfo.InvariantCulture);
+        var gpuRateMs = decimal.Parse(gpuRateMsStr, System.Globalization.CultureInfo.InvariantCulture);
+
+        // 1. Audio Cost
+        var audioCost = audioSeconds * audioRate;
+
+        // 2. Token Cost
+        var tokenCost = (tokenCount / 1000m) * tokenRate;
+
+        // 3. GPU Cost
+        var gpuCost = gpuInferenceMs * gpuRateMs;
+
+        // Sum up base cost
+        var baseCost = audioCost + tokenCost + gpuCost;
+
+        // Apply Multiplier based on Plan and Voice Clone
+        var multiplier = 1.0m;
+
+        if (isVoiceClone)
+        {
+            if (plan.Tier.Equals("Pro", System.StringComparison.OrdinalIgnoreCase))
+            {
+                multiplier = 1.2m;
+            }
+            else if (plan.Tier.Equals("Premium", System.StringComparison.OrdinalIgnoreCase))
+            {
+                multiplier = 1.0m;
+            }
+            else if (plan.Tier.Equals("Free", System.StringComparison.OrdinalIgnoreCase))
+            {
+                // Voice clone not supported on Free, but if somehow passed, charge high or throw
+                multiplier = 2.0m;
+            }
+        }
+
+        // Final cost rounded up, minimum 1
+        var finalCost = Math.Max(1, Math.Ceiling(baseCost * multiplier));
+
+        return (int)finalCost;
+    }
+
+    // --- Credit Management ---
 
     public async Task<Result<CreditBalanceDto>> GetWorkspaceCreditsAsync(
         Guid workspaceId, CancellationToken cancellationToken = default)
@@ -49,132 +134,98 @@ public class CreditService : ICreditService
         }
     }
 
-    public async Task<Result<CreditTransactionDto>> ConsumeCreditsAsync(
+    public Task<Result<CreditTransactionDto>> ConsumeCreditsAsync(
         Guid workspaceId, ConsumeCreditsRequest request, CancellationToken cancellationToken = default)
     {
-        int maxRetries = 3;
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        return ExecuteWithConcurrencyRetryAsync(workspaceId, async () =>
         {
-            try
+            if (request.Amount <= 0)
+                return Result.Failure<CreditTransactionDto>("Amount must be greater than zero.", "INVALID_REQUEST");
+
+            var sub = await GetActiveSubscriptionAsync(workspaceId, true, cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<CreditTransactionDto>(
+                    "No active subscription found for this workspace.",
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (sub.CreditsRemaining < request.Amount)
             {
-                var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd >= DateTime.UtcNow,
-                    cancellationToken);
-
-                if (sub is null)
-                    return Result.Failure<CreditTransactionDto>(
-                        "No active subscription found for this workspace.",
-                        ErrorCodes.BillingSubscriptionNotFound);
-
-                if (sub.CreditsRemaining < request.Amount)
-                {
-                    return Result.Failure<CreditTransactionDto>(
-                        "Insufficient credits.",
-                        ErrorCodes.BillingInsufficientCredits);
-                }
-
-                sub.CreditsRemaining -= request.Amount;
-                sub.CreditsUsedThisCycle += request.Amount;
-                sub.UpdatedAt = DateTime.UtcNow;
-                _unitOfWork.SubscriptionRepository.Update(sub);
-
-                var tx = request.ToEntity(sub);
-
-                var usage = new WarpTalk.BillingService.Domain.Entities.UsageRecord
-                {
-                    Id = Guid.NewGuid(),
-                    SubscriptionId = sub.Id,
-                    UserId = sub.UserId,
-                    WorkspaceId = sub.WorkspaceId,
-                    UsageType = request.ReferenceType,
-                    Unit = "request",
-                    Quantity = 1,
-                    CreditsConsumed = request.Amount,
-                    RecordedAt = DateTime.UtcNow
-                };
-
-                var snapshot = new WarpTalk.BillingService.Domain.Entities.CreditBalanceSnapshot
-                {
-                    Id = Guid.NewGuid(),
-                    SubscriptionId = sub.Id,
-                    CreditsRemaining = sub.CreditsRemaining,
-                    CreditsUsedThisCycle = sub.CreditsUsedThisCycle,
-                    SnapshotAt = DateTime.UtcNow
-                };
-
-                await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
-                await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
-                await _unitOfWork.CreditBalanceSnapshotRepository.AddAsync(snapshot, cancellationToken);
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-                await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
-                    "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
-
-                return Result.Success(tx.ToDto());
+                return Result.Failure<CreditTransactionDto>(
+                    "Insufficient credits.",
+                    ErrorCodes.BillingInsufficientCredits);
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateConcurrencyException")
+
+            sub.CreditsRemaining -= request.Amount;
+            sub.CreditsUsedThisCycle += request.Amount;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            var tx = request.ToEntity(sub);
+
+            var usage = new WarpTalk.BillingService.Domain.Entities.UsageRecord
             {
-                _logger.LogWarning(ex, "Concurrency conflict during ConsumeCredits for WorkspaceId {WorkspaceId}. Attempt {Attempt} of {MaxRetries}", workspaceId, attempt, maxRetries);
-                if (attempt == maxRetries) return Result.Failure<CreditTransactionDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
-                
-                await Task.Delay(50 * attempt, cancellationToken);
-                _unitOfWork.ClearTracking();
-            }
-            catch (Exception ex)
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                UserId = sub.UserId,
+                WorkspaceId = sub.WorkspaceId,
+                UsageType = request.ReferenceType,
+                Unit = "request",
+                Quantity = 1,
+                CreditsConsumed = request.Amount,
+                RecordedAt = DateTime.UtcNow
+            };
+
+            var snapshot = new WarpTalk.BillingService.Domain.Entities.CreditBalanceSnapshot
             {
-                _logger.LogError(ex, "Error consuming credits for WorkspaceId {WorkspaceId}", workspaceId);
-                return Result.Failure<CreditTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
-            }
-        }
-        return Result.Failure<CreditTransactionDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
+                Id = Guid.NewGuid(),
+                SubscriptionId = sub.Id,
+                CreditsRemaining = sub.CreditsRemaining,
+                CreditsUsedThisCycle = sub.CreditsUsedThisCycle,
+                SnapshotAt = DateTime.UtcNow
+            };
+
+            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
+            await _unitOfWork.CreditBalanceSnapshotRepository.AddAsync(snapshot, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
+                "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
+
+            return Result.Success(tx.ToDto());
+        }, cancellationToken);
     }
 
-    public async Task<Result<CreditBalanceDto>> TopUpCreditsAsync(
+    public Task<Result<CreditBalanceDto>> TopUpCreditsAsync(
         Guid workspaceId, TopUpRequest request, CancellationToken cancellationToken = default)
     {
-        int maxRetries = 3;
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        return ExecuteWithConcurrencyRetryAsync(workspaceId, async () =>
         {
-            try
-            {
-                var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                    cancellationToken);
+            if (request.Amount <= 0)
+                return Result.Failure<CreditBalanceDto>("Amount must be greater than zero.", "INVALID_REQUEST");
 
-                if (sub is null)
-                    return Result.Failure<CreditBalanceDto>(
-                        "No active subscription found for this workspace.",
-                        ErrorCodes.BillingSubscriptionNotFound);
+            var sub = await GetActiveSubscriptionAsync(workspaceId, false, cancellationToken);
 
-                sub.CreditsRemaining += request.Amount;
-                sub.UpdatedAt = DateTime.UtcNow;
-                _unitOfWork.SubscriptionRepository.Update(sub);
+            if (sub is null)
+                return Result.Failure<CreditBalanceDto>(
+                    "No active subscription found for this workspace.",
+                    ErrorCodes.BillingSubscriptionNotFound);
 
-                var tx = request.ToEntity(sub);
+            sub.CreditsRemaining += request.Amount;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
 
-                await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            var tx = request.ToEntity(sub);
 
-                await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
-                    "Credits Topped Up", $"You have successfully added {request.Amount} credits.", cancellationToken);
+            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-                return Result.Success(sub.ToCreditBalanceDto(workspaceId));
-            }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateConcurrencyException")
-            {
-                _logger.LogWarning(ex, "Concurrency conflict during TopUpCredits for WorkspaceId {WorkspaceId}. Attempt {Attempt} of {MaxRetries}", workspaceId, attempt, maxRetries);
-                if (attempt == maxRetries) return Result.Failure<CreditBalanceDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
-                
-                await Task.Delay(50 * attempt, cancellationToken);
-                _unitOfWork.ClearTracking();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error topping up credits for WorkspaceId {WorkspaceId}", workspaceId);
-                return Result.Failure<CreditBalanceDto>("An unexpected error occurred.", "INTERNAL_ERROR");
-            }
-        }
-        return Result.Failure<CreditBalanceDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
+            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
+                "Credits Topped Up", $"You have successfully added {request.Amount} credits.", cancellationToken);
+
+            return Result.Success(sub.ToCreditBalanceDto(workspaceId));
+        }, cancellationToken);
     }
 
     public async Task<Result<PagedResult<CreditTransactionDto>>> GetCreditHistoryAsync(
@@ -240,80 +291,63 @@ public class CreditService : ICreditService
         }
     }
 
-    public async Task<Result<CreditBalanceDto>> RecordUsageAsync(
+    public Task<Result<CreditBalanceDto>> RecordUsageAsync(
         RecordUsageRequest request, CancellationToken cancellationToken = default)
     {
-        int maxRetries = 3;
-        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        return ExecuteWithConcurrencyRetryAsync(request.HostWorkspaceId, async () =>
         {
-            try
+            if (request.CreditsConsumed <= 0)
+                return Result.Failure<CreditBalanceDto>("Credits consumed must be greater than zero.", "INVALID_REQUEST");
+
+            var sub = await GetActiveSubscriptionAsync(request.HostWorkspaceId, true, cancellationToken);
+
+            if (sub is null)
             {
-                var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                    s => s.WorkspaceId == request.HostWorkspaceId && s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd >= DateTime.UtcNow,
-                    cancellationToken);
-
-                if (sub is null)
-                {
-                    return Result.Failure<CreditBalanceDto>(
-                        "No active subscription found for the host workspace.",
-                        ErrorCodes.BillingSubscriptionNotFound);
-                }
-
-                // --- Feature Gate: block unsupported features by plan ---
-                var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-                if (plan is null)
-                    return Result.Failure<CreditBalanceDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
-
-                if (request.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase) && !plan.VoiceCloneEnabled)
-                    return Result.Failure<CreditBalanceDto>(
-                        $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
-                        "FEATURE_NOT_AVAILABLE");
-
-                if (sub.CreditsRemaining < request.CreditsConsumed)
-                {
-                    return Result.Failure<CreditBalanceDto>(
-                        "Insufficient credits in the host workspace.",
-                        ErrorCodes.BillingInsufficientCredits);
-                }
-
-                // Deduct credits
-                sub.CreditsRemaining -= request.CreditsConsumed;
-                sub.CreditsUsedThisCycle += request.CreditsConsumed;
-                sub.UpdatedAt = DateTime.UtcNow;
-                _unitOfWork.SubscriptionRepository.Update(sub);
-
-                // 1. Create Transaction (Accounting)
-                var tx = request.ToCreditTransaction(sub);
-                await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
-
-                // 2. Create Usage Record (Analytics)
-                var usage = request.ToUsageRecord(sub);
-                await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
-
-                // Save atomically
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-                // Publish Realtime update for the Host
-                await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.CreditsRemaining,
-                    "Credits Deducted", $"Host-pays: {request.CreditsConsumed} credits were deducted for {request.UsageType}.", cancellationToken);
-
-                return Result.Success(sub.ToCreditBalanceDto(request.HostWorkspaceId));
+                return Result.Failure<CreditBalanceDto>(
+                    "No active subscription found for the host workspace.",
+                    ErrorCodes.BillingSubscriptionNotFound);
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateConcurrencyException")
+
+            // --- Feature Gate: block unsupported features by plan ---
+            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            if (plan is null)
+                return Result.Failure<CreditBalanceDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+
+            if (request.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase) && !plan.VoiceCloneEnabled)
+                return Result.Failure<CreditBalanceDto>(
+                    $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
+                    "FEATURE_NOT_AVAILABLE");
+
+            if (sub.CreditsRemaining < request.CreditsConsumed)
             {
-                _logger.LogWarning(ex, "Concurrency conflict during RecordUsage for HostWorkspaceId {HostWorkspaceId}. Attempt {Attempt} of {MaxRetries}", request.HostWorkspaceId, attempt, maxRetries);
-                if (attempt == maxRetries) return Result.Failure<CreditBalanceDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
-                
-                await Task.Delay(50 * attempt, cancellationToken);
-                _unitOfWork.ClearTracking();
+                return Result.Failure<CreditBalanceDto>(
+                    "Insufficient credits in the host workspace.",
+                    ErrorCodes.BillingInsufficientCredits);
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error recording usage for HostWorkspaceId {HostWorkspaceId}", request.HostWorkspaceId);
-                return Result.Failure<CreditBalanceDto>("An unexpected error occurred.", "INTERNAL_ERROR");
-            }
-        }
-        return Result.Failure<CreditBalanceDto>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
+
+            // Deduct credits
+            sub.CreditsRemaining -= request.CreditsConsumed;
+            sub.CreditsUsedThisCycle += request.CreditsConsumed;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            // 1. Create Transaction (Accounting)
+            var tx = request.ToCreditTransaction(sub);
+            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+
+            // 2. Create Usage Record (Analytics)
+            var usage = request.ToUsageRecord(sub);
+            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
+
+            // Save atomically
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Publish Realtime update for the Host
+            await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.CreditsRemaining,
+                "Credits Deducted", $"Host-pays: {request.CreditsConsumed} credits were deducted for {request.UsageType}.", cancellationToken);
+
+            return Result.Success(sub.ToCreditBalanceDto(request.HostWorkspaceId));
+        }, cancellationToken);
     }
 
     public async Task<Result<CreditReservationDto>> ReserveCreditsAsync(
@@ -329,8 +363,8 @@ public class CreditService : ICreditService
 
             if (existingReserve != null)
             {
-                var existingDto = new CreditReservationDto(Guid.Empty, existingReserve.SubscriptionId, existingReserve.CorrelationId!, existingReserve.Amount, "Reserved", DateTime.UtcNow.AddMinutes(5));
-                return Result.Success(existingDto);
+                var existingRes = new RedisCreditReservation { SubscriptionId = existingReserve.SubscriptionId, IdempotencyKey = existingReserve.CorrelationId!, Amount = existingReserve.Amount };
+                return Result.Success(existingRes.ToDto());
             }
 
             var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
@@ -350,7 +384,7 @@ public class CreditService : ICreditService
                     $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade to Pro or Premium.",
                     "FEATURE_NOT_AVAILABLE");
 
-            var cost = _costCalculator.CalculateCreditCost(request.AudioSeconds, request.TokenCount, request.GpuInferenceMs, request.IsVoiceClone, plan);
+            var cost = CalculateCreditCost(request.AudioSeconds, request.TokenCount, request.GpuInferenceMs, request.IsVoiceClone, plan);
 
             if (sub.CreditsRemaining < cost)
                 return Result.Failure<CreditReservationDto>("Insufficient credits.", ErrorCodes.BillingInsufficientCredits);
@@ -389,14 +423,12 @@ public class CreditService : ICreditService
             {
                 // Concurrency Race Condition Handle (Unique Constraint Violation)
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey}. Assuming already reserved.", request.IdempotencyKey);
-                var existingDto = new CreditReservationDto(Guid.Empty, sub.Id, request.IdempotencyKey, cost, "Reserved", DateTime.UtcNow.AddMinutes(5));
-                return Result.Success(existingDto);
+                return Result.Success(reservation.ToDto());
             }
 
             await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(5), cancellationToken);
 
-            var dto = new CreditReservationDto(Guid.Empty, reservation.SubscriptionId, reservation.IdempotencyKey, reservation.Amount, "Reserved", DateTime.UtcNow.AddMinutes(5));
-            return Result.Success(dto);
+            return Result.Success(reservation.ToDto());
         }
         catch (Exception ex)
         {
@@ -412,19 +444,12 @@ public class CreditService : ICreditService
     {
         try
         {
-
-            // 1. Idempotency Check: Already consumed?
-            var existingConsume = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-                tx => tx.CorrelationId == idempotencyKey && tx.Type == "consume",
-                cancellationToken);
+            var (existingConsume, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, "consume", cancellationToken);
 
             if (existingConsume != null)
             {
-                var existingDto = new CreditTransactionDto(existingConsume.Id, -existingConsume.Amount, existingConsume.Type, existingConsume.Description ?? "", existingConsume.ReferenceType ?? "", existingConsume.ReferenceId, existingConsume.BalanceAfter, existingConsume.CreatedAt);
-                return Result.Success(existingDto);
+                return Result.Success(existingConsume.ToDto());
             }
-
-            var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
             if (reservation == null)
             {
@@ -476,11 +501,10 @@ public class CreditService : ICreditService
             catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
             {
                 _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during consume. Assuming already consumed.", idempotencyKey);
-                var existingDto = new CreditTransactionDto(tx.Id, -tx.Amount, tx.Type, tx.Description ?? "", tx.ReferenceType ?? "", tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt);
-                return Result.Success(existingDto);
+                return Result.Success(tx.ToDto());
             }
 
-            return Result.Success(new CreditTransactionDto(tx.Id, tx.Amount, tx.Type, tx.Description, tx.ReferenceType, tx.ReferenceId, tx.BalanceAfter, tx.CreatedAt));
+            return Result.Success(tx.ToDto());
         }
         catch (Exception ex)
         {
@@ -496,17 +520,12 @@ public class CreditService : ICreditService
     {
         try
         {
-            // 1. Idempotency Check: Already refunded?
-            var existingRefund = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-                tx => tx.CorrelationId == idempotencyKey && tx.Type == "refund",
-                cancellationToken);
+            var (existingRefund, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, "refund", cancellationToken);
 
             if (existingRefund != null)
             {
                 return Result.Success(true);
             }
-
-            var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
             if (reservation == null)
             {
@@ -612,16 +631,7 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            return Result.Success(new CreditTransactionDto(
-                adjustmentTx.Id,
-                adjustmentTx.Amount,
-                adjustmentTx.Type,
-                adjustmentTx.Description,
-                adjustmentTx.ReferenceType,
-                adjustmentTx.ReferenceId,
-                adjustmentTx.BalanceAfter,
-                adjustmentTx.CreatedAt
-            ));
+            return Result.Success(adjustmentTx.ToDto());
         }
         catch (Exception ex)
         {
@@ -720,5 +730,60 @@ public class CreditService : ICreditService
             _logger.LogError(ex, "Error generating billing report for WorkspaceId {WorkspaceId}", workspaceId);
             return Result.Failure<BillingReportDto>("Failed to generate billing report.", "INTERNAL_ERROR");
         }
+    }
+
+    private async Task<WarpTalk.BillingService.Domain.Entities.Subscription?> GetActiveSubscriptionAsync(
+        Guid workspaceId, bool requireActivePeriod = false, CancellationToken cancellationToken = default)
+    {
+        return await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null &&
+                 (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow),
+            cancellationToken);
+    }
+
+    private async Task<Result<T>> ExecuteWithConcurrencyRetryAsync<T>(
+        Guid workspaceId,
+        Func<Task<Result<T>>> operation,
+        CancellationToken cancellationToken)
+    {
+        int maxRetries = 3;
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (Exception ex) when (ex.GetType().Name == "DbUpdateConcurrencyException")
+            {
+                _logger.LogWarning(ex, "Concurrency conflict for WorkspaceId {WorkspaceId}. Attempt {Attempt} of {MaxRetries}", workspaceId, attempt, maxRetries);
+                if (attempt == maxRetries) return Result.Failure<T>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
+                
+                await Task.Delay(50 * attempt, cancellationToken);
+                _unitOfWork.ClearTracking();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing operation for WorkspaceId {WorkspaceId}", workspaceId);
+                return Result.Failure<T>("An unexpected error occurred.", "INTERNAL_ERROR");
+            }
+        }
+        return Result.Failure<T>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
+    }
+
+    private async Task<(CreditTransaction? existingTx, RedisCreditReservation? reservation)> ValidateAndGetReservationAsync(
+        string idempotencyKey, string transactionType, CancellationToken cancellationToken)
+    {
+        var existingTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+            tx => tx.CorrelationId == idempotencyKey && tx.Type == transactionType,
+            cancellationToken);
+
+        if (existingTx != null)
+        {
+            return (existingTx, null);
+        }
+
+        var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
+
+        return (null, reservation);
     }
 }

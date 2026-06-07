@@ -3,8 +3,21 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
-public interface ISubscriptionService
+public interface ISubscriptionManagementService
 {
+    // --- Plan Methods ---
+    Task<Result<IEnumerable<PlanDto>>> GetActivePlansAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PlanDto>> GetPlanByIdAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PlanDto>> GetPlanBySlugAsync(
+        string slug,
+        CancellationToken cancellationToken = default);
+
+    // --- Subscription Methods ---
     Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
         Guid workspaceId,
         CancellationToken cancellationToken = default);

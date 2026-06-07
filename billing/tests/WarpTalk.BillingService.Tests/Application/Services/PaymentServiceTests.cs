@@ -15,16 +15,16 @@ using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
-public class PaymentServiceTests
+public class PaymentAndLedgerServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IGenericRepository<Payment>> _mockPaymentRepo;
     private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IGenericRepository<CreditTransaction>> _mockCreditTxRepo;
-    private readonly PaymentService _paymentService;
+    private readonly PaymentAndLedgerService _paymentService;
 
-    public PaymentServiceTests()
+    public PaymentAndLedgerServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockPaymentRepo = new Mock<IGenericRepository<Payment>>();
@@ -37,7 +37,7 @@ public class PaymentServiceTests
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockCreditTxRepo.Object);
 
-        _paymentService = new PaymentService(_mockUnitOfWork.Object, new Mock<ILogger<PaymentService>>().Object);
+        _paymentService = new PaymentAndLedgerService(_mockUnitOfWork.Object, new Mock<ILogger<PaymentAndLedgerService>>().Object);
     }
 
     // ─────────────────────────────────────────────

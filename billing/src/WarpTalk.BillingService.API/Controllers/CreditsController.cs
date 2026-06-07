@@ -11,10 +11,10 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/credits")]
 public class CreditsController : ControllerBase
 {
-    private readonly ICreditService _creditService;
+    private readonly ICreditAndUsageService _creditService;
     private readonly IWebHostEnvironment _env;
 
-    public CreditsController(ICreditService creditService, IWebHostEnvironment env)
+    public CreditsController(ICreditAndUsageService creditService, IWebHostEnvironment env)
     {
         _creditService = creditService;
         _env = env;
@@ -22,9 +22,7 @@ public class CreditsController : ControllerBase
 
     /// <summary>
     /// Get the current credit balance for a workspace.
-    /// Public read — no auth required.
     /// </summary>
-    [AllowAnonymous]
     [HttpGet("workspace/{workspaceId:guid}")]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(
         Guid workspaceId,
@@ -112,12 +110,10 @@ public class CreditsController : ControllerBase
 
     /// <summary>
     /// Generate a billing report for a workspace for a specific month and year.
-    /// Public read — no auth required (dashboard access).
     /// </summary>
-    [AllowAnonymous]
     [HttpGet("workspace/{workspaceId:guid}/report")]
     public async Task<ActionResult<BillingReportDto>> GetBillingReport(
-        [FromServices] ISubscriptionService subscriptionService,
+        [FromServices] ISubscriptionManagementService subscriptionService,
         Guid workspaceId,
         [FromQuery] int month,
         [FromQuery] int year,

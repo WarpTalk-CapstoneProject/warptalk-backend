@@ -12,9 +12,9 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/subscriptions")]
 public class SubscriptionsController : ControllerBase
 {
-    private readonly ISubscriptionService _subscriptionService;
+    private readonly ISubscriptionManagementService _subscriptionService;
 
-    public SubscriptionsController(ISubscriptionService subscriptionService)
+    public SubscriptionsController(ISubscriptionManagementService subscriptionService)
     {
         _subscriptionService = subscriptionService;
     }

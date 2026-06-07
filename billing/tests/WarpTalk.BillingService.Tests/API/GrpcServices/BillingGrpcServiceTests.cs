@@ -16,10 +16,9 @@ namespace WarpTalk.BillingService.Tests.API.GrpcServices;
 
 public class BillingGrpcServiceTests
 {
-    private readonly Mock<ICreditService> _mockCreditService;
-    private readonly Mock<ISubscriptionService> _mockSubscriptionService;
-    private readonly Mock<IPlanService> _mockPlanService;
-    private readonly Mock<IPaymentService> _mockPaymentService;
+    private readonly Mock<ICreditAndUsageService> _mockCreditService;
+    private readonly Mock<ISubscriptionManagementService> _mockSubscriptionService;
+    private readonly Mock<IPaymentAndLedgerService> _mockPaymentService;
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IConnectionMultiplexer> _mockRedis;
     private readonly Mock<IDatabase> _mockRedisDb;
@@ -28,10 +27,9 @@ public class BillingGrpcServiceTests
 
     public BillingGrpcServiceTests()
     {
-        _mockCreditService = new Mock<ICreditService>();
-        _mockSubscriptionService = new Mock<ISubscriptionService>();
-        _mockPlanService = new Mock<IPlanService>();
-        _mockPaymentService = new Mock<IPaymentService>();
+        _mockCreditService = new Mock<ICreditAndUsageService>();
+        _mockSubscriptionService = new Mock<ISubscriptionManagementService>();
+        _mockPaymentService = new Mock<IPaymentAndLedgerService>();
         _mockUnitOfWork = new Mock<IUnitOfWork> { DefaultValue = DefaultValue.Mock };
         _mockRedis = new Mock<IConnectionMultiplexer>();
         _mockRedisDb = new Mock<IDatabase>();
@@ -42,7 +40,6 @@ public class BillingGrpcServiceTests
         _service = new BillingGrpcService(
             _mockCreditService.Object,
             _mockSubscriptionService.Object,
-            _mockPlanService.Object,
             _mockPaymentService.Object,
             _mockUnitOfWork.Object,
             _mockRedis.Object,

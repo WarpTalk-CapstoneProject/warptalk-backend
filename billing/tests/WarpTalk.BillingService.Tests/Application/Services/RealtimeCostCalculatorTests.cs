@@ -10,7 +10,7 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 public class RealtimeCostCalculatorTests
 {
     private readonly Mock<IConfiguration> _mockConfig;
-    private readonly RealtimeCostCalculator _calculator;
+    private readonly CreditAndUsageService _calculator;
 
     public RealtimeCostCalculatorTests()
     {
@@ -23,7 +23,12 @@ public class RealtimeCostCalculatorTests
         _mockConfig.Setup(c => c["BillingRates:Per1000Tokens"]).Returns("2.0");
         _mockConfig.Setup(c => c["BillingRates:GpuPerMs"]).Returns("0.005");
 
-        _calculator = new RealtimeCostCalculator(_mockConfig.Object);
+        _calculator = new CreditAndUsageService(
+            null!, 
+            null!, 
+            null!, 
+            null!, 
+            _mockConfig.Object);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Stripe;
 using Stripe.Checkout;
 using WarpTalk.PaymentService.Application.Interfaces;
 
@@ -84,5 +85,169 @@ public class StripePaymentService : IStripePaymentService
         Session session = await service.CreateAsync(options);
 
         return session.Url;
+    }
+
+    public async Task<bool> UpdateSubscriptionAsync(Guid workspaceId, decimal newAmount, string currency, string newPlanName)
+    {
+        var service = new SubscriptionService();
+        var searchOptions = new SubscriptionSearchOptions
+        {
+            Query = $"metadata['WorkspaceId']:'{workspaceId}' AND status:'active'"
+        };
+
+        var searchResults = await service.SearchAsync(searchOptions);
+        
+        if (searchResults.Data.Count == 0)
+        {
+            return false;
+        }
+
+        var subscription = searchResults.Data.First();
+        var subscriptionItemId = subscription.Items.Data[0].Id;
+
+        var options = new SubscriptionUpdateOptions
+        {
+            Items = new List<SubscriptionItemOptions>
+            {
+                new SubscriptionItemOptions
+                {
+                    Id = subscriptionItemId,
+                    Deleted = true
+                },
+                new SubscriptionItemOptions
+                {
+                    PriceData = new SubscriptionItemPriceDataOptions
+                    {
+                        UnitAmount = (long)(newAmount * 100),
+                        Currency = currency,
+                        Product = subscription.Items.Data[0].Price.ProductId,
+                        Recurring = new SubscriptionItemPriceDataRecurringOptions
+                        {
+                            Interval = "month"
+                        }
+                    }
+                }
+            },
+            ProrationBehavior = "always_invoice"
+        };
+
+        await service.UpdateAsync(subscription.Id, options);
+        return true;
+    }
+
+    public async Task<bool> CancelSubscriptionAsync(Guid workspaceId)
+    {
+        var service = new SubscriptionService();
+        var searchOptions = new SubscriptionSearchOptions
+        {
+            Query = $"metadata['WorkspaceId']:'{workspaceId}' AND status:'active'"
+        };
+
+        var searchResults = await service.SearchAsync(searchOptions);
+        
+        if (searchResults.Data.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var sub in searchResults.Data)
+        {
+            var updateOptions = new SubscriptionUpdateOptions
+            {
+                CancelAtPeriodEnd = true
+            };
+            await service.UpdateAsync(sub.Id, updateOptions);
+        }
+
+        return true;
+    }
+
+    public async Task<(string Status, string FailureReason)> GetPaymentStatusAsync(string providerTransactionId)
+    {
+        // ProviderTransactionId is usually either SessionId or PaymentIntentId
+        try
+        {
+            if (providerTransactionId.StartsWith("cs_"))
+            {
+                var sessionService = new SessionService();
+                var session = await sessionService.GetAsync(providerTransactionId);
+                
+                if (session.PaymentStatus == "paid")
+                {
+                    return ("paid", string.Empty);
+                }
+                
+                // If there's a payment intent attached, check its status
+                if (!string.IsNullOrEmpty(session.PaymentIntentId))
+                {
+                    var piService = new PaymentIntentService();
+                    var pi = await piService.GetAsync(session.PaymentIntentId);
+                    if (pi.Status == "succeeded") return ("paid", string.Empty);
+                    if (pi.Status == "requires_payment_method" || pi.Status == "canceled") return ("failed", pi.LastPaymentError?.Message ?? "Payment failed or canceled");
+                }
+
+                return ("pending", string.Empty);
+            }
+            else if (providerTransactionId.StartsWith("pi_"))
+            {
+                var piService = new PaymentIntentService();
+                var pi = await piService.GetAsync(providerTransactionId);
+                if (pi.Status == "succeeded") return ("paid", string.Empty);
+                if (pi.Status == "requires_payment_method" || pi.Status == "canceled") return ("failed", pi.LastPaymentError?.Message ?? "Payment failed or canceled");
+                
+                return ("pending", string.Empty);
+            }
+            
+            return ("unknown", "Invalid provider transaction ID format");
+        }
+        catch (Exception ex)
+        {
+            return ("error", ex.Message);
+        }
+    }
+
+    public async Task<bool> RefundPaymentAsync(string providerTransactionId)
+    {
+        try
+        {
+            string paymentIntentId = providerTransactionId;
+            
+            // If it's a session ID, get the payment intent ID
+            if (providerTransactionId.StartsWith("cs_"))
+            {
+                var sessionService = new SessionService();
+                var session = await sessionService.GetAsync(providerTransactionId);
+                paymentIntentId = session.PaymentIntentId;
+                
+                if (string.IsNullOrEmpty(paymentIntentId))
+                {
+                    // Maybe it's an invoice
+                    if (!string.IsNullOrEmpty(session.InvoiceId))
+                    {
+                        var invoiceService = new InvoiceService();
+                        var invoice = await invoiceService.GetAsync(session.InvoiceId);
+                        paymentIntentId = ((dynamic)invoice).PaymentIntentId;
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(paymentIntentId))
+            {
+                return false;
+            }
+
+            var refundService = new RefundService();
+            var options = new RefundCreateOptions
+            {
+                PaymentIntent = paymentIntentId
+            };
+            
+            await refundService.CreateAsync(options);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

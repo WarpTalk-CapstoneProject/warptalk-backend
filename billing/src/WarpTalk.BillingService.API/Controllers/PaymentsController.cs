@@ -11,9 +11,9 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/payments")]
 public class PaymentsController : ControllerBase
 {
-    private readonly IPaymentService _paymentService;
+    private readonly IPaymentAndLedgerService _paymentService;
 
-    public PaymentsController(IPaymentService paymentService)
+    public PaymentsController(IPaymentAndLedgerService paymentService)
     {
         _paymentService = paymentService;
     }

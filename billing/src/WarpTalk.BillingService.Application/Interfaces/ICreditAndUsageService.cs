@@ -1,10 +1,19 @@
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
-public interface ICreditService
+public interface ICreditAndUsageService
 {
+    // --- Cost Calculation ---
+    int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan);
+
+    // --- Session Heartbeat ---
+    Task<Result<Guid>> StartSessionAsync(Guid workspaceId, CancellationToken cancellationToken = default);
+    Task<Result<bool>> ProcessHeartbeatAsync(Guid sessionId, Guid workspaceId, CancellationToken cancellationToken = default);
+
+    // --- Credit & Usage Management ---
     Task<Result<CreditBalanceDto>> GetWorkspaceCreditsAsync(
         Guid workspaceId,
         CancellationToken cancellationToken = default);

@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\WarpTalk.PaymentService.Domain\WarpTalk.PaymentService.Domain.csproj" />
     <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />
   </ItemGroup>
 

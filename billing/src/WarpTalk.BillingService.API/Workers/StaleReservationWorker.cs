@@ -45,7 +45,7 @@ public class StaleReservationWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var creditService = scope.ServiceProvider.GetRequiredService<ICreditService>();
+
 
         // 75 seconds allows for the 15s heartbeat + 60s Grace Period to completely expire.
         var cutoffTime = DateTime.UtcNow.AddSeconds(-75);
