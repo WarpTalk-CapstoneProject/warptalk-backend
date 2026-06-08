@@ -26,6 +26,7 @@ public class WorkspaceInvitationServiceTests
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
     private readonly IWorkspaceInvitationRepository _workspaceInvitationRepository;
+    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly WorkspaceInvitationService _workspaceInvitationService;
 
@@ -35,11 +36,13 @@ public class WorkspaceInvitationServiceTests
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
         _workspaceInvitationRepository = Substitute.For<IWorkspaceInvitationRepository>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
+        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
         _workspaceInvitationService = new WorkspaceInvitationService(_unitOfWork, Substitute.For<ILogger<WorkspaceInvitationService>>(), _authIdentity);
     }
@@ -81,6 +84,9 @@ public class WorkspaceInvitationServiceTests
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
 
+        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
         var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
         // Act
@@ -108,6 +114,8 @@ public class WorkspaceInvitationServiceTests
             WorkspaceId = workspaceId, 
             Email = "invitee@warptalk.vn", 
             Status = InvitationStatus.PENDING.ToString(), 
+            RoleId = roleId,
+            MembershipType = "Internal",
             ExpiresAt = DateTime.UtcNow.AddDays(1) 
         };
 
@@ -118,6 +126,9 @@ public class WorkspaceInvitationServiceTests
         StubRoleName(inviterMember.RoleId, "Owner");
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
+
+        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
 
         var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
@@ -240,6 +251,34 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
+    public async Task AcceptInvitationAsync_ShouldFail_WhenInvitationIsExpired()
+    {
+        // Arrange
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            Email = "invitee@warptalk.vn",
+            Status = InvitationStatus.PENDING.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(-1) // Expired
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+
+        var request = new AcceptInvitationRequest("expired_token");
+
+        // Act
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(request, Guid.NewGuid(), "invitee@warptalk.vn");
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.InvalidState, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.InvitationExpired, result.Error);
+        Assert.Equal(InvitationStatus.EXPIRED.ToString(), invitation.Status);
+        _workspaceInvitationRepository.Received(1).Update(invitation);
+    }
+
+    [Fact]
     public async Task AcceptInvitationAsync_ShouldFail_WhenInternalMemberAlreadyBelongsToAnotherEnterpriseWorkspace()
     {
         // Arrange
@@ -284,6 +323,11 @@ public class WorkspaceInvitationServiceTests
             Arg.Is("Workspace"),
             Arg.Any<CancellationToken>())
             .Returns(memberships);
+
+        _workspaceVerifiedDomainRepository.AnyAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Any<CancellationToken>())
+            .Returns(true);
 
         var request = new AcceptInvitationRequest("valid_token");
 
@@ -351,6 +395,9 @@ public class WorkspaceInvitationServiceTests
         _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(new Workspace { Id = workspaceId, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" });
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns((WorkspaceMember?)null);
+
+        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
 
         var request = new AcceptInvitationRequest("valid_token");
 
@@ -474,6 +521,11 @@ public class WorkspaceInvitationServiceTests
         _workspaceMemberRepository.FindAsync(
             Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
             .Returns(new List<WorkspaceMember> { existingMembership });
+
+        _workspaceVerifiedDomainRepository.AnyAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Any<CancellationToken>())
+            .Returns(true);
 
         // Act
         var result = await _workspaceInvitationService.AcceptInvitationAsync(request, userId, userEmail);

@@ -8,8 +8,9 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceMemberMapper
 {
-    public static WorkspaceMember CreateOwnerMember(Guid workspaceId, Guid userId, Guid roleId)
+    public static WorkspaceMember CreateOwnerMember(Guid workspaceId, Guid userId, Guid roleId, DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceMember
         {
             Id = Guid.NewGuid(),
@@ -18,12 +19,13 @@ public static class WorkspaceMemberMapper
             RoleId = roleId,
             Status = WorkspaceMemberStatus.Active.ToString(),
             MembershipType = MembershipType.Internal.ToString(),
-            JoinedAt = DateTime.UtcNow
+            JoinedAt = now
         };
     }
 
-    public static WorkspaceMember CreateInvitationMember(Guid workspaceId, Guid userId, Guid roleId, string membershipType)
+    public static WorkspaceMember CreateInvitationMember(Guid workspaceId, Guid userId, Guid roleId, string membershipType, DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceMember
         {
             Id = Guid.NewGuid(),
@@ -32,7 +34,7 @@ public static class WorkspaceMemberMapper
             RoleId = roleId,
             Status = WorkspaceMemberStatus.Active.ToString(),
             MembershipType = membershipType,
-            JoinedAt = DateTime.UtcNow
+            JoinedAt = now
         };
     }
 

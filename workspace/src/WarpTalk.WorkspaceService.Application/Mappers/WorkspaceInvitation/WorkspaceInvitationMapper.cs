@@ -9,8 +9,9 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceInvitationMapper
 {
-    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string tokenHash, string membershipType)
+    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string tokenHash, string membershipType, DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceInvitation
         {
             Id = Guid.NewGuid(),
@@ -21,14 +22,18 @@ public static class WorkspaceInvitationMapper
             TokenHash = tokenHash,
             Status = InvitationStatus.PENDING.ToString(),
             MembershipType = membershipType,
-            ExpiresAt = DateTime.UtcNow.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
-            CreatedAt = DateTime.UtcNow
+            ExpiresAt = now.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
+            CreatedAt = now
         };
     }
 
     public static WorkspaceInvitationDto ToDto(this WorkspaceInvitation invitation, string roleName)
     {
-        WorkspaceInvitationValidator.ValidateForMapping(invitation, roleName);
+        ArgumentNullException.ThrowIfNull(invitation);
+        if (string.IsNullOrWhiteSpace(roleName))
+        {
+            throw new ArgumentException("Role Name is required when mapping a WorkspaceInvitation.", nameof(roleName));
+        }
 
         return new WorkspaceInvitationDto(
             invitation.Id,

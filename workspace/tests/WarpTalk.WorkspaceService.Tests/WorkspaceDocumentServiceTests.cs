@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.Shared;
+using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Evaluators;
 using WarpTalk.WorkspaceService.Application.Helpers;
@@ -52,7 +53,7 @@ public class WorkspaceDocumentServiceTests
         _unitOfWork.WorkspaceDocumentAuditRepository.Returns(_workspaceDocumentAuditRepository);
 
         _urlProvider.GetDocumentDownloadUrl(Arg.Any<Guid>(), Arg.Any<Guid>())
-            .Returns(x => $"/api/v1/workspaces/{x.ArgAt<Guid>(0)}/documents/{x.ArgAt<Guid>(1)}/download");
+            .Returns(x => string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, x.ArgAt<Guid>(0), x.ArgAt<Guid>(1)));
 
         _documentService = new WorkspaceDocumentService(
             _unitOfWork,
@@ -231,7 +232,7 @@ public class WorkspaceDocumentServiceTests
             Status = "active"
         };
 
-        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "download", Arg.Any<CancellationToken>()).Returns(Result.Success());
+        _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, Arg.Any<CancellationToken>()).Returns(Result.Success());
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
 
         // Act
@@ -284,5 +285,60 @@ public class WorkspaceDocumentServiceTests
         _workspaceDocumentRepository.Received(1).Update(document);
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.Received(1).PublishDocumentDeletedAsync(documentId, workspaceId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetAccessPoliciesAsync_ShouldReturnPaginatedPolicies_WhenAccessAllowed()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, Arg.Any<CancellationToken>()).Returns(true);
+
+        var policies = new List<WorkspaceDocumentAccessPolicy>
+        {
+            new() { Id = Guid.NewGuid(), DocumentId = documentId, SubjectType = "User", SubjectId = Guid.NewGuid(), Permission = "view", Effect = "ALLOW" },
+            new() { Id = Guid.NewGuid(), DocumentId = documentId, SubjectType = "User", SubjectId = Guid.NewGuid(), Permission = "download", Effect = "ALLOW" },
+            new() { Id = Guid.NewGuid(), DocumentId = documentId, SubjectType = "User", SubjectId = Guid.NewGuid(), Permission = "view", Effect = "DENY" }
+        };
+
+        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>()
+        ).Returns(policies);
+
+        var query = new GetWorkspacesQuery(Page: 2, PageSize: 2);
+
+        // Act
+        var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, query, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.Equal(3, result.Value.Total);
+        Assert.Single(result.Value.Items);
+        Assert.Equal(policies[2].Id, result.Value.Items[0].Id);
+    }
+
+    [Fact]
+    public async Task GetAccessPoliciesAsync_ShouldFail_WhenAccessDenied()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, Arg.Any<CancellationToken>()).Returns(false);
+
+        var query = new GetWorkspacesQuery(Page: 1, PageSize: 10);
+
+        // Act
+        var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, query, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
@@ -10,7 +11,7 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceDocumentMapper
 {
-    public static WorkspaceDocumentDto ToDto(this WorkspaceDocument doc, IWorkspaceUrlProvider urlProvider)
+    public static WorkspaceDocumentDto ToDto(this WorkspaceDocument doc, string downloadUrl)
     {
         return new WorkspaceDocumentDto(
             doc.Id,
@@ -29,7 +30,7 @@ public static class WorkspaceDocumentMapper
             doc.ConfidentialityLevel,
             doc.RetentionState,
             doc.Status,
-            urlProvider.GetDocumentDownloadUrl(doc.WorkspaceId, doc.Id),
+            downloadUrl,
             doc.CreatedAt,
             doc.UpdatedAt
         );
@@ -41,8 +42,12 @@ public static class WorkspaceDocumentMapper
         Guid workspaceId,
         Guid userId,
         string storageKey,
-        bool isOwnerOrAdmin)
+        WorkspaceDocumentStatus status,
+        WorkspaceDocumentIngestionStatus ingestionStatus,
+        bool aiEligible,
+        DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceDocument
         {
             Id = docId,
@@ -59,18 +64,35 @@ public static class WorkspaceDocumentMapper
             SourceType = request.SourceType,
             SourceId = request.SourceId,
             DocumentType = request.FileExtension.TrimStart('.').ToUpper(),
-            AiEligible = isOwnerOrAdmin,
-            IngestionStatus = isOwnerOrAdmin 
-                ? WorkspaceDocumentIngestionStatus.pending.ToString() 
-                : WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(),
+            AiEligible = aiEligible,
+            IngestionStatus = ingestionStatus.ToString(),
             IsSensitive = request.IsSensitive,
             ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(request.IsSensitive),
             RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
-            Status = isOwnerOrAdmin 
-                ? WorkspaceDocumentStatus.active.ToString() 
-                : WorkspaceDocumentStatus.pending_approval.ToString(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
+            Status = status.ToString(),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    public static WorkspaceDocumentAudit ToAuditEntity(
+        Guid documentId,
+        Guid workspaceId,
+        Guid? actorId,
+        string action,
+        object? metadata = null,
+        DateTime? utcNow = null)
+    {
+        var now = utcNow ?? DateTime.UtcNow;
+        return new WorkspaceDocumentAudit
+        {
+            Id = Guid.NewGuid(),
+            DocumentId = documentId,
+            WorkspaceId = workspaceId,
+            ActorId = actorId,
+            Action = action,
+            ActionAt = now,
+            Metadata = metadata != null ? JsonSerializer.Serialize(metadata) : null
         };
     }
 }

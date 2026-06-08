@@ -13,6 +13,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<WorkspaceDocument> WorkspaceDocumentRepository { get; }
     IGenericRepository<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicyRepository { get; }
     IGenericRepository<WorkspaceDocumentAudit> WorkspaceDocumentAuditRepository { get; }
+    IGenericRepository<WorkspaceVerifiedDomain> WorkspaceVerifiedDomainRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

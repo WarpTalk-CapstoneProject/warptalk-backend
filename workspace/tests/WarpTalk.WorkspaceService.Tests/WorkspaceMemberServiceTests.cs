@@ -63,10 +63,6 @@ public class WorkspaceMemberServiceTests
         var requesterUserId = Guid.NewGuid();
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: "John");
 
-        // Mock that requester is member
-        _workspaceMemberRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(new Workspace 
             { 
@@ -74,9 +70,13 @@ public class WorkspaceMemberServiceTests
                 Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}"
             });
 
-        // Requester check for external caller
+        var requesterRoleId = Guid.NewGuid();
+        // Requester check
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "Internal" });
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "Internal", RoleId = requesterRoleId });
+
+        _authIdentity.GetRoleByIdAsync(requesterRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = requesterRoleId, Name = "Member" });
 
         var memberUserId = Guid.NewGuid();
         var memberRoleId = Guid.NewGuid();
@@ -112,65 +112,81 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(1, result.Value.Total);
         Assert.Single(result.Value.Items);
         Assert.Equal("John Doe", result.Value.Items[0].FullName);
+        Assert.Equal(string.Empty, result.Value.Items[0].Email); // Email should be hidden for normal members
     }
 
     [Fact]
-    public async Task ListMembersAsync_ShouldFilterDirectory_WhenRequesterIsExternalMember()
+    public async Task ListMembersAsync_ShouldFail_WhenRequesterIsExternalMember()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
         var requesterUserId = Guid.NewGuid();
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10);
 
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"]}"
-        };
-
-        // Mock requester is member
-        _workspaceMemberRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(workspace);
-
-        // Requester check for external caller (it is external, e.g. Gmail)
+        // Requester check: external member
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
             .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "External" });
 
-        var adminUserId = Guid.NewGuid();
-        var adminRoleId = Guid.NewGuid();
+        // Act
+        var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ListMembersAsync_ShouldShowAllMembersIncludingRemovedAndBanned_WhenRequesterIsOwnerOrAdmin()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var requesterUserId = Guid.NewGuid();
+        var query = new GetWorkspacesQuery(Page: 1, PageSize: 10);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId });
+
+        var requesterRoleId = Guid.NewGuid();
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "Internal", RoleId = requesterRoleId });
+
+        _authIdentity.GetRoleByIdAsync(requesterRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = requesterRoleId, Name = "Owner" });
+
+        var activeMemberUserId = Guid.NewGuid();
+        var removedMemberUserId = Guid.NewGuid();
+        var activeRoleId = Guid.NewGuid();
+        var removedRoleId = Guid.NewGuid();
+
         var members = new List<WorkspaceMember>
         {
-            new() 
-            { 
-                Id = Guid.NewGuid(), 
-                WorkspaceId = workspaceId, 
-                UserId = adminUserId, 
-                RoleId = adminRoleId,
-                Status = "Active", 
-                JoinedAt = DateTime.UtcNow,
-                MembershipType = "Internal"
-            }
+            new() { WorkspaceId = workspaceId, UserId = activeMemberUserId, RoleId = activeRoleId, Status = "Active", JoinedAt = DateTime.UtcNow.AddDays(-1) },
+            new() { WorkspaceId = workspaceId, UserId = removedMemberUserId, RoleId = removedRoleId, Status = "Removed", JoinedAt = DateTime.UtcNow, RemovedAt = DateTime.UtcNow }
         };
 
-        _workspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+        _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
             .Returns(members);
 
-        _authIdentity.GetUserByIdAsync(adminUserId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = adminUserId, FullName = "Admin User", Email = "admin@enterprise.com" });
+        _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = activeMemberUserId, FullName = "Active User", Email = "active@warptalk.vn" });
+        _authIdentity.GetUserByIdAsync(removedMemberUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = removedMemberUserId, FullName = "Removed User", Email = "removed@warptalk.vn" });
 
-        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _authIdentity.GetRoleByIdAsync(activeRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = activeRoleId, Name = "Member" });
+        _authIdentity.GetRoleByIdAsync(removedRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = removedRoleId, Name = "Member" });
 
         // Act
         var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.NotNull(result.Value);
-        Assert.Single(result.Value.Items);
-        Assert.Equal("Admin User", result.Value.Items[0].FullName);
+        Assert.Equal(2, result.Value.Total);
+        Assert.Equal("Active User", result.Value.Items[0].FullName);
+        Assert.Equal("active@warptalk.vn", result.Value.Items[0].Email); // Owner/Admin can see emails
+        Assert.Equal("Removed User", result.Value.Items[1].FullName);
+        Assert.Equal("removed@warptalk.vn", result.Value.Items[1].Email);
     }
 
     [Fact]
@@ -182,8 +198,8 @@ public class WorkspaceMemberServiceTests
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10);
 
         // Mock that requester is NOT member
-        _workspaceMemberRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember)null);
 
         // Act
         var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);

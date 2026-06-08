@@ -52,4 +52,7 @@ public class WorkspaceConfiguration
     public List<string> VerifiedDomains { get; set; } = new();
     public bool AllowExternalCollaboration { get; set; } = true;
     public int? ExternalGracePeriodHours { get; set; }
+
+    // 5. AI Ingestion & Security Guardrails
+    public AiUsagePolicyConfiguration? AiUsagePolicy { get; set; }
 }

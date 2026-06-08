@@ -40,17 +40,6 @@ public class WorkspaceService : IWorkspaceService
         _authIdentity = authIdentity;
     }
 
-    private async Task<string> GetRoleNameByIdAsync(Guid roleId, CancellationToken ct)
-    {
-        var role = await _authIdentity.GetRoleByIdAsync(roleId, ct);
-        return role?.Name ?? "Member";
-    }
-
-    private async Task<Guid?> GetRoleIdByNameAsync(string roleName, CancellationToken ct)
-    {
-        var role = await _authIdentity.GetRoleByNameAsync(roleName, ct);
-        return role?.Id;
-    }
 
 
 
@@ -97,7 +86,7 @@ public class WorkspaceService : IWorkspaceService
             var workspace = request.ToEntity(slug, userId, settingsJson);
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
-            var ownerRoleId = await GetRoleIdByNameAsync(ownerRoleName, ct);
+            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
             if (!ownerRoleId.HasValue)
             {
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
@@ -106,6 +95,24 @@ public class WorkspaceService : IWorkspaceService
 
             await _unitOfWork.WorkspaceRepository.AddAsync(workspace, ct);
             await _unitOfWork.WorkspaceMemberRepository.AddAsync(workspaceMember, ct);
+
+            var verifiedDomain = new WorkspaceVerifiedDomain
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspace.Id,
+                Domain = emailAddress.Domain,
+                Status = "verified",
+                VerificationMethod = "system",
+                VerificationToken = Guid.NewGuid().ToString(),
+                VerifiedAt = DateTime.UtcNow,
+                VerifiedBy = userId,
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userId,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userId
+            };
+            await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
@@ -131,7 +138,7 @@ public class WorkspaceService : IWorkspaceService
                 var roleName = defaultRoleName;
                 if (member != null)
                 {
-                    roleName = await GetRoleNameByIdAsync(member.RoleId, ct);
+                    roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
                 }
 
                 workspaceDtos.Add(ws.ToDto(roleName));
@@ -167,7 +174,7 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            var roleName = await GetRoleNameByIdAsync(member.RoleId, ct);
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             return Result.Success(workspace.ToDto(roleName));
         }
         catch (Exception ex)
@@ -196,8 +203,9 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var user = await _authIdentity.GetUserByIdAsync(userId, ct);
-            var role = await GetRoleNameByIdAsync(member.RoleId, ct);
-            var membershipType = WorkspaceHelper.DetermineMembershipType(user?.Email, workspace).ToString();
+            var role = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(_unitOfWork, user?.Email, workspace, ct);
+            var membershipType = membershipTypeEnum.ToString();
 
             await _workspaceCache.SetActiveWorkspaceDetailsAsync(userId, workspaceId, role, membershipType, ct);
 
@@ -250,7 +258,7 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
-            var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
             if (!execRoleName.IsOwnerOrAdmin())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);

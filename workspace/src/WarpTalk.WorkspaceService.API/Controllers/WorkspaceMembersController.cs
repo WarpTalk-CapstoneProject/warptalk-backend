@@ -66,4 +66,19 @@ public class WorkspaceMembersController : ControllerBase
         }
         return NoContent();
     }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/members/transfer-ownership")]
+    public async Task<IActionResult> TransferOwnership(Guid workspaceId, [FromBody] TransferOwnershipRequest request, CancellationToken ct)
+    {
+        var currentUserId = User.GetUserId();
+        if (currentUserId == null) return Unauthorized();
+
+        var result = await _workspaceMemberService.TransferOwnershipAsync(workspaceId, request.NewOwnerId, currentUserId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
 }

@@ -46,8 +46,14 @@ public static class WorkspaceHelper
             var ws = membership.Workspace;
             if (ws != null)
             {
-                var config = GetWorkspaceConfig(ws);
-                if (config.VerifiedDomains != null && config.VerifiedDomains.Any(vd => string.Equals(vd.Trim(), userDomain, StringComparison.OrdinalIgnoreCase)))
+                var isVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
+                    vd => vd.WorkspaceId == ws.Id 
+                          && vd.Domain.ToLower() == userDomain.ToLower() 
+                          && vd.Status == "verified" 
+                          && vd.VerifiedAt != null 
+                          && vd.RevokedAt == null, 
+                    ct);
+                if (isVerified)
                 {
                     return true;
                 }
@@ -74,9 +80,14 @@ public static class WorkspaceHelper
             return true;
         }
         var emailDomain = emailAddress.Domain;
-        var config = GetWorkspaceConfig(workspace);
 
-        var isDomainVerified = config.VerifiedDomains != null && config.VerifiedDomains.Any(vd => string.Equals(vd.Trim(), emailDomain, StringComparison.OrdinalIgnoreCase));
+        var isDomainVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
+            vd => vd.WorkspaceId == workspaceId 
+                  && vd.Domain.ToLower() == emailDomain.ToLower() 
+                  && vd.Status == "verified" 
+                  && vd.VerifiedAt != null 
+                  && vd.RevokedAt == null, 
+            ct);
         return !isDomainVerified;
     }
 
@@ -88,7 +99,7 @@ public static class WorkspaceHelper
         return string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
-    public static MembershipType DetermineMembershipType(string? userEmail, Workspace? workspace)
+    public static async Task<MembershipType> DetermineMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
     {
         if (workspace == null)
         {
@@ -106,8 +117,14 @@ public static class WorkspaceHelper
         }
 
         var emailDomain = emailAddress.Domain;
-        var config = GetWorkspaceConfig(workspace);
-        var isDomainVerified = config.VerifiedDomains != null && config.VerifiedDomains.Any(vd => string.Equals(vd.Trim(), emailDomain, StringComparison.OrdinalIgnoreCase));
+        
+        var isDomainVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
+            vd => vd.WorkspaceId == workspace.Id 
+                  && vd.Domain.ToLower() == emailDomain.ToLower() 
+                  && vd.Status == "verified" 
+                  && vd.VerifiedAt != null 
+                  && vd.RevokedAt == null, 
+            ct);
         
         return isDomainVerified ? MembershipType.Internal : MembershipType.External;
     }
@@ -116,20 +133,16 @@ public static class WorkspaceHelper
     {
         if (string.IsNullOrWhiteSpace(domain)) return null;
 
-        var workspaces = await unitOfWork.WorkspaceRepository.FindAsync(
-            w => w.IsActive && w.DeletedAt == null,
-            "",
+        var verifiedDomain = await unitOfWork.Repository<WorkspaceVerifiedDomain>().FirstOrDefaultAsync(
+            vd => vd.Domain.ToLower() == domain.ToLower() 
+                  && vd.Status == "verified" 
+                  && vd.VerifiedAt != null 
+                  && vd.RevokedAt == null 
+                  && vd.Workspace.IsActive 
+                  && vd.Workspace.DeletedAt == null,
+            "Workspace",
             ct);
 
-        foreach (var ws in workspaces)
-        {
-            var config = GetWorkspaceConfig(ws);
-            if (config.VerifiedDomains != null && config.VerifiedDomains.Any(vd => string.Equals(vd.Trim(), domain, StringComparison.OrdinalIgnoreCase)))
-            {
-                return ws.Id;
-            }
-        }
-
-        return null;
+        return verifiedDomain?.WorkspaceId;
     }
 }

@@ -156,17 +156,13 @@ public class WorkspaceDocumentsController : ControllerBase
     public async Task<IActionResult> AddAccessPolicy(
         Guid workspaceId,
         Guid documentId,
-        [FromBody] ManageAccessPolicyRequest request,
+        [FromBody] AddAccessPolicyRequest request,
         CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var finalRequest = request.Action == null 
-            ? request with { Action = "Add" } 
-            : request;
-
-        var result = await _documentService.ManageAccessPolicyAsync(workspaceId, documentId, finalRequest, userId.Value, ct);
+        var result = await _documentService.AddAccessPolicyAsync(workspaceId, documentId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -185,17 +181,7 @@ public class WorkspaceDocumentsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var request = new ManageAccessPolicyRequest(
-            Action: "Remove",
-            PolicyId: policyId,
-            SubjectType: null,
-            SubjectId: null,
-            SubjectKey: null,
-            Permission: null,
-            Effect: null
-        );
-
-        var result = await _documentService.ManageAccessPolicyAsync(workspaceId, documentId, request, userId.Value, ct);
+        var result = await _documentService.RemoveAccessPolicyAsync(workspaceId, documentId, policyId, userId.Value, ct);
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -208,12 +194,13 @@ public class WorkspaceDocumentsController : ControllerBase
     public async Task<IActionResult> GetAccessPolicies(
         Guid workspaceId,
         Guid documentId,
+        [FromQuery] GetWorkspacesQuery query,
         CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, userId.Value, ct);
+        var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, query, userId.Value, ct);
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));

@@ -34,17 +34,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         _authIdentity = authIdentity;
     }
 
-    private async Task<string> GetRoleNameByIdAsync(Guid roleId, CancellationToken ct)
-    {
-        var role = await _authIdentity.GetRoleByIdAsync(roleId, ct);
-        return role?.Name ?? "Member";
-    }
-
-    private async Task<Guid?> GetRoleIdByNameAsync(string roleName, CancellationToken ct)
-    {
-        var role = await _authIdentity.GetRoleByNameAsync(roleName, ct);
-        return role?.Id;
-    }
 
     public async Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid executingUserId, CancellationToken ct = default)
     {
@@ -77,8 +66,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
             var adminRoleName = WorkspaceMemberRole.Admin.ToRoleName();
 
-            var ownerRoleId = await GetRoleIdByNameAsync(ownerRoleName, ct);
-            var adminRoleId = await GetRoleIdByNameAsync(adminRoleName, ct);
+            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
+            var adminRoleId = await _authIdentity.GetRoleIdByNameAsync(adminRoleName, ct);
 
             if (ownerRoleId == null || adminRoleId == null)
             {
@@ -114,9 +103,14 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     {
         try
         {
-            var isMember = await _unitOfWork.WorkspaceMemberRepository.AnyAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, ct);
-            if (!isMember)
+            var caller = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (caller == null)
+            {
+                return Result.Failure<PagedResult<WorkspaceMemberDto>>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            if (!string.Equals(caller.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
             {
                 return Result.Failure<PagedResult<WorkspaceMemberDto>>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
@@ -127,9 +121,19 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure<PagedResult<WorkspaceMemberDto>>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            var isExternalCaller = await WorkspaceHelper.IsUserExternalMemberAsync(_unitOfWork, workspaceId, userId, ct);
+            var callerRole = await _authIdentity.GetRoleNameByIdAsync(caller.RoleId, ct);
+            var isOwnerOrAdmin = callerRole.IsOwnerOrAdmin();
 
-            var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+            List<WorkspaceMember> members;
+            if (isOwnerOrAdmin)
+            {
+                var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
+                members = allMembers.OrderBy(m => m.JoinedAt).ToList();
+            }
+            else
+            {
+                members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+            }
 
             var filteredDtos = new List<WorkspaceMemberDto>();
             var roleCache = new Dictionary<Guid, string>();
@@ -138,7 +142,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             {
                 var user = await _authIdentity.GetUserByIdAsync(m.UserId, ct);
                 var fullName = user?.FullName ?? "Unknown";
-                var email = user?.Email ?? "Unknown";
+                var email = isOwnerOrAdmin ? (user?.Email ?? "Unknown") : string.Empty;
                 var avatarUrl = user?.AvatarUrl;
 
                 if (!roleCache.TryGetValue(m.RoleId, out var roleName))
@@ -148,15 +152,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                     roleCache[m.RoleId] = roleName;
                 }
 
-                if (isExternalCaller && roleName != "Owner" && roleName != "Admin")
-                {
-                    continue;
-                }
-
                 if (!string.IsNullOrWhiteSpace(query.Search))
                 {
                     var searchLower = query.Search.ToLower();
-                    if (!fullName.ToLower().Contains(searchLower) && !email.ToLower().Contains(searchLower))
+                    var userEmail = user?.Email ?? "Unknown";
+                    if (!fullName.ToLower().Contains(searchLower) && !userEmail.ToLower().Contains(searchLower))
                     {
                         continue;
                     }
@@ -197,13 +197,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
-            var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
 
             if (memberUserId == executingUserId)
             {
                 if (execRoleName.IsOwner())
                 {
-                    var ownerRoleId = await GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+                    var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
                         return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
@@ -237,7 +237,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
-            var targetRoleName = await GetRoleNameByIdAsync(targetMember.RoleId, ct);
+            var targetRoleName = await _authIdentity.GetRoleNameByIdAsync(targetMember.RoleId, ct);
 
             if (targetRoleName.IsOwner())
             {
@@ -281,7 +281,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
-            var execRoleName = await GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
             if (!execRoleName.IsOwnerOrAdmin())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
@@ -294,13 +294,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
-            var targetRoleName = await GetRoleNameByIdAsync(targetMember.RoleId, ct);
+            var targetRoleName = await _authIdentity.GetRoleNameByIdAsync(targetMember.RoleId, ct);
 
             if (memberUserId == executingUserId)
             {
                 if (targetRoleName.IsOwner())
                 {
-                    var ownerRoleId = await GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+                    var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
                         return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
@@ -334,7 +334,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 }
             }
 
-            var newRoleId = await GetRoleIdByNameAsync(roleName, ct);
+            var newRoleId = await _authIdentity.GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
                 return Result.Failure(WorkspaceConstants.Errors.RoleNotFound, ErrorCodes.ValidationError);

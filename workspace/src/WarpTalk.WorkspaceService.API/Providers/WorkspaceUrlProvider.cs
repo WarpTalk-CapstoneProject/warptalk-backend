@@ -2,6 +2,7 @@ using System;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.API.Providers;
 
@@ -25,7 +26,7 @@ public class WorkspaceUrlProvider : IWorkspaceUrlProvider
         if (httpContext == null)
         {
             // Fallback to relative URL if HTTP context is not available (e.g. background threads / unit tests)
-            return $"/api/v1/workspaces/{workspaceId}/documents/{documentId}/download";
+            return string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, workspaceId, documentId);
         }
 
         return _linkGenerator.GetUriByAction(
@@ -33,6 +34,6 @@ public class WorkspaceUrlProvider : IWorkspaceUrlProvider
             action: "DownloadDocument",
             controller: "WorkspaceDocuments",
             values: new { workspaceId, documentId }
-        ) ?? $"/api/v1/workspaces/{workspaceId}/documents/{documentId}/download";
+        ) ?? string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, workspaceId, documentId);
     }
 }

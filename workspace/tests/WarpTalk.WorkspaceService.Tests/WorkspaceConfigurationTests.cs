@@ -61,4 +61,51 @@ public class WorkspaceConfigurationTests
         Assert.Equal(10, config.MaxActiveRooms);
         Assert.Equal(15, config.ArtifactRetentionDays);
     }
+
+    [Fact]
+    public void WorkspaceConfiguration_ShouldSerializeAndDeserializeAiUsagePolicyWithLanguageSpecificRules_Successfully()
+    {
+        // Arrange
+        var originalPolicy = new AiUsagePolicyConfiguration(
+            AllowExternalLlm: true,
+            RedactPii: new PiiRedactionConfiguration(Enabled: true),
+            Dlp: new DlpConfiguration(Enabled: true, KeywordsBlacklist: new List<string> { "bí mật", "nhạy cảm" }),
+            TranslationProfile: new TranslationProfileConfiguration(
+                TranslationTone: "professional",
+                LanguageSpecificRules: new LanguageSpecificRules(
+                    VietnameseHonorificStyle: "formal_hierarchical",
+                    JapaneseHonorificStyle: "keigo_teineigo"
+                )
+            )
+        );
+
+        var config = new WorkspaceConfiguration
+        {
+            AiUsagePolicy = originalPolicy
+        };
+
+        // Act
+        var json = JsonSerializer.Serialize(config);
+        var deserializedConfig = JsonSerializer.Deserialize<WorkspaceConfiguration>(json);
+
+        // Assert
+        Assert.NotNull(deserializedConfig);
+        Assert.NotNull(deserializedConfig.AiUsagePolicy);
+        Assert.True(deserializedConfig.AiUsagePolicy.AllowExternalLlm);
+        
+        Assert.NotNull(deserializedConfig.AiUsagePolicy.RedactPii);
+        Assert.True(deserializedConfig.AiUsagePolicy.RedactPii.Enabled);
+
+        Assert.NotNull(deserializedConfig.AiUsagePolicy.Dlp);
+        Assert.True(deserializedConfig.AiUsagePolicy.Dlp.Enabled);
+        Assert.NotNull(deserializedConfig.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.Contains("bí mật", deserializedConfig.AiUsagePolicy.Dlp.KeywordsBlacklist);
+
+        Assert.NotNull(deserializedConfig.AiUsagePolicy.TranslationProfile);
+        Assert.Equal("professional", deserializedConfig.AiUsagePolicy.TranslationProfile.TranslationTone);
+
+        Assert.NotNull(deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules);
+        Assert.Equal("formal_hierarchical", deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle);
+        Assert.Equal("keigo_teineigo", deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle);
+    }
 }

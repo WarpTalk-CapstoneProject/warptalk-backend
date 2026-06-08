@@ -21,8 +21,9 @@ public static class WorkspaceDocumentAccessPolicyMapper
         );
     }
 
-    public static WorkspaceDocumentAccessPolicy ToEntity(this ManageAccessPolicyRequest request, Guid documentId, Guid workspaceId, Guid userId)
+    public static WorkspaceDocumentAccessPolicy ToEntity(this AddAccessPolicyRequest request, Guid documentId, Guid workspaceId, Guid userId, DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceDocumentAccessPolicy
         {
             Id = Guid.NewGuid(),
@@ -33,9 +34,9 @@ public static class WorkspaceDocumentAccessPolicyMapper
             SubjectKey = request.SubjectKey,
             Permission = request.Permission ?? string.Empty,
             Effect = request.Effect ?? string.Empty,
-            CreatedAt = DateTime.UtcNow,
+            CreatedAt = now,
             CreatedBy = userId,
-            UpdatedAt = DateTime.UtcNow,
+            UpdatedAt = now,
             UpdatedBy = userId
         };
     }

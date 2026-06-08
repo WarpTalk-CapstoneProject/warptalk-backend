@@ -18,3 +18,7 @@ public record WorkspaceMemberDto(
 public record ChangeMemberRoleRequest(
     string RoleName
 );
+
+public record TransferOwnershipRequest(
+    Guid NewOwnerId
+);

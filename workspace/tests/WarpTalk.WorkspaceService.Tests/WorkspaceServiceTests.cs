@@ -25,6 +25,7 @@ public class WorkspaceServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
+    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly AppWorkspaceService _workspaceService;
@@ -34,11 +35,13 @@ public class WorkspaceServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _workspaceCache = Substitute.For<IWorkspaceCacheService>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
+        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
         _workspaceService = new AppWorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<AppWorkspaceService>>(), _authIdentity);
     }
@@ -81,6 +84,7 @@ public class WorkspaceServiceTests
         // Verify transaction commits
         await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => w.Name == "DeepMind Team" && w.OwnerId == userId), Arg.Any<CancellationToken>());
         await _workspaceMemberRepository.Received(1).AddAsync(Arg.Is<WorkspaceMember>(m => m.UserId == userId && m.RoleId == ownerRole.Id), Arg.Any<CancellationToken>());
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "warptalk.vn" && vd.Status == "verified"), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
@@ -108,6 +112,9 @@ public class WorkspaceServiceTests
         var request = new CreateWorkspaceRequest("New Enterprise", null);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
+        
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
 
         // Mock that they already belong to another Enterprise workspace as an internal member
         var otherEnterpriseWorkspace = new Workspace
@@ -125,6 +132,11 @@ public class WorkspaceServiceTests
             Arg.Is("Workspace"),
             Arg.Any<CancellationToken>())
             .Returns(memberships);
+
+        _workspaceVerifiedDomainRepository.AnyAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Any<CancellationToken>())
+            .Returns(true);
 
         // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
@@ -162,6 +174,8 @@ public class WorkspaceServiceTests
         // Verify we saved the workspace with VerifiedDomains set to enterprise.com
         await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
             w.Settings.Contains("enterprise.com")), Arg.Any<CancellationToken>());
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => 
+            vd.Domain == "enterprise.com" && vd.Status == "verified"), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -176,6 +190,9 @@ public class WorkspaceServiceTests
         _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
             .Returns(new List<WorkspaceMember>());
 
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
         // Mock another active workspace verifying "company.com"
         var otherWorkspace = new Workspace
         {
@@ -185,6 +202,19 @@ public class WorkspaceServiceTests
         };
         _workspaceRepository.FindAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), "", Arg.Any<CancellationToken>())
             .Returns(new List<Workspace> { otherWorkspace });
+
+        var verifiedDomain = new WorkspaceVerifiedDomain
+        {
+            WorkspaceId = otherWorkspace.Id,
+            Domain = "company.com",
+            Status = "verified",
+            Workspace = otherWorkspace
+        };
+        _workspaceVerifiedDomainRepository.FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Is("Workspace"),
+            Arg.Any<CancellationToken>())
+            .Returns(verifiedDomain);
 
         // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
@@ -261,6 +291,11 @@ public class WorkspaceServiceTests
 
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = roleId, Name = "Member" });
+
+        _workspaceVerifiedDomainRepository.AnyAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Any<CancellationToken>())
+            .Returns(true);
 
         // Act
         var result = await _workspaceService.SelectWorkspaceAsync(workspaceId, userId);

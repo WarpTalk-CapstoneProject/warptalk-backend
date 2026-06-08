@@ -28,8 +28,9 @@ public static class WorkspaceMapper
         return ToDto(workspace, role.ToRoleName());
     }
 
-    public static Workspace ToEntity(this CreateWorkspaceRequest request, string slug, Guid ownerId, string settingsJson = "{}")
+    public static Workspace ToEntity(this CreateWorkspaceRequest request, string slug, Guid ownerId, string settingsJson = "{}", DateTime? utcNow = null)
     {
+        var now = utcNow ?? DateTime.UtcNow;
         return new Workspace
         {
             Id = Guid.NewGuid(),
@@ -39,8 +40,8 @@ public static class WorkspaceMapper
             OwnerId = ownerId,
             Settings = settingsJson,
             IsActive = true,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
+            CreatedAt = now,
+            UpdatedAt = now
         };
     }
 
@@ -72,6 +73,26 @@ public static class WorkspaceMapper
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
             VerifiedDomains = dto.VerifiedDomains,
             AllowExternalCollaboration = dto.AllowExternalCollaboration
+        };
+    }
+
+    public static WorkspaceVerifiedDomain ToVerifiedDomainEntity(Guid workspaceId, string domain, Guid userId, string status = "verified", string verificationMethod = "system", DateTime? utcNow = null)
+    {
+        var now = utcNow ?? DateTime.UtcNow;
+        return new WorkspaceVerifiedDomain
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Domain = domain,
+            Status = status,
+            VerificationMethod = verificationMethod,
+            VerificationToken = Guid.NewGuid().ToString(),
+            VerifiedAt = now,
+            VerifiedBy = userId,
+            CreatedAt = now,
+            CreatedBy = userId,
+            UpdatedAt = now,
+            UpdatedBy = userId
         };
     }
 }

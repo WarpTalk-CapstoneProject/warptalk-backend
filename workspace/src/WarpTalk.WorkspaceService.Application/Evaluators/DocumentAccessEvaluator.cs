@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -46,24 +47,6 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             return Result.Failure(WorkspaceConstants.Errors.DocumentNotFound);
         }
 
-        if (string.Equals(requiredPermission, "download", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
-            }
-        }
-        else if (string.Equals(requiredPermission, "ai_retrieval", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.completed.ToString(), StringComparison.OrdinalIgnoreCase) ||
-                !document.AiEligible)
-            {
-                return Result.Failure("Document is not eligible for AI retrieval.");
-            }
-        }
-
         var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
         if (member == null)
@@ -85,6 +68,40 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             _logger.LogWarning(ex, "Failed to fetch role from identity service for RoleId: {RoleId} in workspace {WorkspaceId}. Falling back to default role: {DefaultRole}", member.RoleId, workspaceId, WorkspaceMemberRole.Member.ToRoleName());
         }
 
+        var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
+            .FindAsync(p => p.DocumentId == documentId, "", ct);
+
+        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, ct);
+    }
+
+    public async Task<Result> EvaluateAccessAsync(
+        Guid userId,
+        Guid workspaceId,
+        WorkspaceDocument document,
+        string requiredPermission,
+        WorkspaceMember member,
+        string roleName,
+        IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        CancellationToken ct = default)
+    {
+        if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+            }
+        }
+        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.completed.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                !document.AiEligible)
+            {
+                return Result.Failure("Document is not eligible for AI retrieval.");
+            }
+        }
+
         // 1. AI Ingestion Status check (Security-first)
         if (string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.pending.ToString(), StringComparison.OrdinalIgnoreCase) ||
             string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -98,9 +115,6 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         }
 
         // 2. Evaluate explicit policies
-        var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
-            .FindAsync(p => p.DocumentId == documentId, "", ct);
-
         var matchingPolicies = policies.Where(p =>
             string.Equals(p.Permission, requiredPermission, StringComparison.OrdinalIgnoreCase) &&
             (
