@@ -19,6 +19,7 @@ public static class WorkspaceConstants
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";
         public const string DomainRegisteredElsewhere = "This email belongs to a corporate domain registered with another workspace.";
+        public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
         public const string RequiredOwnerRoleNotFound = "Required owner role not found.";
         public const string UnexpectedErrorCreatingWorkspace = "An unexpected error occurred while creating the workspace.";
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";

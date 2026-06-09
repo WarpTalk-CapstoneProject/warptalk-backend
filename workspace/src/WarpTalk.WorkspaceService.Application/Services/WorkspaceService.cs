@@ -63,16 +63,48 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
             }
 
-            var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
-            if (isInternalElsewhere)
+            var domainsToVerify = new List<string>();
+            bool requireVerified;
+
+            if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
             {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
+                domainsToVerify = request.VerifiedDomains;
+                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
+            }
+            else
+            {
+                if (request.RequireVerifiedDomainForInternal == true)
+                {
+                    domainsToVerify = new List<string> { emailAddress.Domain };
+                    requireVerified = true;
+                }
+                else
+                {
+                    requireVerified = false;
+                }
             }
 
-            var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, emailAddress.Domain, ct);
-            if (owningWorkspaceId.HasValue)
+            if (requireVerified)
             {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
+                var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
+                if (isInternalElsewhere)
+                {
+                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
+                }
+
+                foreach (var domain in domainsToVerify)
+                {
+                    if (EmailAddress.IsPublicDomainName(domain))
+                    {
+                        return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
+                    }
+
+                    var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, domain, ct);
+                    if (owningWorkspaceId.HasValue)
+                    {
+                        return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
+                    }
+                }
             }
 
             var baseSlug = SlugHelper.GenerateSlug(request.Name);
@@ -80,7 +112,8 @@ public class WorkspaceService : IWorkspaceService
 
             var config = new WorkspaceConfiguration
             {
-                VerifiedDomains = new List<string> { emailAddress.Domain }
+                VerifiedDomains = domainsToVerify,
+                RequireVerifiedDomainForInternal = requireVerified
             };
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);
@@ -96,22 +129,28 @@ public class WorkspaceService : IWorkspaceService
             await _unitOfWork.WorkspaceRepository.AddAsync(workspace, ct);
             await _unitOfWork.WorkspaceMemberRepository.AddAsync(workspaceMember, ct);
 
-            var verifiedDomain = new WorkspaceVerifiedDomain
+            if (requireVerified)
             {
-                Id = Guid.NewGuid(),
-                WorkspaceId = workspace.Id,
-                Domain = emailAddress.Domain,
-                Status = "verified",
-                VerificationMethod = "system",
-                VerificationToken = Guid.NewGuid().ToString(),
-                VerifiedAt = DateTime.UtcNow,
-                VerifiedBy = userId,
-                CreatedAt = DateTime.UtcNow,
-                CreatedBy = userId,
-                UpdatedAt = DateTime.UtcNow,
-                UpdatedBy = userId
-            };
-            await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
+                foreach (var domain in domainsToVerify)
+                {
+                    var verifiedDomain = new WorkspaceVerifiedDomain
+                    {
+                        Id = Guid.NewGuid(),
+                        WorkspaceId = workspace.Id,
+                        Domain = domain,
+                        Status = "verified",
+                        VerificationMethod = "system",
+                        VerificationToken = Guid.NewGuid().ToString(),
+                        VerifiedAt = DateTime.UtcNow,
+                        VerifiedBy = userId,
+                        CreatedAt = DateTime.UtcNow,
+                        CreatedBy = userId,
+                        UpdatedAt = DateTime.UtcNow,
+                        UpdatedBy = userId
+                    };
+                    await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
+                }
+            }
 
             await _unitOfWork.SaveChangesAsync(ct);
 
@@ -275,6 +314,17 @@ public class WorkspaceService : IWorkspaceService
                 if (currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration)
                 {
                     return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyExternalCollaboration, ErrorCodes.Forbidden);
+                }
+            }
+
+            if (settings.VerifiedDomains != null && settings.VerifiedDomains.Any())
+            {
+                foreach (var domain in settings.VerifiedDomains)
+                {
+                    if (EmailAddress.IsPublicDomainName(domain))
+                    {
+                        return Result.Failure(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
+                    }
                 }
             }
 

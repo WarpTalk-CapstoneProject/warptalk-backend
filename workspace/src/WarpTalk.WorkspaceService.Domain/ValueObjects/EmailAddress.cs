@@ -6,6 +6,21 @@ namespace WarpTalk.WorkspaceService.Domain.ValueObjects;
 
 public record EmailAddress
 {
+    private static readonly HashSet<string> PublicDomains = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", 
+        "aol.com", "zoho.com", "proton.me", "protonmail.com", "mail.com",
+        "live.com", "yandex.com", "gmx.com"
+    };
+
+    public bool IsPublicDomain => PublicDomains.Contains(Domain);
+
+    public static bool IsPublicDomainName(string domain)
+    {
+        if (string.IsNullOrWhiteSpace(domain)) return false;
+        return PublicDomains.Contains(domain.Trim());
+    }
+
     private static readonly Regex EmailRegex = 
         new(@"^(?i)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", RegexOptions.Compiled);
 

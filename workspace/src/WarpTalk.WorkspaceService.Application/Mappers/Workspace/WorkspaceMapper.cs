@@ -56,7 +56,8 @@ public static class WorkspaceMapper
             config.ArtifactRetentionDays,
             config.EnforceHostApprovalDefault,
             config.VerifiedDomains,
-            config.AllowExternalCollaboration
+            config.AllowExternalCollaboration,
+            config.RequireVerifiedDomainForInternal
         );
     }
 
@@ -72,7 +73,8 @@ public static class WorkspaceMapper
             ArtifactRetentionDays = dto.ArtifactRetentionDays,
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
             VerifiedDomains = dto.VerifiedDomains,
-            AllowExternalCollaboration = dto.AllowExternalCollaboration
+            AllowExternalCollaboration = dto.AllowExternalCollaboration,
+            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal
         };
     }
 

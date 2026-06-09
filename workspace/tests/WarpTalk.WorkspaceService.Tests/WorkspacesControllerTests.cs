@@ -183,6 +183,7 @@ public class WorkspacesControllerTests
             30,
             true,
             new List<string>(),
+            true,
             true
         );
         _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
@@ -211,6 +212,7 @@ public class WorkspacesControllerTests
             30,
             true,
             new List<string>(),
+            true,
             true
         );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
@@ -237,6 +239,7 @@ public class WorkspacesControllerTests
             30,
             true,
             new List<string>(),
+            true,
             true
         );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())

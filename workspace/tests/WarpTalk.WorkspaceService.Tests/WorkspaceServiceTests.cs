@@ -12,6 +12,8 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
+using WarpTalk.WorkspaceService.Domain.Constants;
+using WarpTalk.WorkspaceService.Domain.ValueObjects;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces.Caching;
 using WarpTalk.WorkspaceService.Application.Models;
@@ -64,7 +66,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@warptalk.vn" };
-        var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png");
+        var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png", RequireVerifiedDomainForInternal: true);
 
         StubUser(userId, user);
         var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
@@ -109,7 +111,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "employee@enterprise.com" };
-        var request = new CreateWorkspaceRequest("New Enterprise", null);
+        var request = new CreateWorkspaceRequest("New Enterprise", null, RequireVerifiedDomainForInternal: true);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
         
@@ -120,11 +122,11 @@ public class WorkspaceServiceTests
         var otherEnterpriseWorkspace = new Workspace
         {
             Id = Guid.NewGuid(),
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"]}"
+            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"RequireVerifiedDomainForInternal\":true}"
         };
         var memberships = new List<WorkspaceMember>
         {
-            new WorkspaceMember { UserId = userId, Workspace = otherEnterpriseWorkspace }
+            new WorkspaceMember { UserId = userId, Workspace = otherEnterpriseWorkspace, MembershipType = "Internal" }
         };
 
         _workspaceMemberRepository.FindAsync(
@@ -153,7 +155,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@enterprise.com" };
-        var request = new CreateWorkspaceRequest("New Enterprise", null);
+        var request = new CreateWorkspaceRequest("New Enterprise", null, RequireVerifiedDomainForInternal: true);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
         _workspaceMemberRepository.FindAsync(
@@ -184,7 +186,7 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "user@company.com" };
-        var request = new CreateWorkspaceRequest("New Work", null);
+        var request = new CreateWorkspaceRequest("New Work", null, RequireVerifiedDomainForInternal: true);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
         _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
@@ -223,6 +225,96 @@ public class WorkspaceServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Contains("corporate domain registered with another workspace", result.Error);
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldSucceed_WithoutVerifiedDomain_WhenNoDomainProvided()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "owner@gmail.com" };
+        var request = new CreateWorkspaceRequest("Personal Team", "https://cdn.com/logo.png"); // No verified domains, RequireVerifiedDomainForInternal = null
+
+        StubUser(userId, user);
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal("Personal Team", result.Value.Name);
+
+        // Verify we saved the workspace with empty verified domains and RequireVerifiedDomainForInternal = false
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
+            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":false") && 
+            w.Settings.Contains("\"VerifiedDomains\":[]")), Arg.Any<CancellationToken>());
+
+        // Verify we did NOT add any WorkspaceVerifiedDomain records
+        await _workspaceVerifiedDomainRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldSucceed_WithCustomVerifiedDomains()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "owner@deepmind.com" };
+        var request = new CreateWorkspaceRequest(
+            "DeepMind Labs", 
+            "https://cdn.com/logo.png", 
+            VerifiedDomains: new List<string> { "deepmind.com", "google.com" },
+            RequireVerifiedDomainForInternal: true
+        );
+
+        StubUser(userId, user);
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+
+        // Verify we saved the workspace with both verified domains
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
+            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":true") && 
+            w.Settings.Contains("deepmind.com") && 
+            w.Settings.Contains("google.com")), Arg.Any<CancellationToken>());
+
+        // Verify WorkspaceVerifiedDomain records were added for both domains
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "deepmind.com"), Arg.Any<CancellationToken>());
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "google.com"), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenDomainIsPublicDomain()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "owner@gmail.com" };
+        var request = new CreateWorkspaceRequest(
+            "Fake Google", 
+            "https://cdn.com/logo.png", 
+            VerifiedDomains: new List<string> { "gmail.com" }, // Public domain
+            RequireVerifiedDomainForInternal: true
+        );
+
+        StubUser(userId, user);
+        var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
+        StubRoleByName("Owner", ownerRole);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
     }
 
     #endregion
@@ -523,6 +615,7 @@ public class WorkspaceServiceTests
             30,
             true,
             new List<string>(),
+            true,
             true
         );
 
@@ -566,6 +659,7 @@ public class WorkspaceServiceTests
             30,
             true,
             new List<string>(),
+            true,
             true
         );
 
@@ -588,6 +682,48 @@ public class WorkspaceServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenDomainIsPublicDomain()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceSettingsDto(
+            "vi",
+            "Asia/Ho_Chi_Minh",
+            new List<string>(),
+            false,
+            5,
+            30,
+            true,
+            new List<string> { "yahoo.com" }, // Public domain
+            true,
+            true
+        );
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId });
+        _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = userId, Email = "admin@warptalk.vn" });
+
+        var memberRoleId = Guid.NewGuid();
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Admin" });
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 

@@ -31,41 +31,27 @@ public static class WorkspaceHelper
 
     public static async Task<bool> IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(IUnitOfWork unitOfWork, Guid userId, string userEmail, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(userEmail)) return false;
-
-        if (!EmailAddress.TryParse(userEmail, out var emailAddress) || emailAddress == null) return false;
-        var userDomain = emailAddress.Domain;
-
         var memberships = await unitOfWork.WorkspaceMemberRepository.FindAsync(
             m => m.UserId == userId && m.RemovedAt == null,
             "Workspace",
             ct);
 
-        foreach (var membership in memberships)
-        {
-            var ws = membership.Workspace;
-            if (ws != null)
-            {
-                var isVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-                    vd => vd.WorkspaceId == ws.Id 
-                          && vd.Domain.ToLower() == userDomain.ToLower() 
-                          && vd.Status == "verified" 
-                          && vd.VerifiedAt != null 
-                          && vd.RevokedAt == null, 
-                    ct);
-                if (isVerified)
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return memberships.Any(m => 
+            string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
+            && m.Workspace != null 
+            && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 
     public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, string userEmail, CancellationToken ct)
     {
         var workspace = await unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
         if (workspace == null)
+        {
+            return false;
+        }
+
+        var config = GetWorkspaceConfig(workspace);
+        if (!config.RequireVerifiedDomainForInternal)
         {
             return false;
         }
@@ -102,6 +88,12 @@ public static class WorkspaceHelper
     public static async Task<MembershipType> DetermineMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
     {
         if (workspace == null)
+        {
+            return MembershipType.Internal;
+        }
+
+        var config = GetWorkspaceConfig(workspace);
+        if (!config.RequireVerifiedDomainForInternal)
         {
             return MembershipType.Internal;
         }

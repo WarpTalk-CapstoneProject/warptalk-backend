@@ -5,7 +5,9 @@ namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 
 public record CreateWorkspaceRequest(
     string Name,
-    string? LogoUrl
+    string? LogoUrl,
+    List<string>? VerifiedDomains = null,
+    bool? RequireVerifiedDomainForInternal = null
 );
 
 public record GetWorkspacesQuery

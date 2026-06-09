@@ -11,5 +11,6 @@ public record WorkspaceSettingsDto(
     int ArtifactRetentionDays,
     bool EnforceHostApprovalDefault,
     List<string> VerifiedDomains,
-    bool AllowExternalCollaboration
+    bool AllowExternalCollaboration,
+    bool RequireVerifiedDomainForInternal
 );

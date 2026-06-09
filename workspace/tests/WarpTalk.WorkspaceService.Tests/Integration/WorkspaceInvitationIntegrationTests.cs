@@ -109,6 +109,23 @@ public class WorkspaceInvitationIntegrationTests : BaseIntegrationTest
             };
             db.Workspaces.Add(ws);
 
+            var verifiedDomain = new WorkspaceVerifiedDomain
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                Domain = "company.com",
+                Status = "verified",
+                VerificationMethod = "system",
+                VerificationToken = Guid.NewGuid().ToString(),
+                VerifiedAt = DateTime.UtcNow,
+                VerifiedBy = userId,
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userId,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userId
+            };
+            db.WorkspaceVerifiedDomains.Add(verifiedDomain);
+
             var invitation = new WorkspaceInvitation
             {
                 Id = Guid.NewGuid(),
@@ -182,6 +199,23 @@ public class WorkspaceInvitationIntegrationTests : BaseIntegrationTest
             };
             db.Workspaces.Add(ws1);
 
+            var verifiedDomain = new WorkspaceVerifiedDomain
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId1,
+                Domain = "company.com",
+                Status = "verified",
+                VerificationMethod = "system",
+                VerificationToken = Guid.NewGuid().ToString(),
+                VerifiedAt = DateTime.UtcNow,
+                VerifiedBy = userId,
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userId,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userId
+            };
+            db.WorkspaceVerifiedDomains.Add(verifiedDomain);
+
             // Workspace 2 (Workspace user already belongs to as an Internal member)
             var ws2 = new Workspace
             {
@@ -239,5 +273,75 @@ public class WorkspaceInvitationIntegrationTests : BaseIntegrationTest
 
         // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AcceptInvitation_WorkspaceWithoutVerifiedDomains_Succeeds()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var inviteEmail = "anyone@gmail.com";
+        var rawToken = "personaltoken123";
+        var tokenHash = TokenHasher.Hash(rawToken);
+
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WorkspaceDbContext>();
+            var ws = new Workspace
+            {
+                Id = workspaceId,
+                Name = "Personal Workspace",
+                Slug = "personal-workspace",
+                OwnerId = Guid.NewGuid(),
+                AllowExternalCollaboration = true,
+                Settings = "{\"VerifiedDomains\":[],\"RequireVerifiedDomainForInternal\":false}",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            db.Workspaces.Add(ws);
+
+            var invitation = new WorkspaceInvitation
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                Email = inviteEmail,
+                RoleId = roleId,
+                MembershipType = MembershipType.Internal.ToString(),
+                InvitedBy = Guid.NewGuid(),
+                TokenHash = tokenHash,
+                Status = InvitationStatus.PENDING.ToString(),
+                ExpiresAt = DateTime.UtcNow.AddDays(7),
+                CreatedAt = DateTime.UtcNow
+            };
+            db.WorkspaceInvitations.Add(invitation);
+            await db.SaveChangesAsync();
+        }
+
+        MockAuthIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = roleId, Name = "Member" });
+
+        var jwtToken = GenerateJwtToken(userId, inviteEmail);
+        Client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", jwtToken);
+
+        // Act
+        var response = await Client.PostAsJsonAsync("/api/v1/workspaces/invitations/accept", new AcceptInvitationRequest(rawToken));
+
+        // Assert
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        using (var scope = Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<WorkspaceDbContext>();
+            var dbInviteFound = await db.WorkspaceInvitations.FirstOrDefaultAsync(x => x.TokenHash == tokenHash);
+            Assert.NotNull(dbInviteFound);
+            Assert.Equal(InvitationStatus.ACCEPTED.ToString(), dbInviteFound.Status);
+
+            var dbMember = await db.WorkspaceMembers.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == userId);
+            Assert.NotNull(dbMember);
+            Assert.Equal(MembershipType.Internal.ToString(), dbMember.MembershipType);
+        }
     }
 }

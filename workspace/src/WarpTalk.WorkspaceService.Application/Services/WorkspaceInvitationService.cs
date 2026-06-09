@@ -86,7 +86,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             if (membershipTypeEnum == MembershipType.Internal)
             {
-                if (!isDomainVerified)
+                if (config.RequireVerifiedDomainForInternal && !isDomainVerified)
                 {
                     return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
                 }
@@ -356,16 +356,19 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             
             if (string.Equals(invitation.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
             {
-                if (!isDomainVerified)
+                if (config.RequireVerifiedDomainForInternal && !isDomainVerified)
                 {
                     return Result.Failure(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
                 }
 
-                // Joining as Internal Member — enforce single-workspace constraint
-                var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
-                if (isInternalElsewhere)
+                // Joining as Internal Member — enforce single-workspace constraint if target workspace requires domain verification
+                if (config.RequireVerifiedDomainForInternal)
                 {
-                    return Result.Failure(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.Forbidden);
+                    var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
+                    if (isInternalElsewhere)
+                    {
+                        return Result.Failure(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.Forbidden);
+                    }
                 }
             }
             // Joining as External Partner — allowed even if internal member of another workspace
