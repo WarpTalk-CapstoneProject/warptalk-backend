@@ -83,7 +83,7 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
             BEGIN
                 timestamp_ms := (extract(epoch from clock_timestamp()) * 1000)::bigint;
                 timestamp_hex := lpad(to_hex(timestamp_ms), 12, '0');
-                uuid_hex := timestamp_hex || '7' || lpad(to_hex((random() * 4095)::integer), 3, '0') || '8' || lpad(to_hex((random() * 4095)::integer), 3, '0') || lpad(to_hex((random() * 1099511627775)::bigint), 10, '0');
+                uuid_hex := timestamp_hex || '7' || lpad(to_hex((random() * 4095)::integer), 3, '0') || '8' || lpad(to_hex((random() * 4095)::integer), 3, '0') || lpad(to_hex((random() * 281474976710655)::bigint), 12, '0');
                 RETURN uuid_hex::uuid;
             END;
             $$ LANGUAGE plpgsql;
