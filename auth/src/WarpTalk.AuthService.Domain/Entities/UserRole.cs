@@ -11,13 +11,23 @@ public partial class UserRole
 
     public Guid RoleId { get; set; }
 
-    public Guid? WorkspaceId { get; set; }
-
     public DateTime AssignedAt { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid? AssignedBy { get; set; }
 
+    public DateTime? RevokedAt { get; set; }
+
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
+    public Guid? RevokedBy { get; set; }
+
     public virtual User? AssignedByNavigation { get; set; }
+
+    public virtual User? RevokedByNavigation { get; set; }
 
     public virtual Role Role { get; set; } = null!;
 
