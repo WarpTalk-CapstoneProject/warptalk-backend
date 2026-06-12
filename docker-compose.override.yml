@@ -55,3 +55,14 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
+
+  workspace-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/workspace/src/WarpTalk.WorkspaceService.API
+    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1

@@ -8,6 +8,8 @@ using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Hubs.Filters;
 using WarpTalk.Gateway.Services;
+using WarpTalk.Gateway.Transforms;
+using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -118,6 +120,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // 4. Configure YARP Reverse Proxy
+builder.Services.AddTransient<Yarp.ReverseProxy.Transforms.Builder.ITransformProvider, InternalContextTransformProvider>();
 builder.Services.AddReverseProxy()
     .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"));
 
@@ -170,7 +173,10 @@ builder.Services.AddHealthChecks();
 builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] ?? "http://localhost:5104");
+    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"] 
+                  ?? builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] 
+                  ?? "http://localhost:50054";
+    o.Address = new Uri(address);
 })
 .ConfigurePrimaryHttpMessageHandler(() =>
 {

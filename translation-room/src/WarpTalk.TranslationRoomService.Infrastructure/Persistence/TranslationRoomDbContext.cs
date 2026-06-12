@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -16,7 +17,7 @@ public partial class TranslationRoomDbContext : DbContext
     {
     }
 
-    public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
+
 
     public virtual DbSet<SupportedLanguage> SupportedLanguages { get; set; }
 
@@ -49,48 +50,7 @@ public partial class TranslationRoomDbContext : DbContext
             .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
 
-        modelBuilder.Entity<SchemaMigration>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("schema_migrations_pkey");
 
-            entity.ToTable("schema_migrations", "translation_room");
-
-            entity.HasIndex(e => e.MigrationKey, "schema_migrations_migration_key_key").IsUnique();
-
-            entity.HasIndex(e => e.Status, "schema_migrations_status_idx");
-
-            entity.HasIndex(e => e.Status, "schema_migrations_status_idx1");
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.AppliedBy)
-                .HasMaxLength(100)
-                .HasColumnName("applied_by");
-            entity.Property(e => e.Checksum)
-                .HasMaxLength(128)
-                .HasColumnName("checksum");
-            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
-            entity.Property(e => e.ExecutionTimeMs).HasColumnName("execution_time_ms");
-            entity.Property(e => e.MigrationKey)
-                .HasMaxLength(150)
-                .HasColumnName("migration_key");
-            entity.Property(e => e.MigrationName)
-                .HasMaxLength(255)
-                .HasColumnName("migration_name");
-            entity.Property(e => e.ScriptPath)
-                .HasMaxLength(500)
-                .HasColumnName("script_path");
-            entity.Property(e => e.StartedAt).HasColumnName("started_at");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'success'::character varying")
-                .HasColumnName("status");
-        });
 
         modelBuilder.Entity<SupportedLanguage>(entity =>
         {
@@ -395,6 +355,10 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasConstraintName("translation_room_participants_translation_room_id_fkey");
         });
 
+        modelBuilder.HasPostgresEnum<RoomStatus>("translation_room", "room_status");
+        modelBuilder.HasPostgresEnum<TranslationRoomParticipantStatus>("translation_room", "participant_status");
+        modelBuilder.HasPostgresEnum<ArtifactType>("translation_room", "artifact_type");
+
         modelBuilder.Entity<UserSetting>(entity =>
         {
             entity
@@ -408,6 +372,72 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasMaxLength(15)
                 .HasColumnName("default_speak_language");
             entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
+        modelBuilder.Entity<TranslationRoomArtifact>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_artifacts_pkey");
+
+            entity.ToTable("translation_room_artifacts", "translation_room");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("public.uuid_generate_v7()")
+                .HasColumnName("id");
+
+            entity.Property(e => e.TranslationRoomId)
+                .HasColumnName("translation_room_id");
+
+            entity.Property(e => e.ArtifactType)
+                .HasColumnName("artifact_type");
+
+            entity.Property(e => e.FileUrl)
+                .HasMaxLength(500)
+                .HasColumnName("file_url");
+
+            entity.Property(e => e.FileFormat)
+                .HasMaxLength(20)
+                .HasColumnName("file_format");
+
+            entity.Property(e => e.FileSizeBytes)
+                .HasColumnName("file_size_bytes");
+
+            entity.Property(e => e.ContainsRawAudio)
+                .HasDefaultValue(false)
+                .HasColumnName("contains_raw_audio");
+
+            entity.Property(e => e.ContainsRawVideo)
+                .HasDefaultValue(false)
+                .HasColumnName("contains_raw_video");
+
+            entity.Property(e => e.ConsentRequired)
+                .HasDefaultValue(false)
+                .HasColumnName("consent_required");
+
+            entity.Property(e => e.RetentionUntil)
+                .HasColumnName("retention_until");
+
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.Property(e => e.CreatedBy)
+                .HasColumnName("created_by");
+
+            entity.Property(e => e.DeletedAt)
+                .HasColumnName("deleted_at");
+
+            entity.Property(e => e.DeletedBy)
+                .HasColumnName("deleted_by");
+
+            entity.HasOne(d => d.TranslationRoom)
+                .WithMany(p => p.TranslationRoomArtifacts)
+                .HasForeignKey(d => d.TranslationRoomId)
+                .HasConstraintName("translation_room_artifacts_translation_room_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

@@ -33,13 +33,18 @@ public partial class UserSetting
 
     public bool ShowTranslatedTranscript { get; set; }
 
-    public bool CompactParticipantList { get; set; }
-
     public bool HighContrast { get; set; }
 
     public bool ScreenReaderMode { get; set; }
 
     public DateTime UpdatedAt { get; set; }
 
-    public virtual User User { get; set; } = null!;
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
+    public Guid? UpdatedBy { get; set; }
+
+    public virtual User? UpdatedByNavigation { get; set; }
+
+    public virtual User? User { get; set; }
 }

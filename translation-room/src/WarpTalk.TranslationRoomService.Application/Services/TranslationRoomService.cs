@@ -281,7 +281,7 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>("Only the host can start the room.", ErrorCodes.Forbidden);
 
             if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
-                return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be started.", ErrorCodes.InvalidState);
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
             translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
             translationRoom.StartedAt ??= DateTime.UtcNow;
@@ -291,12 +291,8 @@ public class TranslationRoomService : ITranslationRoomService
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            await _audioRouteEventProcessor.ProcessEventAsync(
-                translationRoomId,
-                null,
-                AudioRoutingEventType.session_starts.ToString(),
-                "{}",
-                ct);
+            // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
+            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
             return Result.Success(translationRoom.ToResponseDto());
         }
@@ -386,6 +382,23 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.UpdatedBy = hostId;
 
             _translationRoomRepository.Update(translationRoom);
+
+            var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
+            if (participants != null)
+            {
+                var participantsToUpdate = participants
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .ToList();
+
+                foreach (var participant in participantsToUpdate)
+                {
+                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.UpdatedAt = DateTime.UtcNow;
+                    _participantRepository.Update(participant);
+                }
+            }
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(translationRoom.ToResponseDto());
@@ -456,7 +469,6 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status == nameof(RoomStatus.ENDED))
                 return Result.Success();
-
             if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS) && translationRoom.Status != nameof(RoomStatus.PAUSED))
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 

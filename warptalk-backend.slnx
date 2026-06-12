@@ -48,4 +48,11 @@
     <Project Path="translation-room/src/WarpTalk.TranslationRoomService.Domain/WarpTalk.TranslationRoomService.Domain.csproj" />
     <Project Path="translation-room/src/WarpTalk.TranslationRoomService.Infrastructure/WarpTalk.TranslationRoomService.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/workspace/" />
+  <Folder Name="/workspace/src/">
+    <Project Path="workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj" />
+    <Project Path="workspace/src/WarpTalk.WorkspaceService.Application/WarpTalk.WorkspaceService.Application.csproj" />
+    <Project Path="workspace/src/WarpTalk.WorkspaceService.Domain/WarpTalk.WorkspaceService.Domain.csproj" />
+    <Project Path="workspace/src/WarpTalk.WorkspaceService.Infrastructure/WarpTalk.WorkspaceService.Infrastructure.csproj" />
+  </Folder>
 </Solution>
