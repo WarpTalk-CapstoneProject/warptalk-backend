@@ -99,6 +99,7 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
         db.Database.ExecuteSqlRaw("CREATE EXTENSION IF NOT EXISTS pgcrypto;");
         db.Database.ExecuteSqlRaw("CREATE OR REPLACE FUNCTION public.uuidv7() RETURNS uuid AS $$ BEGIN RETURN gen_random_uuid(); END; $$ LANGUAGE plpgsql;");
+        db.Database.ExecuteSqlRaw("CREATE OR REPLACE FUNCTION public.uuid_generate_v7() RETURNS uuid AS $$ BEGIN RETURN gen_random_uuid(); END; $$ LANGUAGE plpgsql;");
         await db.Database.EnsureCreatedAsync();
 
         db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS translation_room;");

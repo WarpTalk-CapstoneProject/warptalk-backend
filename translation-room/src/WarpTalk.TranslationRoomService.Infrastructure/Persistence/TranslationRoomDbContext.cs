@@ -125,8 +125,7 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasColumnName("source_language");
             entity.Property(e => e.StartedAt).HasColumnName("started_at");
             entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'SCHEDULED'::room_status")
+                .HasDefaultValue(RoomStatus.SCHEDULED)
                 .HasColumnName("status");
             entity.Property(e => e.TargetLanguages)
                 .HasDefaultValueSql("'[]'::jsonb")

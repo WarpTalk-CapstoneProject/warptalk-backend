@@ -31,6 +31,8 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
             claims.Add(new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()));
         }
 
+        claims.Add(new Claim("email_verified", "true"));
+
         var identity = new ClaimsIdentity(claims, "Test");
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, "Test");

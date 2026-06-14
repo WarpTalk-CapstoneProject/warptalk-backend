@@ -56,7 +56,7 @@ public class AudioRouteCacheServiceTests
         var room = new TranslationRoom
         {
             Id = roomId,
-            Status = RoomStatus.IN_PROGRESS.ToString()
+            Status = RoomStatus.IN_PROGRESS
         };
 
         _mockRouteRepository.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))

@@ -77,7 +77,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // 1. Determine initial status
-            var status = request.ScheduledAt.HasValue ? nameof(RoomStatus.SCHEDULED) : nameof(RoomStatus.WAITING);
+            var status = request.ScheduledAt.HasValue ? RoomStatus.SCHEDULED : RoomStatus.WAITING;
 
             // 2. Generate unique 12-char alphanumeric TranslationRoomCode
             string roomCode;
@@ -251,10 +251,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED))
+            if (translationRoom.Status != RoomStatus.SCHEDULED)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToWaiting, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.WAITING);
+            translationRoom.Status = RoomStatus.WAITING;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -280,10 +280,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure<TranslationRoomDto>("Only the host can start the room.", ErrorCodes.Forbidden);
 
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
+            translationRoom.Status = RoomStatus.IN_PROGRESS;
             translationRoom.StartedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
@@ -311,10 +311,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS))
+            if (translationRoom.Status != RoomStatus.IN_PROGRESS)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.PAUSED);
+            translationRoom.Status = RoomStatus.PAUSED;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -340,10 +340,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
             
-            if (translationRoom.Status != nameof(RoomStatus.PAUSED))
+            if (translationRoom.Status != RoomStatus.PAUSED)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.IN_PROGRESS);
+            translationRoom.Status = RoomStatus.IN_PROGRESS;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -373,10 +373,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure<TranslationRoomDto>("Only the host can cancel the room.", ErrorCodes.Forbidden);
 
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure<TranslationRoomDto>("Only scheduled or waiting rooms can be cancelled.", ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.CANCELLED);
+            translationRoom.Status = RoomStatus.CANCELLED;
             translationRoom.EndedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
             translationRoom.UpdatedBy = hostId;
@@ -418,13 +418,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             
             // Idempotent check
-            if (translationRoom.Status == nameof(RoomStatus.EXPIRED))
+            if (translationRoom.Status == RoomStatus.EXPIRED)
                 return Result.Success();
 
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToExpired, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.EXPIRED);
+            translationRoom.Status = RoomStatus.EXPIRED;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
@@ -467,12 +467,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status == nameof(RoomStatus.ENDED))
+            if (translationRoom.Status == RoomStatus.ENDED)
                 return Result.Success();
-            if (translationRoom.Status != nameof(RoomStatus.IN_PROGRESS) && translationRoom.Status != nameof(RoomStatus.PAUSED))
+            if (translationRoom.Status != RoomStatus.IN_PROGRESS && translationRoom.Status != RoomStatus.PAUSED)
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToEnded, ErrorCodes.InvalidState);
 
-            translationRoom.Status = nameof(RoomStatus.ENDED);
+            translationRoom.Status = RoomStatus.ENDED;
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
@@ -525,7 +525,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.HostId != hostId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != nameof(RoomStatus.SCHEDULED) && translationRoom.Status != nameof(RoomStatus.WAITING))
+            if (translationRoom.Status != RoomStatus.SCHEDULED && translationRoom.Status != RoomStatus.WAITING)
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
             // WT-65: Update and Validate Source Language
@@ -580,7 +580,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
-            var historyRequest = request with { Status = request.Status ?? $"{nameof(RoomStatus.ENDED)},{nameof(RoomStatus.CANCELLED)}" };
+            var historyRequest = request with { Status = request.Status ?? $"{RoomStatus.ENDED},{RoomStatus.CANCELLED}" };
             var query = ApplyRoomFilters(BuildAccessibleRoomsQuery(userId), historyRequest)
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
@@ -656,7 +656,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, ct))
                 return Result.Failure<TranslationRoomFeedbackStateDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (room.Status != nameof(RoomStatus.ENDED))
+            if (room.Status != RoomStatus.ENDED)
                 return Result.Failure<TranslationRoomFeedbackStateDto>("Feedback is only available after a room ends.", ErrorCodes.InvalidState);
 
             var feedback = await _unitOfWork.Repository<TranslationRoomFeedback>()
@@ -679,7 +679,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, ct))
                 return Result.Failure<TranslationRoomFeedbackDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (room.Status != nameof(RoomStatus.ENDED))
+            if (room.Status != RoomStatus.ENDED)
                 return Result.Failure<TranslationRoomFeedbackDto>("Feedback is only available after a room ends.", ErrorCodes.InvalidState);
 
             var feedbackRepository = _unitOfWork.Repository<TranslationRoomFeedback>();
@@ -727,9 +727,11 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var statuses = request.Status
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(s => s.ToUpperInvariant())
+                .Select(s => Enum.TryParse<RoomStatus>(s, true, out var parsedStatus) ? parsedStatus : (RoomStatus?)null)
+                .Where(s => s.HasValue)
+                .Select(s => s!.Value)
                 .ToList();
-            query = query.Where(r => statuses.Contains(r.Status.ToUpper()));
+            query = query.Where(r => statuses.Contains(r.Status));
         }
 
         if (!string.IsNullOrWhiteSpace(request.Search))
@@ -771,7 +773,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.Title,
             room.Description,
             room.TranslationRoomCode,
-            room.Status,
+            room.Status.ToString(),
             Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,

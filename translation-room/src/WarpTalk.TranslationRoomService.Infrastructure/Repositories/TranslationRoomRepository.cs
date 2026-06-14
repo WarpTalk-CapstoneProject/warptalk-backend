@@ -23,7 +23,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         {
             foreach (var status in excludedStatuses)
             {
-                query = query.Where(r => r.Status != status);
+                if (Enum.TryParse<WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus>(status, true, out var roomStatus))
+            {
+                query = query.Where(r => r.Status != roomStatus);
+            }
             }
         }
 
@@ -38,7 +41,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         {
             foreach (var status in excludedStatuses)
             {
-                query = query.Where(r => r.Status != status);
+                if (Enum.TryParse<WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus>(status, true, out var roomStatus))
+            {
+                query = query.Where(r => r.Status != roomStatus);
+            }
             }
         }
 
@@ -52,7 +58,7 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         var query = _dbSet
             .Include(r => r.TranslationRoomParticipants)
             .Include(r => r.TranslationRoomArtifacts)
-            .Where(r => (r.Status == "ENDED" || r.Status == "CANCELLED" || r.Status == "EXPIRED") && r.DeletedAt == null &&
+            .Where(r => (r.Status == WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus.ENDED || r.Status == WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus.CANCELLED || r.Status == WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus.EXPIRED) && r.DeletedAt == null &&
                         (r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)))
             .OrderByDescending(r => r.CreatedAt)
             .Skip(offset)
