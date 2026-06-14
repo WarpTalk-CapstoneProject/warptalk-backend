@@ -40,7 +40,7 @@ public partial class TranslationRoom
 
     public string TranslationRoomCode { get; set; } = null!;
 
-    public string Status { get; set; } = null!;
+    public RoomStatus Status { get; set; }
 
     public string TranslationRoomType { get; set; } = null!;
 

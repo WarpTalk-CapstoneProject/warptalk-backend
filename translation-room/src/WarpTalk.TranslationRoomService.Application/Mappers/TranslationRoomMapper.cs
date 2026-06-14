@@ -29,7 +29,7 @@ public static class TranslationRoomMapper
             room.Title,
             room.Description,
             room.TranslationRoomCode,
-            room.Status,
+            room.Status.ToString(),
             string.IsNullOrEmpty(room.TranslationRoomType) ? TranslationRoomType.INSTANT : Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,
@@ -43,7 +43,7 @@ public static class TranslationRoomMapper
         );
     }
 
-    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
+    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, RoomStatus status, string sourceLanguage, List<string> targetLanguages)
     {
         return new TranslationRoom
         {
@@ -85,7 +85,7 @@ public static class TranslationRoomMapper
             room.Title,
             room.Description,
             room.TranslationRoomCode,
-            room.Status,
+            room.Status.ToString(),
             string.IsNullOrEmpty(room.TranslationRoomType) ? TranslationRoomType.INSTANT : Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
             room.MaxParticipants,
             room.SourceLanguage,
