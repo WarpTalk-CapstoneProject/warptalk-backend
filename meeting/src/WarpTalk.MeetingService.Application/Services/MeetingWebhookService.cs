@@ -134,6 +134,13 @@ public class MeetingWebhookService : IMeetingWebhookService
         if (participant != null)
         {
             participant.LeftAt = DateTime.UtcNow;
+            participant.IsActive = false; // Add IsActive tracking for webhook disconnect
+        }
+
+        // "No Active Host" logic: if the host left, clear the ActiveHostId
+        if (room.ActiveHostId.ToString() == identity)
+        {
+            room.ActiveHostId = null;
         }
     }
 
@@ -157,7 +164,7 @@ public class MeetingWebhookService : IMeetingWebhookService
             {
                 MeetingParticipantId = participant.Id,
                 ProviderTrackId = trackId ?? string.Empty,
-                MediaType = kind == "video" ? MediaType.Video : MediaType.Audio,
+                MediaType = (kind == "video" ? MediaType.Video : MediaType.Audio).ToString(),
                 PublishedAt = DateTime.UtcNow
             };
             await _unitOfWork.MeetingTrackRepository.AddAsync(track);
@@ -210,7 +217,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         
         if (room != null)
         {
-            room.Status = MeetingStatus.Finished;
+            room.Status = MeetingStatus.Finished.ToString();
             room.EndedAt = DateTime.UtcNow;
         }
     }

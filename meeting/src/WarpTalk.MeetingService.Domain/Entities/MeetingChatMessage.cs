@@ -1,29 +1,47 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
 
-public class MeetingChatMessage
+public partial class MeetingChatMessage
 {
     public Guid Id { get; set; }
+
     public Guid MeetingRoomId { get; set; }
+
     public Guid WorkspaceId { get; set; }
+
     public Guid? SenderUserId { get; set; }
+
     public Guid? ParticipantId { get; set; }
+
     public string SenderDisplayName { get; set; } = null!;
+
     public string SenderType { get; set; } = null!;
+
     public string MessageType { get; set; } = null!;
+
     public string OriginalLanguage { get; set; } = null!;
+
     public string OriginalText { get; set; } = null!;
+
     public bool TranslationEnabled { get; set; }
-    public bool ContainsWarpbotMention { get; set; }
+
     public bool IsHidden { get; set; }
+
     public DateTime CreatedAt { get; set; }
+
     public DateTime? UpdatedAt { get; set; }
 
-    public virtual MeetingRoom MeetingRoom { get; set; } = null!;
-    public virtual MeetingParticipant? Participant { get; set; }
-    public virtual ICollection<MeetingChatTranslation> MeetingChatTranslations { get; set; } = new List<MeetingChatTranslation>();
+    public string Mentions { get; set; } = null!;
+
     public virtual ICollection<MeetingChatAssistantRequest> MeetingChatAssistantRequests { get; set; } = new List<MeetingChatAssistantRequest>();
+
     public virtual ICollection<MeetingChatModerationEvent> MeetingChatModerationEvents { get; set; } = new List<MeetingChatModerationEvent>();
+
+    public virtual ICollection<MeetingChatTranslation> MeetingChatTranslations { get; set; } = new List<MeetingChatTranslation>();
+
+    public virtual MeetingRoom MeetingRoom { get; set; } = null!;
+
+    public virtual MeetingParticipant? Participant { get; set; }
 }

@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package workspace_invitation;
+
+service WorkspaceInvitationService {
+  rpc VerifyInvitationToken (VerifyInvitationTokenRequest) returns (VerifyInvitationTokenResponse);
+  rpc AcceptInvitation (AcceptInvitationRequest) returns (AcceptInvitationResponse);
+}
+
+message VerifyInvitationTokenRequest {
+  string token = 1;
+}
+
+message VerifyInvitationTokenResponse {
+  bool is_valid = 1;
+  string email = 2;
+  string workspace_id = 3;
+  string workspace_name = 4;
+  string role_id = 5;
+  string role_name = 6;
+  string membership_type = 7;
+  string error_message = 8;
+}
+
+message AcceptInvitationRequest {
+  string token = 1;
+  string user_id = 2;
+  string email = 3;
+}
+
+message AcceptInvitationResponse {
+  bool success = 1;
+  string error_message = 2;
+}

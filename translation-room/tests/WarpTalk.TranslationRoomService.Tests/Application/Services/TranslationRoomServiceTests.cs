@@ -175,7 +175,7 @@ public class TranslationRoomServiceTests
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be(nameof(RoomStatus.IN_PROGRESS));
         room.StartedAt.Should().NotBeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
@@ -206,8 +206,8 @@ public class TranslationRoomServiceTests
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Should().Be("Only scheduled or waiting rooms can be started.");
+        result.IsSuccess.Should().BeFalse(result.Error);
+        result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToStart);
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
     }
 
@@ -301,6 +301,4 @@ public class TranslationRoomServiceTests
         participant3.Status.Should().Be(nameof(TranslationRoomParticipantStatus.INVITED)); // unchanged
         _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
     }
-
-
 }

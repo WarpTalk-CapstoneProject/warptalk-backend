@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
 
-public class MeetingParticipant
+public partial class MeetingParticipant
 {
     public Guid Id { get; set; }
 
@@ -30,6 +30,8 @@ public class MeetingParticipant
     public DateTime? JoinedAt { get; set; }
 
     public DateTime? LeftAt { get; set; }
+
+    public virtual ICollection<MeetingChatMessage> MeetingChatMessages { get; set; } = new List<MeetingChatMessage>();
 
     public virtual MeetingRoom MeetingRoom { get; set; } = null!;
 

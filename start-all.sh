@@ -25,6 +25,7 @@ NC='\033[0m'
 # Service definitions: name|cwd|port
 SERVICES=(
     "auth|auth/src/WarpTalk.AuthService.API|5101"
+    "workspace|workspace/src/WarpTalk.WorkspaceService.API|5106"
     "translation-room|translation-room/src/WarpTalk.TranslationRoomService.API|5102"
     "transcript|transcript/src/WarpTalk.TranscriptService.API|5103"
     "notification|notification/src/WarpTalk.NotificationService.API|5104"
@@ -39,6 +40,7 @@ print_banner() {
     echo "║  PostgreSQL  (Docker)         → localhost:5432       ║"
     echo "║  Redis       (Docker)         → localhost:6379       ║"
     echo "║  Auth        (REST+gRPC)      → :5101 / :50051      ║"
+    echo "║  Workspace   (REST+gRPC)      → :5106 / :50056      ║"
     echo "║  TranslationRoom(REST+gRPC)   → :5102 / :50052      ║"
     echo "║  Transcript  (REST+gRPC)      → :5103 / :50053      ║"
     echo "║  Notification (REST)          → :5104 / :50054      ║"
@@ -53,7 +55,7 @@ print_banner() {
 
 kill_ports() {
     echo -e "${YELLOW}🧹 Cleaning up occupied ports...${NC}"
-    for port in 5101 5102 5103 5104 5200 50051 50052 50053 50054; do
+    for port in 5101 5102 5103 5104 5105 5106 5200 50051 50052 50053 50054 50055 50056; do
         local pids
         pids=$(lsof -ti :"$port" 2>/dev/null || true)
         if [[ -n "$pids" ]]; then
@@ -163,8 +165,8 @@ start_services_bg() {
         echo -e "   ${GREEN}PID: $pid → log: $LOG_DIR/${name}.log${NC}"
 
         # Small delay between services for startup ordering
-        if [[ "$name" == "auth" ]]; then
-            sleep 3  # Auth must be ready before others connect via gRPC
+        if [[ "$name" == "auth" ]] || [[ "$name" == "workspace" ]]; then
+            sleep 3  # Auth/Workspace must be ready before others connect via gRPC
         else
             sleep 1
         fi

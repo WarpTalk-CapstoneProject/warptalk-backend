@@ -70,7 +70,8 @@ public class MeetingChatService : IMeetingChatService
         var dto = message.ToDto();
         await _chatNotifier.BroadcastMessageReceivedAsync(roomId, dto, ct);
         
-        if (request.ContainsWarpbotMention)
+        var agentMentions = request.Mentions.Where(m => m.Type == "agent").ToList();
+        if (agentMentions.Any())
         {
             var assistantRequest = new MeetingChatAssistantRequest
             {
@@ -79,7 +80,7 @@ public class MeetingChatService : IMeetingChatService
                 MeetingRoomId = roomId,
                 WorkspaceId = workspaceId,
                 RequestedByUserId = userId,
-                Prompt = request.OriginalText, // or extract prompt from mention
+                Prompt = request.OriginalText, // Extract prompt from mention if needed
                 ContextScope = "recent_messages",
                 Status = "pending",
                 CreatedAt = DateTime.UtcNow
@@ -94,7 +95,8 @@ public class MeetingChatService : IMeetingChatService
                 RoomId = roomId,
                 MessageId = message.Id,
                 UserId = userId,
-                Prompt = assistantRequest.Prompt
+                Prompt = assistantRequest.Prompt,
+                AgentIds = agentMentions.Select(m => m.Id).ToArray()
             });
         }
         else if (request.TranslationEnabled)
