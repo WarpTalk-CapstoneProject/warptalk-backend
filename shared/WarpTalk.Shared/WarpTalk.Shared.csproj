@@ -30,6 +30,7 @@
     <Protobuf Include="Protos\notification.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\billing.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\workspace_invitation.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos\meeting.proto" GrpcServices="Both" />
   </ItemGroup>
 
 </Project>

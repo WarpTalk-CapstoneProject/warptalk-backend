@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Text.Json;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Domain.Entities;
 
@@ -19,7 +21,7 @@ public static class MeetingChatMapper
             OriginalLanguage = entity.OriginalLanguage,
             OriginalText = entity.OriginalText,
             TranslationEnabled = entity.TranslationEnabled,
-            ContainsWarpbotMention = entity.ContainsWarpbotMention,
+            Mentions = string.IsNullOrEmpty(entity.Mentions) ? new List<ChatMentionDto>() : JsonSerializer.Deserialize<List<ChatMentionDto>>(entity.Mentions, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<ChatMentionDto>(),
             CreatedAt = entity.CreatedAt
         };
     }
@@ -44,7 +46,7 @@ public static class MeetingChatMapper
             OriginalLanguage = request.OriginalLanguage,
             OriginalText = request.OriginalText,
             TranslationEnabled = request.TranslationEnabled,
-            ContainsWarpbotMention = request.ContainsWarpbotMention,
+            Mentions = request.Mentions == null ? "[]" : JsonSerializer.Serialize(request.Mentions, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
             IsHidden = false,
             CreatedAt = DateTime.UtcNow
         };

@@ -19,6 +19,25 @@ public class MeetingChatHub : Hub
 
     public async Task JoinMeetingChat(Guid roomId)
     {
+        var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userIdString))
+        {
+            throw new HubException("Unauthorized");
+        }
+
+        // Validate Participant is active
+        var unitOfWork = Context.GetHttpContext()?.RequestServices.GetService(typeof(WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork)) as WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork;
+        if (unitOfWork != null)
+        {
+            var participant = await unitOfWork.MeetingParticipantRepository
+                .FirstOrDefaultAsync(p => p.MeetingRoomId == roomId && p.ProviderIdentity == userIdString);
+
+            if (participant == null || !participant.IsActive)
+            {
+                throw new HubException("Forbidden: You are not an active participant in this room.");
+            }
+        }
+
         var groupName = GetRoomGroupName(roomId);
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
     }

@@ -21,8 +21,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
 
         if (excludedStatuses != null && excludedStatuses.Any())
         {
-            var statusList = excludedStatuses.ToList();
-            query = query.Where(r => !statusList.Contains(r.Status));
+            foreach (var status in excludedStatuses)
+            {
+                query = query.Where(r => r.Status != status);
+            }
         }
 
         return await query.AnyAsync(cancellationToken);
@@ -34,8 +36,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
 
         if (excludedStatuses != null && excludedStatuses.Any())
         {
-            var statusList = excludedStatuses.ToList();
-            query = query.Where(r => !statusList.Contains(r.Status));
+            foreach (var status in excludedStatuses)
+            {
+                query = query.Where(r => r.Status != status);
+            }
         }
 
         return await query.FirstOrDefaultAsync(cancellationToken);
@@ -48,7 +52,7 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
         var query = _dbSet
             .Include(r => r.TranslationRoomParticipants)
             .Include(r => r.TranslationRoomArtifacts)
-            .Where(r => terminalStatuses.Contains(r.Status) && r.DeletedAt == null &&
+            .Where(r => (r.Status == "ENDED" || r.Status == "CANCELLED" || r.Status == "EXPIRED") && r.DeletedAt == null &&
                         (r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)))
             .OrderByDescending(r => r.CreatedAt)
             .Skip(offset)

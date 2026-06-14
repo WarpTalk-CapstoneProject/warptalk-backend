@@ -56,7 +56,7 @@ public class MeetingChatServiceTests
         Id = _roomId,
         TranslationRoomId = Guid.NewGuid(),
         ProviderRoomName = "test-room",
-        Status = MeetingStatus.Active,
+        Status = MeetingStatus.Active.ToString(),
         IsActive = true,
         CreatedBy = createdBy ?? _hostId,
         CreatedAt = DateTime.UtcNow
@@ -161,7 +161,10 @@ public class MeetingChatServiceTests
         {
             OriginalText = "@WarpBot summarize",
             OriginalLanguage = "en",
-            ContainsWarpbotMention = true
+            Mentions = new List<ChatMentionDto> 
+            {
+                new ChatMentionDto { Id = "warpbot", Display = "WarpBot", Type = "agent" }
+            }
         };
 
         var result = await _sut.SendMessageAsync(_roomId, _userId, request);

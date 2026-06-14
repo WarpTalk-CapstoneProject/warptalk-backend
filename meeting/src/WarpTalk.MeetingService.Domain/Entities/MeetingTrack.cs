@@ -1,9 +1,9 @@
-using System;
-using WarpTalk.MeetingService.Domain.Enums;
+﻿using System;
+using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
 
-public class MeetingTrack
+public partial class MeetingTrack
 {
     public Guid Id { get; set; }
 
@@ -11,7 +11,7 @@ public class MeetingTrack
 
     public string ProviderTrackId { get; set; } = null!;
 
-    public MediaType MediaType { get; set; }
+    public string MediaType { get; set; } = null!;
 
     public bool IsMuted { get; set; }
 

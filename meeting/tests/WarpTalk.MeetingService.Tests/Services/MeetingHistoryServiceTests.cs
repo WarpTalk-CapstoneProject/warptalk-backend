@@ -44,7 +44,7 @@ public class MeetingHistoryServiceTests
         Id = id ?? _roomId,
         TranslationRoomId = Guid.NewGuid(),
         ProviderRoomName = "test-room",
-        Status = MeetingStatus.Finished,
+        Status = MeetingStatus.Finished.ToString(),
         IsActive = true,
         CreatedBy = createdBy ?? _userId,
         CreatedAt = DateTime.UtcNow.AddHours(-1),
