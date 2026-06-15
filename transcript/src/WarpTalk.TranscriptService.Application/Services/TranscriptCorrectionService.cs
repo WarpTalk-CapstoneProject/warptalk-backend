@@ -62,7 +62,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             var correction = dto.ToEntity(segmentId);
 
             segment.IsCorrected = true;
-            if (dto.CorrectionType == CorrectionType.Stt)
+            if (dto.CorrectionType?.Equals("STT", StringComparison.OrdinalIgnoreCase) == true)
             {
                 segment.OriginalText = dto.CorrectedText;
             }

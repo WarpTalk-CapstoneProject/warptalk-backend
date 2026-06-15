@@ -13,7 +13,7 @@ public static class ArtifactMapper
         {
             Id = Guid.NewGuid(),
             TranslationRoomId = request.RoomId,
-            ArtifactType = request.ArtifactType.ToString(),
+            ArtifactType = request.ArtifactType ?? "TRANSCRIPT",
             FileUrl = request.FileUrl,
             FileFormat = request.FileFormat,
             FileSizeBytes = request.SizeBytes,
@@ -30,7 +30,7 @@ public static class ArtifactMapper
     {
         return new RoomArtifactDto(
             artifact.Id,
-            Enum.Parse<ArtifactType>(artifact.ArtifactType, true),
+            artifact.ArtifactType,
             artifact.FileFormat,
             artifact.FileSizeBytes,
             artifact.ContainsRawAudio,

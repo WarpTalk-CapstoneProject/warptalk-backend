@@ -764,7 +764,7 @@ public class TranslationRoomService : ITranslationRoomService
     {
         var settings = !string.IsNullOrEmpty(room.Settings)
             ? JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings)
-            : new RoomSettingsResponse(true, WarpTalk.TranslationRoomService.Domain.Enums.ArtifactAccessLevel.HostOnly);
+            : new RoomSettingsResponse(true, "HOST_ONLY");
 
         return new TranslationRoomListItemDto(
             room.Id,
@@ -774,7 +774,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.Description,
             room.TranslationRoomCode,
             room.Status.ToString(),
-            Enum.Parse<TranslationRoomType>(room.TranslationRoomType, true),
+            room.TranslationRoomType,
             room.MaxParticipants,
             room.SourceLanguage,
             LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
@@ -783,7 +783,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.EndedAt,
             room.DurationSeconds,
             room.CreatedAt,
-            settings ?? new RoomSettingsResponse(true, WarpTalk.TranslationRoomService.Domain.Enums.ArtifactAccessLevel.HostOnly),
+            settings ?? new RoomSettingsResponse(true, "HOST_ONLY"),
             room.TranslationRoomParticipants.Count,
             room.HostId == userId
         );

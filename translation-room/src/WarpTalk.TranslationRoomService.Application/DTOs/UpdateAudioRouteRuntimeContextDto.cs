@@ -5,5 +5,5 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 
 public record UpdateAudioRouteRuntimeContextDto(
     string? StreamId,
-    AudioRouteStatus? Status
+    string? Status
 );
