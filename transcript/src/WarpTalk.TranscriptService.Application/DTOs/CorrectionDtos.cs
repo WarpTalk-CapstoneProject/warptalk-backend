@@ -17,7 +17,7 @@ public record CreateCorrectionDto(
     string CorrectedText,
     
     [Required(ErrorMessage = "CorrectionType is required.")] 
-    CorrectionType CorrectionType
+    string CorrectionType
 );
 
 public record TranscriptCorrectionDto(
@@ -26,8 +26,8 @@ public record TranscriptCorrectionDto(
     Guid UserId,
     string OriginalText,
     string CorrectedText,
-    CorrectionType CorrectionType,
-    CorrectionStatus Status,
+    string CorrectionType,
+    string Status,
     bool TriggeredRetranslation,
     Guid? ReviewedBy,
     DateTime? ReviewedAt,

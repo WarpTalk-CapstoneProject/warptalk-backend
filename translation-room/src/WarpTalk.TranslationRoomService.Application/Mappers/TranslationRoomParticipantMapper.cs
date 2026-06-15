@@ -75,7 +75,7 @@ public static class TranslationRoomParticipantMapper
             participant.TranslationRoomId,
             participant.UserId.GetValueOrDefault(),
             participant.DisplayName,
-            Enum.Parse<TranslationRoomParticipantRole>(participant.Role, true),
+            participant.Role,
             participant.ListenLanguage,
             participant.SpeakLanguage,
             participant.Status,

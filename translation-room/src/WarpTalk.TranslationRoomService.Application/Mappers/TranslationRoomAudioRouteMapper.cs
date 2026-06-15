@@ -38,35 +38,10 @@ public static class TranslationRoomAudioRouteMapper
             entity.TargetLanguage,
             entity.VoiceCloneEnabled,
             entity.StreamId,
-            ParseStatus(entity.Status),
+            entity.Status,
             entity.StartedAt,
             entity.EndedAt,
             entity.CreatedAt
         );
-    }
-
-    private static AudioRouteStatus ParseStatus(string? status)
-    {
-        if (Enum.TryParse<AudioRouteStatus>(status, true, out var parsed))
-        {
-            return parsed;
-        }
-
-        return status?.ToUpperInvariant() switch
-        {
-            "IDLE" => AudioRouteStatus.PENDING,
-            "ROUTING_READY" => AudioRouteStatus.READY,
-            "AUDIO_ROUTING_ACTIVE" => AudioRouteStatus.BROADCASTING,
-            "AUDIO_ROUTING_PAUSED" => AudioRouteStatus.PAUSED,
-            "STT_DEGRADED" => AudioRouteStatus.SPEECH_DELAYED,
-            "TRANSLATION_DEGRADED" => AudioRouteStatus.TRANSLATION_DELAYED,
-            "TTS_DEGRADED" => AudioRouteStatus.VOICE_DELAYED,
-            "VOICE_CLONE_FALLBACK" => AudioRouteStatus.STANDARD_VOICE,
-            "TEXT_ONLY_MODE" => AudioRouteStatus.CAPTION_ONLY,
-            "STOPPING" => AudioRouteStatus.ENDING,
-            "FINALIZING_ARTIFACTS" => AudioRouteStatus.SAVING_OUTPUTS,
-            "FINALIZING_ARTIFACTS_FAILED" => AudioRouteStatus.SAVE_FAILED,
-            _ => AudioRouteStatus.PENDING
-        };
     }
 }

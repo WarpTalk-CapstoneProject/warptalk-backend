@@ -21,7 +21,7 @@ public record TranslationRoomParticipantDto(
     Guid TranslationRoomId,
     Guid UserId,
     string DisplayName,
-    TranslationRoomParticipantRole Role,
+    string Role,
     string ListenLanguage,
     string SpeakLanguage,
     string Status,

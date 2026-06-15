@@ -202,10 +202,10 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 updated = true;
             }
 
-            if (dto.Status.HasValue && route.Status != dto.Status.Value.ToString())
+            if (dto.Status != null && route.Status != dto.Status)
             {
-                route.Status = dto.Status.Value.ToString();
-                if (dto.Status.Value == AudioRouteStatus.BROADCASTING)
+                route.Status = dto.Status;
+                if (dto.Status == AudioRouteStatus.BROADCASTING.ToString())
                 {
                     route.StartedAt = DateTime.UtcNow;
                 }

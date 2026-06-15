@@ -9,12 +9,12 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record RoomSettingsRequest(
     bool RequiresApproval = true,
-    ArtifactAccessLevel ArtifactAccess = ArtifactAccessLevel.HostOnly
+    string ArtifactAccess = "HOST_ONLY"
 );
 
 public record RoomSettingsResponse(
     bool RequiresApproval,
-    ArtifactAccessLevel ArtifactAccess
+    string ArtifactAccess
 );
 
 public record UpdateRoomSettingsRequest(
@@ -36,7 +36,7 @@ public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
     [Required] string Title,
     string? Description,
-    TranslationRoomType TranslationRoomType, // e.g., Instant, Scheduled
+    string TranslationRoomType, // e.g., Instant, Scheduled
     int MaxParticipants,
     string? SourceLanguage,
     List<string>? TargetLanguages,
@@ -59,7 +59,7 @@ public record TranslationRoomDto(
     string? Description,
     [StringLength(12)] string TranslationRoomCode,
     string Status,
-    TranslationRoomType TranslationRoomType,
+    string TranslationRoomType,
     int MaxParticipants,
     string SourceLanguage,
     List<string> TargetLanguages,
@@ -80,7 +80,7 @@ public record TranslationRoomListItemDto(
     string? Description,
     [StringLength(12)] string TranslationRoomCode,
     string Status,
-    TranslationRoomType TranslationRoomType,
+    string TranslationRoomType,
     int MaxParticipants,
     string SourceLanguage,
     List<string> TargetLanguages,
@@ -108,7 +108,7 @@ public record JoinTranslationRoomResponse(
 
 public record RoomArtifactDto(
     Guid Id,
-    ArtifactType ArtifactType,
+    string ArtifactType,
     string? FileFormat,
     long? FileSizeBytes,
     bool ContainsRawAudio,
@@ -137,7 +137,7 @@ public record TranslationRoomArtifactDto(
 
 public record CreateArtifactRequest(
     Guid RoomId,
-    ArtifactType ArtifactType,
+    string ArtifactType,
     string FileUrl,
     string FileFormat,
     long SizeBytes,

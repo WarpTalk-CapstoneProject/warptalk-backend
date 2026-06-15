@@ -12,7 +12,7 @@ public record TranslationRoomAudioRouteDto(
     string TargetLanguage,
     bool VoiceCloneEnabled,
     string? StreamId,
-    AudioRouteStatus Status,
+    string Status,
     DateTime StartedAt,
     DateTime? EndedAt,
     DateTime CreatedAt
