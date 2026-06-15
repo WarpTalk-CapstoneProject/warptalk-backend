@@ -49,7 +49,7 @@ public class AudioRouteCacheServiceTests
                 SourceLanguage = "en",
                 TargetLanguage = "vi",
                 VoiceCloneEnabled = true,
-                Status = AudioRouteStatus.READY.ToString()
+                Status = "READY".ToString()
             }
         };
 
@@ -70,7 +70,7 @@ public class AudioRouteCacheServiceTests
 
         // Assert
         result.Should().HaveCount(1);
-        result[0].Status.Should().Be(AudioRouteStatus.READY);
+        result[0].Status.Should().Be("READY");
 
         _mockRedisStateRepo.Verify(r => r.StringSetAsync(
             It.Is<string>(k => k == $"translationRoom:{roomId}:audio_routes"),

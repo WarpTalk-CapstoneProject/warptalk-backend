@@ -56,7 +56,7 @@ public class TranslationRoomServiceTests
             HostId = hostId, 
             TranslationRoomCode = roomCode,
             Status = "WAITING",
-            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            TranslationRoomType = "INSTANT".ToString(),
             Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}"
         };
 
@@ -72,8 +72,8 @@ public class TranslationRoomServiceTests
 
         // Assert
         result.IsSuccess.Should().BeTrue();
-        result.Value!.Participant.Role.Should().Be(TranslationRoomParticipantRole.HOST);
-        _mockParticipantRepo.Verify(p => p.AddAsync(It.Is<TranslationRoomParticipant>(pt => pt.Role == TranslationRoomParticipantRole.HOST.ToString()), It.IsAny<CancellationToken>()), Times.Once);
+        result.Value!.Participant.Role.Should().Be("HOST");
+        _mockParticipantRepo.Verify(p => p.AddAsync(It.Is<TranslationRoomParticipant>(pt => pt.Role == "HOST".ToString()), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -87,7 +87,7 @@ public class TranslationRoomServiceTests
             Id = Guid.NewGuid(), 
             TranslationRoomCode = roomCode,
             Status = "ENDED",
-            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            TranslationRoomType = "INSTANT".ToString(),
             Settings = "{\"requires_approval\":true,\"history_access\":\"HostOnly\"}"
         };
 
@@ -117,7 +117,7 @@ public class TranslationRoomServiceTests
             TranslationRoomCode = roomCode,
             Status = "WAITING",
             HostId = Guid.NewGuid(),
-            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            TranslationRoomType = "INSTANT".ToString(),
             Settings = "{\"requires_approval\":false}"
         };
 
@@ -127,8 +127,8 @@ public class TranslationRoomServiceTests
             TranslationRoomId = roomId,
             UserId = userId,
             DisplayName = "Old Name",
-            Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
-            Status = nameof("INVITED")
+            Role = "PARTICIPANT".ToString(),
+            Status = "INVITED"
         };
 
         var request = new JoinTranslationRoomRequest(roomCode, "New Name", "fr", "es");
@@ -146,7 +146,7 @@ public class TranslationRoomServiceTests
         existingParticipant.DisplayName.Should().Be("New Name");
         existingParticipant.SpeakLanguage.Should().Be("fr");
         existingParticipant.ListenLanguage.Should().Be("es");
-        existingParticipant.Status.Should().Be(nameof("CONNECTED"));
+        existingParticipant.Status.Should().Be("CONNECTED");
         _mockParticipantRepo.Verify(p => p.Update(existingParticipant), Times.Once);
     }
 
@@ -163,7 +163,7 @@ public class TranslationRoomServiceTests
             Title = "Test room",
             TranslationRoomCode = "ABC-DEF-GHI",
             Status = "WAITING",
-            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            TranslationRoomType = "INSTANT".ToString(),
             MaxParticipants = 10,
             SourceLanguage = "vi",
             TargetLanguages = "[\"en\"]",
@@ -194,7 +194,7 @@ public class TranslationRoomServiceTests
             Title = "Ended room",
             TranslationRoomCode = "ABC-DEF-GHI",
             Status = "ENDED",
-            TranslationRoomType = TranslationRoomType.INSTANT.ToString(),
+            TranslationRoomType = "INSTANT".ToString(),
             MaxParticipants = 10,
             SourceLanguage = "vi",
             TargetLanguages = "[\"en\"]",
@@ -283,9 +283,9 @@ public class TranslationRoomServiceTests
         var hostId = Guid.NewGuid();
         var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", StartedAt = DateTime.UtcNow, Settings = "{\"requires_approval\":true}" };
 
-        var participant1 = new TranslationRoomParticipant { Status = nameof("CONNECTED") };
-        var participant2 = new TranslationRoomParticipant { Status = nameof("WAITING") };
-        var participant3 = new TranslationRoomParticipant { Status = nameof("INVITED") };
+        var participant1 = new TranslationRoomParticipant { Status = "CONNECTED" };
+        var participant2 = new TranslationRoomParticipant { Status = "WAITING" };
+        var participant3 = new TranslationRoomParticipant { Status = "INVITED" };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
         _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default))
@@ -296,9 +296,9 @@ public class TranslationRoomServiceTests
 
         // Assert
         result.IsSuccess.Should().BeTrue();
-        participant1.Status.Should().Be(nameof("DISCONNECTED"));
-        participant2.Status.Should().Be(nameof("DISCONNECTED"));
-        participant3.Status.Should().Be(nameof("INVITED")); // unchanged
+        participant1.Status.Should().Be("DISCONNECTED");
+        participant2.Status.Should().Be("DISCONNECTED");
+        participant3.Status.Should().Be("INVITED"); // unchanged
         _mockParticipantRepo.Verify(p => p.Update(It.IsAny<TranslationRoomParticipant>()), Times.Exactly(2));
     }
 }
