@@ -27,6 +27,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceUrlProvider _urlProvider;
+    private readonly ITranslationRoomClient _translationRoomClient;
     private readonly ILogger<WorkspaceDocumentService> _logger;
 
     public WorkspaceDocumentService(
@@ -35,6 +36,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IWorkspaceDocumentEventPublisher eventPublisher,
         IAuthIdentityClient authIdentity,
         IWorkspaceUrlProvider urlProvider,
+        ITranslationRoomClient translationRoomClient,
         ILogger<WorkspaceDocumentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -42,6 +44,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _eventPublisher = eventPublisher;
         _authIdentity = authIdentity;
         _urlProvider = urlProvider;
+        _translationRoomClient = translationRoomClient;
         _logger = logger;
     }
 
@@ -144,6 +147,50 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     d.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
             }
 
+            Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
+            Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null;
+
+            if (string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                var meetingIds = filteredDocs
+                    .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
+                    .Select(d => d.SourceId!.Value)
+                    .Distinct()
+                    .ToList();
+
+                if (meetingIds.Any())
+                {
+                    roomCache = new Dictionary<Guid, TranslationRoomDto?>();
+                    participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
+
+                    var roomTasks = meetingIds.Select(async id =>
+                    {
+                        var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
+                        return (id, room);
+                    }).ToList();
+
+                    var participantTasks = meetingIds.Select(async id =>
+                    {
+                        var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
+                        return (id, participants);
+                    }).ToList();
+
+                    await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
+
+                    foreach (var task in roomTasks)
+                    {
+                        var res = await task;
+                        roomCache[res.id] = res.room;
+                    }
+
+                    foreach (var task in participantTasks)
+                    {
+                        var res = await task;
+                        participantsCache[res.id] = res.participants;
+                    }
+                }
+            }
+
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
             {
@@ -156,6 +203,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     member,
                     roleName,
                     docPolicies,
+                    roomCache,
+                    participantsCache,
                     ct);
 
                 if (accessResult.IsSuccess)

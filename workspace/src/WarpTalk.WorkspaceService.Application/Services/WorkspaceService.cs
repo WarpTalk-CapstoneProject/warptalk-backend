@@ -344,4 +344,41 @@ public class WorkspaceService : IWorkspaceService
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result> SoftDeleteWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null || workspace.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (executingMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            if (!execRoleName.IsOwner())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyExternalCollaboration, ErrorCodes.Forbidden);
+            }
+
+            workspace.DeletedAt = DateTime.UtcNow;
+            workspace.UpdatedBy = userId;
+            
+            _unitOfWork.WorkspaceRepository.Update(workspace);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while deleting workspace. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
 }

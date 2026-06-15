@@ -616,7 +616,8 @@ public class WorkspaceServiceTests
             true,
             new List<string>(),
             true,
-            true
+            true,
+            null
         );
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
@@ -660,7 +661,8 @@ public class WorkspaceServiceTests
             true,
             new List<string>(),
             true,
-            true
+            true,
+            null
         );
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
@@ -701,7 +703,8 @@ public class WorkspaceServiceTests
             true,
             new List<string> { "yahoo.com" }, // Public domain
             true,
-            true
+            true,
+            null
         );
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())

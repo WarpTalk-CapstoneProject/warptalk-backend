@@ -32,6 +32,7 @@ public class WorkspaceDocumentServiceTests
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceUrlProvider _urlProvider;
+    private readonly ITranslationRoomClient _translationRoomClient;
     private readonly WorkspaceDocumentService _documentService;
 
     public WorkspaceDocumentServiceTests()
@@ -45,6 +46,7 @@ public class WorkspaceDocumentServiceTests
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _urlProvider = Substitute.For<IWorkspaceUrlProvider>();
+        _translationRoomClient = Substitute.For<ITranslationRoomClient>();
 
         // Set up mock repository mappings
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
@@ -61,6 +63,7 @@ public class WorkspaceDocumentServiceTests
             _eventPublisher,
             _authIdentity,
             _urlProvider,
+            _translationRoomClient,
             Substitute.For<ILogger<WorkspaceDocumentService>>()
         );
     }

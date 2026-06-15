@@ -57,7 +57,8 @@ public static class WorkspaceMapper
             config.EnforceHostApprovalDefault,
             config.VerifiedDomains,
             config.AllowExternalCollaboration,
-            config.RequireVerifiedDomainForInternal
+            config.RequireVerifiedDomainForInternal,
+            config.AiUsagePolicy?.ToDto()
         );
     }
 
@@ -74,7 +75,8 @@ public static class WorkspaceMapper
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
             VerifiedDomains = dto.VerifiedDomains,
             AllowExternalCollaboration = dto.AllowExternalCollaboration,
-            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal
+            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
+            AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration()
         };
     }
 
@@ -96,5 +98,37 @@ public static class WorkspaceMapper
             UpdatedAt = now,
             UpdatedBy = userId
         };
+    }
+
+    public static AiUsagePolicyDto ToDto(this AiUsagePolicyConfiguration config)
+    {
+        return new AiUsagePolicyDto(
+            config.AllowExternalLlm,
+            config.RedactPii == null ? null : new PiiRedactionDto(config.RedactPii.Enabled),
+            config.Dlp == null ? null : new DlpDto(config.Dlp.Enabled, config.Dlp.KeywordsBlacklist),
+            config.TranslationProfile == null ? null : new TranslationProfileDto(
+                config.TranslationProfile.TranslationTone,
+                config.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRulesDto(
+                    config.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
+                    config.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
+                )
+            )
+        );
+    }
+
+    public static AiUsagePolicyConfiguration ToConfiguration(this AiUsagePolicyDto dto)
+    {
+        return new AiUsagePolicyConfiguration(
+            dto.AllowExternalLlm,
+            dto.RedactPii == null ? null : new PiiRedactionConfiguration(dto.RedactPii.Enabled),
+            dto.Dlp == null ? null : new DlpConfiguration(dto.Dlp.Enabled, dto.Dlp.KeywordsBlacklist),
+            dto.TranslationProfile == null ? null : new TranslationProfileConfiguration(
+                dto.TranslationProfile.TranslationTone,
+                dto.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRules(
+                    dto.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
+                    dto.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
+                )
+            )
+        );
     }
 }

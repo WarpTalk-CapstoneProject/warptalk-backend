@@ -352,4 +352,47 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
+            if (executingMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            if (!execRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure("Only workspace owners or admins can manage member settings.", ErrorCodes.Forbidden);
+            }
+
+            var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
+            if (targetMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
+            }
+
+            var targetRoleName = await _authIdentity.GetRoleNameByIdAsync(targetMember.RoleId, ct);
+            if (targetRoleName.IsOwner() && !execRoleName.IsOwner())
+            {
+                return Result.Failure("Admins cannot modify settings of workspace owners.", ErrorCodes.Forbidden);
+            }
+
+            targetMember.CanCreateMeetings = request.CanCreateMeetings;
+
+            _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while updating member settings. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
 }

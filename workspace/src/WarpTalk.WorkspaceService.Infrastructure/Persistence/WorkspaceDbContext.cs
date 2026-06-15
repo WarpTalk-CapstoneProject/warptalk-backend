@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -406,6 +406,9 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'active'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.CanCreateMeetings)
+                .HasColumnName("can_create_meetings")
+                .HasDefaultValue(true);
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
 
