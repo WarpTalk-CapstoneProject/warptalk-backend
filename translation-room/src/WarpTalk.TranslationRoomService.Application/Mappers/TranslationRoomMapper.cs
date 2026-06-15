@@ -43,7 +43,7 @@ public static class TranslationRoomMapper
         );
     }
 
-    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, RoomStatus status, string sourceLanguage, List<string> targetLanguages)
+    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
     {
         return new TranslationRoom
         {

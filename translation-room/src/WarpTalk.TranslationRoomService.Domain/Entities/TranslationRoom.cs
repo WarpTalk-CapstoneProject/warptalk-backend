@@ -1,6 +1,5 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -40,7 +39,7 @@ public partial class TranslationRoom
 
     public string TranslationRoomCode { get; set; } = null!;
 
-    public RoomStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
     public string TranslationRoomType { get; set; } = null!;
 

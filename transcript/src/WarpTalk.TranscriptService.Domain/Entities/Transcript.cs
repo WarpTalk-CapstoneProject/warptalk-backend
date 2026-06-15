@@ -19,6 +19,8 @@ public partial class Transcript
 
     public int Version { get; set; }
 
+    public string Status { get; set; } = null!;
+
     public string SourceLanguage { get; set; } = null!;
 
     public int TotalSegments { get; set; }

@@ -15,8 +15,8 @@ public static class TranscriptCorrectionMapper
             entity.UserId,
             entity.OriginalText,
             entity.CorrectedText,
-            entity.CorrectionType,
-            entity.Status,
+            Enum.Parse<CorrectionType>(entity.CorrectionType, true),
+            Enum.Parse<CorrectionStatus>(entity.Status, true),
             entity.TriggeredRetranslation,
             entity.ReviewedBy,
             entity.ReviewedAt,
@@ -33,8 +33,8 @@ public static class TranscriptCorrectionMapper
             UserId = dto.UserId,
             OriginalText = dto.OriginalText,
             CorrectedText = dto.CorrectedText,
-            CorrectionType = dto.CorrectionType,
-            Status = CorrectionStatus.Pending,
+            CorrectionType = dto.CorrectionType.ToString(),
+            Status = "PENDING",
             TriggeredRetranslation = true,
             CreatedAt = DateTime.UtcNow
         };
