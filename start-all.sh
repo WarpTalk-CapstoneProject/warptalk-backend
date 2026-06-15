@@ -79,7 +79,8 @@ start_postgres() {
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD=postgres \
             -p 5432:5432 \
-            postgres:16-alpine > /dev/null
+            -v "$SCRIPT_DIR/../warptalk-infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro" \
+            postgres:18-alpine > /dev/null
         echo -e "   ${GREEN}Created and started new container${NC}"
     fi
 
