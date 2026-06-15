@@ -103,7 +103,7 @@ public class MeetingsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
 
-            if (result.ErrorCode == ErrorCodes.BadRequest)
+            if (result.ErrorCode == ErrorCodes.ValidationError)
                 return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));

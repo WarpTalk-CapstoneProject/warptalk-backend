@@ -18,6 +18,10 @@ public partial class TranscriptCorrection
 
     public string CorrectedText { get; set; } = null!;
 
+    public string CorrectionType { get; set; } = null!;
+
+    public string Status { get; set; } = null!;
+
     public bool TriggeredRetranslation { get; set; }
 
     /// <summary>

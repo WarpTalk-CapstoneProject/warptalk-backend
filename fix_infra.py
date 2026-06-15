@@ -1,0 +1,15 @@
+import re
+
+def process(filepath):
+    with open(filepath, 'r') as f:
+        content = f.read()
+    
+    content = re.sub(r'\bRoomStatus\.([A-Z_]+)\b(?!\.ToString)', r'"\1"', content)
+    content = re.sub(r'\bArtifactType\.([A-Z_]+)\b(?!\.ToString)', r'"\1"', content)
+    
+    with open(filepath, 'w') as f:
+        f.write(content)
+
+process('./translation-room/src/WarpTalk.TranslationRoomService.Infrastructure/Repositories/TranslationRoomRepository.cs')
+process('./translation-room/src/WarpTalk.TranslationRoomService.Infrastructure/BackgroundProcessors/ArtifactsFinalizer.cs')
+

@@ -34,9 +34,6 @@ builder.WebHost.ConfigureKestrel(options =>
 
 // --- DbContext ---
 var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranscriptDb"));
-dataSourceBuilder.MapEnum<TranscriptStatus>("transcript.transcript_status");
-dataSourceBuilder.MapEnum<CorrectionStatus>("transcript.correction_status");
-dataSourceBuilder.MapEnum<CorrectionType>("transcript.correction_type");
 var dataSource = dataSourceBuilder.Build();
 
 builder.Services.AddDbContext<TranscriptDbContext>(options =>

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranscriptService.Domain.Entities;
@@ -20,7 +20,7 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<GlossaryTerm> GlossaryTerms { get; set; }
 
-
+    public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
     public virtual DbSet<Transcript> Transcripts { get; set; }
 
@@ -34,7 +34,7 @@ public partial class TranscriptDbContext : DbContext
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
 #warning To protect potentially sensitive information in your connection string, you should move it out of source code. You can avoid scaffolding the connection string by using the Name= syntax to read it from configuration - see https://go.microsoft.com/fwlink/?linkid=2131148. For more guidance on storing connection strings, see https://go.microsoft.com/fwlink/?LinkId=723263.
-        => optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=warptalk;Username=postgres;Password=CHANGE_ME_STRONG_PASSWORD;Search Path=transcript,public");
+        => optionsBuilder.UseNpgsql("Host=localhost;Port=5432;Database=warptalk;Username=postgres;Password=postgres");
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -145,6 +145,47 @@ public partial class TranscriptDbContext : DbContext
                 .HasConstraintName("glossary_terms_glossary_id_fkey");
         });
 
+        modelBuilder.Entity<SchemaMigration>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("schema_migrations_pkey");
+
+            entity.ToTable("schema_migrations", "transcript");
+
+            entity.HasIndex(e => e.MigrationKey, "schema_migrations_migration_key_key").IsUnique();
+
+            entity.HasIndex(e => e.Status, "schema_migrations_status_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.AppliedBy)
+                .HasMaxLength(100)
+                .HasColumnName("applied_by");
+            entity.Property(e => e.Checksum)
+                .HasMaxLength(128)
+                .HasColumnName("checksum");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ErrorMessage).HasColumnName("error_message");
+            entity.Property(e => e.ExecutionTimeMs).HasColumnName("execution_time_ms");
+            entity.Property(e => e.MigrationKey)
+                .HasMaxLength(150)
+                .HasColumnName("migration_key");
+            entity.Property(e => e.MigrationName)
+                .HasMaxLength(255)
+                .HasColumnName("migration_name");
+            entity.Property(e => e.ScriptPath)
+                .HasMaxLength(500)
+                .HasColumnName("script_path");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'success'::character varying")
+                .HasColumnName("status");
+        });
+
         modelBuilder.Entity<Transcript>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("transcripts_pkey");
@@ -176,8 +217,8 @@ public partial class TranscriptDbContext : DbContext
                 .HasMaxLength(15)
                 .HasColumnName("source_language");
             entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'recording'::character varying")
+                .HasMaxLength(255)
+                .HasDefaultValueSql("'RECORDING'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.TotalDurationMs).HasColumnName("total_duration_ms");
             entity.Property(e => e.TotalSegments).HasColumnName("total_segments");
@@ -209,7 +250,7 @@ public partial class TranscriptDbContext : DbContext
                 .HasColumnName("id");
             entity.Property(e => e.CorrectedText).HasColumnName("corrected_text");
             entity.Property(e => e.CorrectionType)
-                .HasMaxLength(20)
+                .HasMaxLength(255)
                 .HasColumnName("correction_type");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
@@ -221,8 +262,8 @@ public partial class TranscriptDbContext : DbContext
                 .HasColumnName("reviewed_by");
             entity.Property(e => e.SegmentId).HasColumnName("segment_id");
             entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasDefaultValueSql("'accepted'::character varying")
+                .HasMaxLength(255)
+                .HasDefaultValueSql("'PENDING'::character varying")
                 .HasColumnName("status");
             entity.Property(e => e.TriggeredRetranslation).HasColumnName("triggered_retranslation");
             entity.Property(e => e.UserId)

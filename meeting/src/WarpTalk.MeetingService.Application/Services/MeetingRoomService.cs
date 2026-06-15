@@ -331,7 +331,7 @@ public class MeetingRoomService : IMeetingRoomService
 
         if (newHostParticipant == null)
         {
-            return Result.Failure<bool>("The new host must be an active participant in the meeting.", ErrorCodes.BadRequest);
+            return Result.Failure<bool>("The new host must be an active participant in the meeting.", ErrorCodes.ValidationError);
         }
 
         meetingRoom.ActiveHostId = newHostUserId;
