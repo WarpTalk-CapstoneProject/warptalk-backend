@@ -5,11 +5,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.MeetingService.API.Controllers;
 
 [ApiController]
-[Route("api/v1/meetings/{roomId:guid}/chat")]
+[Route("api/v1/meetings/rooms/{roomId:guid}/chat")]
 [Authorize]
 public class MeetingChatController : ControllerBase
 {
@@ -20,7 +21,7 @@ public class MeetingChatController : ControllerBase
         _chatService = chatService;
     }
 
-    private Guid CurrentUserId => Guid.Parse(User.FindFirst("sub")?.Value ?? Guid.Empty.ToString());
+    private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
     [HttpGet]
     public async Task<IActionResult> GetMessages(Guid roomId, CancellationToken ct)

@@ -33,16 +33,6 @@ public partial class MeetingDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
-            .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
-            .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
-            .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
-            .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
-            .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
-            .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
-            .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
-            .HasPostgresEnum("transcript", "correction_status", new[] { "PENDING", "ACCEPTED", "REJECTED" })
-            .HasPostgresEnum("transcript", "correction_type", new[] { "STT", "TRANSLATION" })
-            .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
 
         modelBuilder.Entity<MeetingChatAssistantRequest>(entity =>

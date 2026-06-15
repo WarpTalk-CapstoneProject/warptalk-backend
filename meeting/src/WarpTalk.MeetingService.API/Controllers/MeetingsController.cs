@@ -21,6 +21,8 @@ public class MeetingsController : ControllerBase
         _meetingRoomService = meetingRoomService;
     }
 
+    private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
+
     [HttpPost("rooms/{translationRoomId}/join")]
     public async Task<IActionResult> JoinMeeting(Guid translationRoomId)
     {

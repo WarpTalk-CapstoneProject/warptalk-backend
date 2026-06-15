@@ -773,7 +773,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.Title,
             room.Description,
             room.TranslationRoomCode,
-            room.Status.ToString(),
+            Enum.TryParse<RoomStatus>(room.Status, true, out var parsedStatus) ? parsedStatus : RoomStatus.SCHEDULED,
             room.TranslationRoomType,
             room.MaxParticipants,
             room.SourceLanguage,
