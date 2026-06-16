@@ -365,7 +365,7 @@ public class WorkspaceService : IWorkspaceService
             var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
             if (!execRoleName.IsOwner())
             {
-                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyExternalCollaboration, ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
             workspace.DeletedAt = DateTime.UtcNow;
