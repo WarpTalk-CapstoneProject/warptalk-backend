@@ -17,10 +17,10 @@ public class MeetingChatHub : Hub
         await base.OnConnectedAsync();
     }
 
-    public async Task JoinMeetingChat(Guid roomId)
+    public async Task JoinMeetingRoom(Guid roomId)
     {
         var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(userIdString))
+        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
         {
             throw new HubException("Unauthorized");
         }
@@ -29,8 +29,11 @@ public class MeetingChatHub : Hub
         var unitOfWork = Context.GetHttpContext()?.RequestServices.GetService(typeof(WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork)) as WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork;
         if (unitOfWork != null)
         {
+            var room = await unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId);
+            if (room == null) throw new HubException("Room not found");
+
             var participant = await unitOfWork.MeetingParticipantRepository
-                .FirstOrDefaultAsync(p => p.MeetingRoomId == roomId && p.ProviderIdentity == userIdString);
+                .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
 
             if (participant == null || !participant.IsActive)
             {

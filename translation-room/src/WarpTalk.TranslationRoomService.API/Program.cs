@@ -81,9 +81,13 @@ builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();
 builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalizationQueue>();
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
+builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
+builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
+builder.Services.Configure<WarpTalk.Shared.Configuration.SmtpSettings>(builder.Configuration.GetSection("Smtp"));
+builder.Services.AddScoped<WarpTalk.Shared.Interfaces.IEmailService, WarpTalk.Shared.Services.SmtpEmailService>();
 
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.TelemetrySettings>(
     builder.Configuration.GetSection("Telemetry"));

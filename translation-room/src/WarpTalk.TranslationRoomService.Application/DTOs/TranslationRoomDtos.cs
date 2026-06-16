@@ -18,6 +18,11 @@ public record RoomSettingsResponse(
 );
 
 public record UpdateRoomSettingsRequest(
+    string? Title,
+    string? Description,
+    int? MaxParticipants,
+    DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     RoomSettingsRequest? Settings,
     string? SourceLanguage,
     List<string>? TargetLanguages
@@ -41,7 +46,8 @@ public record CreateTranslationRoomRequest(
     string? SourceLanguage,
     List<string>? TargetLanguages,
     RoomSettingsRequest? Settings,
-    DateTime? ScheduledAt
+    DateTime? ScheduledAt,
+    List<string>? InvitedEmails
 );
 
 public record JoinTranslationRoomRequest(
@@ -64,6 +70,7 @@ public record TranslationRoomDto(
     string SourceLanguage,
     List<string> TargetLanguages,
     DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     DateTime? StartedAt,
     DateTime? EndedAt,
     int? DurationSeconds,
@@ -85,6 +92,7 @@ public record TranslationRoomListItemDto(
     string SourceLanguage,
     List<string> TargetLanguages,
     DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     DateTime? StartedAt,
     DateTime? EndedAt,
     int? DurationSeconds,

@@ -94,14 +94,14 @@ public class TranslationRoomServiceTests
         var request = new JoinTranslationRoomRequest(roomCode, "User", "en", "vi");
 
         _mockRoomRepo.Setup(r => r.GetByCodeAsync(roomCode, It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((TranslationRoom?)null);
+            .ReturnsAsync(room);
 
         // Act
         var result = await _service.JoinTranslationRoomAsync(request, userId);
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error.Should().Be(TranslationRoomConstants.ErrorRoomNotFound);
+        result.ErrorCode.Should().Be(ErrorCodes.InvalidState);
     }
 
     [Fact]

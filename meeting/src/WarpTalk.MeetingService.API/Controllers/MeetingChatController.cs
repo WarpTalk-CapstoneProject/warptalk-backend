@@ -28,7 +28,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.GetRoomMessagesAsync(roomId, CurrentUserId, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok(result.Value);
     }
@@ -38,7 +42,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.SendMessageAsync(roomId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok(result.Value);
     }
@@ -48,7 +56,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.RequestTranslationAsync(roomId, messageId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Accepted();
     }
@@ -58,7 +70,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.ModerateMessageAsync(roomId, messageId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok();
     }
