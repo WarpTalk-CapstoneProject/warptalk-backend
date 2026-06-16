@@ -32,10 +32,10 @@ public class MeetingChatService : IMeetingChatService
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Room not found.", "NOT_FOUND");
 
         var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
-        bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
+        bool isParticipant = participant != null;
 
-        if (room.CreatedBy != userId && !isActiveParticipant)
-            return Result.Failure<IEnumerable<MeetingChatMessageDto>>($"Not an active participant. Debug: roomCreatedBy={room.CreatedBy}, userId={userId}, participantIsNull={participant == null}, isActive={(participant?.IsActive)}, leftAt={(participant?.LeftAt)}", "FORBIDDEN");
+        if (room.CreatedBy != userId && !isParticipant)
+            return Result.Failure<IEnumerable<MeetingChatMessageDto>>($"Not a participant. Debug: roomCreatedBy={room.CreatedBy}, userId={userId}", "FORBIDDEN");
 
         var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
         

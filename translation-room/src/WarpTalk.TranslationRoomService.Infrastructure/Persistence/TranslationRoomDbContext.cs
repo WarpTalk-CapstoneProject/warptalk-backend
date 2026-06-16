@@ -30,12 +30,22 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
 
+    public virtual DbSet<TranslationRoomInvitation> TranslationRoomInvitations { get; set; }
+
     public virtual DbSet<UserSetting> UserSettings { get; set; }
+
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
+            .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
+            .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
+            .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
+            .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
+            .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
+            .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
+            .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
             .HasPostgresExtension("uuid-ossp");
 
         modelBuilder.Entity<SchemaMigration>(entity =>
@@ -369,6 +379,38 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("translation_room_participants_translation_room_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationRoomInvitation>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_invitations_pkey");
+
+            entity.ToTable("translation_room_invitations", "translation_room");
+
+            entity.HasIndex(e => new { e.TranslationRoomId, e.Email }, "translation_room_invitations_room_email_idx").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.Email)
+                .HasMaxLength(255)
+                .HasColumnName("email");
+            entity.Property(e => e.Status)
+                .HasMaxLength(50)
+                .HasDefaultValueSql("'PENDING'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.TranslationRoom).WithMany(p => p.TranslationRoomInvitations)
+                .HasForeignKey(d => d.TranslationRoomId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("translation_room_invitations_translation_room_id_fkey");
         });
 
         modelBuilder.Entity<UserSetting>(entity =>

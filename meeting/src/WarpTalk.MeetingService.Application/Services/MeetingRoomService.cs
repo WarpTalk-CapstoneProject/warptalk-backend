@@ -29,7 +29,7 @@ public class MeetingRoomService : IMeetingRoomService
         _logger = logger;
     }
 
-    public async Task<Result<JoinMeetingResponse>> JoinMeetingAsync(Guid translationRoomId, Guid userId)
+    public async Task<Result<JoinMeetingResponse>> JoinMeetingAsync(Guid translationRoomId, Guid userId, string? displayName = null)
     {
         var userIdString = userId.ToString();
 
@@ -48,6 +48,11 @@ public class MeetingRoomService : IMeetingRoomService
             await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromMinutes(5));
         }
 
+        if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED")
+        {
+            return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
+        }
+
         // 2. Provision / Get Meeting Room
         var meetingRoom = await _unitOfWork.MeetingRoomRepository
             .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
@@ -58,9 +63,15 @@ public class MeetingRoomService : IMeetingRoomService
             {
                 TranslationRoomId = translationRoomId,
                 ProviderRoomName = translationRoomId.ToString(),
-                Status = "SCHEDULED"
+                Status = roomDetails.Status
             };
             await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+        }
+        else if (meetingRoom.Status != roomDetails.Status)
+        {
+            meetingRoom.Status = roomDetails.Status;
+            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
         }
 
@@ -137,28 +148,27 @@ public class MeetingRoomService : IMeetingRoomService
         }
         else
         {
-            if (participant.LeftAt.HasValue && !participant.IsActive)
+            if (!participant.IsActive || participant.LeftAt.HasValue)
             {
                 participant.IsActive = true;
                 participant.JoinedAt = DateTime.UtcNow;
+                participant.LeftAt = null;
                 _unitOfWork.MeetingParticipantRepository.Update(participant);
                 await _unitOfWork.SaveChangesAsync();
             }
         }
 
         // 5. Lobby / Waiting Room Logic
-        if (meetingRoom.Status == "SCHEDULED")
+        if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
         {
             if (isHost)
             {
-                meetingRoom.Status = "IN_PROGRESS";
                 meetingRoom.ActiveHostId = userId;
                 _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
                 await _unitOfWork.SaveChangesAsync();
             }
             else
             {
-                // Put in waiting room
                 return Result.Success(new JoinMeetingResponse
                 {
                     Token = string.Empty,
@@ -170,17 +180,40 @@ public class MeetingRoomService : IMeetingRoomService
         }
         else if (isHost && meetingRoom.ActiveHostId == null)
         {
-            // If room is already in progress but no active host, and original host joins, they reclaim host.
             meetingRoom.ActiveHostId = userId;
             _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
         }
 
-        // 6. Generate Token for Live Meeting
+        // 6. Resolve participant display name for LiveKit token
+        // Priority: 1) displayName from controller (from JWT/frontend), 2) gRPC participant lookup, 3) fallback
+        string participantName = displayName ?? "Participant";
+        
+        // If no displayName was provided, try gRPC lookup
+        if (string.IsNullOrEmpty(displayName))
+        {
+            try
+            {
+                var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                {
+                    var p = grpcPartsResult.Value.Participants.FirstOrDefault(x => x.Id == userIdString);
+                    if (p != null && !string.IsNullOrEmpty(p.DisplayName))
+                    {
+                        participantName = p.DisplayName;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve participant display name via gRPC");
+            }
+        }
+
         var tokenResult = _tokenService.GenerateToken(
             roomName: meetingRoom.ProviderRoomName,
             participantIdentity: providerIdentity,
-            participantName: "User " + userIdString.Substring(0, 5),
+            participantName: participantName,
             canPublish: true,
             canSubscribe: true);
 
@@ -420,13 +453,7 @@ public class MeetingRoomService : IMeetingRoomService
 
     public async Task<Result<bool>> EndMeetingAsync(Guid translationRoomId, Guid hostUserId)
     {
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
-
-        if (meetingRoom == null)
-            return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
-
-        // Authorization
+        // 1. Fetch Room Details for Authorization
         var roomCacheKey = $"meeting:room:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
@@ -439,30 +466,36 @@ public class MeetingRoomService : IMeetingRoomService
             roomDetails = grpcResult.Value;
         }
 
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+
         bool isOriginalHost = roomDetails.HostId == hostUserId.ToString();
-        bool isActiveHost = meetingRoom.ActiveHostId == hostUserId;
+        bool isActiveHost = meetingRoom?.ActiveHostId == hostUserId;
 
         if (!isOriginalHost && !isActiveHost)
             return Result.Failure<bool>("Only the host can end the meeting for all.", ErrorCodes.Forbidden);
 
-        // Update status
-        meetingRoom.Status = "FINISHED";
-        meetingRoom.EndedAt = DateTime.UtcNow;
-        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        // Update status if it exists
+        if (meetingRoom != null)
+        {
+            meetingRoom.Status = "FINISHED";
+            meetingRoom.EndedAt = DateTime.UtcNow;
+            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        }
 
         await _unitOfWork.SaveChangesAsync();
 
         // Publish to Provider (LiveKit) to end room
         await _redisService.PublishEventAsync("meeting.end_room", new
         {
-            RoomName = meetingRoom.ProviderRoomName
+            RoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString()
         });
 
         // Finalize Artifacts and Stop Billing
         await _redisService.PublishEventAsync("meeting.billing.stop", new
         {
             TranslationRoomId = translationRoomId.ToString(),
-            MeetingRoomId = meetingRoom.Id.ToString()
+            MeetingRoomId = meetingRoom?.Id.ToString() ?? Guid.Empty.ToString()
         });
 
         return Result.Success(true);

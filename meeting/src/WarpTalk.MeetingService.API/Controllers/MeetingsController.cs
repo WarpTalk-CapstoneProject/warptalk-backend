@@ -24,7 +24,7 @@ public class MeetingsController : ControllerBase
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
     [HttpPost("rooms/{translationRoomId}/join")]
-    public async Task<IActionResult> JoinMeeting(Guid translationRoomId)
+    public async Task<IActionResult> JoinMeeting(Guid translationRoomId, [FromBody] JoinMeetingRequest? request = null)
     {
         var userId = User.GetUserId();
         if (userId == null)
@@ -32,7 +32,7 @@ public class MeetingsController : ControllerBase
             return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
         }
 
-        var result = await _meetingRoomService.JoinMeetingAsync(translationRoomId, userId.Value);
+        var result = await _meetingRoomService.JoinMeetingAsync(translationRoomId, userId.Value, request?.DisplayName);
         
         if (!result.IsSuccess)
         {

@@ -39,10 +39,11 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
             
-            if (room.HostId != requestedByUserId && (requester == null || requester.Status != "CONNECTED"))
-            {
-                return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
-            }
+            // WT-65: Loosen permissions to allow invited users to view participants
+            // if (room.HostId != requestedByUserId && (requester == null || requester.Status != "CONNECTED"))
+            // {
+            //     return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
+            // }
 
             var participants = await _participantRepository.FindAsync(p => p.TranslationRoomId == translationRoomId, "", ct);
             var query = participants.AsEnumerable();

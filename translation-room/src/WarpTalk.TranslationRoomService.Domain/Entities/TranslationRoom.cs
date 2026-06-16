@@ -1,20 +1,20 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
 /// <summary>
 /// Room lifecycle:
-/// SCHEDULED -&gt; WAITING
-/// SCHEDULED -&gt; CANCELLED
-/// SCHEDULED -&gt; EXPIRED
-/// WAITING -&gt; IN_PROGRESS
-/// WAITING -&gt; CANCELLED
-/// WAITING -&gt; EXPIRED
-/// IN_PROGRESS -&gt; PAUSED
-/// PAUSED -&gt; IN_PROGRESS
-/// IN_PROGRESS -&gt; ENDED
-/// IN_PROGRESS -&gt; FAILED
+/// SCHEDULED -> WAITING
+/// SCHEDULED -> CANCELLED
+/// SCHEDULED -> EXPIRED
+/// WAITING -> IN_PROGRESS
+/// WAITING -> CANCELLED
+/// WAITING -> EXPIRED
+/// IN_PROGRESS -> PAUSED
+/// PAUSED -> IN_PROGRESS
+/// IN_PROGRESS -> ENDED
+/// IN_PROGRESS -> FAILED
 /// 
 /// Draft room is not persisted. If the user discards a draft, no room record is created.
 /// 
@@ -89,4 +89,6 @@ public partial class TranslationRoom
     public virtual ICollection<TranslationRoomFeedback> TranslationRoomFeedbacks { get; set; } = new List<TranslationRoomFeedback>();
 
     public virtual ICollection<TranslationRoomParticipant> TranslationRoomParticipants { get; set; } = new List<TranslationRoomParticipant>();
+
+    public virtual ICollection<TranslationRoomInvitation> TranslationRoomInvitations { get; set; } = new List<TranslationRoomInvitation>();
 }

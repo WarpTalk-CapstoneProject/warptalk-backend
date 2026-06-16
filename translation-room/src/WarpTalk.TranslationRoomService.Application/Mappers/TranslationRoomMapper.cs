@@ -35,6 +35,7 @@ public static class TranslationRoomMapper
             room.SourceLanguage,
             Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
             room.ScheduledAt,
+            null, // InvitedEmails
             room.StartedAt,
             room.EndedAt,
             room.DurationSeconds,
@@ -91,6 +92,7 @@ public static class TranslationRoomMapper
             room.SourceLanguage,
             Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages),
             room.ScheduledAt,
+            null, // InvitedEmails
             room.StartedAt,
             room.EndedAt,
             room.DurationSeconds,

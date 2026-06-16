@@ -155,13 +155,15 @@ public class TranscriptQueryService : ITranscriptQueryService
             if (Guid.TryParse(room.HostId, out var hostId) && hostId == userId)
                 return true;
 
-            var participants = await _roomClient.GetParticipantsByRoomIdAsync(
-                new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() },
-                cancellationToken: cancellationToken);
-
-            return participants.Participants.Any(p =>
-                Guid.TryParse(p.Id, out var participantUserId) &&
-                participantUserId == userId);
+            // WT-65: Loosen permissions, anyone with Room ID can access
+            // var participants = await _roomClient.GetParticipantsByRoomIdAsync(
+            //     new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() },
+            //     cancellationToken: cancellationToken);
+            // 
+            // return participants.Participants.Any(p =>
+            //     Guid.TryParse(p.Id, out var participantUserId) &&
+            //     participantUserId == userId);
+            return true;
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {
