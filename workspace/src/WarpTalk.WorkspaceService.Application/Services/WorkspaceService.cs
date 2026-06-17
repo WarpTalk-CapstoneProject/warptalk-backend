@@ -27,17 +27,20 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly ILogger<WorkspaceService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
         IUnitOfWork unitOfWork, 
         IWorkspaceCacheService workspaceCache, 
         ILogger<WorkspaceService> logger,
-        IAuthIdentityClient authIdentity)
+        IAuthIdentityClient authIdentity,
+        IWorkspaceEventPublisher eventPublisher)
     {
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
         _logger = logger;
         _authIdentity = authIdentity;
+        _eventPublisher = eventPublisher;
     }
 
 
@@ -359,6 +362,9 @@ public class WorkspaceService : IWorkspaceService
             
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
+
             return Result.Success();
         }
         catch (Exception ex)

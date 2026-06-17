@@ -47,6 +47,7 @@ public static class WorkspaceConstants
         public const string CannotDemoteLastOwner = "Cannot demote the last owner. Please transfer ownership first.";
         public const string CannotChangeOwnerRole = "Cannot change the Owner's role.";
         public const string AdminCannotChangeAdminRole = "Admin cannot change another Admin's role.";
+        public const string AdminCannotModifyPeerAdmin = "Admin cannot modify settings of other Admins.";
         public const string AdminCannotPromoteToAdmin = "Admin cannot promote members to Admin role.";
         public const string RoleNotFound = "Role not found.";
 

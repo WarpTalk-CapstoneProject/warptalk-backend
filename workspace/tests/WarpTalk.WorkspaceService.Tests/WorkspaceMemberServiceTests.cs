@@ -16,6 +16,7 @@ using WarpTalk.WorkspaceService.Application.Interfaces.Caching;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.Shared;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -574,6 +575,153 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(adminRoleId, currentOwnerMember.RoleId);
         Assert.Equal(ownerRoleId, newOwnerMember.RoleId);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
+    #region UpdateMemberAsync Tests
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldSucceed_WhenOwnerUpdatesAdmin()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var targetUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var targetRoleId = Guid.NewGuid();
+
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var targetMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = targetRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        // Mock executing member (owner)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(ownerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(ownerMember);
+
+        // Mock target member (admin)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(targetMember)),
+            "", Arg.Any<CancellationToken>()).Returns(targetMember);
+
+        StubRoleName(ownerRoleId, "Owner");
+        StubRoleName(targetRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, targetUserId, request, ownerUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(targetMember.CanCreateMeetings);
+        _workspaceMemberRepository.Received(1).Update(targetMember);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldSucceed_WhenAdminUpdatesSelf()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        // Mock executing member & target member (same admin member)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+
+        StubRoleName(adminRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, adminUserId, request, adminUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(adminMember.CanCreateMeetings);
+        _workspaceMemberRepository.Received(1).Update(adminMember);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldFail_WhenAdminUpdatesPeerAdmin()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminAUserId = Guid.NewGuid();
+        var adminBUserId = Guid.NewGuid();
+        var adminARoleId = Guid.NewGuid();
+        var adminBRoleId = Guid.NewGuid();
+
+        var adminAMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminAUserId, RoleId = adminARoleId };
+        var adminBMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminBUserId, RoleId = adminBRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        // Mock executing member (Admin A)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminAMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminAMember);
+
+        // Mock target member (Admin B)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminBMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminBMember);
+
+        StubRoleName(adminARoleId, "Admin");
+        StubRoleName(adminBRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, adminBUserId, request, adminAUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.AdminCannotModifyPeerAdmin, result.Error);
+        Assert.False(adminBMember.CanCreateMeetings);
+        _workspaceMemberRepository.DidNotReceive().Update(Arg.Any<WorkspaceMember>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldFail_WhenAdminUpdatesOwner()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        // Mock executing member (admin)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+
+        // Mock target member (owner)
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(ownerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(ownerMember);
+
+        StubRoleName(adminRoleId, "Admin");
+        StubRoleName(ownerRoleId, "Owner");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, ownerUserId, request, adminUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal("Admins cannot modify settings of workspace owners.", result.Error);
+        Assert.False(ownerMember.CanCreateMeetings);
+        _workspaceMemberRepository.DidNotReceive().Update(Arg.Any<WorkspaceMember>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     #endregion

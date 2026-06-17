@@ -30,6 +30,7 @@ public class WorkspaceServiceTests
     private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceCacheService _workspaceCache;
+    private readonly IWorkspaceEventPublisher _eventPublisher;
     private readonly AppWorkspaceService _workspaceService;
 
     public WorkspaceServiceTests()
@@ -40,12 +41,13 @@ public class WorkspaceServiceTests
         _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _workspaceCache = Substitute.For<IWorkspaceCacheService>();
+        _eventPublisher = Substitute.For<IWorkspaceEventPublisher>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
-        _workspaceService = new AppWorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<AppWorkspaceService>>(), _authIdentity);
+        _workspaceService = new AppWorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<AppWorkspaceService>>(), _authIdentity, _eventPublisher);
     }
 
     private void StubUser(Guid userId, User user)
@@ -728,6 +730,96 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
+    #region SoftDeleteWorkspaceAsync Tests
+
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldSucceed_AndPublishWorkspaceDeletedEvent_WhenRequesterIsOwner()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId };
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ownerMember);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(workspace.DeletedAt);
+        Assert.Equal(ownerUserId, workspace.UpdatedBy);
+
+        _workspaceRepository.Received(1).Update(workspace);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _eventPublisher.Received(1).PublishWorkspaceDeletedAsync(workspaceId, ownerUserId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldFail_WhenRequesterIsNotOwner()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid() };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(adminMember);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+
+        // Act
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, adminUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, result.Error);
+        Assert.Null(workspace.DeletedAt);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _eventPublisher.DidNotReceive().PublishWorkspaceDeletedAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldFail_WhenWorkspaceNotFound()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((Workspace)null);
+
+        // Act
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNotFound, result.Error);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _eventPublisher.DidNotReceive().PublishWorkspaceDeletedAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     #endregion

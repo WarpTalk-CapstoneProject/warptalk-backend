@@ -383,6 +383,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure("Admins cannot modify settings of workspace owners.", ErrorCodes.Forbidden);
             }
 
+            if (execRoleName.IsAdmin() && targetRoleName.IsAdmin() && memberUserId != executingUserId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AdminCannotModifyPeerAdmin, ErrorCodes.Forbidden);
+            }
+
             targetMember.CanCreateMeetings = request.CanCreateMeetings;
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
