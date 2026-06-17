@@ -142,7 +142,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             {
                 var user = await _authIdentity.GetUserByIdAsync(m.UserId, ct);
                 var fullName = user?.FullName ?? "Unknown";
-                var email = (isOwnerOrAdmin || m.UserId == userId) ? (user?.Email ?? string.Empty) : string.Empty;
+                var email = user?.Email ?? string.Empty;
                 var avatarUrl = user?.AvatarUrl;
 
                 if (!roleCache.TryGetValue(m.RoleId, out var roleName))

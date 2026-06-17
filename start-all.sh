@@ -29,6 +29,7 @@ SERVICES=(
     "translation-room|translation-room/src/WarpTalk.TranslationRoomService.API|5102"
     "transcript|transcript/src/WarpTalk.TranscriptService.API|5103"
     "notification|notification/src/WarpTalk.NotificationService.API|5104"
+    "meeting|meeting/src/WarpTalk.MeetingService.API|5105"
     "gateway|gateway/src/WarpTalk.Gateway|5200"
 )
 
@@ -44,6 +45,7 @@ print_banner() {
     echo "║  TranslationRoom(REST+gRPC)   → :5102 / :50052      ║"
     echo "║  Transcript  (REST+gRPC)      → :5103 / :50053      ║"
     echo "║  Notification (REST)          → :5104 / :50054      ║"
+    echo "║  Meeting      (REST)          → :5105 / :50055      ║"
     echo "║  Gateway     (YARP+SignalR)   → :5200                ║"
     echo "║                                                      ║"
     echo "║  SignalR Hubs:                                       ║"
@@ -142,6 +144,23 @@ start_redis() {
     done
     echo -e " ${RED}❌ Timeout${NC}"
     exit 1
+}
+
+start_livekit() {
+    echo -e "${CYAN}📹 Starting LiveKit...${NC}"
+    if docker ps --format '{{.Names}}' | grep -q "^warptalk-livekit$"; then
+        echo -e "   ${GREEN}Already running${NC}"
+    elif docker ps -a --format '{{.Names}}' | grep -q "^warptalk-livekit$"; then
+        docker start "warptalk-livekit" > /dev/null
+        echo -e "   ${GREEN}Started existing container${NC}"
+    else
+        docker run -d \
+            --name "warptalk-livekit" \
+            -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+            -e LIVEKIT_KEYS="APIBVnfFo9PzzoQ: wbB6j98H2jfF5nLTZYhaiYXQM8hM6nB3KoVoXfMNTPA" \
+            livekit/livekit-server:latest --dev --bind 0.0.0.0 > /dev/null
+        echo -e "   ${GREEN}Created and started new container${NC}"
+    fi
 }
 
 start_services_bg() {
@@ -314,6 +333,7 @@ case "${1:-}" in
         start_postgres
         run_migrations
         start_redis
+        start_livekit
         start_services_bg
         wait_and_test
         ;;

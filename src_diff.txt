@@ -1,0 +1,1301 @@
+diff --git a/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspaceMembersController.cs b/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspaceMembersController.cs
+index 4417b5d..dde585e 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspaceMembersController.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspaceMembersController.cs
+@@ -81,4 +81,19 @@ public async Task<IActionResult> TransferOwnership(Guid workspaceId, [FromBody]
+         }
+         return NoContent();
+     }
++
++    [Authorize]
++    [HttpPatch("{workspaceId:guid}/members/{userId:guid}")]
++    public async Task<IActionResult> UpdateWorkspaceMember(Guid workspaceId, Guid userId, [FromBody] UpdateWorkspaceMemberRequest request, CancellationToken ct)
++    {
++        var currentUserId = User.GetUserId();
++        if (currentUserId == null) return Unauthorized();
++
++        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, userId, request, currentUserId.Value, ct);
++        if (!result.IsSuccess)
++        {
++            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
++        }
++        return NoContent();
++    }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspacesController.cs b/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspacesController.cs
+index 37c996b..dc5c0f3 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspacesController.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.API/Controllers/WorkspacesController.cs
+@@ -111,4 +111,19 @@ public async Task<IActionResult> UpdateWorkspaceSettings(Guid id, [FromBody] Wor
+         }
+         return NoContent();
+     }
++
++    [Authorize]
++    [HttpDelete("{id:guid}")]
++    public async Task<IActionResult> DeleteWorkspace(Guid id, CancellationToken ct)
++    {
++        var userId = User.GetUserId();
++        if (userId == null) return Unauthorized();
++
++        var result = await _workspaceService.SoftDeleteWorkspaceAsync(id, userId.Value, ct);
++        if (!result.IsSuccess)
++        {
++            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
++        }
++        return NoContent();
++    }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.API/GrpcServices/WorkspaceGrpcService.cs b/workspace/src/WarpTalk.WorkspaceService.API/GrpcServices/WorkspaceGrpcService.cs
+new file mode 100644
+index 0000000..a924e87
+--- /dev/null
++++ b/workspace/src/WarpTalk.WorkspaceService.API/GrpcServices/WorkspaceGrpcService.cs
+@@ -0,0 +1,165 @@
++using System;
++using System.Linq;
++using System.Threading.Tasks;
++using Grpc.Core;
++using WarpTalk.Shared.Protos;
++using WarpTalk.WorkspaceService.Domain.Interfaces;
++using WarpTalk.WorkspaceService.Application.Interfaces;
++using WarpTalk.WorkspaceService.Application.Helpers;
++
++namespace WarpTalk.WorkspaceService.API.GrpcServices;
++
++public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceBase
++{
++    private readonly IUnitOfWork _unitOfWork;
++    private readonly IAuthIdentityClient _authIdentity;
++
++    public WorkspaceGrpcService(IUnitOfWork unitOfWork, IAuthIdentityClient authIdentity)
++    {
++        _unitOfWork = unitOfWork;
++        _authIdentity = authIdentity;
++    }
++
++    public override async Task<GetWorkspaceMemberResponse> GetWorkspaceMemberDetails(
++        GetWorkspaceMemberRequest request, ServerCallContext context)
++    {
++        var ct = context.CancellationToken;
++
++        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId) ||
++            !Guid.TryParse(request.UserId, out var userId))
++        {
++            return new GetWorkspaceMemberResponse { IsMember = false };
++        }
++
++        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
++            m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
++
++        if (member == null)
++        {
++            return new GetWorkspaceMemberResponse { IsMember = false };
++        }
++
++        var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
++
++        return new GetWorkspaceMemberResponse
++        {
++            IsMember = true,
++            RoleName = roleName ?? "Member",
++            MembershipType = member.MembershipType ?? "internal",
++            IsActive = string.Equals(member.Status, "active", StringComparison.OrdinalIgnoreCase),
++            CanCreateMeetings = member.CanCreateMeetings
++        };
++    }
++
++    public override async Task<ValidateMeetingCreationResponse> ValidateMeetingCreation(
++        ValidateMeetingCreationRequest request, ServerCallContext context)
++    {
++        var ct = context.CancellationToken;
++
++        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId) ||
++            !Guid.TryParse(request.UserId, out var userId))
++        {
++            return new ValidateMeetingCreationResponse
++            {
++                IsAllowed = false,
++                ErrorMessage = "Invalid WorkspaceId or UserId format."
++            };
++        }
++
++        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
++            m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
++
++        if (member == null)
++        {
++            return new ValidateMeetingCreationResponse
++            {
++                IsAllowed = false,
++                ErrorMessage = "User is not a member of this workspace."
++            };
++        }
++
++        if (!string.Equals(member.Status, "active", StringComparison.OrdinalIgnoreCase))
++        {
++            return new ValidateMeetingCreationResponse
++            {
++                IsAllowed = false,
++                ErrorMessage = "Workspace member is inactive."
++            };
++        }
++
++        if (!member.CanCreateMeetings)
++        {
++            return new ValidateMeetingCreationResponse
++            {
++                IsAllowed = false,
++                ErrorMessage = "User does not have permission to create meetings."
++            };
++        }
++
++        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
++        if (workspace == null)
++        {
++            return new ValidateMeetingCreationResponse
++            {
++                IsAllowed = false,
++                ErrorMessage = "Workspace not found."
++            };
++        }
++
++        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
++
++        // Validate target languages subset
++        if (request.TargetLanguages != null && request.TargetLanguages.Any())
++        {
++            if (config.AllowedTargetLanguages != null && config.AllowedTargetLanguages.Any())
++            {
++                var unsupported = request.TargetLanguages.FirstOrDefault(lang =>
++                    !config.AllowedTargetLanguages.Contains(lang, StringComparer.OrdinalIgnoreCase));
++                if (unsupported != null)
++                {
++                    return new ValidateMeetingCreationResponse
++                    {
++                        IsAllowed = false,
++                        ErrorMessage = $"Target language '{unsupported}' is not allowed by the workspace policy."
++                    };
++                }
++            }
++        }
++
++        // Active rooms check:
++        // Since we are only modifying the Workspace module, we simulate the active rooms check.
++        // Once TranslationRoomService has an active rooms count endpoint, we would call it.
++        // For now, we allow the request to pass.
++        
++        return new ValidateMeetingCreationResponse
++        {
++            IsAllowed = true,
++            ErrorMessage = ""
++        };
++    }
++
++    public override async Task<GetWorkspaceSettingsResponse> GetWorkspaceSettings(
++        GetWorkspaceSettingsRequest request, ServerCallContext context)
++    {
++        var ct = context.CancellationToken;
++
++        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
++        {
++            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid WorkspaceId format."));
++        }
++
++        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
++        if (workspace == null)
++        {
++            throw new RpcException(new Status(StatusCode.NotFound, "Workspace not found."));
++        }
++
++        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
++
++        return new GetWorkspaceSettingsResponse
++        {
++            ArtifactRetentionDays = config.ArtifactRetentionDays,
++            AllowExternalCollaboration = config.AllowExternalCollaboration
++        };
++    }
++}
+diff --git a/workspace/src/WarpTalk.WorkspaceService.API/Program.cs b/workspace/src/WarpTalk.WorkspaceService.API/Program.cs
+index 2f4cc52..fc394c4 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.API/Program.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.API/Program.cs
+@@ -72,7 +72,7 @@
+ builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
+ builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
+ // Services
+-builder.Services.AddScoped<IWorkspaceService, WorkspaceService>();
++builder.Services.AddScoped<IWorkspaceService, WarpTalk.WorkspaceService.Application.Services.WorkspaceService>();
+ builder.Services.AddScoped<IWorkspaceMemberService, WorkspaceMemberService>();
+ builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
+ builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>();
+@@ -120,6 +120,7 @@
+ 
+ app.MapControllers();
+ app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceInvitationGrpcService>();
++app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceGrpcService>();
+ 
+ // Simple health/check endpoints
+ app.MapGet("/", () => "WarpTalk Workspace Service is running.");
+diff --git a/workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj b/workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj
+index e6f2672..fdce6d8 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj
++++ b/workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj
+@@ -9,12 +9,10 @@
+   <ItemGroup>
+     <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
+     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.5" />
+-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.2" />
+     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.5">
+       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+       <PrivateAssets>all</PrivateAssets>
+     </PackageReference>
+-    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.6" />
+     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.5" />
+   </ItemGroup>
+ 
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/AiUsagePolicyDto.cs b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/AiUsagePolicyDto.cs
+new file mode 100644
+index 0000000..d0364b4
+--- /dev/null
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/AiUsagePolicyDto.cs
+@@ -0,0 +1,29 @@
++using System.Collections.Generic;
++
++namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
++
++public record AiUsagePolicyDto(
++    bool? AllowExternalLlm,
++    PiiRedactionDto? RedactPii,
++    DlpDto? Dlp,
++    TranslationProfileDto? TranslationProfile
++);
++
++public record PiiRedactionDto(
++    bool Enabled
++);
++
++public record DlpDto(
++    bool Enabled,
++    List<string>? KeywordsBlacklist
++);
++
++public record TranslationProfileDto(
++    string? TranslationTone,
++    LanguageSpecificRulesDto? LanguageSpecificRules
++);
++
++public record LanguageSpecificRulesDto(
++    string? VietnameseHonorificStyle,
++    string? JapaneseHonorificStyle
++);
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/WorkspaceSettingsDto.cs b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/WorkspaceSettingsDto.cs
+index 56f8ea7..7e58068 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/WorkspaceSettingsDto.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/Workspace/WorkspaceSettingsDto.cs
+@@ -12,5 +12,6 @@ public record WorkspaceSettingsDto(
+     bool EnforceHostApprovalDefault,
+     List<string> VerifiedDomains,
+     bool AllowExternalCollaboration,
+-    bool RequireVerifiedDomainForInternal
++    bool RequireVerifiedDomainForInternal,
++    AiUsagePolicyDto? AiUsagePolicy
+ );
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/WorkspaceMember/WorkspaceMemberDtos.cs b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/WorkspaceMember/WorkspaceMemberDtos.cs
+index e2f306d..e11d29a 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/WorkspaceMember/WorkspaceMemberDtos.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/DTOs/WorkspaceMember/WorkspaceMemberDtos.cs
+@@ -12,7 +12,8 @@ public record WorkspaceMemberDto(
+     string RoleName,
+     string Status,
+     DateTime JoinedAt,
+-    string MembershipType
++    string MembershipType,
++    bool CanCreateMeetings
+ );
+ 
+ public record ChangeMemberRoleRequest(
+@@ -22,3 +23,7 @@ string RoleName
+ public record TransferOwnershipRequest(
+     Guid NewOwnerId
+ );
++
++public record UpdateWorkspaceMemberRequest(
++    bool CanCreateMeetings
++);
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/DocumentAccessEvaluator.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/DocumentAccessEvaluator.cs
+index eda1622..9c25e80 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/DocumentAccessEvaluator.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/DocumentAccessEvaluator.cs
+@@ -71,7 +71,7 @@ public async Task<Result> EvaluateAccessAsync(Guid userId, Guid workspaceId, Gui
+         var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
+             .FindAsync(p => p.DocumentId == documentId, "", ct);
+ 
+-        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, ct);
++        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, null, null, ct);
+     }
+ 
+     public async Task<Result> EvaluateAccessAsync(
+@@ -82,6 +82,8 @@ public async Task<Result> EvaluateAccessAsync(
+         WorkspaceMember member,
+         string roleName,
+         IEnumerable<WorkspaceDocumentAccessPolicy> policies,
++        Dictionary<Guid, TranslationRoomDto?>? roomCache = null,
++        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
+         CancellationToken ct = default)
+     {
+         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
+@@ -114,24 +116,68 @@ public async Task<Result> EvaluateAccessAsync(
+             }
+         }
+ 
+-        // 2. Evaluate explicit policies
+-        var matchingPolicies = policies.Where(p =>
+-            string.Equals(p.Permission, requiredPermission, StringComparison.OrdinalIgnoreCase) &&
+-            (
+-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
+-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
+-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
+-            )
++        // 2. Evaluate explicit policies with hierarchy propagation
++        var subjectPolicies = policies.Where(p =>
++            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
++            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
++            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
+         ).ToList();
+ 
+-        // Deny overrides: if any policy is DENY, block access
+-        if (matchingPolicies.Any(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase)))
++        // Build sets of denied and allowed permissions for this subject
++        var deniedPermissions = subjectPolicies
++            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase))
++            .Select(p => p.Permission.ToLowerInvariant())
++            .ToHashSet();
++
++        var allowedPermissions = subjectPolicies
++            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase))
++            .Select(p => p.Permission.ToLowerInvariant())
++            .ToHashSet();
++
++        // 2a. Determine if denied by hierarchical rules
++        bool isDenied = false;
++        if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase))
++        {
++            isDenied = deniedPermissions.Contains("view");
++        }
++        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
++        {
++            isDenied = deniedPermissions.Contains("download") || deniedPermissions.Contains("view");
++        }
++        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
++        {
++            isDenied = deniedPermissions.Contains("ai_retrieval") || deniedPermissions.Contains("view");
++        }
++        else
++        {
++            isDenied = deniedPermissions.Contains(requiredPermission.ToLowerInvariant());
++        }
++
++        if (isDenied)
+         {
+             return Result.Failure(WorkspaceConstants.Errors.AccessDeniedByPolicy);
+         }
+ 
+-        // If no DENY, but ALLOW exists, grant access
+-        if (matchingPolicies.Any(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase)))
++        // 2b. Determine if allowed by hierarchical rules
++        bool isAllowed = false;
++        if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase))
++        {
++            isAllowed = allowedPermissions.Contains("view") || allowedPermissions.Contains("download") || allowedPermissions.Contains("ai_retrieval");
++        }
++        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
++        {
++            isAllowed = allowedPermissions.Contains("download");
++        }
++        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
++        {
++            isAllowed = allowedPermissions.Contains("ai_retrieval");
++        }
++        else
++        {
++            isAllowed = allowedPermissions.Contains(requiredPermission.ToLowerInvariant());
++        }
++
++        if (isAllowed)
+         {
+             return Result.Success();
+         }
+@@ -145,6 +191,7 @@ public async Task<Result> EvaluateAccessAsync(
+         // Non-sensitive default action
+         if (string.Equals(member.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
+         {
++            // Internal users can access non-sensitive documents by default
+             return Result.Success();
+         }
+ 
+@@ -153,11 +200,29 @@ public async Task<Result> EvaluateAccessAsync(
+             // Check meeting exception
+             if (string.Equals(document.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && document.SourceId.HasValue)
+             {
+-                var room = await _translationRoomClient.GetTranslationRoomAsync(document.SourceId.Value, ct);
++                TranslationRoomDto? room = null;
++                if (roomCache != null && roomCache.TryGetValue(document.SourceId.Value, out var cachedRoom))
++                {
++                    room = cachedRoom;
++                }
++                else
++                {
++                    room = await _translationRoomClient.GetTranslationRoomAsync(document.SourceId.Value, ct);
++                }
++
+                 if (room != null)
+                 {
+-                    var participants = await _translationRoomClient.GetParticipantsAsync(document.SourceId.Value, ct);
+-                    var isParticipant = participants.Any(p => p.Id == userId);
++                    List<TranslationRoomParticipantDto>? participants = null;
++                    if (participantsCache != null && participantsCache.TryGetValue(document.SourceId.Value, out var cachedParticipants))
++                    {
++                        participants = cachedParticipants;
++                    }
++                    else
++                    {
++                        participants = await _translationRoomClient.GetParticipantsAsync(document.SourceId.Value, ct);
++                    }
++
++                    var isParticipant = participants != null && participants.Any(p => p.Id == userId);
+                     if (isParticipant)
+                     {
+                         var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/IDocumentAccessEvaluator.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/IDocumentAccessEvaluator.cs
+index 322b1fd..50d3971 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/IDocumentAccessEvaluator.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Evaluators/IDocumentAccessEvaluator.cs
+@@ -4,6 +4,7 @@
+ using System.Threading.Tasks;
+ using WarpTalk.Shared;
+ using WarpTalk.WorkspaceService.Domain.Entities;
++using WarpTalk.WorkspaceService.Application.Interfaces;
+ 
+ namespace WarpTalk.WorkspaceService.Application.Evaluators;
+ 
+@@ -18,6 +19,8 @@ Task<Result> EvaluateAccessAsync(
+         WorkspaceMember member,
+         string roleName,
+         IEnumerable<WorkspaceDocumentAccessPolicy> policies,
++        Dictionary<Guid, TranslationRoomDto?>? roomCache = null,
++        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
+         CancellationToken ct = default);
+     Task<bool> CanManagePoliciesAsync(Guid userId, Guid workspaceId, Guid documentId, CancellationToken ct = default);
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceMemberService.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceMemberService.cs
+index 85e037a..3148cc6 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceMemberService.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceMemberService.cs
+@@ -13,4 +13,5 @@ public interface IWorkspaceMemberService
+     Task<Result> RemoveMemberAsync(Guid workspaceId, Guid memberUserId, Guid executingUserId, CancellationToken ct = default);
+     Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default);
+     Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid executingUserId, CancellationToken ct = default);
++    Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default);
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceService.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceService.cs
+index a2a0db0..7a4ac27 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceService.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Interfaces/IWorkspaceService.cs
+@@ -16,5 +16,6 @@ public interface IWorkspaceService
+     Task<Result<SelectWorkspaceResponse>> SelectWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+     Task<Result<WorkspaceSettingsDto>> GetWorkspaceSettingsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+     Task<Result> UpdateWorkspaceSettingsAsync(Guid workspaceId, WorkspaceSettingsDto settings, Guid userId, CancellationToken ct = default);
++    Task<Result> SoftDeleteWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+ }
+ 
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/Workspace/WorkspaceMapper.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/Workspace/WorkspaceMapper.cs
+index a0e01c9..bfba74a 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/Workspace/WorkspaceMapper.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/Workspace/WorkspaceMapper.cs
+@@ -57,7 +57,8 @@ public static WorkspaceSettingsDto ToSettingsDto(this WorkspaceConfiguration con
+             config.EnforceHostApprovalDefault,
+             config.VerifiedDomains,
+             config.AllowExternalCollaboration,
+-            config.RequireVerifiedDomainForInternal
++            config.RequireVerifiedDomainForInternal,
++            config.AiUsagePolicy?.ToDto()
+         );
+     }
+ 
+@@ -74,7 +75,8 @@ public static WorkspaceConfiguration ToConfiguration(this WorkspaceSettingsDto d
+             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
+             VerifiedDomains = dto.VerifiedDomains,
+             AllowExternalCollaboration = dto.AllowExternalCollaboration,
+-            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal
++            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
++            AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration()
+         };
+     }
+ 
+@@ -97,4 +99,36 @@ public static WorkspaceVerifiedDomain ToVerifiedDomainEntity(Guid workspaceId, s
+             UpdatedBy = userId
+         };
+     }
++
++    public static AiUsagePolicyDto ToDto(this AiUsagePolicyConfiguration config)
++    {
++        return new AiUsagePolicyDto(
++            config.AllowExternalLlm,
++            config.RedactPii == null ? null : new PiiRedactionDto(config.RedactPii.Enabled),
++            config.Dlp == null ? null : new DlpDto(config.Dlp.Enabled, config.Dlp.KeywordsBlacklist),
++            config.TranslationProfile == null ? null : new TranslationProfileDto(
++                config.TranslationProfile.TranslationTone,
++                config.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRulesDto(
++                    config.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
++                    config.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
++                )
++            )
++        );
++    }
++
++    public static AiUsagePolicyConfiguration ToConfiguration(this AiUsagePolicyDto dto)
++    {
++        return new AiUsagePolicyConfiguration(
++            dto.AllowExternalLlm,
++            dto.RedactPii == null ? null : new PiiRedactionConfiguration(dto.RedactPii.Enabled),
++            dto.Dlp == null ? null : new DlpConfiguration(dto.Dlp.Enabled, dto.Dlp.KeywordsBlacklist),
++            dto.TranslationProfile == null ? null : new TranslationProfileConfiguration(
++                dto.TranslationProfile.TranslationTone,
++                dto.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRules(
++                    dto.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
++                    dto.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
++                )
++            )
++        );
++    }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/WorkspaceMember/WorkspaceMemberMapper.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/WorkspaceMember/WorkspaceMemberMapper.cs
+index 916a335..a72fa06 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/WorkspaceMember/WorkspaceMemberMapper.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Mappers/WorkspaceMember/WorkspaceMemberMapper.cs
+@@ -50,7 +50,8 @@ public static WorkspaceMemberDto ToDto(this WorkspaceMember member, string fullN
+             roleName,
+             member.Status,
+             member.JoinedAt,
+-            member.MembershipType
++            member.MembershipType,
++            member.CanCreateMeetings
+         );
+     }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceDocumentService.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceDocumentService.cs
+index d73f1fe..db49d88 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceDocumentService.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceDocumentService.cs
+@@ -27,6 +27,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
+     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+     private readonly IAuthIdentityClient _authIdentity;
+     private readonly IWorkspaceUrlProvider _urlProvider;
++    private readonly ITranslationRoomClient _translationRoomClient;
+     private readonly ILogger<WorkspaceDocumentService> _logger;
+ 
+     public WorkspaceDocumentService(
+@@ -35,6 +36,7 @@ public WorkspaceDocumentService(
+         IWorkspaceDocumentEventPublisher eventPublisher,
+         IAuthIdentityClient authIdentity,
+         IWorkspaceUrlProvider urlProvider,
++        ITranslationRoomClient translationRoomClient,
+         ILogger<WorkspaceDocumentService> logger)
+     {
+         _unitOfWork = unitOfWork;
+@@ -42,6 +44,7 @@ public WorkspaceDocumentService(
+         _eventPublisher = eventPublisher;
+         _authIdentity = authIdentity;
+         _urlProvider = urlProvider;
++        _translationRoomClient = translationRoomClient;
+         _logger = logger;
+     }
+ 
+@@ -144,6 +147,50 @@ public async Task<Result<PagedResult<WorkspaceDocumentDto>>> ListDocumentsAsync(
+                     d.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
+             }
+ 
++            Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
++            Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null;
++
++            if (string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
++            {
++                var meetingIds = filteredDocs
++                    .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
++                    .Select(d => d.SourceId!.Value)
++                    .Distinct()
++                    .ToList();
++
++                if (meetingIds.Any())
++                {
++                    roomCache = new Dictionary<Guid, TranslationRoomDto?>();
++                    participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
++
++                    var roomTasks = meetingIds.Select(async id =>
++                    {
++                        var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
++                        return (id, room);
++                    }).ToList();
++
++                    var participantTasks = meetingIds.Select(async id =>
++                    {
++                        var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
++                        return (id, participants);
++                    }).ToList();
++
++                    await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
++
++                    foreach (var task in roomTasks)
++                    {
++                        var res = await task;
++                        roomCache[res.id] = res.room;
++                    }
++
++                    foreach (var task in participantTasks)
++                    {
++                        var res = await task;
++                        participantsCache[res.id] = res.participants;
++                    }
++                }
++            }
++
+             var allowedDtos = new List<WorkspaceDocumentDto>();
+             foreach (var doc in filteredDocs)
+             {
+@@ -156,6 +203,8 @@ public async Task<Result<PagedResult<WorkspaceDocumentDto>>> ListDocumentsAsync(
+                     member,
+                     roleName,
+                     docPolicies,
++                    roomCache,
++                    participantsCache,
+                     ct);
+ 
+                 if (accessResult.IsSuccess)
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceMemberService.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceMemberService.cs
+index cf55532..be74529 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceMemberService.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceMemberService.cs
+@@ -352,4 +352,47 @@ public async Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUse
+             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+         }
+     }
++
++    public async Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default)
++    {
++        try
++        {
++            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
++                m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
++            if (executingMember == null)
++            {
++                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
++            }
++
++            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
++            if (!execRoleName.IsOwnerOrAdmin())
++            {
++                return Result.Failure("Only workspace owners or admins can manage member settings.", ErrorCodes.Forbidden);
++            }
++
++            var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
++                m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
++            if (targetMember == null)
++            {
++                return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
++            }
++
++            var targetRoleName = await _authIdentity.GetRoleNameByIdAsync(targetMember.RoleId, ct);
++            if (targetRoleName.IsOwner() && !execRoleName.IsOwner())
++            {
++                return Result.Failure("Admins cannot modify settings of workspace owners.", ErrorCodes.Forbidden);
++            }
++
++            targetMember.CanCreateMeetings = request.CanCreateMeetings;
++
++            _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
++            await _unitOfWork.SaveChangesAsync(ct);
++            return Result.Success();
++        }
++        catch (Exception ex)
++        {
++            _logger.LogError(ex, "Error occurred while updating member settings. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
++            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
++        }
++    }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceService.cs b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceService.cs
+index 2d0c5d3..0662f90 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceService.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceService.cs
+@@ -344,4 +344,41 @@ public async Task<Result> UpdateWorkspaceSettingsAsync(Guid workspaceId, Workspa
+             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+         }
+     }
++
++    public async Task<Result> SoftDeleteWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
++    {
++        try
++        {
++            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
++            if (workspace == null || workspace.DeletedAt != null)
++            {
++                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
++            }
++
++            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
++                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
++            if (executingMember == null)
++            {
++                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
++            }
++
++            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
++            if (!execRoleName.IsOwner())
++            {
++                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
++            }
++
++            workspace.DeletedAt = DateTime.UtcNow;
++            workspace.UpdatedBy = userId;
++            
++            _unitOfWork.WorkspaceRepository.Update(workspace);
++            await _unitOfWork.SaveChangesAsync(ct);
++            return Result.Success();
++        }
++        catch (Exception ex)
++        {
++            _logger.LogError(ex, "Error occurred while deleting workspace. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
++            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
++        }
++    }
+ }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs b/workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs
+index 1e2fbb8..5c2e3ba 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs
+@@ -32,6 +32,7 @@ public static class Errors
+         public const string OnlyOwnerAdminCanUpdateSettings = "Only Owner or Admin can update workspace settings.";
+         public const string InvalidSettingsPayload = "Invalid settings payload.";
+         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
++        public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
+         
+         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
+         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Domain/Entities/WorkspaceMember.cs b/workspace/src/WarpTalk.WorkspaceService.Domain/Entities/WorkspaceMember.cs
+index 834c40c..c87b71b 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Domain/Entities/WorkspaceMember.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Domain/Entities/WorkspaceMember.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ 
+ namespace WarpTalk.WorkspaceService.Domain.Entities;
+@@ -17,6 +17,8 @@ public partial class WorkspaceMember
+ 
+     public string Status { get; set; } = null!;
+ 
++    public bool CanCreateMeetings { get; set; } = true;
++
+     public DateTime JoinedAt { get; set; }
+ 
+     public DateTime? RemovedAt { get; set; }
+diff --git a/workspace/src/WarpTalk.WorkspaceService.Infrastructure/Persistence/WorkspaceDbContext.cs b/workspace/src/WarpTalk.WorkspaceService.Infrastructure/Persistence/WorkspaceDbContext.cs
+index 418c370..9da250c 100644
+--- a/workspace/src/WarpTalk.WorkspaceService.Infrastructure/Persistence/WorkspaceDbContext.cs
++++ b/workspace/src/WarpTalk.WorkspaceService.Infrastructure/Persistence/WorkspaceDbContext.cs
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using Microsoft.EntityFrameworkCore;
+ 
+@@ -413,6 +413,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
+                 .HasMaxLength(20)
+                 .HasDefaultValueSql("'active'::character varying")
+                 .HasColumnName("status");
++            entity.Property(e => e.CanCreateMeetings)
++                .HasColumnName("can_create_meetings")
++                .HasDefaultValue(true);
+             entity.Property(e => e.UserId).HasColumnName("user_id");
+             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+ 
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/DocumentAccessEvaluatorTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/DocumentAccessEvaluatorTests.cs
+index a697115..33a253e 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/DocumentAccessEvaluatorTests.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/DocumentAccessEvaluatorTests.cs
+@@ -491,5 +491,62 @@ public async Task CanManagePoliciesAsync_ShouldAllow_WhenUserIsDocumentOwner_Eve
+         Assert.True(result);
+     }
+ 
++    [Fact]
++    public async Task EvaluateAccessAsync_ShouldDenyDownload_WhenViewIsDenied()
++    {
++        // Arrange
++        var userId = Guid.NewGuid();
++        var workspaceId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var roleId = Guid.NewGuid();
++        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", Status = "active" };
++        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
++
++        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
++        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
++        StubRoleName(roleId, "Member");
++
++        var policies = new List<WorkspaceDocumentAccessPolicy>
++        {
++            new() { DocumentId = documentId, SubjectType = WorkspacePolicyConstants.SubjectTypeUser, SubjectId = userId, Permission = "view", Effect = WorkspacePolicyConstants.EffectDeny }
++        };
++        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(policies);
++
++        // Act
++        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "download");
++
++        // Assert
++        Assert.False(result.IsSuccess);
++        Assert.Equal(WorkspaceConstants.Errors.AccessDeniedByPolicy, result.Error);
++    }
++
++    [Fact]
++    public async Task EvaluateAccessAsync_ShouldAllowView_WhenDownloadIsAllowed()
++    {
++        // Arrange
++        var userId = Guid.NewGuid();
++        var workspaceId = Guid.NewGuid();
++        var documentId = Guid.NewGuid();
++        var roleId = Guid.NewGuid();
++        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed" };
++        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
++
++        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
++        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
++        StubRoleName(roleId, "Member");
++
++        var policies = new List<WorkspaceDocumentAccessPolicy>
++        {
++            new() { DocumentId = documentId, SubjectType = WorkspacePolicyConstants.SubjectTypeUser, SubjectId = userId, Permission = "download", Effect = WorkspacePolicyConstants.EffectAllow }
++        };
++        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(policies);
++
++        // Act
++        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "view");
++
++        // Assert
++        Assert.True(result.IsSuccess);
++    }
++
+     #endregion
+ }
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/Integration/BaseIntegrationTest.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/Integration/BaseIntegrationTest.cs
+index 1dc3138..b872a9c 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/Integration/BaseIntegrationTest.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/Integration/BaseIntegrationTest.cs
+@@ -56,6 +56,16 @@ public async Task InitializeAsync()
+ 
+                     services.AddDistributedMemoryCache();
+ 
++                    // Swap ConnectionMultiplexer with mock to prevent connection attempts
++                    var redisMultiplexerDescriptor = services.SingleOrDefault(
++                        d => d.ServiceType == typeof(StackExchange.Redis.IConnectionMultiplexer));
++                    if (redisMultiplexerDescriptor != null) services.Remove(redisMultiplexerDescriptor);
++
++                    var mockMultiplexer = Substitute.For<StackExchange.Redis.IConnectionMultiplexer>();
++                    var mockDatabase = Substitute.For<StackExchange.Redis.IDatabase>();
++                    mockMultiplexer.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(mockDatabase);
++                    services.AddSingleton(mockMultiplexer);
++
+                     // Swap AuthIdentity client with Mock
+                     var authClientDescriptor = services.SingleOrDefault(
+                         d => d.ServiceType == typeof(IAuthIdentityClient));
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceDocumentServiceTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceDocumentServiceTests.cs
+index 5db8094..bc7148f 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceDocumentServiceTests.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceDocumentServiceTests.cs
+@@ -32,6 +32,7 @@ public class WorkspaceDocumentServiceTests
+     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+     private readonly IAuthIdentityClient _authIdentity;
+     private readonly IWorkspaceUrlProvider _urlProvider;
++    private readonly ITranslationRoomClient _translationRoomClient;
+     private readonly WorkspaceDocumentService _documentService;
+ 
+     public WorkspaceDocumentServiceTests()
+@@ -45,6 +46,7 @@ public WorkspaceDocumentServiceTests()
+         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
+         _authIdentity = Substitute.For<IAuthIdentityClient>();
+         _urlProvider = Substitute.For<IWorkspaceUrlProvider>();
++        _translationRoomClient = Substitute.For<ITranslationRoomClient>();
+ 
+         // Set up mock repository mappings
+         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
+@@ -61,6 +63,7 @@ public WorkspaceDocumentServiceTests()
+             _eventPublisher,
+             _authIdentity,
+             _urlProvider,
++            _translationRoomClient,
+             Substitute.For<ILogger<WorkspaceDocumentService>>()
+         );
+     }
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceGrpcServiceTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceGrpcServiceTests.cs
+new file mode 100644
+index 0000000..3a9a887
+--- /dev/null
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceGrpcServiceTests.cs
+@@ -0,0 +1,274 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Linq.Expressions;
++using System.Threading;
++using System.Threading.Tasks;
++using Grpc.Core;
++using NSubstitute;
++using WarpTalk.Shared.Protos;
++using WarpTalk.WorkspaceService.API.GrpcServices;
++using WarpTalk.WorkspaceService.Domain.Entities;
++using WarpTalk.WorkspaceService.Domain.Interfaces;
++using WarpTalk.WorkspaceService.Application.Interfaces;
++using WarpTalk.WorkspaceService.Application.Models;
++using Xunit;
++
++namespace WarpTalk.WorkspaceService.Tests;
++
++public class WorkspaceGrpcServiceTests
++{
++    private readonly IUnitOfWork _unitOfWork;
++    private readonly IAuthIdentityClient _authIdentity;
++    private readonly WorkspaceGrpcService _service;
++    private readonly ServerCallContext _context;
++
++    public WorkspaceGrpcServiceTests()
++    {
++        _unitOfWork = Substitute.For<IUnitOfWork>();
++        _authIdentity = Substitute.For<IAuthIdentityClient>();
++        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity);
++        _context = new TestServerCallContext(CancellationToken.None);
++    }
++
++    [Fact]
++    public async Task GetWorkspaceMemberDetails_ShouldReturnIsMemberTrue_WhenMemberExists()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var roleId = Guid.NewGuid();
++        var member = new WorkspaceMember
++        {
++            WorkspaceId = workspaceId,
++            UserId = userId,
++            RoleId = roleId,
++            MembershipType = "internal",
++            Status = "Active",
++            CanCreateMeetings = true
++        };
++
++        _unitOfWork.WorkspaceMemberRepository
++            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
++            .Returns(member);
++
++        _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
++            .Returns(new Role { Id = roleId, Name = "Admin" });
++
++        var request = new GetWorkspaceMemberRequest
++        {
++            WorkspaceId = workspaceId.ToString(),
++            UserId = userId.ToString()
++        };
++
++        // Act
++        var response = await _service.GetWorkspaceMemberDetails(request, _context);
++
++        // Assert
++        Assert.True(response.IsMember);
++        Assert.Equal("Admin", response.RoleName);
++        Assert.Equal("internal", response.MembershipType);
++        Assert.True(response.IsActive);
++        Assert.True(response.CanCreateMeetings);
++    }
++
++    [Fact]
++    public async Task GetWorkspaceMemberDetails_ShouldReturnIsMemberFalse_WhenMemberDoesNotExist()
++    {
++        // Arrange
++        _unitOfWork.WorkspaceMemberRepository
++            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
++            .Returns((WorkspaceMember)null!);
++
++        var request = new GetWorkspaceMemberRequest
++        {
++            WorkspaceId = Guid.NewGuid().ToString(),
++            UserId = Guid.NewGuid().ToString()
++        };
++
++        // Act
++        var response = await _service.GetWorkspaceMemberDetails(request, _context);
++
++        // Assert
++        Assert.False(response.IsMember);
++    }
++
++    [Fact]
++    public async Task ValidateMeetingCreation_ShouldAllow_WhenMemberHasPermissionAndActive()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var member = new WorkspaceMember
++        {
++            WorkspaceId = workspaceId,
++            UserId = userId,
++            Status = "Active",
++            CanCreateMeetings = true
++        };
++
++        var workspace = new Workspace
++        {
++            Id = workspaceId,
++            Settings = "{\"AllowedTargetLanguages\":[\"en\",\"vi\"],\"MaxActiveRooms\":10}"
++        };
++
++        _unitOfWork.WorkspaceMemberRepository
++            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
++            .Returns(member);
++
++        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
++            .Returns(workspace);
++
++        var request = new ValidateMeetingCreationRequest
++        {
++            WorkspaceId = workspaceId.ToString(),
++            UserId = userId.ToString(),
++            TargetLanguages = { "vi" }
++        };
++
++        // Act
++        var response = await _service.ValidateMeetingCreation(request, _context);
++
++        // Assert
++        Assert.True(response.IsAllowed);
++        Assert.Empty(response.ErrorMessage);
++    }
++
++    [Fact]
++    public async Task ValidateMeetingCreation_ShouldDeny_WhenMemberCannotCreateMeetings()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var member = new WorkspaceMember
++        {
++            WorkspaceId = workspaceId,
++            UserId = userId,
++            Status = "Active",
++            CanCreateMeetings = false
++        };
++
++        _unitOfWork.WorkspaceMemberRepository
++            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
++            .Returns(member);
++
++        var request = new ValidateMeetingCreationRequest
++        {
++            WorkspaceId = workspaceId.ToString(),
++            UserId = userId.ToString()
++        };
++
++        // Act
++        var response = await _service.ValidateMeetingCreation(request, _context);
++
++        // Assert
++        Assert.False(response.IsAllowed);
++        Assert.Contains("permission", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task ValidateMeetingCreation_ShouldDeny_WhenTargetLanguageNotAllowedByWorkspace()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var member = new WorkspaceMember
++        {
++            WorkspaceId = workspaceId,
++            UserId = userId,
++            Status = "Active",
++            CanCreateMeetings = true
++        };
++
++        var workspace = new Workspace
++        {
++            Id = workspaceId,
++            Settings = "{\"AllowedTargetLanguages\":[\"vi\"],\"MaxActiveRooms\":10}"
++        };
++
++        _unitOfWork.WorkspaceMemberRepository
++            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
++            .Returns(member);
++
++        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
++            .Returns(workspace);
++
++        var request = new ValidateMeetingCreationRequest
++        {
++            WorkspaceId = workspaceId.ToString(),
++            UserId = userId.ToString(),
++            TargetLanguages = { "en" } // Not allowed in workspace settings
++        };
++
++        // Act
++        var response = await _service.ValidateMeetingCreation(request, _context);
++
++        // Assert
++        Assert.False(response.IsAllowed);
++        Assert.Contains("not allowed", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
++    }
++
++    [Fact]
++    public async Task GetWorkspaceSettings_ShouldReturnSettings_WhenWorkspaceExists()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        var workspace = new Workspace
++        {
++            Id = workspaceId,
++            Settings = "{\"ArtifactRetentionDays\":15,\"AllowExternalCollaboration\":true}"
++        };
++
++        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
++            .Returns(workspace);
++
++        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
++
++        // Act
++        var response = await _service.GetWorkspaceSettings(request, _context);
++
++        // Assert
++        Assert.Equal(15, response.ArtifactRetentionDays);
++        Assert.True(response.AllowExternalCollaboration);
++    }
++
++    [Fact]
++    public async Task GetWorkspaceSettings_ShouldThrowRpcException_WhenWorkspaceDoesNotExist()
++    {
++        // Arrange
++        var workspaceId = Guid.NewGuid();
++        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
++            .Returns((Workspace)null!);
++
++        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
++
++        // Act & Assert
++        var exception = await Assert.ThrowsAsync<RpcException>(() => _service.GetWorkspaceSettings(request, _context));
++        Assert.Equal(StatusCode.NotFound, exception.StatusCode);
++    }
++
++    private class TestServerCallContext : ServerCallContext
++    {
++        private readonly CancellationToken _cancellationToken;
++
++        public TestServerCallContext(CancellationToken cancellationToken)
++        {
++            _cancellationToken = cancellationToken;
++        }
++
++        protected override string MethodCore => "TestMethod";
++        protected override string HostCore => "localhost";
++        protected override string PeerCore => "127.0.0.1";
++        protected override DateTime DeadlineCore => DateTime.MaxValue;
++        protected override Metadata RequestHeadersCore => new Metadata();
++        protected override CancellationToken CancellationTokenCore => _cancellationToken;
++        protected override Metadata ResponseTrailersCore => new Metadata();
++        protected override Status StatusCore { get; set; }
++        protected override WriteOptions WriteOptionsCore { get; set; }
++        protected override AuthContext AuthContextCore => null!;
++
++        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions options) => null!;
++        protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders) => Task.CompletedTask;
++    }
++}
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceMembersControllerTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceMembersControllerTests.cs
+index ae61b49..2123874 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceMembersControllerTests.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceMembersControllerTests.cs
+@@ -46,7 +46,7 @@ public async Task ListMembers_ShouldReturnPaginatedList_WhenSucceeds()
+         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: null);
+         var expectedList = new List<WorkspaceMemberDto>
+         {
+-            new(Guid.NewGuid(), workspaceId, _userId, "John Doe", "john@warptalk.vn", null, "Member", "Active", DateTime.UtcNow, "Internal")
++            new(Guid.NewGuid(), workspaceId, _userId, "John Doe", "john@warptalk.vn", null, "Member", "Active", DateTime.UtcNow, "Internal", true)
+         };
+         var expectedPagedResult = new PagedResult<WorkspaceMemberDto>(expectedList, 1, 10, 1);
+ 
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceServiceTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceServiceTests.cs
+index 8a9bc53..4b0b709 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceServiceTests.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspaceServiceTests.cs
+@@ -616,7 +616,8 @@ public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsOwnerOrAd
+             true,
+             new List<string>(),
+             true,
+-            true
++            true,
++            null
+         );
+ 
+         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+@@ -660,7 +661,8 @@ public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAd
+             true,
+             new List<string>(),
+             true,
+-            true
++            true,
++            null
+         );
+ 
+         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+@@ -701,7 +703,8 @@ public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenDomainIsPublicDoma
+             true,
+             new List<string> { "yahoo.com" }, // Public domain
+             true,
+-            true
++            true,
++            null
+         );
+ 
+         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+diff --git a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspacesControllerTests.cs b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspacesControllerTests.cs
+index 31051db..29ff654 100644
+--- a/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspacesControllerTests.cs
++++ b/workspace/tests/WarpTalk.WorkspaceService.Tests/WorkspacesControllerTests.cs
+@@ -184,7 +184,8 @@ public async Task GetWorkspaceSettings_ShouldReturnSettings_WhenSuccessful()
+             true,
+             new List<string>(),
+             true,
+-            true
++            true,
++            null
+         );
+         _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+             .Returns(Result.Success(expectedSettings));
+@@ -213,7 +214,8 @@ public async Task UpdateWorkspaceSettings_ShouldReturnSuccess_WhenSuccessful()
+             true,
+             new List<string>(),
+             true,
+-            true
++            true,
++            null
+         );
+         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
+             .Returns(Result.Success());
+@@ -240,7 +242,8 @@ public async Task UpdateWorkspaceSettings_ShouldReturnForbidden_WhenUnauthorized
+             true,
+             new List<string>(),
+             true,
+-            true
++            true,
++            null
+         );
+         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
+             .Returns(Result.Failure("Forbidden", ErrorCodes.Forbidden));
