@@ -8,8 +8,6 @@ public class UpdateRoomSettingsRequestValidator : AbstractValidator<UpdateRoomSe
 {
     public UpdateRoomSettingsRequestValidator()
     {
-        RuleFor(x => x.Settings)
-            .NotNull().WithMessage(TranslationRoomConstants.ValidationSettingsRequired);
-
+        // Settings is optional
     }
 }

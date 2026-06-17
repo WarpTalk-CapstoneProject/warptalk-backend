@@ -1,6 +1,5 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 
@@ -9,6 +8,8 @@ public partial class TranslationRoomArtifact
     public Guid Id { get; set; }
 
     public Guid TranslationRoomId { get; set; }
+
+    public string ArtifactType { get; set; } = null!;
 
     public string? FileUrl { get; set; }
 

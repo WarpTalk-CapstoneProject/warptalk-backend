@@ -1,6 +1,14 @@
 using System;
+using System.Collections.Generic;
 
 namespace WarpTalk.MeetingService.Application.DTOs;
+
+public class ChatMentionDto
+{
+    public string Id { get; set; } = null!;
+    public string Display { get; set; } = null!;
+    public string Type { get; set; } = null!; // "agent" or "user"
+}
 
 public class MeetingChatMessageDto
 {
@@ -13,7 +21,7 @@ public class MeetingChatMessageDto
     public string OriginalLanguage { get; set; } = null!;
     public string OriginalText { get; set; } = null!;
     public bool TranslationEnabled { get; set; }
-    public bool ContainsWarpbotMention { get; set; }
+    public List<ChatMentionDto> Mentions { get; set; } = new();
     public DateTime CreatedAt { get; set; }
 }
 
@@ -22,7 +30,7 @@ public class SendMeetingChatMessageRequest
     public string OriginalText { get; set; } = null!;
     public string OriginalLanguage { get; set; } = null!;
     public bool TranslationEnabled { get; set; }
-    public bool ContainsWarpbotMention { get; set; }
+    public List<ChatMentionDto> Mentions { get; set; } = new();
     public string MessageType { get; set; } = "text";
 }
 

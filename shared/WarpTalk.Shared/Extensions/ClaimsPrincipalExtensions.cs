@@ -19,4 +19,9 @@ public static class ClaimsPrincipalExtensions
         var claim = principal.FindFirst("email_verified")?.Value;
         return bool.TryParse(claim, out var verified) && verified;
     }
+
+    public static string? GetEmail(this ClaimsPrincipal principal)
+    {
+        return principal.FindFirst(ClaimTypes.Email)?.Value ?? principal.FindFirst("email")?.Value;
+    }
 }

@@ -60,6 +60,7 @@ public class MeetingRoomDetailDto
     public MeetingRoomDto Room { get; set; } = null!;
     public List<MeetingParticipantDto> Participants { get; set; } = new();
     public int TotalChatMessages { get; set; }
+    public List<MeetingChatMessageDto> RecentMessages { get; set; } = new();
 }
 
 // --- Request DTOs ---

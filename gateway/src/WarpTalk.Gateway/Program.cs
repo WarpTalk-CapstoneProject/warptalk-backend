@@ -47,7 +47,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 // Only extract from query string for Hub paths
                 var path = context.HttpContext.Request.Path;
                 if (!string.IsNullOrEmpty(accessToken) &&
-                    path.StartsWithSegments("/hubs"))
+                    (path.StartsWithSegments("/hubs") || path.Value.Contains("chat-hub") || path.Value.Contains("hub")))
                 {
                     context.Token = accessToken;
                 }
@@ -159,6 +159,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
+builder.Services.AddHostedService<WarpTalk.Gateway.Services.SttSimulatorWorker>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 
 // 8. Configure Health Checks

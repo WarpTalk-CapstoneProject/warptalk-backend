@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
 using System.Security.Claims;
+using System.Collections.Concurrent;
 using WarpTalk.Gateway.Services;
 
 namespace WarpTalk.Gateway.Hubs;
@@ -19,6 +20,9 @@ public class TranslationRoomHub : Hub
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<TranslationRoomHub> _logger;
+
+    // Track which connection belongs to which room
+    private static readonly ConcurrentDictionary<string, string> _connectionToRoom = new();
 
     public TranslationRoomHub(
         IConnectionManager connectionManager,
@@ -53,6 +57,19 @@ public class TranslationRoomHub : Hub
         var userId = GetUserId();
         var isFullyOffline = _connectionManager.RemoveConnection(userId, Context.ConnectionId);
 
+        if (_connectionToRoom.TryRemove(Context.ConnectionId, out var roomIdStr) && isFullyOffline)
+        {
+            // Publish event to Redis for TranslationRoomService to process participant left
+            var db = _redis.GetDatabase();
+            await db.PublishAsync("translationRoom:participant-offline", $"{roomIdStr}:{userId}");
+
+            _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
+            await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
+            
+            await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
+                .SendAsync("ParticipantLeft", userId);
+        }
+
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} disconnected (ConnectionId: {ConnectionId}, FullyOffline: {FullyOffline})",
             userId, Context.ConnectionId, isFullyOffline);
@@ -72,6 +89,7 @@ public class TranslationRoomHub : Hub
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
+        _connectionToRoom[Context.ConnectionId] = translationRoomId.ToString();
 
         var participantInfo = new ParticipantInfoDto(
             UserId: Guid.Parse(userId),
