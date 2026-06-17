@@ -14,8 +14,10 @@ using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.Shared.Protos;
 using StackExchange.Redis;
+using WarpTalk.WorkspaceService.Infrastructure.Storage;
 using WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 using WarpTalk.WorkspaceService.API.Providers;
+using WarpTalk.WorkspaceService.Infrastructure.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -76,9 +78,13 @@ builder.Services.AddScoped<IWorkspaceService, WarpTalk.WorkspaceService.Applicat
 builder.Services.AddScoped<IWorkspaceMemberService, WorkspaceMemberService>();
 builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
 builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>();
+builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
+builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, RedisDocumentEventPublisher>();
-builder.Services.AddHostedService<DocumentAiIngestionConsumerService>();
+builder.Services.AddSingleton<IWorkspaceDocumentStorage, LocalEncryptedWorkspaceDocumentStorage>();
+builder.Services.AddHttpClient();
+builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();

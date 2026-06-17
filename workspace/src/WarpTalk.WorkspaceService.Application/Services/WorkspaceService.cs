@@ -133,21 +133,7 @@ public class WorkspaceService : IWorkspaceService
             {
                 foreach (var domain in domainsToVerify)
                 {
-                    var verifiedDomain = new WorkspaceVerifiedDomain
-                    {
-                        Id = Guid.NewGuid(),
-                        WorkspaceId = workspace.Id,
-                        Domain = domain,
-                        Status = "verified",
-                        VerificationMethod = "system",
-                        VerificationToken = Guid.NewGuid().ToString(),
-                        VerifiedAt = DateTime.UtcNow,
-                        VerifiedBy = userId,
-                        CreatedAt = DateTime.UtcNow,
-                        CreatedBy = userId,
-                        UpdatedAt = DateTime.UtcNow,
-                        UpdatedBy = userId
-                    };
+                    var verifiedDomain = WorkspaceMapper.ToVerifiedDomainEntity(workspace.Id, domain, userId);
                     await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
                 }
             }

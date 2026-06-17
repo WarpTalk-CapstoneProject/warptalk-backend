@@ -86,10 +86,22 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
         CancellationToken ct = default)
     {
+        // Archived check: only Owner/Admin or Document Owner can view/download archived documents.
+        if (string.Equals(document.Status, WorkspaceDocumentStatus.archived.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+            var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+            }
+        }
+
         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
         {
             if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
             {
+                // Download requires active status, unless allowed by archived check above
                 return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
             }
         }

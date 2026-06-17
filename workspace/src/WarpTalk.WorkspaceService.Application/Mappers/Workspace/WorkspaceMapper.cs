@@ -104,15 +104,9 @@ public static class WorkspaceMapper
     {
         return new AiUsagePolicyDto(
             config.AllowExternalLlm,
-            config.RedactPii == null ? null : new PiiRedactionDto(config.RedactPii.Enabled),
-            config.Dlp == null ? null : new DlpDto(config.Dlp.Enabled, config.Dlp.KeywordsBlacklist),
-            config.TranslationProfile == null ? null : new TranslationProfileDto(
-                config.TranslationProfile.TranslationTone,
-                config.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRulesDto(
-                    config.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
-                    config.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
-                )
-            )
+            config.RedactPii.ToDto(),
+            config.Dlp.ToDto(),
+            config.TranslationProfile.ToDto()
         );
     }
 
@@ -120,15 +114,69 @@ public static class WorkspaceMapper
     {
         return new AiUsagePolicyConfiguration(
             dto.AllowExternalLlm,
-            dto.RedactPii == null ? null : new PiiRedactionConfiguration(dto.RedactPii.Enabled),
-            dto.Dlp == null ? null : new DlpConfiguration(dto.Dlp.Enabled, dto.Dlp.KeywordsBlacklist),
-            dto.TranslationProfile == null ? null : new TranslationProfileConfiguration(
-                dto.TranslationProfile.TranslationTone,
-                dto.TranslationProfile.LanguageSpecificRules == null ? null : new LanguageSpecificRules(
-                    dto.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle,
-                    dto.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle
-                )
-            )
+            dto.RedactPii.ToConfiguration(),
+            dto.Dlp.ToConfiguration(),
+            dto.TranslationProfile.ToConfiguration()
+        );
+    }
+
+    public static PiiRedactionDto? ToDto(this PiiRedactionConfiguration? config)
+    {
+        if (config == null) return null;
+        return new PiiRedactionDto(config.Enabled);
+    }
+
+    public static PiiRedactionConfiguration? ToConfiguration(this PiiRedactionDto? dto)
+    {
+        if (dto == null) return null;
+        return new PiiRedactionConfiguration(dto.Enabled);
+    }
+
+    public static DlpDto? ToDto(this DlpConfiguration? config)
+    {
+        if (config == null) return null;
+        return new DlpDto(config.Enabled, config.KeywordsBlacklist);
+    }
+
+    public static DlpConfiguration? ToConfiguration(this DlpDto? dto)
+    {
+        if (dto == null) return null;
+        return new DlpConfiguration(dto.Enabled, dto.KeywordsBlacklist);
+    }
+
+    public static TranslationProfileDto? ToDto(this TranslationProfileConfiguration? config)
+    {
+        if (config == null) return null;
+        return new TranslationProfileDto(
+            config.TranslationTone,
+            config.LanguageSpecificRules.ToDto()
+        );
+    }
+
+    public static TranslationProfileConfiguration? ToConfiguration(this TranslationProfileDto? dto)
+    {
+        if (dto == null) return null;
+        return new TranslationProfileConfiguration(
+            dto.TranslationTone,
+            dto.LanguageSpecificRules.ToConfiguration()
+        );
+    }
+
+    public static LanguageSpecificRulesDto? ToDto(this LanguageSpecificRules? config)
+    {
+        if (config == null) return null;
+        return new LanguageSpecificRulesDto(
+            config.VietnameseHonorificStyle,
+            config.JapaneseHonorificStyle
+        );
+    }
+
+    public static LanguageSpecificRules? ToConfiguration(this LanguageSpecificRulesDto? dto)
+    {
+        if (dto == null) return null;
+        return new LanguageSpecificRules(
+            dto.VietnameseHonorificStyle,
+            dto.JapaneseHonorificStyle
         );
     }
 }
