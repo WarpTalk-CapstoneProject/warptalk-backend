@@ -206,7 +206,17 @@ public class TranslationRoomHub : Hub
     /// Receive an audio chunk from the client and forward to the AI pipeline via Redis.
     /// Audio is base64-encoded on the client, forwarded as-is to the STT worker.
     /// </summary>
-    public async Task SendAudioChunk(Guid translationRoomId, string audioBase64, int chunkIndex, string language = "auto")
+    public async Task SendAudioChunk(
+        Guid translationRoomId,
+        string audioBase64,
+        int chunkIndex,
+        string language = "auto",
+        string sourceRuntime = "web",
+        double vadConfidence = 0.0,
+        int speechStartMs = 0,
+        int speechEndMs = 0,
+        double inputLufs = 0.0,
+        bool noiseSuppressionEnabled = false)
     {
         var userId = GetUserId();
 
@@ -215,7 +225,13 @@ public class TranslationRoomHub : Hub
             speakerId: userId,
             chunkIndex: chunkIndex,
             audioBase64: audioBase64,
-            language: language);
+            language: language,
+            sourceRuntime: sourceRuntime,
+            vadConfidence: vadConfidence,
+            speechStartMs: speechStartMs,
+            speechEndMs: speechEndMs,
+            inputLufs: inputLufs,
+            noiseSuppressionEnabled: noiseSuppressionEnabled);
 
         _logger.LogDebug(
             "TranslationRoomHub: Audio chunk {ChunkIndex} from {UserId} in translationRoom {TranslationRoomId}",

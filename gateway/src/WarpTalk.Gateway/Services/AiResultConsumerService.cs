@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Microsoft.AspNetCore.SignalR;
 using WarpTalk.Gateway.Hubs;
 
@@ -193,7 +194,17 @@ public sealed class AiResultConsumerService : BackgroundService
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
                         AudioBase64: RedisStreamService.GetField(entry, "audio_data") ?? "",
                         VoiceType: RedisStreamService.GetField(entry, "voice_type") ?? "default",
-                        DurationMs: int.TryParse(RedisStreamService.GetField(entry, "duration_ms"), out var dur) ? dur : 0);
+                        DurationMs: int.TryParse(RedisStreamService.GetField(entry, "duration_ms"), out var dur) ? dur : 0,
+                        VoiceMode: RedisStreamService.GetField(entry, "voice_mode"),
+                        CloneStrength: double.TryParse(RedisStreamService.GetField(entry, "clone_strength"), NumberStyles.Float, CultureInfo.InvariantCulture, out var strength) ? strength : null,
+                        AnchorProvider: RedisStreamService.GetField(entry, "anchor_provider"),
+                        CloneProvider: RedisStreamService.GetField(entry, "clone_provider"),
+                        RenderLocation: RedisStreamService.GetField(entry, "render_location"),
+                        CacheKey: RedisStreamService.GetField(entry, "cache_key"),
+                        CacheHit: bool.TryParse(RedisStreamService.GetField(entry, "cache_hit"), out var cacheHit) ? cacheHit : null,
+                        SynthesisLatencyMs: int.TryParse(RedisStreamService.GetField(entry, "synthesis_latency_ms"), out var synthMs) ? synthMs : null,
+                        ConversionLatencyMs: int.TryParse(RedisStreamService.GetField(entry, "conversion_latency_ms"), out var conversionMs) ? conversionMs : null,
+                        FallbackReason: RedisStreamService.GetField(entry, "fallback_reason"));
 
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
