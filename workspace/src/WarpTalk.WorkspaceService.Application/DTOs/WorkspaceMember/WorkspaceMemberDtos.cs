@@ -12,7 +12,8 @@ public record WorkspaceMemberDto(
     string RoleName,
     string Status,
     DateTime JoinedAt,
-    string MembershipType
+    string MembershipType,
+    bool CanCreateMeetings
 );
 
 public record ChangeMemberRoleRequest(
@@ -21,4 +22,8 @@ public record ChangeMemberRoleRequest(
 
 public record TransferOwnershipRequest(
     Guid NewOwnerId
+);
+
+public record UpdateWorkspaceMemberRequest(
+    bool CanCreateMeetings
 );

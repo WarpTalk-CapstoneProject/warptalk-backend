@@ -56,6 +56,16 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
 
                     services.AddDistributedMemoryCache();
 
+                    // Swap ConnectionMultiplexer with mock to prevent connection attempts
+                    var redisMultiplexerDescriptor = services.SingleOrDefault(
+                        d => d.ServiceType == typeof(StackExchange.Redis.IConnectionMultiplexer));
+                    if (redisMultiplexerDescriptor != null) services.Remove(redisMultiplexerDescriptor);
+
+                    var mockMultiplexer = Substitute.For<StackExchange.Redis.IConnectionMultiplexer>();
+                    var mockDatabase = Substitute.For<StackExchange.Redis.IDatabase>();
+                    mockMultiplexer.GetDatabase(Arg.Any<int>(), Arg.Any<object>()).Returns(mockDatabase);
+                    services.AddSingleton(mockMultiplexer);
+
                     // Swap AuthIdentity client with Mock
                     var authClientDescriptor = services.SingleOrDefault(
                         d => d.ServiceType == typeof(IAuthIdentityClient));

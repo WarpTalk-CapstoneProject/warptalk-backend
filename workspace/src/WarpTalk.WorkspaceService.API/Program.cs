@@ -14,8 +14,10 @@ using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.Shared.Protos;
 using StackExchange.Redis;
+using WarpTalk.WorkspaceService.Infrastructure.Storage;
 using WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 using WarpTalk.WorkspaceService.API.Providers;
+using WarpTalk.WorkspaceService.Infrastructure.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -72,13 +74,18 @@ builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
 builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
 builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
 // Services
-builder.Services.AddScoped<IWorkspaceService, WorkspaceService>();
+builder.Services.AddScoped<IWorkspaceService, WarpTalk.WorkspaceService.Application.Services.WorkspaceService>();
 builder.Services.AddScoped<IWorkspaceMemberService, WorkspaceMemberService>();
 builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
 builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>();
+builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
+builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, RedisDocumentEventPublisher>();
-builder.Services.AddHostedService<DocumentAiIngestionConsumerService>();
+builder.Services.AddScoped<IWorkspaceEventPublisher, RedisWorkspaceEventPublisher>();
+builder.Services.AddSingleton<IWorkspaceDocumentStorage, LocalEncryptedWorkspaceDocumentStorage>();
+builder.Services.AddHttpClient();
+builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
@@ -120,6 +127,7 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceInvitationGrpcService>();
+app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceGrpcService>();
 
 // Simple health/check endpoints
 app.MapGet("/", () => "WarpTalk Workspace Service is running.");

@@ -71,7 +71,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
             .FindAsync(p => p.DocumentId == documentId, "", ct);
 
-        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, ct);
+        return await EvaluateAccessAsync(userId, workspaceId, document, requiredPermission, member, roleName, policies, null, null, ct);
     }
 
     public async Task<Result> EvaluateAccessAsync(
@@ -82,12 +82,26 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         WorkspaceMember member,
         string roleName,
         IEnumerable<WorkspaceDocumentAccessPolicy> policies,
+        Dictionary<Guid, TranslationRoomDto?>? roomCache = null,
+        Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
         CancellationToken ct = default)
     {
+        // Archived check: only Owner/Admin or Document Owner can view/download archived documents.
+        if (string.Equals(document.Status, WorkspaceDocumentStatus.archived.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+            var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+            }
+        }
+
         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
         {
             if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
             {
+                // Download requires active status, unless allowed by archived check above
                 return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
             }
         }
@@ -114,24 +128,68 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             }
         }
 
-        // 2. Evaluate explicit policies
-        var matchingPolicies = policies.Where(p =>
-            string.Equals(p.Permission, requiredPermission, StringComparison.OrdinalIgnoreCase) &&
-            (
-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
-                (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
-            )
+        // 2. Evaluate explicit policies with hierarchy propagation
+        var subjectPolicies = policies.Where(p =>
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase) && p.SubjectId == userId) ||
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, roleName, StringComparison.OrdinalIgnoreCase)) ||
+            (string.Equals(p.SubjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase) && string.Equals(p.SubjectKey, member.MembershipType, StringComparison.OrdinalIgnoreCase))
         ).ToList();
 
-        // Deny overrides: if any policy is DENY, block access
-        if (matchingPolicies.Any(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase)))
+        // Build sets of denied and allowed permissions for this subject
+        var deniedPermissions = subjectPolicies
+            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectDeny, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Permission.ToLowerInvariant())
+            .ToHashSet();
+
+        var allowedPermissions = subjectPolicies
+            .Where(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase))
+            .Select(p => p.Permission.ToLowerInvariant())
+            .ToHashSet();
+
+        // 2a. Determine if denied by hierarchical rules
+        bool isDenied = false;
+        if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase))
+        {
+            isDenied = deniedPermissions.Contains("view");
+        }
+        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
+        {
+            isDenied = deniedPermissions.Contains("download") || deniedPermissions.Contains("view");
+        }
+        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
+        {
+            isDenied = deniedPermissions.Contains("ai_retrieval") || deniedPermissions.Contains("view");
+        }
+        else
+        {
+            isDenied = deniedPermissions.Contains(requiredPermission.ToLowerInvariant());
+        }
+
+        if (isDenied)
         {
             return Result.Failure(WorkspaceConstants.Errors.AccessDeniedByPolicy);
         }
 
-        // If no DENY, but ALLOW exists, grant access
-        if (matchingPolicies.Any(p => string.Equals(p.Effect, WorkspacePolicyConstants.EffectAllow, StringComparison.OrdinalIgnoreCase)))
+        // 2b. Determine if allowed by hierarchical rules
+        bool isAllowed = false;
+        if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.View, StringComparison.OrdinalIgnoreCase))
+        {
+            isAllowed = allowedPermissions.Contains("view") || allowedPermissions.Contains("download") || allowedPermissions.Contains("ai_retrieval");
+        }
+        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
+        {
+            isAllowed = allowedPermissions.Contains("download");
+        }
+        else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
+        {
+            isAllowed = allowedPermissions.Contains("ai_retrieval");
+        }
+        else
+        {
+            isAllowed = allowedPermissions.Contains(requiredPermission.ToLowerInvariant());
+        }
+
+        if (isAllowed)
         {
             return Result.Success();
         }
@@ -145,6 +203,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         // Non-sensitive default action
         if (string.Equals(member.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
         {
+            // Internal users can access non-sensitive documents by default
             return Result.Success();
         }
 
@@ -153,11 +212,29 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             // Check meeting exception
             if (string.Equals(document.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && document.SourceId.HasValue)
             {
-                var room = await _translationRoomClient.GetTranslationRoomAsync(document.SourceId.Value, ct);
+                TranslationRoomDto? room = null;
+                if (roomCache != null && roomCache.TryGetValue(document.SourceId.Value, out var cachedRoom))
+                {
+                    room = cachedRoom;
+                }
+                else
+                {
+                    room = await _translationRoomClient.GetTranslationRoomAsync(document.SourceId.Value, ct);
+                }
+
                 if (room != null)
                 {
-                    var participants = await _translationRoomClient.GetParticipantsAsync(document.SourceId.Value, ct);
-                    var isParticipant = participants.Any(p => p.Id == userId);
+                    List<TranslationRoomParticipantDto>? participants = null;
+                    if (participantsCache != null && participantsCache.TryGetValue(document.SourceId.Value, out var cachedParticipants))
+                    {
+                        participants = cachedParticipants;
+                    }
+                    else
+                    {
+                        participants = await _translationRoomClient.GetParticipantsAsync(document.SourceId.Value, ct);
+                    }
+
+                    var isParticipant = participants != null && participants.Any(p => p.Id == userId);
                     if (isParticipant)
                     {
                         var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);

@@ -81,4 +81,19 @@ public class WorkspaceMembersController : ControllerBase
         }
         return NoContent();
     }
+
+    [Authorize]
+    [HttpPatch("{workspaceId:guid}/members/{userId:guid}")]
+    public async Task<IActionResult> UpdateWorkspaceMember(Guid workspaceId, Guid userId, [FromBody] UpdateWorkspaceMemberRequest request, CancellationToken ct)
+    {
+        var currentUserId = User.GetUserId();
+        if (currentUserId == null) return Unauthorized();
+
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, userId, request, currentUserId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
 }

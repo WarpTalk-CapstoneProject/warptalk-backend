@@ -25,13 +25,20 @@ public class WorkspaceDocumentsController : ControllerBase
 
     [Authorize]
     [HttpPost]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(10 * 1024 * 1024)] // Enforce 10MB limit at request level
     public async Task<IActionResult> UploadDocument(
         Guid workspaceId,
-        [FromBody] UploadDocumentRequest request,
+        [FromForm] UploadDocumentApiRequest request,
         CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
+
+        if (request.File == null || request.File.Length == 0)
+        {
+            return BadRequest(new ApiErrorResponse("No file was uploaded.", ErrorCodes.ValidationError));
+        }
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId.Value, ct);
         if (!result.IsSuccess)
@@ -134,6 +141,24 @@ public class WorkspaceDocumentsController : ControllerBase
     }
 
     [Authorize]
+    [HttpGet("{documentId:guid}/extracted-text")]
+    public async Task<IActionResult> GetExtractedText(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _documentService.GetExtractedTextAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [Authorize]
     [HttpDelete("{documentId:guid}")]
     public async Task<IActionResult> DeleteDocument(
         Guid workspaceId,
@@ -206,5 +231,41 @@ public class WorkspaceDocumentsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
+    }
+
+    [Authorize]
+    [HttpPost("{documentId:guid}/archive")]
+    public async Task<IActionResult> ArchiveDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _documentService.ArchiveDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("{documentId:guid}/restore")]
+    public async Task<IActionResult> RestoreDocument(
+        Guid workspaceId,
+        Guid documentId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _documentService.RestoreDocumentAsync(workspaceId, documentId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
     }
 }

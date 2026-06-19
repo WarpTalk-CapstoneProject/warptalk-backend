@@ -1,16 +1,22 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared;
 using WarpTalk.WorkspaceService.Application.Helpers;
+using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -19,22 +25,23 @@ using WarpTalk.WorkspaceService.Domain.Settings;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 
-public class DocumentAiIngestionConsumerService : BackgroundService
+/// <summary>
+/// Background consumer service performing Pre-Ingestion Security Guardrails (PII/DLP scans)
+/// and direct AI Ingestion (chunking, OpenAI embeddings, and Qdrant vector sync).
+/// </summary>
+public class DocumentSecurityGuardrailConsumerService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
-    private readonly ILogger<DocumentAiIngestionConsumerService> _logger;
+    private readonly ILogger<DocumentSecurityGuardrailConsumerService> _logger;
     private readonly IServiceProvider _serviceProvider;
+
     private const string StreamKey = "workspace-document-events";
     private const string ConsumerGroup = "workspace-document-ingestion";
     private readonly string _consumerName = $"workspace-ingestion-{Environment.MachineName}-{Guid.NewGuid():N}";
 
-    // Common PII Regular Expressions
-    private static readonly Regex EmailRegex = new(@"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex PhoneRegex = new(@"\b(?:\+?84|0)\d{9,10}\b", RegexOptions.Compiled);
-
-    public DocumentAiIngestionConsumerService(
+    public DocumentSecurityGuardrailConsumerService(
         IConnectionMultiplexer redis,
-        ILogger<DocumentAiIngestionConsumerService> logger,
+        ILogger<DocumentSecurityGuardrailConsumerService> logger,
         IServiceProvider serviceProvider)
     {
         _redis = redis;
@@ -44,10 +51,10 @@ public class DocumentAiIngestionConsumerService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("DocumentAiIngestionConsumerService started.");
+        _logger.LogInformation("DocumentSecurityGuardrailConsumerService started.");
         var db = _redis.GetDatabase();
 
-        // Ensure stream and consumer group exists
+        // Step 1: Ensure Redis Stream Consumer Group exists
         try
         {
             await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", true);
@@ -61,6 +68,7 @@ public class DocumentAiIngestionConsumerService : BackgroundService
             _logger.LogError(ex, "Failed to initialize Redis Stream Consumer Group for stream: {StreamKey}", StreamKey);
         }
 
+        // Step 2: Enter stream consumption loop
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -96,7 +104,7 @@ public class DocumentAiIngestionConsumerService : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred in DocumentAiIngestionConsumerService processing loop.");
+                _logger.LogError(ex, "Error occurred in DocumentSecurityGuardrailConsumerService processing loop.");
                 await Task.Delay(5000, stoppingToken);
             }
         }
@@ -106,6 +114,9 @@ public class DocumentAiIngestionConsumerService : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var storage = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentStorage>();
+        var textExtractor = scope.ServiceProvider.GetRequiredService<IDocumentTextExtractor>();
+        var securityScanner = scope.ServiceProvider.GetRequiredService<IDocumentSecurityScanner>();
 
         WorkspaceDocument? document = null;
         try
@@ -113,7 +124,7 @@ public class DocumentAiIngestionConsumerService : BackgroundService
             document = await unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null || document.DeletedAt != null)
             {
-                _logger.LogWarning("Document {DocumentId} not found or soft-deleted. Skipping ingestion.", documentId);
+                _logger.LogWarning("Document {DocumentId} not found or soft-deleted. Skipping guardrails & ingestion.", documentId);
                 return;
             }
 
@@ -125,54 +136,46 @@ public class DocumentAiIngestionConsumerService : BackgroundService
             // 1. Resolve Effective AI Usage Policy (Inheritance & Fallback)
             var (piiEnabled, dlpEnabled, keywordsBlacklist) = await ResolvePolicySettingsAsync(unitOfWork, document, ct);
 
-            // 2. Read Document Content (Simulated storage read)
-            var content = MockReadDocumentContent(document);
+            // 2. Read Document Content (Physical storage read + decryption)
+            ExtractedDocumentContent content;
+            using (var decryptedStream = await storage.GetDecryptedStreamAsync(document, ct))
+            {
+                content = await textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+            }
+
+            // 2.5 Save the extracted structured content serialized as JSON on disk
+            var jsonContent = JsonSerializer.Serialize(content);
+            await storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
             // 3. Scan for Guardrail Violations
-            bool violationFound = false;
-
-            // PII Scan
-            if (piiEnabled)
+            var scanResult = securityScanner.Scan(content.FullText, piiEnabled, dlpEnabled, keywordsBlacklist);
+            if (scanResult.PiiDetected)
             {
-                if (EmailRegex.IsMatch(content) || PhoneRegex.IsMatch(content))
-                {
-                    _logger.LogInformation("PII detected in document {DocumentId}", documentId);
-                    violationFound = true;
-                }
+                _logger.LogInformation("PII violation detected in document {DocumentId}", documentId);
+            }
+            if (scanResult.DlpDetected)
+            {
+                _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
-            // DLP Scan (Case-insensitive substring match)
-            if (dlpEnabled && keywordsBlacklist != null)
-            {
-                foreach (var keyword in keywordsBlacklist)
-                {
-                    if (!string.IsNullOrWhiteSpace(keyword) && content.Contains(keyword, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _logger.LogInformation("DLP keyword violation ('{Keyword}') detected in document {DocumentId}", keyword, documentId);
-                        violationFound = true;
-                        break;
-                    }
-                }
-            }
+            bool violationFound = scanResult.ViolationFound;
 
-            // 4. Update Document State based on Scan results
-            // Preserve manual upload sensitivity if it was already true
             document.IsSensitive = document.IsSensitive || violationFound;
             document.ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(document.IsSensitive);
-            document.AiEligible = !document.IsSensitive; // Not eligible for AI retrieval if sensitive
-            document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
+            document.AiEligible = !document.IsSensitive; // Exclude from AI search context if sensitive
 
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Successfully finalized ingestion scan for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}", 
+            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}", 
                 documentId, document.IsSensitive, document.AiEligible);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing AI Ingestion for document {DocumentId}. Applying fail-safe security fallback.", documentId);
+            _logger.LogError(ex, "Error processing AI Ingestion/Guardrails for document {DocumentId}. Applying fail-safe security fallback.", documentId);
 
-            // Fail-Safe Fallback: If scanner fails, default to restricted access
+            // Fail-Safe Fallback (Fail-Closed Policy): Default to restricted access on error
             if (document != null)
             {
                 try
@@ -243,21 +246,5 @@ public class DocumentAiIngestionConsumerService : BackgroundService
         }
 
         return (piiEnabled, dlpEnabled, keywordsBlacklist);
-    }
-
-    private string MockReadDocumentContent(WorkspaceDocument document)
-    {
-        // Mock reading document content using specific keywords in FileName for testing purposes
-        if (document.FileName.Contains("sensitive_test_pii", StringComparison.OrdinalIgnoreCase))
-        {
-            return "This document belongs to John Doe. Contact email: john.doe@example.com. Phone: 0987654321.";
-        }
-        
-        if (document.FileName.Contains("sensitive_test_dlp", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Báo cáo nội bộ về doanh thu và kế hoạch tăng trưởng doanh số quý tiếp theo.";
-        }
-
-        return "This is a clean, non-sensitive document for workspace collaboration.";
     }
 }

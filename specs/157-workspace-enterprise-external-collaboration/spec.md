@@ -88,6 +88,22 @@ Quy tắc kiểm tra (Validation Rule) khi user đồng ý lời mời vào Ente
 
 ---
 
-## 5. Security & Regression Risks
+## 5. Business Rules and User Stories (Linear WT-157 Aligned)
+
+Nguồn: Linear WT-157 định hướng B2B: Workspace không còn là trải nghiệm B2C multi-workspace rộng, mà là internal enterprise boundary. Access phải được kiểm soát bằng company domain policy, admin approval và enterprise membership rules. Acceptance criteria yêu cầu admin quản lý verified domain qua backend contracts, reject unmanaged domains, và document verification/revocation edge cases.
+
+| Business Rule | User story | Acceptance scenarios |
+|---|---|---|
+| BR-157-001 - Verified domain defines Internal membership | Là enterprise workspace owner, tôi muốn đăng ký và verify company email domains để chỉ user nội bộ thuộc domain công ty mới được xem là Internal Member. | Given domain đã verified, When invite/register/join bằng email thuộc domain đó, Then user được xét Internal; Given domain chưa verified hoặc bị disabled, Then không grant internal access. |
+| BR-157-002 - Internal Member belongs to one Enterprise Workspace | Là hệ thống B2B, tôi muốn nhân viên nội bộ chỉ thuộc một enterprise tenant để dữ liệu tổ chức không bị trộn. | Given user đã là Internal Member của Workspace A, When accept internal invite vào Workspace B, Then reject; Given user là External Member, Then có thể tham gia nhiều workspace theo policy. |
+| BR-157-003 - External collaboration must be explicitly enabled | Là Owner/Admin, tôi muốn tắt/bật external collaboration để kiểm soát đối tác ngoài domain. | Given `AllowExternalCollaboration=false`, When invite outside-domain email, Then reject; Given enabled, When outside-domain invite role Member, Then create pending invite. |
+| BR-157-004 - External users cannot receive management authority | Là enterprise owner, tôi muốn outside-domain collaborator không thể trở thành Owner/Admin để bảo vệ governance. | Given external invite requests Owner/Admin, When validate, Then reject hoặc force Member theo approved policy; Given external user tries settings/invitation/member mutation, Then reject 403. |
+| BR-157-005 - External Member directory visibility is restricted | Là external collaborator, tôi chỉ cần biết Owner/Admin contact để làm việc, không cần thấy toàn bộ directory nội bộ. | Given External Member requests full member directory, Then reject or return restricted contact list; Given Internal Member requests list, Then return active member list theo role. |
+| BR-157-006 - External Member resource access is meeting-participant scoped | Là external collaborator, tôi muốn xem tài nguyên cuộc họp tôi được mời, nhưng không thấy transcript/document/artifact ngoài phạm vi đó. | Given External Member participated in Meeting M1, When view M1 transcript/artifact in allowed grace period, Then allow; Given Meeting M2 not participated, Then deny. |
+| BR-157-007 - Domain verification and revocation must not bypass explicit member state | Là enterprise owner, tôi muốn disable/revoke domain không tự mở lại user đã bị removed/suspended để tránh bypass governance. | Given member Removed/Suspended, When domain remains verified, Then member không được auto-reactivate; Given domain revoked, Then new internal join using that domain is rejected until reverified. |
+
+---
+
+## 6. Security & Regression Risks
 - Rủi ro lỗ hổng khi kiểm tra `MeetingParticipants`: Cần đảm bảo logic query DB không bị bypass bằng cách truyền thiếu tham số.
 - Đảm bảo logic check `VerifiedDomains` sử dụng **exact domain equality** (khớp tuyệt đối) by default. (Ví dụ: `fpt.edu.vn` sẽ KHÔNG tự động bao gồm `sv.fpt.edu.vn`).

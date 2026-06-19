@@ -1,0 +1,2431 @@
+﻿WarpTalk Detailed System Specification
+Last updated: 2026-06-10
+
+
+Scope: Backend-first specification for warptalk-backend, cross-checked with warptalk-web, warptalk-ai, warptalk-infrastructure, and warptalk-desktop.
+
+
+Primary purpose: give another AI or engineer enough context to design UI, implement endpoints, extend workers, test flows, and understand current limitations without re-reading the whole repository.
+
+
+________________
+
+
+1. Document Control
+1.1 Source Files Reviewed
+Core backend:
+
+
+* warptalk-backend/GEMINI.md
+* warptalk-backend/specs/002-module-2-transcript/plan.md
+* warptalk-backend/gateway/src/WarpTalk.Gateway/Program.cs
+* warptalk-backend/gateway/src/WarpTalk.Gateway/appsettings.json
+* warptalk-backend/gateway/src/WarpTalk.Gateway/Hubs/TranslationRoomHub.cs
+* warptalk-backend/gateway/src/WarpTalk.Gateway/Services/AiResultConsumerService.cs
+* warptalk-backend/gateway/src/WarpTalk.Gateway/Services/RedisStreamService.cs
+* warptalk-backend/auth/src/WarpTalk.AuthService.API/Controllers/AuthController.cs
+* warptalk-backend/auth/src/WarpTalk.AuthService.Application/Services/AuthService.cs
+* warptalk-backend/translation-room/src/WarpTalk.TranslationRoomService.API/Controllers/*
+* warptalk-backend/translation-room/src/WarpTalk.TranslationRoomService.Application/Services/*
+* warptalk-backend/meeting/src/WarpTalk.MeetingService.API/Controllers/*
+* warptalk-backend/meeting/src/WarpTalk.MeetingService.Application/Services/*
+* warptalk-backend/transcript/src/WarpTalk.TranscriptService.API/Controllers/*
+* warptalk-backend/transcript/src/WarpTalk.TranscriptService.Infrastructure/Redis/TranscriptRedisConsumerService.cs
+* warptalk-backend/notification/src/WarpTalk.NotificationService.API/Controllers/NotificationsController.cs
+* warptalk-backend/billing/src/WarpTalk.BillingService.API/Controllers/BillingController.cs
+* warptalk-backend/*/Infrastructure/*DbContext.cs
+
+
+Supporting repos:
+
+
+* warptalk-web/README.md
+* warptalk-web/docs/b2b-dashboard-and-meeting-plan.md
+* warptalk-web/src/lib/api/endpoints.ts
+* warptalk-web/src/services/*.service.ts
+* warptalk-web/src/types/*.ts
+* warptalk-ai/README.md
+* warptalk-ai/shared/schemas.py
+* warptalk-ai/shared/base_worker.py
+* warptalk-ai/*_worker/worker.py
+* warptalk-infrastructure/README.md
+* warptalk-infrastructure/docker-compose.yml
+* warptalk-infrastructure/scripts/init-db.sql
+* warptalk-infrastructure/scripts/migrations/*.sql
+1.2 Change Log
+Version
+	Date
+	Author
+	Change
+	Reason
+	0.1
+	2026-06-10
+	Codex
+	Initial detailed system specification
+	Consolidate backend, web, AI, database, requirements, flows, quality and limitations
+	1.3 Rules For Updating This File
+Every update must record:
+
+
+* Version: semantic document version, not app release version.
+* Date: exact date.
+* Scope: what module changed.
+* Before: behavior or limitation before the change.
+* After: new behavior or intended behavior.
+* Impact: affected endpoints, UI pages, DB tables, workers, tests.
+* Open risks: unresolved mismatch or technical debt.
+
+
+Recommended time control per documentation update:
+
+
+Update Type
+	Target Time
+	Required Output
+	Small endpoint/request field change
+	15-30 minutes
+	Endpoint table, DTO, happy/unhappy case update
+	New backend feature
+	1-2 hours
+	Requirement, API, DB, mainflow, tests, UI notes
+	New meeting/AI flow
+	2-4 hours
+	Sequence, Redis contract, latency budget, fallback behavior
+	Database migration
+	30-60 minutes
+	Schema section, rollback note, indexes, data integrity impact
+	Release/phase summary
+	2-3 hours
+	Change log, limitations, QA checklist, known gaps
+	
+
+________________
+
+
+2. Product Summary
+WarpTalk is a real-time multilingual communication platform for B2B meetings. It lets a host create a translation room, participants join with speak/listen languages, the system routes live audio through STT, translation, TTS, and AI assistant workers, then persists transcripts, translations, summaries, artifacts, feedback, notifications, and usage billing.
+
+
+The current implementation is a microservice system:
+
+
+* Gateway: public API entry point through YARP and SignalR hubs.
+* Auth Service: users, JWT, refresh tokens, Google login, profile.
+* TranslationRoom Service: room lifecycle, participants, language policy, audio routes, artifacts, feedback.
+* Meeting Service: LiveKit joining, meeting room records, chat, chat moderation, meeting history.
+* Transcript Service: transcript query APIs, glossary APIs, Redis persistence consumer for STT/translation results.
+* Notification Service: user notifications, preferences, admin notifications.
+* Billing Service: plans, subscriptions, credits, transaction history, idempotent credit operations.
+* AI Workers: Python Redis Streams workers for STT, translation, TTS, voice cloning, summary/action items.
+* Infrastructure: PostgreSQL, PgBouncer, Redis, COTURN, Prometheus, Grafana, Seq, backups.
+
+
+________________
+
+
+3. Architecture Overview
+3.1 High-Level Runtime
+flowchart LR
+
+
+  Web["warptalk-web Next.js UI"] --> Gateway["API Gateway YARP + SignalR"]
+
+
+  Desktop["warptalk-desktop Electron"] --> Gateway
+
+
+  Gateway --> Auth["Auth Service"]
+
+
+  Gateway --> Room["TranslationRoom Service"]
+
+
+  Gateway --> Meeting["Meeting Service"]
+
+
+  Gateway --> Transcript["Transcript Service"]
+
+
+  Gateway --> Notify["Notification Service"]
+
+
+  Gateway --> Billing["Billing Service"]
+
+
+  Gateway <--> Redis["Redis Streams + Pub/Sub + SignalR backplane"]
+
+
+  Room <--> Redis
+
+
+  Transcript <--> Redis
+
+
+  Notify <--> Redis
+
+
+  Meeting <--> Redis
+
+
+  Redis --> STT["STT Worker"]
+
+
+  STT --> Redis
+
+
+  Redis --> MT["Translation Worker"]
+
+
+  MT --> Redis
+
+
+  Redis --> TTS["TTS Worker"]
+
+
+  TTS --> Redis
+
+
+  Redis --> Assistant["AI Assistant Worker"]
+
+
+  Assistant --> Redis
+
+
+  Auth --> PG["PostgreSQL"]
+
+
+  Room --> PG
+
+
+  Meeting --> PG
+
+
+  Transcript --> PG
+
+
+  Notify --> PG
+
+
+  Billing --> PG
+3.2 Deployment Components
+From warptalk-infrastructure:
+
+
+Component
+	Purpose
+	Notes
+	PostgreSQL 18
+	Primary relational database
+	Uses schemas per bounded context
+	PgBouncer
+	Connection pooler
+	Transaction pooling
+	Redis 7
+	Cache, streams, pub/sub
+	AI pipeline, route events, telemetry, notifications
+	COTURN
+	TURN/STUN
+	WebRTC connectivity
+	Seq
+	Centralized structured logs
+	Operational debugging
+	Prometheus/Grafana
+	Metrics and dashboards
+	System health and latency
+	Backup scripts
+	PostgreSQL and Qdrant backups
+	Operational continuity
+	3.3 Public Routing Through Gateway
+Public clients should call Gateway with /api/v1/*.
+
+
+Public Route
+	Internal Target
+	/api/v1/auth/{...}
+	Auth service /api/auth/{...}
+	/api/v1/translation-rooms/{...}
+	TranslationRoom service
+	/api/v1/transcripts/{...}
+	Transcript service
+	/api/v1/notifications/{...}
+	Notification service
+	/api/v1/admin/notifications/{...}
+	Notification service admin endpoints
+	/api/v1/meetings/{...}
+	Meeting service
+	/hubs/translation-room
+	Gateway SignalR hub
+	/hubs/notification
+	Gateway SignalR hub
+	/health, /ready
+	Gateway health checks
+	
+
+Gateway security and performance:
+
+
+* JWT Bearer auth validates issuer, audience, lifetime, signing key.
+* SignalR tokens are accepted through ?access_token=... only for /hubs.
+* Global rate limit: 100 requests/minute per remote IP or host.
+* Login rate policy exists: 5 requests/minute, but verify it is actually applied to auth routes before production.
+* Notification inbox route has InboxPolicy: 30 requests/minute.
+* SignalR maximum receive size: 128 KB.
+* Security headers include X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy.
+
+
+________________
+
+
+4. Technology Stack
+4.1 Backend
+Area
+	Technology
+	Language
+	C#
+	Runtime
+	.NET 10 target in current plan
+	API
+	ASP.NET Core controllers
+	Gateway
+	YARP reverse proxy
+	Realtime
+	SignalR
+	Inter-service
+	gRPC
+	Persistence
+	EF Core, PostgreSQL
+	Messaging
+	Redis Streams and Pub/Sub
+	Tests
+	xUnit, Moq, Testcontainers where planned
+	4.2 Web
+Area
+	Technology
+	Framework
+	Next.js 16 App Router
+	UI
+	React 19
+	Styling
+	Tailwind CSS v4
+	Components
+	shadcn/ui, Base UI
+	State
+	Zustand
+	Data
+	Axios, TanStack Query
+	Auth
+	Cookie-based access token in current middleware; NextAuth mentioned in README
+	Realtime
+	@microsoft/signalr
+	4.3 AI
+Worker
+	Current/Intended Model
+	STT
+	Faster-Whisper/OpenAI Whisper
+	Translation
+	NLLB-200 with Google fallback
+	TTS
+	Edge-TTS fallback, XTTS v2 for voice cloning
+	Assistant
+	OpenAI-style GPT API; config default currently gpt-4o
+	4.4 Infrastructure
+Area
+	Technology
+	Containers
+	Docker Compose
+	WebRTC network
+	COTURN
+	Observability
+	Prometheus, Grafana, OpenTelemetry collector, Seq
+	Backups
+	shell scripts for PostgreSQL and Qdrant
+	
+
+________________
+
+
+5. Actors And Roles
+Actor
+	Description
+	Main Capabilities
+	Anonymous/Public
+	Not logged in
+	Landing, login, register, forgot password
+	Participant
+	Joins invited/public room
+	Setup mic/speaker/language, join waiting room/live meeting, view permitted artifacts
+	Host
+	Creates and runs rooms
+	Create/start/pause/resume/end/cancel rooms, admit/kick participants, manage audio routes, review artifacts
+	Workspace Manager
+	Operates workspace
+	Manage rooms, terminology, members, artifacts, usage
+	Workspace Owner
+	Owns tenant
+	Billing, security, retention, audit, policy
+	WarpTalk Internal/Admin
+	Platform operator
+	Internal dashboard, tenants, plans, support, AI ops
+	
+
+Current implementation note:
+
+
+* Auth roles exist as strings in JWT/user roles.
+* Web middleware currently only checks access token presence and does not enforce full role-aware routing.
+* Some workspace APIs are implied by DB/infrastructure and UI plans, but a dedicated workspace-service is referenced in infrastructure while not present in warptalk-backend source reviewed here.
+
+
+________________
+
+
+6. Web Route Intent
+From warptalk-web/docs/b2b-dashboard-and-meeting-plan.md and current src/app routes:
+
+
+Route
+	Audience
+	Intent
+	/
+	Public
+	Landing
+	/login, /register, /forgot-password
+	Public/Auth
+	Auth pages
+	/host/dashboard
+	Host
+	Host operations dashboard
+	/participant/dashboard
+	Participant
+	Upcoming invites, setup, summaries
+	/workspace/dashboard
+	Workspace manager/owner
+	Usage, members, rooms, governance
+	/internal/dashboard
+	Internal admin
+	Tenants, platform health, AI ops
+	/join
+	Participant
+	Join by room code
+	/rooms
+	Host/workspace
+	Room list
+	/rooms/[id]
+	Host/participant
+	Room detail/preflight
+	/rooms/[id]/setup
+	Host/participant
+	Device and language setup
+	/rooms/[id]/waiting
+	Host/participant
+	Approval/readiness
+	/room/[id]
+	Host/participant
+	Live meeting surface
+	/rooms/[id]/ended
+	Host/participant
+	Post-meeting finalizing, feedback
+	/rooms/[id]/artifacts
+	Host/workspace
+	Transcript, summary, export artifacts
+	/workspace/terminology
+	Workspace manager/owner
+	Glossary/terms
+	/workspace/billing
+	Workspace owner
+	Plan, credits, transactions
+	/internal/ai-ops
+	Internal admin
+	AI pipeline monitoring
+	
+
+UI implementation rule:
+
+
+* UI must distinguish TranslationRoom from MeetingRoom.
+* TranslationRoom is the product/session lifecycle object.
+* MeetingRoom is the LiveKit/media provisioning object created when an authorized user joins the live meeting.
+
+
+________________
+
+
+7. Database Specification
+7.1 Schema Boundaries
+warptalk-infrastructure/scripts/init-db.sql defines many schemas. Current code primarily uses:
+
+
+Schema
+	Current Owner
+	auth
+	Auth service
+	workspace
+	Infrastructure planned; backend source has partial old auth workspace entities
+	translation_room
+	TranslationRoom service
+	meeting
+	Meeting service
+	transcript
+	Transcript service
+	notification
+	Notification service
+	billing
+	Billing service DbContext uses billing; infrastructure init also has subscription, so schema naming must be reconciled
+	ai
+	Planned AI jobs/models/vector/evaluation
+	voice
+	Planned voice profiles/consent/samples
+	privacy
+	Planned consent, retention, deletion, audit
+	platform
+	Planned config, audit logs, outbox/inbox, health
+	admin
+	Planned support, incidents, maintenance
+	7.2 Important Tables
+Auth:
+
+
+* auth.users: email, password hash, Google ID, profile, lockout, email verification, audit timestamps.
+* auth.refresh_tokens: hashed refresh tokens, device, IP, expiry, revocation.
+* auth.roles, auth.permissions, auth.role_permissions, auth.user_roles.
+* auth.user_settings: default speak/listen language, voice clone toggle, mic suppression, recording/summary defaults, UI accessibility settings.
+
+
+Translation room:
+
+
+* translation_room.translation_rooms: workspace, host, title, code, lifecycle status, source/target languages, settings, timestamps.
+* translation_room.translation_room_participants: participant user/display name, role, speak/listen languages, status, audio and voice clone flags.
+* translation_room.translation_room_audio_routes: source participant, target participant, language pair, route status, stream ID, voice clone flag.
+* translation_room.translation_room_artifacts: post-room artifacts, file info, consent and retention metadata.
+* translation_room.translation_room_feedback: user ratings and comments.
+
+
+Meeting:
+
+
+* meeting.meeting_rooms: maps translation_room_id to provider room name and LiveKit lifecycle.
+* meeting.meeting_participants: provider identity and join/leave metadata.
+* meeting.meeting_tracks: media tracks.
+* Chat entities exist in domain (MeetingChatMessage, translations, moderation, assistant requests), but current MeetingDbContext.cs reviewed does not show mappings for those chat tables. This is a current implementation gap to verify before relying on chat persistence.
+
+
+Transcript:
+
+
+* transcript.transcripts: one logical transcript per translation room and version, status, source language, counters.
+* transcript.transcript_segments: ordered original STT segments.
+* transcript.transcript_translations: translated text per segment and target language.
+* transcript.transcript_corrections: human corrections and retranslation flags.
+* transcript.transcript_exports: export file metadata.
+* transcript.glossaries, transcript.glossary_terms: workspace terminology.
+
+
+Billing:
+
+
+* billing.plans: plan name, price, credits per month.
+* billing.subscriptions: one active subscription per workspace via unique partial index.
+* billing.credit_transactions: top-up and consumption ledger.
+* billing.transactions: payment transaction records.
+* billing.idempotency_records: idempotent operation cache by key and operation.
+
+
+Notification:
+
+
+* notification.notification_messages: user-facing notifications.
+* notification.notification_preferences: channel preferences.
+* notification.admin_notifications: admin-created broadcasts.
+7.3 Data Integrity Rules
+* Every major table uses UUID IDs.
+* Domain schemas intentionally avoid physical FKs to external service-owned entities in several DbContexts. Example: Transcript stores workspace_id and translation_room_id as external IDs and validates access via gRPC.
+* Billing enforces one active subscription per workspace.
+* Transcript enforces unique (translation_room_id, version) and unique (transcript_id, sequence_order).
+* Transcript translations should enforce unique (segment_id, target_language).
+* Translation room code should be unique across non-terminal rooms.
+* Soft deletion appears via deleted_at in many tables; queries must filter deleted rows.
+7.4 Database Risks And Required Cleanup
+Current mismatches to resolve:
+
+
+* Infrastructure init-db.sql uses schemas including subscription, while Billing service uses schema billing.
+* Some SQL references look stale, for example old auth/workspace location and rename migrations.
+* AuthDbContext still has workspace entities under auth, while infrastructure migrated workspace tables to workspace.
+* TranscriptDbContext.OnConfiguring contains a scaffolded local connection string warning. Production must rely on configuration only.
+* Meeting chat domain and repositories exist, but reviewed DbContext mapping does not include MeetingChatMessage and related chat tables.
+
+
+________________
+
+
+8. Standard API Contract
+8.1 Current Reality
+The codebase currently returns mixed response shapes:
+
+
+* Many controllers return raw DTO on success and ApiErrorResponse(error, code) on failure.
+* Some Transcript endpoints return { Message = error }.
+* Some Meeting Chat endpoints return plain string error.
+* Audio route endpoints return anonymous { Error, Code }.
+* Billing has the most complete OpenAPI-style response annotations and consistent ApiErrorResponse.
+8.2 Target Standard For All New/Refactored Endpoints
+Success response:
+
+
+{
+
+
+  "data": {},
+
+
+  "meta": {
+
+
+    "requestId": "optional-correlation-id",
+
+
+    "serverTime": "2026-06-10T00:00:00Z"
+
+
+  }
+
+
+}
+
+
+Paginated success response:
+
+
+{
+
+
+  "data": {
+
+
+    "items": []
+
+
+  },
+
+
+  "pagination": {
+
+
+    "page": 1,
+
+
+    "pageSize": 20,
+
+
+    "total": 100,
+
+
+    "totalPages": 5,
+
+
+    "hasNextPage": true,
+
+
+    "hasPreviousPage": false
+
+
+  },
+
+
+  "meta": {
+
+
+    "requestId": "optional-correlation-id"
+
+
+  }
+
+
+}
+
+
+Error response:
+
+
+{
+
+
+  "error": "Human-readable message",
+
+
+  "code": "VALIDATION_ERROR",
+
+
+  "details": {},
+
+
+  "requestId": "optional-correlation-id"
+
+
+}
+
+
+Transitional rule:
+
+
+* Existing UI may continue reading raw DTOs until backend is refactored.
+* Any new endpoint should use one standard shape.
+* When changing existing endpoints, update warptalk-web/src/lib/api/endpoints.ts, service adapters, and TypeScript types together.
+8.3 HTTP Status Rules
+Condition
+	Status
+	Code
+	Missing/invalid token
+	401
+	UNAUTHORIZED
+	Authenticated but not allowed
+	403
+	FORBIDDEN
+	Entity not found
+	404
+	NOT_FOUND
+	Validation failed
+	400
+	VALIDATION_ERROR
+	Lifecycle/state conflict
+	409
+	INVALID_STATE or CONFLICT
+	Insufficient billing credits
+	402
+	INSUFFICIENT_CREDITS
+	Duplicate active subscription or unique conflict
+	409
+	CONFLICT
+	Idempotency payload mismatch
+	409
+	IDEMPOTENCY_CONFLICT
+	Internal error
+	500
+	INTERNAL_SERVER_ERROR
+	Async job accepted
+	202
+	ACCEPTED
+	8.4 Endpoint Implementation Quality Rules
+* Accept CancellationToken.
+* Validate request DTOs with data annotations or FluentValidation.
+* Clamp pagination (page >= 1, pageSize max 100 or 200 depending module).
+* Return typed error response.
+* Do not leak raw exception messages in production.
+* Use idempotency for payment, billing, AI job trigger, export generation, and webhook handlers.
+* Add route-level authorization policy where role-specific.
+* Emit structured logs with entity IDs, user ID, operation, result, latency.
+
+
+________________
+
+
+9. Auth Service Specification
+9.1 Endpoints
+Public through Gateway:
+
+
+Method
+	Public Path
+	Internal Path
+	Purpose
+	POST
+	/api/v1/auth/register
+	/api/auth/register
+	Register user
+	POST
+	/api/v1/auth/login
+	/api/auth/login
+	Login with email/password
+	POST
+	/api/v1/auth/google-login
+	/api/auth/google-login
+	Login/register with Google ID token
+	POST
+	/api/v1/auth/refresh
+	/api/auth/refresh
+	Rotate refresh token
+	POST
+	/api/v1/auth/logout
+	/api/auth/logout
+	Revoke refresh token
+	GET
+	/api/v1/auth/me
+	/api/auth/me
+	Current user profile
+	PUT
+	/api/v1/auth/me
+	/api/auth/me
+	Update profile
+	POST
+	/api/v1/auth/change-password
+	/api/auth/change-password
+	Set/change password
+	9.2 Main Rules
+* Register lowercases and trims email.
+* Duplicate email returns EmailExists.
+* Register assigns default role "member" in token response, but confirm role persistence/seed.
+* Login:
+   * inactive user is rejected.
+   * 5 failed password attempts locks account for 15 minutes.
+   * successful login resets failed attempts and lock status.
+   * refresh token is hashed before storage.
+* Refresh:
+   * old token is revoked.
+   * new access and refresh token are issued.
+   * expired/revoked/missing token is rejected.
+* Google login:
+   * verifies Google token.
+   * creates user if missing.
+   * links Google ID to existing email if needed.
+* Change password:
+   * Google-only users with empty password hash can set a password.
+9.3 Happy Cases
+* User registers, receives access token, refresh token, expiry, user profile.
+* User logs in with valid password and active account.
+* User refreshes token once; old refresh token cannot be reused.
+* User updates profile fields and receives updated profile.
+9.4 Unhappy Cases
+* Duplicate email registration.
+* Wrong password increments failed count.
+* Account locked after 5 failed attempts.
+* Google token invalid.
+* Refresh token reused after rotation.
+* Authenticated user has missing NameIdentifier claim.
+
+
+________________
+
+
+10. Translation Room Service Specification
+10.1 Endpoints
+Method
+	Path
+	Purpose
+	GET
+	/api/v1/translation-rooms
+	List rooms accessible to current user
+	POST
+	/api/v1/translation-rooms
+	Create room
+	GET
+	/api/v1/translation-rooms/{id}
+	Get room detail
+	POST
+	/api/v1/translation-rooms/join
+	Join by room code
+	POST
+	/api/v1/translation-rooms/{id}/waiting
+	Move scheduled room to waiting
+	POST
+	/api/v1/translation-rooms/{id}/start
+	Start room
+	POST
+	/api/v1/translation-rooms/{id}/pause
+	Pause active room
+	POST
+	/api/v1/translation-rooms/{id}/resume
+	Resume paused room
+	POST
+	/api/v1/translation-rooms/{id}/end
+	End room
+	POST
+	/api/v1/translation-rooms/{id}/cancel
+	Cancel scheduled/waiting room
+	GET
+	/api/v1/translation-rooms/history
+	Room history for current user
+	GET
+	/api/v1/translation-rooms/{id}/artifacts
+	Artifacts permitted to current user
+	GET
+	/api/v1/translation-rooms/{id}/feedback/me
+	Current user's feedback state
+	POST
+	/api/v1/translation-rooms/{id}/feedback
+	Submit feedback
+	PUT
+	/api/v1/translation-rooms/{id}/settings
+	Update pre-start settings
+	GET
+	/api/v1/translation-rooms/{id}/participants
+	Participant list
+	PUT
+	/api/v1/translation-rooms/{id}/participants/{participantId}/audio
+	Toggle translated audio for participant
+	PUT
+	/api/v1/translation-rooms/{id}/participants/{participantId}/admit
+	Host admits waiting participant
+	PUT
+	/api/v1/translation-rooms/{id}/participants/{participantId}/kick
+	Host kicks participant
+	PUT
+	/api/v1/translation-rooms/{id}/participants/me/leave
+	Current participant leaves
+	POST
+	/api/v1/translation-rooms/{roomId}/audio-routes/generate
+	Generate full-mesh audio routes
+	GET
+	/api/v1/translation-rooms/{roomId}/audio-routes
+	Get routes
+	PATCH
+	/api/v1/translation-rooms/{roomId}/audio-routes/{routeId}/runtime
+	Update stream/status runtime context
+	PATCH
+	/api/v1/translation-rooms/{roomId}/audio-routes/{routeId}/voice-clone
+	Toggle voice clone
+	10.2 Status Model
+Room statuses:
+
+
+* SCHEDULED
+* WAITING
+* IN_PROGRESS
+* PAUSED
+* ENDED
+* CANCELLED
+* EXPIRED
+* FAILED
+
+
+Participant statuses:
+
+
+* INVITED
+* WAITING
+* CONNECTED
+* DISCONNECTED
+* LEFT
+* KICKED
+* REJECTED
+
+
+Participant roles:
+
+
+* HOST
+* PARTICIPANT
+
+
+Room types currently implemented:
+
+
+* INSTANT
+* SCHEDULED
+10.3 Lifecycle State Machine
+stateDiagram-v2
+
+
+  [*] --> SCHEDULED: create with scheduledAt
+
+
+  [*] --> WAITING: create instant/no scheduledAt
+
+
+  SCHEDULED --> WAITING: open waiting room
+
+
+  SCHEDULED --> IN_PROGRESS: start
+
+
+  WAITING --> IN_PROGRESS: start
+
+
+  IN_PROGRESS --> PAUSED: pause
+
+
+  PAUSED --> IN_PROGRESS: resume
+
+
+  IN_PROGRESS --> ENDED: end
+
+
+  PAUSED --> ENDED: end
+
+
+  SCHEDULED --> CANCELLED: cancel
+
+
+  WAITING --> CANCELLED: cancel
+
+
+  SCHEDULED --> EXPIRED: expire
+
+
+  WAITING --> EXPIRED: expire
+
+
+Invalid transitions must return 409 INVALID_STATE in the target contract.
+10.4 Create Room Mainflow
+Input:
+
+
+* workspaceId
+* title
+* description
+* translationRoomType
+* maxParticipants
+* sourceLanguage
+* targetLanguages
+* settings.requiresApproval
+* settings.artifactAccess
+* scheduledAt
+
+
+Flow:
+
+
+1. Extract host ID from JWT.
+2. If sourceLanguage or targetLanguages are missing, load defaults from auth.user_settings equivalent repository:
+   * default speak language -> source
+   * default listen language -> first target
+3. Validate source language exists and is supported.
+4. Validate target languages exist and are supported.
+5. Determine initial status:
+   * scheduled room -> SCHEDULED
+   * instant room -> WAITING
+6. Generate unique 12-character room code.
+7. Persist room.
+8. Return TranslationRoomDto.
+
+
+Happy case:
+
+
+* Host creates instant room with source vi-VN, targets en-US, status becomes WAITING, room code is returned.
+
+
+Unhappy cases:
+
+
+* Missing source and no user default.
+* Unsupported source or target language.
+* scheduledAt in past.
+* maxParticipants <= 0.
+* Room code collision loops until unique.
+* Database error.
+10.5 Join Room Mainflow
+Input:
+
+
+* translationRoomCode
+* displayName
+* speakLanguage
+* listenLanguage
+
+
+Flow:
+
+
+1. Extract user ID from JWT.
+2. Find non-terminal room by code.
+3. Load user default languages if speak/listen omitted.
+4. Validate participant languages against room policy:
+   * speak/listen must be supported.
+   * language must match source or allowed target policy.
+5. Upsert participant record by (roomId, userId).
+6. If participant was KICKED, reject permanently.
+7. Determine approval behavior:
+   * host joins as connected.
+   * if requiresApproval, non-host participant status is WAITING.
+   * otherwise participant can become CONNECTED.
+8. Return room + participant.
+
+
+Happy cases:
+
+
+* Host joins own room and becomes connected.
+* Participant joins room and waits for approval.
+* Participant rejoins and updates language preferences.
+
+
+Unhappy cases:
+
+
+* Invalid room code.
+* Terminal room code.
+* Kicked participant attempts rejoin.
+* Unsupported language.
+* Display name missing or too long.
+* Room full, if max participant enforcement is completed.
+10.6 Waiting Room And Participant Management
+Host actions:
+
+
+* Admit participant: WAITING -> CONNECTED.
+* Kick participant: any non-host participant -> KICKED.
+* Toggle translation audio: changes IsTranslationAudioEnabled, not microphone mute.
+
+
+Participant action:
+
+
+* Leave room: participant -> LEFT.
+
+
+Authorization:
+
+
+* Only host can admit, kick, manage participant translated audio.
+* Host cannot kick self.
+* Non-host can list participants only if connected or if policy permits.
+10.7 Audio Routing
+Purpose:
+
+
+* For every speaker/listener pair, generate route if source language differs from target language.
+* Same-language pairs should bypass machine translation.
+
+
+Route statuses:
+
+
+* PENDING
+* READY
+* BROADCASTING
+* PAUSED
+* SPEECH_DELAYED
+* TRANSLATION_DELAYED
+* VOICE_DELAYED
+* STANDARD_VOICE
+* CAPTION_ONLY
+* ENDING
+* SAVING_OUTPUTS
+* SAVE_FAILED
+* COMPLETED
+
+
+Generate route flow:
+
+
+1. Load room.
+2. Validate room source/target policy exists.
+3. Load participants.
+4. Build full mesh for all participant pairs.
+5. Skip same source/target language pairs.
+6. Update stale routes.
+7. Add missing routes.
+8. Remove obsolete routes for participants no longer active.
+9. Publish route update to Redis.
+
+
+Runtime events:
+
+
+* Session start/end/pause/resume triggers audio route state machine.
+* Telemetry can degrade route status:
+   * STT degraded -> speech delay.
+   * translation degraded -> translation delay.
+   * TTS degraded -> voice delay or text-only mode.
+   * voice clone unavailable -> fallback to standard voice.
+10.8 Artifacts And Feedback
+Artifacts:
+
+
+* Transcript exports, summary exports, debug logs, optional recordings, audio samples.
+* Access level is controlled by room settings and artifact metadata.
+* Consent may be required for raw audio/video artifacts.
+* Retention time must be enforced by cleanup worker or scheduled process.
+
+
+Feedback:
+
+
+* User submits 1-5 overall rating.
+* Optional quality dimensions:
+   * translation quality
+   * audio quality
+   * voice clone quality
+   * AI summary quality
+* One feedback per (roomId, userId) should be enforced.
+
+
+________________
+
+
+11. Meeting Service Specification
+11.1 Purpose
+Meeting Service handles the live provider session and chat/history around a Translation Room. It should not duplicate room lifecycle business rules. It asks TranslationRoom Service through gRPC whether a user is authorized to join.
+11.2 Endpoints
+Method
+	Path
+	Purpose
+	POST
+	/api/v1/meetings/rooms/{translationRoomId}/join
+	Create/get LiveKit meeting room and return token
+	POST
+	/api/v1/meetings/rooms/{translationRoomId}/trigger-ai
+	Publish AI trigger event
+	GET
+	/api/v1/meetings/history
+	Get current user's meeting history
+	GET
+	/api/v1/meetings/history/{roomId}
+	Get meeting room detail
+	GET
+	/api/v1/meetings/{roomId}/chat
+	Get chat messages
+	POST
+	/api/v1/meetings/{roomId}/chat
+	Send chat message
+	POST
+	/api/v1/meetings/{roomId}/chat/{messageId}/translate
+	Request chat translation
+	POST
+	/api/v1/meetings/{roomId}/chat/{messageId}/moderate
+	Hide/moderate message
+	WS
+	/api/v1/meetings/chat-hub
+	Meeting chat SignalR hub
+	11.3 Join Meeting Mainflow
+1. User enters from live meeting UI.
+2. Backend reads user ID from JWT.
+3. Meeting Service checks Redis cache for room details.
+4. If cache miss, call TranslationRoom gRPC.
+5. Authorize:
+   * host can join.
+   * participant can join only when active/connected.
+   * waiting participant must be blocked.
+6. Create meeting.meeting_rooms if not exists.
+7. Create meeting.meeting_participants if not exists.
+8. Generate LiveKit token with publish/subscribe permissions.
+9. Publish Redis event meeting.track_published to trigger AI if needed.
+10. Return:
+* token
+* providerRoomName
+* participantIdentity
+
+
+Happy cases:
+
+
+* Host starts room then joins live meeting and receives LiveKit token.
+* Connected participant joins and receives LiveKit token.
+
+
+Unhappy cases:
+
+
+* Translation room not found.
+* Participant still waiting.
+* Participant was kicked.
+* LiveKit token generation fails.
+* Redis publish fails; meeting join can still succeed but logs warning.
+11.4 Meeting Chat
+Chat message fields:
+
+
+* originalText
+* originalLanguage
+* translationEnabled
+* containsWarpbotMention
+* messageType
+
+
+Flow:
+
+
+1. Verify meeting room exists.
+2. Verify user is host or active participant.
+3. Persist message.
+4. Broadcast to meeting_chat:{roomId} group.
+5. If containsWarpbotMention, create assistant request and publish meeting.chat.assistant_requested.
+6. Else if translationEnabled, publish meeting.chat.translation_requested.
+
+
+Moderation:
+
+
+* Only host can moderate.
+* Moderation hides message and records moderation event.
+* Broadcast MessageHidden.
+
+
+Current gap:
+
+
+* Verify Meeting DbContext maps chat tables before relying on database persistence.
+
+
+________________
+
+
+12. Realtime And AI Pipeline Specification
+12.1 Intended Pipeline
+sequenceDiagram
+
+
+  participant UI as Web/Desktop Client
+
+
+  participant Hub as Gateway TranslationRoomHub
+
+
+  participant Redis as Redis Streams
+
+
+  participant STT as STT Worker
+
+
+  participant MT as Translation Worker
+
+
+  participant TTS as TTS Worker
+
+
+  participant Persist as Transcript Service
+
+
+  participant Client as SignalR Clients
+
+
+  UI->>Hub: SendAudioChunk(roomId, audioBase64, chunkIndex, language)
+
+
+  Hub->>Redis: XADD audio:chunks:{roomId}
+
+
+  Redis->>STT: consume audio chunk
+
+
+  STT->>Redis: XADD stt:results:{roomId}
+
+
+  Redis->>MT: consume STT result
+
+
+  MT->>Redis: XADD translate:results:{roomId}
+
+
+  Redis->>TTS: consume translation result
+
+
+  TTS->>Redis: XADD tts:results:{roomId}
+
+
+  Redis->>Persist: consume stt/translation results
+
+
+  Redis->>Hub: consume results
+
+
+  Hub->>Client: TranscriptSegmentReceived / TranslationTextReceived / TranslatedAudioReceived
+12.2 Canonical Redis Stream Keys
+Use room terminology consistently. Current code often uses meeting_id for historical compatibility. Canonical contract should be:
+
+
+Stream
+	Producer
+	Consumer
+	Purpose
+	audio:chunks:{roomId}
+	Gateway
+	STT, embedding collector
+	Raw audio chunk
+	stt:results:{roomId}
+	STT
+	Gateway, Transcript, Translation, Assistant
+	Original transcript
+	translate:results:{roomId}
+	Translation
+	Gateway, Transcript, TTS
+	Translated text
+	tts:results:{roomId}
+	TTS
+	Gateway
+	Synthesized audio
+	ai_assistant:results:{roomId}
+	Assistant
+	Gateway
+	Summary/action items
+	translationRoom:system_events
+	Workers/backend
+	Backend services
+	System events
+	translationRoom:telemetry
+	Workers
+	TranslationRoom service
+	Latency/degradation telemetry
+	12.3 Canonical Message Fields
+Audio chunk:
+
+
+{
+
+
+  "room_id": "uuid",
+
+
+  "speaker_id": "uuid",
+
+
+  "chunk_index": "0",
+
+
+  "audio_data": "base64",
+
+
+  "language": "auto|vi-VN|en-US",
+
+
+  "sample_rate": "16000",
+
+
+  "is_final_chunk": "0",
+
+
+  "timestamp_ms": "unix-ms"
+
+
+}
+
+
+STT result:
+
+
+{
+
+
+  "segment_id": "uuid",
+
+
+  "room_id": "uuid",
+
+
+  "speaker_id": "uuid",
+
+
+  "text": "original text",
+
+
+  "language": "vi-VN",
+
+
+  "confidence": "0.95",
+
+
+  "start_ms": "0",
+
+
+  "end_ms": "1000",
+
+
+  "chunk_index": "0",
+
+
+  "is_final_chunk": "0",
+
+
+  "timestamp_ms": "unix-ms",
+
+
+  "model_provider": "openai|whisper|local",
+
+
+  "model_name": "whisper-medium",
+
+
+  "model_version": "optional"
+
+
+}
+
+
+Translation result:
+
+
+{
+
+
+  "translation_id": "uuid",
+
+
+  "segment_id": "uuid",
+
+
+  "room_id": "uuid",
+
+
+  "speaker_id": "uuid",
+
+
+  "original_text": "source sentence",
+
+
+  "translated_text": "target sentence",
+
+
+  "source_lang": "vi-VN",
+
+
+  "target_lang": "en-US",
+
+
+  "confidence": "0.90",
+
+
+  "start_ms": "0",
+
+
+  "end_ms": "1000",
+
+
+  "latency_ms": "240",
+
+
+  "is_final_chunk": "0",
+
+
+  "timestamp_ms": "unix-ms",
+
+
+  "model_provider": "nllb|google|openai|azure",
+
+
+  "model_name": "facebook/nllb-200-distilled-600M",
+
+
+  "model_version": "optional"
+
+
+}
+
+
+TTS result:
+
+
+{
+
+
+  "segment_id": "uuid",
+
+
+  "room_id": "uuid",
+
+
+  "speaker_id": "uuid",
+
+
+  "audio_data": "base64-wav",
+
+
+  "duration_ms": "900",
+
+
+  "voice_type": "default|cloned",
+
+
+  "target_lang": "en-US",
+
+
+  "is_final_chunk": "0",
+
+
+  "timestamp_ms": "unix-ms",
+
+
+  "model_provider": "edge-tts|xtts",
+
+
+  "model_name": "voice/model-name"
+
+
+}
+
+
+Assistant result:
+
+
+{
+
+
+  "room_id": "uuid",
+
+
+  "type": "summary|action_items|decisions|qa_answer",
+
+
+  "content": "string or JSON string",
+
+
+  "timestamp_ms": "unix-ms",
+
+
+  "model_provider": "openai|local",
+
+
+  "model_name": "model-name",
+
+
+  "schema_version": "1.0"
+
+
+}
+12.4 AI Provider Normalization
+Different AI providers must be normalized at the worker boundary. UI and backend must never depend on provider-specific raw output.
+
+
+Required normalization rules:
+
+
+* All IDs are UUID strings.
+* Language codes use one platform standard. Recommended: BCP-47 (vi-VN, en-US) at API/UI level; worker adapters may map to model-specific codes internally.
+* Text fields are always UTF-8 strings.
+* Confidence is decimal 0-1 where provider supports it; otherwise use null or omit and set confidence_source = "not_supported".
+* Latency is measured in milliseconds from original audio chunk timestamp.
+* Each message includes model metadata:
+   * model_provider
+   * model_name
+   * model_version
+   * schema_version
+* Workers must implement fallback without changing the output schema.
+* Empty final chunks are allowed only to signal finalization and must include is_final_chunk = 1.
+12.5 Current Contract Mismatches To Fix
+These are observed in source and should be treated as blockers for reliable realtime persistence:
+
+
+1. Gateway PublishAudioChunkAsync writes field translation_room_id, but Python AudioChunkMessage.from_redis() requires meeting_id.
+2. Gateway writes stream audio:chunks:{translationRoomId} while STTWorker.input_stream is audio:chunks unless stream discovery/pattern logic is changed.
+3. Python BaseWorker.publish("stt:results", meeting_id, ...) writes stt:results:{meeting_id}, but Gateway AiResultConsumerService consumes stt:results without suffix.
+4. Translation Worker reads target language from meeting:{meeting_id}:languages, but Gateway stores it under translationRoom:{translationRoomId}:languages.
+5. Transcript persistence for translations expects translation_id, text, target_language, model, while Translation Worker emits segment_id, translated_text, target_lang.
+6. Gateway uses meeting_id field to infer translationRoomId; canonical naming should be room_id or consistently preserve meeting_id until all services are migrated.
+
+
+Recommended migration:
+
+
+* Phase 1: add backward-compatible readers that accept both old and new field names.
+* Phase 2: change producers to canonical fields.
+* Phase 3: update tests for every stream schema.
+* Phase 4: remove old names after one release.
+12.6 Latency Budget
+Target realtime experience:
+
+
+Stage
+	Target
+	Client chunk size
+	1s audio chunks
+	Gateway publish
+	< 50 ms
+	STT inference
+	150-500 ms depending model/GPU
+	Translation
+	100-500 ms per sentence
+	TTS default
+	100-300 ms
+	XTTS voice clone
+	300-800 ms
+	End-to-end partial transcript
+	< 2s
+	End-to-end translated audio
+	< 3s preferred, < 5s acceptable
+	
+
+Timeout/fallback rules:
+
+
+* If STT delayed: show "speech delayed" and keep sending audio.
+* If translation delayed: show original captions and pending translated captions.
+* If TTS delayed/unavailable: switch to text-only/caption-only mode.
+* If voice clone unavailable: use standard voice.
+* If Redis unavailable: surface realtime degraded state; do not drop meeting room lifecycle operations silently.
+
+
+________________
+
+
+13. Transcript Service Specification
+13.1 Endpoints
+Method
+	Path
+	Purpose
+	GET
+	/api/v1/transcripts/{id}
+	Get transcript metadata
+	GET
+	/api/v1/transcripts/by-room/{translationRoomId}
+	Get transcript by room
+	GET
+	/api/v1/transcripts/{transcriptId}/segments
+	Paged segments
+	GET
+	/api/v1/transcripts/{transcriptId}/translations
+	Paged translations
+	POST
+	/api/v1/transcripts/{transcriptId}/segments/{segmentId}/correct
+	Correct segment
+	GET
+	/api/v1/transcripts/{transcriptId}/segments/{segmentId}/corrections
+	Correction history
+	POST
+	/api/v1/transcripts/{transcriptId}/exports
+	Create export
+	GET
+	/api/v1/transcripts/{transcriptId}/exports/{id}/download
+	Download export
+	POST
+	/api/v1/glossaries
+	Create glossary
+	GET
+	/api/v1/glossaries/{id}
+	Get glossary
+	GET
+	/api/v1/glossaries/workspace/{workspaceId}
+	List workspace glossaries
+	PUT
+	/api/v1/glossaries/{id}
+	Update glossary
+	DELETE
+	/api/v1/glossaries/{id}
+	Delete glossary
+	POST
+	/api/v1/glossaries/{id}/terms
+	Add term
+	GET
+	/api/v1/glossaries/{id}/terms
+	List terms
+	PUT
+	/api/v1/glossaries/{id}/terms/{termId}
+	Update term
+	DELETE
+	/api/v1/glossaries/{id}/terms/{termId}
+	Delete term
+	13.2 Query Access Rule
+Transcript access is granted if:
+
+
+* current user is room host, or
+* current user is a participant in the room.
+
+
+Access is checked by gRPC calls to TranslationRoom Service.
+13.3 Persistence Consumer
+Transcript consumer watches Redis stream keys:
+
+
+* stt:results:*
+* translate:results:*
+
+
+STT persistence flow:
+
+
+1. Parse room ID from stream key.
+2. Parse segment ID and speaker ID.
+3. Get or create transcript for room.
+4. Resolve workspace ID via TranslationRoom gRPC.
+5. Resolve speaker name via Auth gRPC.
+6. Insert segment if not already inserted.
+7. Update transcript counters.
+8. Consume billing credits for stt_segment.
+
+
+Translation persistence flow:
+
+
+1. Parse room ID from stream key.
+2. Parse translation ID and segment ID.
+3. Verify segment exists.
+4. Insert translation if not already inserted.
+5. Consume billing credits for mt_segment.
+
+
+Unhappy cases:
+
+
+* Segment ID invalid -> discard/ack.
+* Segment not found for translation -> retry later.
+* Billing unavailable -> log error, do not block persistence.
+* gRPC lookup unavailable -> current code may fail or fall back depending call.
+
+
+________________
+
+
+14. Notification Service Specification
+14.1 Endpoints
+Method
+	Path
+	Purpose
+	GET
+	/api/v1/notifications/preferences
+	Get current user notification preferences
+	PUT
+	/api/v1/notifications/preferences
+	Update current user channel preferences
+	GET
+	/api/v1/notifications?page=&pageSize=
+	List current user notifications
+	PATCH
+	/api/v1/notifications/{id}/read
+	Mark one notification read
+	PATCH
+	/api/v1/notifications/read-all
+	Mark all current user notifications read
+	POST
+	/api/v1/notifications/internal/seed
+	Dev/test seed notification
+	POST
+	/api/v1/admin/notifications
+	Admin creates notification
+	GET
+	/api/v1/admin/notifications
+	Admin lists notifications
+	GET
+	/api/v1/admin/notifications/{id}
+	Admin detail
+	14.2 User Notification Rules
+* If preferences do not exist, default preference is created:
+   * notification type SYSTEM
+   * email enabled
+   * push enabled
+   * in-app enabled
+* Notification list clamps pageSize to 100.
+* Mark-as-read validates notification belongs to user.
+14.3 Production vs Dev
+* internal/seed is a temporary dev/testing endpoint. Do not expose in production UI.
+* Admin endpoints require role admin.
+
+
+________________
+
+
+15. Billing Service Specification
+15.1 Endpoints
+Method
+	Path
+	Purpose
+	GET
+	/api/v1/billing/plans
+	List plans
+	GET
+	/api/v1/billing/workspaces/{workspaceId}/credits
+	Current credits
+	GET
+	/api/v1/billing/workspaces/{workspaceId}/subscriptions/active
+	Active subscription
+	POST
+	/api/v1/billing/workspaces/{workspaceId}/subscriptions
+	Create subscription
+	POST
+	/api/v1/billing/workspaces/{workspaceId}/credits/topup
+	Add credits
+	POST
+	/api/v1/billing/workspaces/{workspaceId}/credits/consume
+	Consume credits
+	GET
+	/api/v1/billing/workspaces/{workspaceId}/credits/history
+	Credit ledger
+	GET
+	/api/v1/billing/workspaces/{workspaceId}/transactions
+	Payment transactions
+	POST
+	/api/v1/billing/workspaces/{workspaceId}/subscriptions/cancel
+	Cancel subscription
+	
+
+Gateway note:
+
+
+* Reviewed Gateway appsettings did not include a billing route. Add YARP route before calling Billing Service through Gateway.
+15.2 Billing Rules
+* Plans are public/readable.
+* Workspace operations require workspace validation, except current code has [AllowAnonymous] on create subscription despite still calling workspace validation. Review before production.
+* One active subscription per workspace.
+* Subscription starts with plan monthly credits.
+* Top-up amount must be positive.
+* Credit consume amount must be positive and requires referenceType.
+* If balance is insufficient, return 402.
+* Use Idempotency-Key header for top-up and consume operations.
+15.3 Credit Consumption References
+Allowed/reference examples:
+
+
+* stt_segment
+* mt_segment
+* tts_segment
+* summary_generation
+* manual
+* topup
+
+
+Current code parses referenceType into enum CreditReferenceType; ensure enum values match actual strings used by Transcript Service (stt_segment, mt_segment) or adapt mapping.
+
+
+________________
+
+
+16. Functional Requirements
+16.1 Auth And Profile
+ID
+	Requirement
+	FR-AUTH-001
+	User can register with email, password, full name.
+	FR-AUTH-002
+	User can login and receive access/refresh token pair.
+	FR-AUTH-003
+	User can refresh token; old refresh token is revoked.
+	FR-AUTH-004
+	User can logout; refresh token is revoked.
+	FR-AUTH-005
+	User can login with Google.
+	FR-AUTH-006
+	User can view/update profile.
+	FR-AUTH-007
+	User can change password or set password after Google-only signup.
+	FR-AUTH-008
+	Account locks for 15 minutes after 5 failed login attempts.
+	16.2 Room Lifecycle
+ID
+	Requirement
+	FR-ROOM-001
+	Host can create instant or scheduled translation room.
+	FR-ROOM-002
+	Room has unique join code.
+	FR-ROOM-003
+	Host can open scheduled room into waiting state.
+	FR-ROOM-004
+	Participant can join by code.
+	FR-ROOM-005
+	Room can require host approval before participant connects.
+	FR-ROOM-006
+	Host can admit/kick participants.
+	FR-ROOM-007
+	Host can start, pause, resume, end, cancel room according to state machine.
+	FR-ROOM-008
+	Settings can be changed only before IN_PROGRESS.
+	FR-ROOM-009
+	Kicked participant cannot rejoin.
+	FR-ROOM-010
+	Room history is available to host/participants.
+	FR-ROOM-011
+	User can submit post-room feedback once.
+	16.3 Meeting And Chat
+ID
+	Requirement
+	FR-MEET-001
+	Authorized host/participant can receive LiveKit token.
+	FR-MEET-002
+	Waiting/kicked user cannot join LiveKit meeting.
+	FR-MEET-003
+	Meeting room maps to translation room.
+	FR-MEET-004
+	Active participant can send and view chat messages.
+	FR-MEET-005
+	Host can moderate chat messages.
+	FR-MEET-006
+	Chat message can request translation.
+	FR-MEET-007
+	Chat message can mention Warpbot to request AI response.
+	16.4 Realtime AI
+ID
+	Requirement
+	FR-AI-001
+	Client can stream audio chunks to Gateway SignalR hub.
+	FR-AI-002
+	STT worker emits original transcript segments.
+	FR-AI-003
+	Translation worker emits target-language text.
+	FR-AI-004
+	TTS worker emits translated audio.
+	FR-AI-005
+	Voice cloning starts with default voice then upgrades when embedding is available.
+	FR-AI-006
+	AI assistant accumulates transcript and generates summary/action items.
+	FR-AI-007
+	Gateway broadcasts AI pipeline outputs to room group.
+	FR-AI-008
+	Transcript service persists STT and translation results idempotently.
+	FR-AI-009
+	Worker output schema remains stable across AI providers.
+	16.5 Transcript, Glossary, Artifacts
+ID
+	Requirement
+	FR-TRANS-001
+	User can fetch transcript by transcript ID.
+	FR-TRANS-002
+	User can fetch transcript by translation room ID.
+	FR-TRANS-003
+	User can page transcript segments.
+	FR-TRANS-004
+	User can page translations.
+	FR-TRANS-005
+	Workspace can manage glossary and terms.
+	FR-TRANS-006
+	User can request transcript export.
+	FR-TRANS-007
+	User can correct a segment and optionally trigger retranslation.
+	16.6 Notifications
+ID
+	Requirement
+	FR-NOTIF-001
+	User can view notification preferences.
+	FR-NOTIF-002
+	User can update channel preferences.
+	FR-NOTIF-003
+	User can list notifications.
+	FR-NOTIF-004
+	User can mark one/all notifications read.
+	FR-NOTIF-005
+	Admin can create/list/view admin notifications.
+	16.7 Billing
+ID
+	Requirement
+	FR-BILL-001
+	User can view plans.
+	FR-BILL-002
+	Workspace owner can view credits and active subscription.
+	FR-BILL-003
+	Workspace can create one active subscription.
+	FR-BILL-004
+	Workspace can top up credits idempotently.
+	FR-BILL-005
+	Services can consume credits idempotently.
+	FR-BILL-006
+	Credit and transaction history are paginated.
+	FR-BILL-007
+	Insufficient credits blocks billable operation or degrades according to product policy.
+	
+
+________________
+
+
+17. Non-Functional Requirements
+17.1 Performance
+* Gateway HTTP p95 target: < 300 ms for simple reads.
+* Room create/join p95 target: < 800 ms.
+* SignalR transcript broadcast target: < 2s from audio chunk start.
+* Translated audio target: < 3s preferred, < 5s acceptable.
+* Transcript consumer throughput target from plan: 500+ segments/second.
+* Redis stream max length must prevent unbounded memory growth.
+17.2 Reliability
+* Redis consumers must be idempotent.
+* Redis stream messages must be acked only after successful processing or after deliberate discard of invalid payload.
+* AI worker crash should not end a room; it should degrade the AI/audio path.
+* Billing should not double-charge on retries.
+* Live meeting join can succeed even if AI trigger publish fails, but UI must show AI degraded state if known.
+17.3 Security
+* JWT validation on all protected APIs and hubs.
+* Role-based policies for admin/internal/workspace owner routes.
+* Refresh tokens stored only as hashes.
+* gRPC internal calls require internal secret in production.
+* CORS must be strict in production.
+* Do not expose dev/test endpoints in production.
+* Raw audio/video artifacts require consent and retention policy.
+17.4 Privacy And Compliance
+* Consent records are required for voice cloning and raw audio/video storage.
+* Artifacts must carry retention metadata.
+* Access logs should exist for sensitive artifact access.
+* Workspace document sensitivity/confidentiality should guide AI eligibility.
+* Users should be able to request data deletion in future privacy module.
+17.5 Observability
+* Every request should have a correlation/request ID.
+* Logs must include user ID, workspace ID, room ID when available.
+* AI telemetry should publish worker type, room ID, latency, timestamp.
+* Dashboards should include:
+   * room lifecycle errors
+   * SignalR connection counts
+   * Redis stream lag
+   * STT/translation/TTS latency
+   * billing credit consume errors
+   * gRPC failure rates
+
+
+________________
+
+
+18. Meeting Mainflows For UI
+18.1 Host Creates Instant Room
+1. Host opens /rooms or host dashboard.
+2. Host clicks create room.
+3. UI collects title, description, source language, target languages, max participants, approval setting, artifact access.
+4. UI calls POST /api/v1/translation-rooms.
+5. Backend returns room code and status WAITING.
+6. UI navigates to /rooms/{id} or /rooms/{id}/setup.
+7. Host copies invite link/code.
+
+
+UI states:
+
+
+* Loading submit.
+* Validation errors inline.
+* Success state with room code.
+* Failure state for unsupported language or auth expired.
+18.2 Participant Joins By Code
+1. Participant opens /join.
+2. Enters room code, display name, speak language, listen language.
+3. UI calls POST /api/v1/translation-rooms/join.
+4. If participant is WAITING, UI navigates to /rooms/{id}/waiting.
+5. If participant is CONNECTED, UI navigates to /rooms/{id}/setup or live room.
+6. Host sees waiting participant and admits.
+
+
+Unhappy UI states:
+
+
+* Invalid code.
+* Room ended/cancelled/expired.
+* Kicked participant.
+* Language unsupported.
+* Waiting too long; allow refresh/leave.
+18.3 Host Starts Meeting
+1. Host sees room status WAITING.
+2. Host confirms participants/readiness.
+3. UI calls POST /api/v1/translation-rooms/{id}/start.
+4. Backend sets IN_PROGRESS and triggers audio routing state machine.
+5. UI calls POST /api/v1/meetings/rooms/{translationRoomId}/join.
+6. Meeting Service returns LiveKit token.
+7. UI connects to LiveKit and /hubs/translation-room.
+8. UI starts audio capture and sends chunks.
+
+
+Unhappy UI states:
+
+
+* Non-host tries to start.
+* Room already ended/cancelled.
+* LiveKit token generation failed.
+* SignalR connection failed.
+* Browser mic permission denied.
+18.4 Live Realtime Translation
+1. UI captures audio chunks, base64 encodes, calls hub SendAudioChunk.
+2. Gateway writes Redis stream.
+3. STT produces transcript.
+4. Gateway broadcasts TranscriptSegmentReceived.
+5. Translation worker produces translated text.
+6. Gateway broadcasts TranslationTextReceived.
+7. TTS worker produces audio.
+8. Gateway broadcasts TranslatedAudioReceived.
+9. UI renders:
+   * original caption
+   * translated caption
+   * playback translated audio if enabled
+   * route/AI degraded indicators
+
+
+UI controls:
+
+
+* Mute/unmute local mic.
+* Toggle translated audio.
+* Change listen language before or during supported states.
+* Show participant list.
+* Show live transcript panel.
+* Show AI status.
+18.5 Pause/Resume
+Pause:
+
+
+1. Host calls POST /pause.
+2. Backend sets room PAUSED.
+3. Route event tells workers to skip processing room.
+4. UI stops or buffers audio sending depending product choice.
+
+
+Resume:
+
+
+1. Host calls POST /resume.
+2. Backend sets room IN_PROGRESS.
+3. Route event resumes workers.
+4. UI resumes audio capture.
+18.6 End Meeting And Artifacts
+1. Host calls POST /end.
+2. Backend sets ENDED, stores ended time and duration.
+3. Participants move to DISCONNECTED.
+4. Audio route state machine gets session_ends.
+5. Transcript finalization and AI summary generation should be triggered.
+6. UI navigates to /rooms/{id}/ended.
+7. UI polls/streams artifact statuses.
+8. When ready, UI shows /rooms/{id}/artifacts.
+9. User submits feedback.
+
+
+Artifact states:
+
+
+* queued
+* processing
+* ready
+* failed
+* consent_required
+* expired
+
+
+________________
+
+
+19. Happy And Unhappy Case Matrix
+Flow
+	Happy Case
+	Unhappy Cases
+	Register
+	new user gets tokens
+	duplicate email, weak password, DB down
+	Login
+	active user gets tokens
+	invalid credentials, locked account, inactive account
+	Refresh
+	old token revoked, new pair issued
+	token expired, reused, revoked
+	Create room
+	host creates room with supported languages
+	missing language, unsupported language, invalid schedule, auth expired
+	Join room
+	participant upserted and routed to waiting/connected
+	bad code, terminal room, kicked participant, unsupported language
+	Admit participant
+	waiting participant becomes connected
+	non-host, participant missing, participant not waiting
+	Kick participant
+	participant becomes kicked
+	non-host, host self-kick, participant missing
+	Start room
+	waiting/scheduled becomes in progress
+	non-host, invalid state, missing route policy
+	Pause room
+	in-progress becomes paused
+	non-host, not in progress
+	Resume room
+	paused becomes in progress
+	non-host, not paused
+	End room
+	in-progress/paused becomes ended
+	non-host, invalid state
+	Join LiveKit
+	authorized user gets token
+	waiting user, room missing, LiveKit error
+	Send audio
+	chunk enters Redis
+	SignalR disconnected, payload too large, Redis down
+	STT
+	transcript segment emitted
+	no speech, model unavailable, malformed audio
+	Translation
+	translated text emitted
+	unsupported language, model timeout, fallback unavailable
+	TTS
+	audio emitted
+	voice clone unavailable, TTS unavailable -> text-only
+	Persist transcript
+	idempotent insert
+	schema mismatch, gRPC lookup fail, billing fail
+	Billing consume
+	credit deducted once
+	no subscription, insufficient credits, idempotency conflict
+	Notification read
+	notification marked read
+	notification missing, wrong user
+	Feedback
+	feedback created
+	duplicate feedback, invalid rating, not participant
+	
+
+________________
+
+
+20. Current Limitations
+High priority:
+
+
+* Redis stream and field contracts are inconsistent between Gateway, AI workers, and Transcript consumer.
+* Gateway does not currently route Billing in reviewed appsettings.json.
+* Billing schema name differs from infrastructure init SQL (billing vs subscription).
+* Meeting chat persistence mapping must be verified.
+* Response contracts are inconsistent across services.
+* Workspace service is referenced in infrastructure but not present in reviewed backend source.
+* Full RBAC is not enforced in web middleware.
+* Some dev/test endpoints exist and should be disabled in production.
+
+
+Medium priority:
+
+
+* Transcript access returns Forbid() without typed error body in some endpoints.
+* Several endpoints return raw strings or anonymous errors.
+* Some comments and README encoding are garbled, suggesting file encoding cleanup is needed.
+* AI assistant summary trigger is a marker text __MEETING_END__; production should use explicit system event.
+* Voice consent tables exist in DB design but are not wired end-to-end.
+* Artifact retention and deletion workers are only partially visible.
+
+
+Low priority:
+
+
+* Web service adapters normalize backend status casing; backend should standardize casing.
+* Web endpoints include some transcript start/finalize/audio routes not seen in reviewed Transcript controllers.
+* Some room type values in web (one_to_one, group, webinar, b2b_virtual_mic) exceed backend enum (INSTANT, SCHEDULED).
+
+
+________________
+
+
+21. Improvement Roadmap
+Phase 1: Contract Stabilization
+* Define canonical Redis schemas in shared docs/tests.
+* Add contract tests for Gateway -> AI -> Transcript.
+* Make workers accept backward-compatible field aliases.
+* Align stream keys.
+* Add Billing route to Gateway.
+* Standardize API error shape.
+Phase 2: Meeting UX Completion
+* Complete room preflight endpoint if UI needs single lightweight object.
+* Enforce room capacity.
+* Add participant readiness/device status.
+* Complete waiting room realtime updates.
+* Wire LiveKit room state to room lifecycle.
+Phase 3: Transcript And Artifacts
+* Fix translation persistence contract.
+* Add summary job table or use AI processing jobs.
+* Add artifact status endpoints.
+* Add export generation worker.
+* Add correction/retranslation complete flow.
+Phase 4: Workspace Governance
+* Implement dedicated workspace service or move workspace APIs clearly into Auth.
+* Members/invitations/domain verification.
+* Document upload and AI eligibility.
+* Glossary propagation into translation workers.
+Phase 5: Production Hardening
+* Full RBAC policies.
+* Secrets management.
+* OpenTelemetry traces.
+* Dead-letter streams.
+* Retention jobs.
+* Load tests for 500+ segments/s.
+* Security audit for CORS, admin routes, gRPC internal tokens.
+
+
+________________
+
+
+22. Quality Control Checklist
+Before merging any backend feature:
+
+
+* Endpoint has request validation.
+* Endpoint returns typed success and typed error.
+* Auth/role policy is explicit.
+* Pagination is bounded.
+* Logs include operation and entity IDs.
+* Tests cover happy case and at least one unhappy case.
+* DB migrations are reversible or have safe rollback notes.
+* Idempotency is added for retry-prone operations.
+* Web API adapter/types updated if contract changed.
+* Docs updated in this file.
+
+
+Before releasing AI/realtime changes:
+
+
+* Redis stream key and field names match canonical schema.
+* Gateway, worker, Transcript consumer contract tests pass.
+* Backward-compatible aliases exist for one release if renaming fields.
+* Latency telemetry is emitted.
+* Fallback mode is tested.
+* Dead-letter or retry strategy exists.
+* Workers handle pause/resume/end room events.
+
+
+Before releasing database changes:
+
+
+* Migration applies to empty DB.
+* Migration applies to existing DB.
+* Indexes cover expected filters/joins.
+* FK ownership is deliberate and documented.
+* Enum values match C# and TypeScript.
+* Rollback or forward-fix plan exists.
+
+
+Before releasing UI changes:
+
+
+* UI route maps to documented endpoint.
+* Loading, empty, error, success states exist.
+* Auth expired state redirects safely.
+* Participant and host see role-appropriate controls.
+* Status casing is normalized.
+* Realtime disconnect/reconnect is handled.
+* Mobile layout fits controls and text.
+
+
+________________
+
+
+23. Acceptance Criteria For An AI Building UI From This Spec
+The AI should be able to build:
+
+
+* Auth pages: login/register/forgot password/profile.
+* Host dashboard: rooms, quick create, active session, recent history.
+* Participant dashboard: upcoming rooms, join by code, summaries.
+* Workspace dashboard: usage, rooms, artifacts, terminology, billing.
+* Internal dashboard: tenants, AI ops, support, plans.
+* Room create flow.
+* Room detail/preflight page.
+* Setup page with mic/speaker/language controls.
+* Waiting room page with host admit/kick and participant waiting state.
+* Live meeting page with transcript, translation, participant list, AI status.
+* Ended page with artifact generation and feedback.
+* Artifacts page with transcript, summary, action items, exports.
+* Billing page with plans, current credits, top-up, history.
+* Notification inbox/preferences.
+
+
+The AI must not assume:
+
+
+* Billing route exists through Gateway until added.
+* Workspace service APIs exist.
+* Redis AI pipeline is production-ready before contract mismatches are fixed.
+* All web routes are backed by real APIs; some are preview/planned.
+* Backend room type enum supports all current web room type strings.
+
+
+________________
+
+
+24. Definition Of Done For Current Project Scope
+Minimum backend done:
+
+
+* Auth, TranslationRoom, Meeting, Transcript, Notification, Billing compile and run in Docker.
+* Gateway routes every service needed by web.
+* Standard error response across services.
+* Redis AI contract fixed and tested.
+* Transcript persistence works for STT and translation.
+* Billing credit consumption is compatible with actual reference types.
+* Room lifecycle and participant management have integration tests.
+
+
+Minimum AI done:
+
+
+* STT, translation, TTS, assistant workers run with Redis.
+* Each worker accepts canonical stream schema.
+* Workers emit model metadata.
+* Pause/resume/end states affect processing.
+* Fallback paths are visible to UI.
+
+
+Minimum UI done:
+
+
+* Host and participant can complete create -> join -> waiting -> setup -> live -> end -> artifacts flow.
+* Errors and degraded AI states are visible.
+* Role-specific dashboards route correctly.
+* API adapters match backend contract.
+
+
+Minimum operations done:
+
+
+* Docker Compose starts full stack.
+* Health checks expose service readiness.
+* Logs and telemetry are visible in Seq/Grafana.
+* Secrets are not placeholders in production.
+* Backup scripts are tested.

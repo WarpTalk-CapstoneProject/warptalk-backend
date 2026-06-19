@@ -57,7 +57,8 @@ public static class WorkspaceMapper
             config.EnforceHostApprovalDefault,
             config.VerifiedDomains,
             config.AllowExternalCollaboration,
-            config.RequireVerifiedDomainForInternal
+            config.RequireVerifiedDomainForInternal,
+            config.AiUsagePolicy?.ToDto()
         );
     }
 
@@ -74,7 +75,8 @@ public static class WorkspaceMapper
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
             VerifiedDomains = dto.VerifiedDomains,
             AllowExternalCollaboration = dto.AllowExternalCollaboration,
-            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal
+            RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
+            AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration()
         };
     }
 
@@ -96,5 +98,85 @@ public static class WorkspaceMapper
             UpdatedAt = now,
             UpdatedBy = userId
         };
+    }
+
+    public static AiUsagePolicyDto ToDto(this AiUsagePolicyConfiguration config)
+    {
+        return new AiUsagePolicyDto(
+            config.AllowExternalLlm,
+            config.RedactPii.ToDto(),
+            config.Dlp.ToDto(),
+            config.TranslationProfile.ToDto()
+        );
+    }
+
+    public static AiUsagePolicyConfiguration ToConfiguration(this AiUsagePolicyDto dto)
+    {
+        return new AiUsagePolicyConfiguration(
+            dto.AllowExternalLlm,
+            dto.RedactPii.ToConfiguration(),
+            dto.Dlp.ToConfiguration(),
+            dto.TranslationProfile.ToConfiguration()
+        );
+    }
+
+    public static PiiRedactionDto? ToDto(this PiiRedactionConfiguration? config)
+    {
+        if (config == null) return null;
+        return new PiiRedactionDto(config.Enabled);
+    }
+
+    public static PiiRedactionConfiguration? ToConfiguration(this PiiRedactionDto? dto)
+    {
+        if (dto == null) return null;
+        return new PiiRedactionConfiguration(dto.Enabled);
+    }
+
+    public static DlpDto? ToDto(this DlpConfiguration? config)
+    {
+        if (config == null) return null;
+        return new DlpDto(config.Enabled, config.KeywordsBlacklist);
+    }
+
+    public static DlpConfiguration? ToConfiguration(this DlpDto? dto)
+    {
+        if (dto == null) return null;
+        return new DlpConfiguration(dto.Enabled, dto.KeywordsBlacklist);
+    }
+
+    public static TranslationProfileDto? ToDto(this TranslationProfileConfiguration? config)
+    {
+        if (config == null) return null;
+        return new TranslationProfileDto(
+            config.TranslationTone,
+            config.LanguageSpecificRules.ToDto()
+        );
+    }
+
+    public static TranslationProfileConfiguration? ToConfiguration(this TranslationProfileDto? dto)
+    {
+        if (dto == null) return null;
+        return new TranslationProfileConfiguration(
+            dto.TranslationTone,
+            dto.LanguageSpecificRules.ToConfiguration()
+        );
+    }
+
+    public static LanguageSpecificRulesDto? ToDto(this LanguageSpecificRules? config)
+    {
+        if (config == null) return null;
+        return new LanguageSpecificRulesDto(
+            config.VietnameseHonorificStyle,
+            config.JapaneseHonorificStyle
+        );
+    }
+
+    public static LanguageSpecificRules? ToConfiguration(this LanguageSpecificRulesDto? dto)
+    {
+        if (dto == null) return null;
+        return new LanguageSpecificRules(
+            dto.VietnameseHonorificStyle,
+            dto.JapaneseHonorificStyle
+        );
     }
 }

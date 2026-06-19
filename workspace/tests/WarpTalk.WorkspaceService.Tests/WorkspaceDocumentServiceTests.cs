@@ -19,6 +19,10 @@ using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using Xunit;
 
+using Microsoft.AspNetCore.Http;
+using System.IO;
+using System.Text;
+
 namespace WarpTalk.WorkspaceService.Tests;
 
 public class WorkspaceDocumentServiceTests
@@ -32,6 +36,8 @@ public class WorkspaceDocumentServiceTests
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceUrlProvider _urlProvider;
+    private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IWorkspaceDocumentStorage _storage;
     private readonly WorkspaceDocumentService _documentService;
 
     public WorkspaceDocumentServiceTests()
@@ -45,6 +51,8 @@ public class WorkspaceDocumentServiceTests
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _urlProvider = Substitute.For<IWorkspaceUrlProvider>();
+        _translationRoomClient = Substitute.For<ITranslationRoomClient>();
+        _storage = Substitute.For<IWorkspaceDocumentStorage>();
 
         // Set up mock repository mappings
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
@@ -61,6 +69,9 @@ public class WorkspaceDocumentServiceTests
             _eventPublisher,
             _authIdentity,
             _urlProvider,
+            _translationRoomClient,
+            _storage,
+            Substitute.For<IDocumentTextExtractor>(),
             Substitute.For<ILogger<WorkspaceDocumentService>>()
         );
     }
@@ -85,7 +96,11 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(memberRoleId, "Member");
 
-        var request = new UploadDocumentRequest("Doc1", "file.pdf", ".pdf", "application/pdf", 1024, "upload", null, false);
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns("file.pdf");
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -114,7 +129,11 @@ public class WorkspaceDocumentServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
         StubRoleName(adminRoleId, "Admin");
 
-        var request = new UploadDocumentRequest("Doc1", "file.pdf", ".pdf", "application/pdf", 1024, "upload", null, false);
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns("file.pdf");
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);

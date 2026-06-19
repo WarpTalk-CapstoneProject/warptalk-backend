@@ -37,7 +37,7 @@ public static class WorkspaceDocumentMapper
     }
 
     public static WorkspaceDocument ToEntity(
-        this UploadDocumentRequest request,
+        this UploadDocumentApiRequest request,
         Guid docId,
         Guid workspaceId,
         Guid userId,
@@ -48,6 +48,7 @@ public static class WorkspaceDocumentMapper
         DateTime? utcNow = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
+        var extension = System.IO.Path.GetExtension(request.File.FileName);
         return new WorkspaceDocument
         {
             Id = docId,
@@ -55,15 +56,15 @@ public static class WorkspaceDocumentMapper
             UploadedBy = userId,
             OwnerId = userId,
             Name = request.Name,
-            FileName = request.FileName,
-            FileExtension = request.FileExtension,
-            MimeType = request.MimeType,
-            SizeBytes = request.SizeBytes,
+            FileName = request.File.FileName,
+            FileExtension = extension,
+            MimeType = request.File.ContentType,
+            SizeBytes = request.File.Length,
             StorageProvider = WorkspaceDocumentConstants.LocalStorageProvider,
             StorageKey = storageKey,
             SourceType = request.SourceType,
             SourceId = request.SourceId,
-            DocumentType = request.FileExtension.TrimStart('.').ToUpper(),
+            DocumentType = extension.TrimStart('.').ToUpper(),
             AiEligible = aiEligible,
             IngestionStatus = ingestionStatus.ToString(),
             IsSensitive = request.IsSensitive,
