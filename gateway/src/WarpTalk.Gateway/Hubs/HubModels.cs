@@ -53,7 +53,17 @@ public record TranslatedAudioDto(
     Guid SpeakerId,
     string AudioBase64,
     string VoiceType,
-    int DurationMs);
+    int DurationMs,
+    string? VoiceMode = null,
+    double? CloneStrength = null,
+    string? AnchorProvider = null,
+    string? CloneProvider = null,
+    string? RenderLocation = null,
+    string? CacheKey = null,
+    bool? CacheHit = null,
+    int? SynthesisLatencyMs = null,
+    int? ConversionLatencyMs = null,
+    string? FallbackReason = null);
 
 public record AiAssistantResultDto(
     string TranslationRoomId,
