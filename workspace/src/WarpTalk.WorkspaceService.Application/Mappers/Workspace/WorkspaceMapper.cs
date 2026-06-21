@@ -11,7 +11,7 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceMapper
 {
-    public static WorkspaceDto ToDto(this Workspace workspace, string role)
+    public static WorkspaceDto ToDto(this Workspace workspace, string role, string membershipType = "Internal")
     {
         return new WorkspaceDto(
             workspace.Id,
@@ -19,7 +19,8 @@ public static class WorkspaceMapper
             workspace.Slug,
             workspace.LogoUrl,
             role,
-            workspace.CreatedAt
+            workspace.CreatedAt,
+            membershipType
         );
     }
 

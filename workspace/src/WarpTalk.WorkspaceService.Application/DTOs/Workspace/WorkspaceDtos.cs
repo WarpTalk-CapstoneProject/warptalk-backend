@@ -30,7 +30,8 @@ public record WorkspaceDto(
     string Slug,
     string? LogoUrl,
     string Role,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    string MembershipType = "Internal"
 );
 
 public record PagedResult<T>(

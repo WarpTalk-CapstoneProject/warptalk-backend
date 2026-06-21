@@ -164,12 +164,14 @@ public class WorkspaceService : IWorkspaceService
                 var member = ws.WorkspaceMembers.FirstOrDefault();
                 var defaultRoleName = WorkspaceMemberRole.Member.ToRoleName();
                 var roleName = defaultRoleName;
+                var membershipType = "Internal";
                 if (member != null)
                 {
                     roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+                    membershipType = member.MembershipType;
                 }
 
-                workspaceDtos.Add(ws.ToDto(roleName));
+                workspaceDtos.Add(ws.ToDto(roleName, membershipType));
             }
             var pagedResult = new PagedResult<WorkspaceDto>(workspaceDtos, query.Page, query.PageSize, totalCount);
             return Result.Success(pagedResult);
@@ -203,7 +205,7 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            return Result.Success(workspace.ToDto(roleName));
+            return Result.Success(workspace.ToDto(roleName, member.MembershipType));
         }
         catch (Exception ex)
         {

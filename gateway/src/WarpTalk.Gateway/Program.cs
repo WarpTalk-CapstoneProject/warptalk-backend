@@ -107,6 +107,13 @@ builder.Services.AddRateLimiter(options =>
         opt.Window = TimeSpan.FromMinutes(1);
     });
 
+    // Specific policy for preflight check (WT-160)
+    options.AddFixedWindowLimiter("PreflightPolicy", opt =>
+    {
+        opt.PermitLimit = 10;
+        opt.Window = TimeSpan.FromMinutes(1);
+    });
+
     // Specific policy for inbox
     options.AddFixedWindowLimiter("InboxPolicy", opt =>
     {

@@ -42,6 +42,28 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         };
     }
 
+    public override async Task<GetTranslationRoomResponse> GetTranslationRoomByCode(GetTranslationRoomByCodeRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.RoomCode))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Room code is required."));
+
+        var result = await _translationRoomService.GetTranslationRoomByCodeAsync(request.RoomCode, context.CancellationToken);
+
+        if (!result.IsSuccess)
+            throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomCode);
+
+        return new GetTranslationRoomResponse
+        {
+            Id = result.Value!.Id.ToString(),
+            WorkspaceId = result.Value!.WorkspaceId.ToString(),
+            Title = result.Value!.Title,
+            HostId = result.Value!.HostId.ToString(),
+            Status = result.Value!.Status.ToString(),
+            StartedAt = result.Value!.StartedAt?.ToString("O") ?? string.Empty,
+            EndedAt = result.Value!.EndedAt?.ToString("O") ?? string.Empty
+        };
+    }
+
     public override async Task<GetParticipantsByRoomIdResponse> GetParticipantsByRoomId(GetParticipantsByRoomIdRequest request, ServerCallContext context)
     {
         if (!Guid.TryParse(request.RoomId, out var parsedRoomId))

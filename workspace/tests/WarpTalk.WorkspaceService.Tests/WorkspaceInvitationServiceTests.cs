@@ -28,6 +28,7 @@ public class WorkspaceInvitationServiceTests
     private readonly IWorkspaceInvitationRepository _workspaceInvitationRepository;
     private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly ITranslationRoomClient _translationRoomClient;
     private readonly WorkspaceInvitationService _workspaceInvitationService;
 
     public WorkspaceInvitationServiceTests()
@@ -38,13 +39,18 @@ public class WorkspaceInvitationServiceTests
         _workspaceInvitationRepository = Substitute.For<IWorkspaceInvitationRepository>();
         _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
+        _translationRoomClient = Substitute.For<ITranslationRoomClient>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
-        _workspaceInvitationService = new WorkspaceInvitationService(_unitOfWork, Substitute.For<ILogger<WorkspaceInvitationService>>(), _authIdentity);
+        _workspaceInvitationService = new WorkspaceInvitationService(
+            _unitOfWork, 
+            Substitute.For<ILogger<WorkspaceInvitationService>>(), 
+            _authIdentity,
+            _translationRoomClient);
     }
 
     private void StubRoleName(Guid roleId, string roleName)

@@ -100,4 +100,65 @@ public class WorkspaceInvitationsController : ControllerBase
         }
         return NoContent();
     }
+
+    [Authorize]
+    [HttpPost("join-requests")]
+    public async Task<IActionResult> CreateJoinRequest([FromBody] CreateJoinRequestCommand command, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized();
+
+        var result = await _workspaceInvitationService.CreateJoinRequestAsync(command, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/join-requests/{invitationId:guid}/approve")]
+    public async Task<IActionResult> ApproveJoinRequest(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/join-requests/{invitationId:guid}/reject")]
+    public async Task<IActionResult> RejectJoinRequest(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceInvitationService.RejectJoinRequestAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
 }
+

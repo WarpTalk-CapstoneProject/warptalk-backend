@@ -207,6 +207,25 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    public async Task<Result<TranslationRoomDto>> GetTranslationRoomByCodeAsync(string roomCode, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByCodeAsync(roomCode, null, ct);
+            
+            if (translationRoom == null)
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            return Result.Success(translationRoom.ToResponseDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while fetching translation room by code: {RoomCode}", roomCode);
+            return Result.Failure<TranslationRoomDto>("An unexpected error occurred while fetching the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+
     public async Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try

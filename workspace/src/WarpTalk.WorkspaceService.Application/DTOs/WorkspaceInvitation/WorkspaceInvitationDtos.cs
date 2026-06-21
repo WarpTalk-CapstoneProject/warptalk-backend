@@ -13,6 +13,12 @@ public record AcceptInvitationRequest(
     [Required] string Token
 );
 
+public record CreateJoinRequestCommand(
+    string? RoomCode,
+    string? WorkspaceSlug
+);
+
+
 public record WorkspaceInvitationDto(
     Guid Id,
     Guid WorkspaceId,
