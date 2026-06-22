@@ -23,6 +23,9 @@ public class TranslationRoomHub : Hub
 
     // Track which connection belongs to which room
     private static readonly ConcurrentDictionary<string, string> _connectionToRoom = new();
+    
+    // Track user active connection in a room: (RoomId_UserId) -> ConnectionId
+    private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
 
     public TranslationRoomHub(
         IConnectionManager connectionManager,
@@ -59,6 +62,9 @@ public class TranslationRoomHub : Hub
 
         if (_connectionToRoom.TryRemove(Context.ConnectionId, out var roomIdStr) && isFullyOffline)
         {
+            var roomUserKey = $"{roomIdStr}_{userId}";
+            _roomUserToConnection.TryRemove(roomUserKey, out _);
+
             // Publish event to Redis for TranslationRoomService to process participant left
             var db = _redis.GetDatabase();
             await db.PublishAsync("translationRoom:participant-offline", $"{roomIdStr}:{userId}");
@@ -87,9 +93,28 @@ public class TranslationRoomHub : Hub
     {
         var userId = GetUserId();
         var groupName = TranslationRoomGroupName(translationRoomId);
+        var roomIdStr = translationRoomId.ToString();
+        var roomUserKey = $"{roomIdStr}_{userId}";
+
+        // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
+        if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
+        {
+            if (existingConnectionId != Context.ConnectionId)
+            {
+                _logger.LogWarning("TranslationRoomHub: User {UserId} joined from a new device. Kicking old connection {OldConnectionId}.", userId, existingConnectionId);
+                
+                // Notify old connection
+                await Clients.Client(existingConnectionId).SendAsync("ForceDisconnected", "You have joined from another device.");
+                
+                // Remove old connection from group
+                await Groups.RemoveFromGroupAsync(existingConnectionId, groupName);
+                _connectionToRoom.TryRemove(existingConnectionId, out _);
+            }
+        }
 
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
-        _connectionToRoom[Context.ConnectionId] = translationRoomId.ToString();
+        _connectionToRoom[Context.ConnectionId] = roomIdStr;
+        _roomUserToConnection[roomUserKey] = Context.ConnectionId;
 
         var participantInfo = new ParticipantInfoDto(
             UserId: Guid.Parse(userId),
@@ -125,8 +150,12 @@ public class TranslationRoomHub : Hub
     {
         var userId = GetUserId();
         var groupName = TranslationRoomGroupName(translationRoomId);
+        var roomIdStr = translationRoomId.ToString();
+        var roomUserKey = $"{roomIdStr}_{userId}";
 
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
+        _connectionToRoom.TryRemove(Context.ConnectionId, out _);
+        _roomUserToConnection.TryRemove(roomUserKey, out _);
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLeft", userId);
