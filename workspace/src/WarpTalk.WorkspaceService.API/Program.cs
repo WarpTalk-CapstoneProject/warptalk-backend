@@ -50,7 +50,7 @@ builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = redisConnectionString;
 });
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString));
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 builder.Services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
 
 // Auth identity (gRPC → UserService in WarpTalk.Shared, implemented by UserServiceGrpc in Auth API)
@@ -86,6 +86,7 @@ builder.Services.AddScoped<IWorkspaceEventPublisher, RedisWorkspaceEventPublishe
 builder.Services.AddSingleton<IWorkspaceDocumentStorage, LocalEncryptedWorkspaceDocumentStorage>();
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
+builder.Services.AddHostedService<MeetingStartedEventConsumer>();
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();

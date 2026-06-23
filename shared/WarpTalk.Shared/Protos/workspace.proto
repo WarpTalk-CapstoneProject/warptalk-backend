@@ -41,4 +41,5 @@ message GetWorkspaceSettingsRequest {
 message GetWorkspaceSettingsResponse {
   int32 artifact_retention_days = 1;
   bool allow_external_collaboration = 2;
+  bool is_profanity_filter_enabled = 3;
 }

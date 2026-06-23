@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.RegularExpressions;
+using Grpc.Core;
 using Microsoft.AspNetCore.SignalR;
 using WarpTalk.Gateway.Hubs;
 
@@ -22,10 +24,15 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly RedisStreamService _streamService;
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IHubContext<TranslationRoomHub> _hubContext;
+    private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
+    private readonly WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient _roomClient;
     private readonly ILogger<AiResultConsumerService> _logger;
 
     private const string ConsumerGroupName = "gateway-consumers";
     private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
+
+    // Cache profanity settings: translationRoomId -> isProfanityFilterEnabled
+    private readonly ConcurrentDictionary<string, bool> _profanityFilterCache = new();
 
     // translationRoomId → CancellationTokenSource (for stopping consumers when translationRoom ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _translationRoomCts = new();
@@ -34,11 +41,15 @@ public sealed class AiResultConsumerService : BackgroundService
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IHubContext<TranslationRoomHub> hubContext,
+        WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
+        WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
         ILogger<AiResultConsumerService> logger)
     {
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _hubContext = hubContext;
+        _workspaceClient = workspaceClient;
+        _roomClient = roomClient;
         _logger = logger;
     }
 
@@ -70,6 +81,37 @@ public sealed class AiResultConsumerService : BackgroundService
 
 
 
+    // ── Profanity Masking ────────────────────────────────────
+
+    private async Task<bool> IsProfanityFilterEnabledAsync(string translationRoomId, CancellationToken ct)
+    {
+        if (_profanityFilterCache.TryGetValue(translationRoomId, out var isEnabled))
+            return isEnabled;
+
+        try
+        {
+            var roomResponse = await _roomClient.GetTranslationRoomByIdAsync(
+                new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = translationRoomId }, cancellationToken: ct);
+            
+            var workspaceResponse = await _workspaceClient.GetWorkspaceSettingsAsync(
+                new WarpTalk.Shared.Protos.GetWorkspaceSettingsRequest { WorkspaceId = roomResponse.WorkspaceId }, cancellationToken: ct);
+            
+            isEnabled = workspaceResponse.IsProfanityFilterEnabled;
+            _profanityFilterCache.TryAdd(translationRoomId, isEnabled);
+            return isEnabled;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            _profanityFilterCache.TryAdd(translationRoomId, false);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get profanity filter setting for room {RoomId}", translationRoomId);
+            return false;
+        }
+    }
+
     // ── STT Results → TranscriptSegmentReceived ──────────────
 
     private async Task ConsumeSTTResultsAsync(CancellationToken ct)
@@ -91,11 +133,19 @@ public sealed class AiResultConsumerService : BackgroundService
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
                     if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    
+                    var originalText = RedisStreamService.GetField(entry, "text") ?? "";
+                    
+                    if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                    {
+                        originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
+                    }
+
                     var segment = new TranscriptSegmentDto(
                         SegmentId: Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var sid) ? sid : Guid.NewGuid(),
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
                         SpeakerName: RedisStreamService.GetField(entry, "speaker_id") ?? "Unknown",
-                        OriginalText: RedisStreamService.GetField(entry, "text") ?? "",
+                        OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
                         TargetLanguage: null,
@@ -141,11 +191,21 @@ public sealed class AiResultConsumerService : BackgroundService
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
                     if (string.IsNullOrEmpty(translationRoomId)) continue;
+
+                    var originalText = RedisStreamService.GetField(entry, "original_text") ?? "";
+                    var translatedText = RedisStreamService.GetField(entry, "translated_text") ?? "";
+
+                    if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                    {
+                        originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
+                        translatedText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(translatedText);
+                    }
+
                     var dto = new TranslationTextDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
-                        OriginalText: RedisStreamService.GetField(entry, "original_text") ?? "",
-                        TranslatedText: RedisStreamService.GetField(entry, "translated_text") ?? "",
+                        OriginalText: originalText,
+                        TranslatedText: translatedText,
                         SourceLang: RedisStreamService.GetField(entry, "source_lang") ?? "",
                         TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "");
 
