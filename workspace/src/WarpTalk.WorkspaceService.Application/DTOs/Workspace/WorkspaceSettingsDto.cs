@@ -13,5 +13,6 @@ public record WorkspaceSettingsDto(
     List<string> VerifiedDomains,
     bool AllowExternalCollaboration,
     bool RequireVerifiedDomainForInternal,
-    AiUsagePolicyDto? AiUsagePolicy
+    AiUsagePolicyDto? AiUsagePolicy,
+    bool IsProfanityFilterEnabled
 );

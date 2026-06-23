@@ -185,7 +185,8 @@ public class WorkspacesControllerTests
             new List<string>(),
             true,
             true,
-            null
+            null,
+            false
         );
         _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedSettings));
@@ -215,7 +216,8 @@ public class WorkspacesControllerTests
             new List<string>(),
             true,
             true,
-            null
+            null,
+            false
         );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success());
@@ -243,7 +245,8 @@ public class WorkspacesControllerTests
             new List<string>(),
             true,
             true,
-            null
+            null,
+            false
         );
         _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Failure("Forbidden", ErrorCodes.Forbidden));

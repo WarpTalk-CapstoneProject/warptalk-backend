@@ -53,6 +53,15 @@ public class MeetingRoomService : IMeetingRoomService
             return Result.Failure<JoinMeetingResponse>("This translation room has already ended or been cancelled.", ErrorCodes.InvalidState);
         }
 
+        // Enforce BR-159-015: Scheduled Link Expiration (2 hours)
+        if (!string.IsNullOrEmpty(roomDetails.ScheduledStartTime) && DateTime.TryParse(roomDetails.ScheduledStartTime, out var scheduledTime))
+        {
+            if (DateTime.UtcNow > scheduledTime.AddHours(2))
+            {
+                return Result.Failure<JoinMeetingResponse>("This meeting link has expired.", ErrorCodes.InvalidState);
+            }
+        }
+
         // 2. Provision / Get Meeting Room
         var meetingRoom = await _unitOfWork.MeetingRoomRepository
             .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
@@ -67,12 +76,29 @@ public class MeetingRoomService : IMeetingRoomService
             };
             await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
+
+            // Notify WorkspaceService to capture Context Snapshot
+            await _redisService.PublishEventAsync("meeting.started", new
+            {
+                TranslationRoomId = translationRoomId.ToString(),
+                WorkspaceId = roomDetails.WorkspaceId
+            });
         }
         else if (meetingRoom.Status != roomDetails.Status)
         {
             meetingRoom.Status = roomDetails.Status;
             _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
             await _unitOfWork.SaveChangesAsync();
+
+            // If it transitions to IN_PROGRESS, might want to trigger too if not done
+            if (meetingRoom.Status == "IN_PROGRESS")
+            {
+                await _redisService.PublishEventAsync("meeting.started", new
+                {
+                    TranslationRoomId = translationRoomId.ToString(),
+                    WorkspaceId = roomDetails.WorkspaceId
+                });
+            }
         }
 
         // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)

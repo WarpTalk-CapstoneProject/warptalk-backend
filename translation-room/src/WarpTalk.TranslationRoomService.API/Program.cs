@@ -83,6 +83,8 @@ builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
 builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
+builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
+builder.Services.AddHostedService<WarpTalk.TranslationRoomService.Infrastructure.Workers.MeetingLifecycleWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
@@ -135,6 +137,9 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.Transcri
 
 builder.Services.AddControllers();
 builder.Services.AddCustomApiBehavior();
+
+builder.Services.AddScoped<WarpTalk.TranslationRoomService.API.Filters.RateLimitingFilter>();
+
 builder.Services.AddOpenApi();
 
 builder.Services.AddGrpc();

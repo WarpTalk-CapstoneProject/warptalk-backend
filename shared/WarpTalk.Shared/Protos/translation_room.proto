@@ -21,6 +21,8 @@ message GetTranslationRoomResponse {
   string status = 5;
   string started_at = 6;
   string ended_at = 7;
+  string scheduled_start_time = 8;
+  bool is_profanity_filter_enabled = 9;
 }
 
 message GetParticipantsByRoomIdRequest {
