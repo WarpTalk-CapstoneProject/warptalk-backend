@@ -13,4 +13,5 @@ public interface IWorkspaceMemberService
     Task<Result> RemoveMemberAsync(Guid workspaceId, Guid memberUserId, Guid executingUserId, CancellationToken ct = default);
     Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default);
     Task<Result> TransferOwnershipAsync(Guid workspaceId, Guid newOwnerId, Guid executingUserId, CancellationToken ct = default);
+    Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default);
 }

@@ -21,8 +21,10 @@ public class MeetingsController : ControllerBase
         _meetingRoomService = meetingRoomService;
     }
 
+    private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
+
     [HttpPost("rooms/{translationRoomId}/join")]
-    public async Task<IActionResult> JoinMeeting(Guid translationRoomId)
+    public async Task<IActionResult> JoinMeeting(Guid translationRoomId, [FromBody] JoinMeetingRequest? request = null)
     {
         var userId = User.GetUserId();
         if (userId == null)
@@ -30,8 +32,7 @@ public class MeetingsController : ControllerBase
             return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
         }
 
-        var result = await _meetingRoomService.JoinMeetingAsync(translationRoomId, userId.Value);
-
+        var result = await _meetingRoomService.JoinMeetingAsync(translationRoomId, userId.Value, request?.DisplayName);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
@@ -57,5 +58,108 @@ public class MeetingsController : ControllerBase
         }
 
         return Ok(new { message = "AI Triggered" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/participants/{participantId}/reject")]
+    public async Task<IActionResult> RejectParticipant(Guid translationRoomId, Guid participantId)
+    {
+        var hostUserId = User.GetUserId();
+        if (hostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.RejectParticipantAsync(translationRoomId, hostUserId.Value, participantId);
+        
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Participant rejected from lobby" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/transfer-host/{newHostUserId}")]
+    public async Task<IActionResult> TransferHost(Guid translationRoomId, Guid newHostUserId)
+    {
+        var currentHostUserId = User.GetUserId();
+        if (currentHostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.TransferHostAsync(translationRoomId, currentHostUserId.Value, newHostUserId);
+        
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.ValidationError)
+                return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Host role transferred successfully" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/participants/{participantId}/kick")]
+    public async Task<IActionResult> KickParticipant(Guid translationRoomId, Guid participantId)
+    {
+        var hostUserId = User.GetUserId();
+        if (hostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.KickParticipantAsync(translationRoomId, hostUserId.Value, participantId);
+        
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Participant kicked and invitation revoked" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/end")]
+    public async Task<IActionResult> EndMeeting(Guid translationRoomId)
+    {
+        var hostUserId = User.GetUserId();
+        if (hostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.EndMeetingAsync(translationRoomId, hostUserId.Value);
+        
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Meeting ended successfully for all participants" });
     }
 }

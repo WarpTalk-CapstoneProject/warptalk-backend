@@ -18,7 +18,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             WorkspaceId: workspaceId,
             Title: "Integration Test Room",
             Description: "Testing the full flow",
-            TranslationRoomType: TranslationRoomType.INSTANT,
+            TranslationRoomType: "INSTANT",
             MaxParticipants: 10,
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi", "fr" },
@@ -37,7 +37,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
         createdRoom.Should().NotBeNull();
         createdRoom!.TranslationRoomCode.Should().NotBeNullOrWhiteSpace();
-        createdRoom.Status.Should().Be("WAITING");
+        createdRoom.Status.Should().Be(RoomStatus.WAITING);
 
         // 3. Act: Join Room as Member
         var memberId = Guid.NewGuid();
@@ -63,7 +63,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         joinData!.Room.Id.Should().Be(createdRoom.Id);
         joinData.Participant.UserId.Should().Be(memberId);
         joinData.Participant.DisplayName.Should().Be("Member User");
-        joinData.Participant.Role.Should().Be(TranslationRoomParticipantRole.PARTICIPANT);
+        joinData.Participant.Role.Should().Be("PARTICIPANT");
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             WorkspaceId: Guid.NewGuid(),
             Title: "Scheduled Room",
             Description: "Testing scheduled creation",
-            TranslationRoomType: TranslationRoomType.SCHEDULED,
+            TranslationRoomType: "SCHEDULED",
             MaxParticipants: 5,
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi" },
@@ -92,7 +92,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         var createdRoom = await response.Content.ReadFromJsonAsync<TranslationRoomDto>();
-        createdRoom!.Status.Should().Be("SCHEDULED");
+        createdRoom!.Status.Should().Be(RoomStatus.SCHEDULED);
     }
 
     [Fact]

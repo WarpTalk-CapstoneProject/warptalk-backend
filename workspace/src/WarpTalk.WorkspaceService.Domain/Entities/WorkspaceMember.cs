@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -16,6 +16,8 @@ public partial class WorkspaceMember
     public string MembershipType { get; set; } = null!;
 
     public string Status { get; set; } = null!;
+
+    public bool CanCreateMeetings { get; set; } = true;
 
     public DateTime JoinedAt { get; set; }
 

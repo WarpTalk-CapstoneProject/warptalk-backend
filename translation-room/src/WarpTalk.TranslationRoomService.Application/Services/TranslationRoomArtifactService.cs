@@ -40,7 +40,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (room == null) return Result.Failure<List<RoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status))
+            if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
             {
                 return Result.Failure<List<RoomArtifactDto>>("Artifacts are only available for finished rooms.", ErrorCodes.InvalidState);
             }

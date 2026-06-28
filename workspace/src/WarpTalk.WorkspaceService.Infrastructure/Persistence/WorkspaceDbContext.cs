@@ -1,12 +1,17 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
+
 using WarpTalk.WorkspaceService.Domain.Entities;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
 public partial class WorkspaceDbContext : DbContext
 {
+    public WorkspaceDbContext()
+    {
+    }
+
     public WorkspaceDbContext(DbContextOptions<WorkspaceDbContext> options)
         : base(options)
     {
@@ -28,6 +33,7 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; }
 
+    
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -38,9 +44,6 @@ public partial class WorkspaceDbContext : DbContext
             .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
             .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
             .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
-            .HasPostgresEnum("transcript", "correction_status", new[] { "PENDING", "ACCEPTED", "REJECTED" })
-            .HasPostgresEnum("transcript", "correction_type", new[] { "STT", "TRANSLATION" })
-            .HasPostgresEnum("transcript", "transcript_status", new[] { "RECORDING", "FINALIZING", "FINALIZED", "ARCHIVED" })
             .HasPostgresExtension("uuid-ossp");
 
         modelBuilder.Entity<Workspace>(entity =>
@@ -199,6 +202,8 @@ public partial class WorkspaceDbContext : DbContext
 
             entity.ToTable("workspace_document_access_policies", "workspace");
 
+            entity.HasIndex(e => e.WorkspaceId, "IX_workspace_document_access_policies_workspace_id");
+
             entity.HasIndex(e => e.DocumentId, "idx_doc_access_policies_doc_id");
 
             entity.HasIndex(e => new { e.DocumentId, e.SubjectType, e.SubjectId }, "idx_doc_access_policies_lookup");
@@ -289,6 +294,8 @@ public partial class WorkspaceDbContext : DbContext
             entity.HasKey(e => e.Id).HasName("workspace_invitations_pkey");
 
             entity.ToTable("workspace_invitations", "workspace");
+
+            entity.HasIndex(e => e.WorkspaceId, "IX_workspace_invitations_workspace_id");
 
             entity.HasIndex(e => e.TokenHash, "workspace_invitations_token_hash_key").IsUnique();
 
@@ -406,6 +413,9 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'active'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.CanCreateMeetings)
+                .HasColumnName("can_create_meetings")
+                .HasDefaultValue(true);
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
 
@@ -420,6 +430,8 @@ public partial class WorkspaceDbContext : DbContext
             entity.HasKey(e => e.Id).HasName("workspace_verified_domains_pkey");
 
             entity.ToTable("workspace_verified_domains", "workspace");
+
+            entity.HasIndex(e => e.WorkspaceId, "IX_workspace_verified_domains_workspace_id");
 
             entity.HasIndex(e => e.Domain, "idx_workspace_verified_domains_unique_verified")
                 .IsUnique()

@@ -9,15 +9,20 @@ namespace WarpTalk.TranslationRoomService.Application.DTOs;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record RoomSettingsRequest(
     bool RequiresApproval = true,
-    ArtifactAccessLevel ArtifactAccess = ArtifactAccessLevel.HostOnly
+    string ArtifactAccess = "HOST_ONLY"
 );
 
 public record RoomSettingsResponse(
     bool RequiresApproval,
-    ArtifactAccessLevel ArtifactAccess
+    string ArtifactAccess
 );
 
 public record UpdateRoomSettingsRequest(
+    string? Title,
+    string? Description,
+    int? MaxParticipants,
+    DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     RoomSettingsRequest? Settings,
     string? SourceLanguage,
     List<string>? TargetLanguages
@@ -36,12 +41,13 @@ public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
     [Required] string Title,
     string? Description,
-    TranslationRoomType TranslationRoomType, // e.g., Instant, Scheduled
+    string TranslationRoomType, // e.g., Instant, Scheduled
     int MaxParticipants,
     string? SourceLanguage,
     List<string>? TargetLanguages,
     RoomSettingsRequest? Settings,
-    DateTime? ScheduledAt
+    DateTime? ScheduledAt,
+    List<string>? InvitedEmails
 );
 
 public record JoinTranslationRoomRequest(
@@ -58,12 +64,13 @@ public record TranslationRoomDto(
     [MaxLength(255)] string Title,
     string? Description,
     [StringLength(12)] string TranslationRoomCode,
-    string Status,
-    TranslationRoomType TranslationRoomType,
+    RoomStatus Status,
+    string TranslationRoomType,
     int MaxParticipants,
     string SourceLanguage,
     List<string> TargetLanguages,
     DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     DateTime? StartedAt,
     DateTime? EndedAt,
     int? DurationSeconds,
@@ -79,12 +86,13 @@ public record TranslationRoomListItemDto(
     [MaxLength(255)] string Title,
     string? Description,
     [StringLength(12)] string TranslationRoomCode,
-    string Status,
-    TranslationRoomType TranslationRoomType,
+    RoomStatus Status,
+    string TranslationRoomType,
     int MaxParticipants,
     string SourceLanguage,
     List<string> TargetLanguages,
     DateTime? ScheduledAt,
+    List<string>? InvitedEmails,
     DateTime? StartedAt,
     DateTime? EndedAt,
     int? DurationSeconds,
@@ -108,7 +116,7 @@ public record JoinTranslationRoomResponse(
 
 public record RoomArtifactDto(
     Guid Id,
-    ArtifactType ArtifactType,
+    string ArtifactType,
     string? FileFormat,
     long? FileSizeBytes,
     bool ContainsRawAudio,
@@ -137,7 +145,7 @@ public record TranslationRoomArtifactDto(
 
 public record CreateArtifactRequest(
     Guid RoomId,
-    ArtifactType ArtifactType,
+    string ArtifactType,
     string FileUrl,
     string FileFormat,
     long SizeBytes,

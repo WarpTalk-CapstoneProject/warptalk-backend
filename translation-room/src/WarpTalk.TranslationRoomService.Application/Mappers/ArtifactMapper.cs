@@ -13,7 +13,7 @@ public static class ArtifactMapper
         {
             Id = Guid.NewGuid(),
             TranslationRoomId = request.RoomId,
-            ArtifactType = request.ArtifactType,
+            ArtifactType = request.ArtifactType ?? "TRANSCRIPT",
             FileUrl = request.FileUrl,
             FileFormat = request.FileFormat,
             FileSizeBytes = request.SizeBytes,

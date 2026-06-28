@@ -68,7 +68,7 @@ public static class TranslationRoomConstants
     public const string ValidationSpeakLanguageRequired = "Speak language is required.";
     public const string ValidationDisplayNameRequired = "Display name is required.";
     public const string ValidationDisplayNameMaxLength = "Display name cannot exceed 100 characters.";
-    public const string ValidationTranslationRoomCodeFormat = "Translation room code format must be xxx-yyyy-zzz using only lowercase letters (e.g., abc-defg-hij).";
+    public const string ValidationTranslationRoomCodeFormat = "Translation room code format is invalid.";
     public const string ValidationSearchTermMaxLength = "Search term cannot exceed 100 characters.";
     public const string ValidationInvalidParticipantStatus = "Status must be a valid TranslationRoomParticipantStatus.";
     public const string ValidationInvalidParticipantRole = "Role must be a valid TranslationRoomParticipantRole.";

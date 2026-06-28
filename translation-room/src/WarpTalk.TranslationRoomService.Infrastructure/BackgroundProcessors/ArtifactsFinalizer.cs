@@ -382,7 +382,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     {
         return new CreateArtifactRequest(
             roomId,
-            artifactType,
+            artifactType.ToString(),
             fileUrl,
             fileFormat,
             sizeBytes,

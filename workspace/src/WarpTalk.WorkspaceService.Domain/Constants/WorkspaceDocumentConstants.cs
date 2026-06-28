@@ -19,5 +19,7 @@ public static class WorkspaceDocumentConstants
         public const string RejectDocument = "RejectDocument";
         public const string DownloadDocument = "DownloadDocument";
         public const string DeleteDocument = "DeleteDocument";
+        public const string ArchiveDocument = "ArchiveDocument";
+        public const string RestoreDocument = "RestoreDocument";
     }
 }

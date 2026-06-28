@@ -12,5 +12,7 @@ public record WorkspaceSettingsDto(
     bool EnforceHostApprovalDefault,
     List<string> VerifiedDomains,
     bool AllowExternalCollaboration,
-    bool RequireVerifiedDomainForInternal
+    bool RequireVerifiedDomainForInternal,
+    AiUsagePolicyDto? AiUsagePolicy,
+    bool IsProfanityFilterEnabled
 );

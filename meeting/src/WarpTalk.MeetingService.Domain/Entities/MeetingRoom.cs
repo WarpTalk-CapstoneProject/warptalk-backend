@@ -1,10 +1,9 @@
 using System;
 using System.Collections.Generic;
-using WarpTalk.MeetingService.Domain.Enums;
 
 namespace WarpTalk.MeetingService.Domain.Entities;
 
-public class MeetingRoom
+public partial class MeetingRoom
 {
     public Guid Id { get; set; }
 
@@ -12,7 +11,9 @@ public class MeetingRoom
 
     public string ProviderRoomName { get; set; } = null!;
 
-    public MeetingStatus Status { get; set; }
+    public Guid? ActiveHostId { get; set; }
+
+    public string Status { get; set; } = null!;
 
     public bool IsActive { get; set; }
 
@@ -30,5 +31,9 @@ public class MeetingRoom
 
     public DateTime? EndedAt { get; set; }
 
+    public virtual ICollection<MeetingChatMessage> MeetingChatMessages { get; set; } = new List<MeetingChatMessage>();
+
     public virtual ICollection<MeetingParticipant> MeetingParticipants { get; set; } = new List<MeetingParticipant>();
+
+    public virtual ICollection<MeetingInvitation> MeetingInvitations { get; set; } = new List<MeetingInvitation>();
 }

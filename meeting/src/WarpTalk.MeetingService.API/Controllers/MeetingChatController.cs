@@ -5,11 +5,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.MeetingService.API.Controllers;
 
 [ApiController]
-[Route("api/v1/meetings/{roomId:guid}/chat")]
+[Route("api/v1/meetings/rooms/{roomId:guid}/chat")]
 [Authorize]
 public class MeetingChatController : ControllerBase
 {
@@ -20,14 +21,18 @@ public class MeetingChatController : ControllerBase
         _chatService = chatService;
     }
 
-    private Guid CurrentUserId => Guid.Parse(User.FindFirst("sub")?.Value ?? Guid.Empty.ToString());
+    private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
     [HttpGet]
     public async Task<IActionResult> GetMessages(Guid roomId, CancellationToken ct)
     {
         var result = await _chatService.GetRoomMessagesAsync(roomId, CurrentUserId, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok(result.Value);
     }
@@ -37,7 +42,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.SendMessageAsync(roomId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok(result.Value);
     }
@@ -47,7 +56,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.RequestTranslationAsync(roomId, messageId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Accepted();
     }
@@ -57,7 +70,11 @@ public class MeetingChatController : ControllerBase
     {
         var result = await _chatService.ModerateMessageAsync(roomId, messageId, CurrentUserId, request, ct);
         if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
+        }
             
         return Ok();
     }

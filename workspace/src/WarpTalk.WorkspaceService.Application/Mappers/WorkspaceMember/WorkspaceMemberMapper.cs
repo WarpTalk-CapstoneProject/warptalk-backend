@@ -50,7 +50,8 @@ public static class WorkspaceMemberMapper
             roleName,
             member.Status,
             member.JoinedAt,
-            member.MembershipType
+            member.MembershipType,
+            member.CanCreateMeetings
         );
     }
 }

@@ -17,9 +17,9 @@ public static class TranslationRoomParticipantMapper
         bool isHost)
     {
         var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
-        var initialStatus = (requiresApproval && !isHost)
-            ? nameof(TranslationRoomParticipantStatus.WAITING)
-            : nameof(TranslationRoomParticipantStatus.CONNECTED);
+        var initialStatus = (requiresApproval && !isHost) 
+            ? "WAITING" 
+            : "CONNECTED";
 
         return new TranslationRoomParticipant
         {
@@ -49,20 +49,20 @@ public static class TranslationRoomParticipantMapper
         participant.SpeakLanguage = speakLanguage;
 
         // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
-        if (participant.Status == nameof(TranslationRoomParticipantStatus.DISCONNECTED) ||
-            participant.Status == nameof(TranslationRoomParticipantStatus.LEFT) ||
-            participant.Status == nameof(TranslationRoomParticipantStatus.INVITED))
+        if (participant.Status == "DISCONNECTED" ||
+            participant.Status == "LEFT" ||
+            participant.Status == "INVITED")
         {
-            participant.Status = (requiresApproval && !isHost)
-                ? nameof(TranslationRoomParticipantStatus.WAITING)
-                : nameof(TranslationRoomParticipantStatus.CONNECTED);
+            participant.Status = (requiresApproval && !isHost) 
+                ? "WAITING" 
+                : "CONNECTED";
         }
 
         // BR-004: Host check overrides approval
         if (isHost)
         {
             participant.Role = nameof(TranslationRoomParticipantRole.HOST);
-            participant.Status = nameof(TranslationRoomParticipantStatus.CONNECTED);
+            participant.Status = "CONNECTED";
         }
 
         participant.UpdatedAt = DateTime.UtcNow;
@@ -75,7 +75,7 @@ public static class TranslationRoomParticipantMapper
             participant.TranslationRoomId,
             participant.UserId.GetValueOrDefault(),
             participant.DisplayName,
-            Enum.Parse<TranslationRoomParticipantRole>(participant.Role, true),
+            participant.Role,
             participant.ListenLanguage,
             participant.SpeakLanguage,
             participant.Status,

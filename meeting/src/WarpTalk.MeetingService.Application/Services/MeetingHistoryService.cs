@@ -37,8 +37,16 @@ public class MeetingHistoryService : IMeetingHistoryService
         {
             var statuses = request.Status
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => s.ToUpperInvariant())
                 .ToList();
-            query = query.Where(r => statuses.Contains(r.Status.ToString()));
+            query = query.Where(r => statuses.Contains(r.Status.ToUpper()));
+        }
+
+        // Apply search filter
+        if (!string.IsNullOrWhiteSpace(request.Search))
+        {
+            var searchTerm = request.Search.Trim().ToLower();
+            query = query.Where(r => r.ProviderRoomName.ToLower().Contains(searchTerm));
         }
 
         // Apply date range filter
@@ -80,7 +88,7 @@ public class MeetingHistoryService : IMeetingHistoryService
             .GroupBy(m => m.MeetingRoomId)
             .ToDictionary(
                 g => g.Key,
-                g => g.Take(5).Select(m => m.ToDto()).ToList()
+                g => g.Take(5).Reverse().Select(m => m.ToDto()).ToList()
             );
 
         var items = roomEntities.Select(room =>
@@ -115,14 +123,17 @@ public class MeetingHistoryService : IMeetingHistoryService
         var participants = await _unitOfWork.MeetingParticipantRepository
             .FindAsync(p => p.MeetingRoomId == roomId, ct: ct);
 
-        var totalChatMessages = _unitOfWork.MeetingChatMessageRepository.Query()
-            .Count(m => m.MeetingRoomId == roomId);
+        var messages = await _unitOfWork.MeetingChatMessageRepository
+            .FindAsync(m => m.MeetingRoomId == roomId && !m.IsHidden, ct: ct);
+
+        var totalChatMessages = messages.Count();
 
         var detail = new MeetingRoomDetailDto
         {
             Room = room.ToRoomDto(userId, participants.Count, totalChatMessages),
             Participants = participants.Select(p => p.ToParticipantDto()).ToList(),
-            TotalChatMessages = totalChatMessages
+            TotalChatMessages = totalChatMessages,
+            RecentMessages = messages.OrderBy(m => m.CreatedAt).Select(m => m.ToDto()).ToList()
         };
 
         return Result.Success(detail);

@@ -61,14 +61,16 @@ function Kill-Ports {
     Write-Host ($YELLOW + "[CLEAN] Cleaning up occupied ports..." + $NC)
     $ports = @(5101, 5102, 5103, 5104, 5105, 5106, 5200, 50051, 50052, 50053, 50054, 50055, 50056)
     foreach ($port in $ports) {
-        $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-        foreach ($conn in $connections) {
-            $procId = $conn.OwningProcess
-            if ($procId -and $procId -ne 0) {
-                try {
-                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-                    Write-Host "   Killed process $procId on port $port"
-                } catch {}
+        $nets = netstat -ano | Select-String ":$port\s+"
+        foreach ($line in $nets) {
+            if ($line -match '\s+(\d+)$') {
+                $pidVal = $Matches[1]
+                if ($pidVal -and $pidVal -ne 0) {
+                    try {
+                        Stop-Process -Id $pidVal -Force -ErrorAction SilentlyContinue
+                        Write-Host "   Killed process $pidVal on port $port"
+                    } catch {}
+                }
             }
         }
     }

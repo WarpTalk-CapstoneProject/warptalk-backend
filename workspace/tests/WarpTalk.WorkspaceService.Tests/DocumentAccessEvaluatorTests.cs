@@ -491,5 +491,62 @@ public class DocumentAccessEvaluatorTests
         Assert.True(result);
     }
 
+    [Fact]
+    public async Task EvaluateAccessAsync_ShouldDenyDownload_WhenViewIsDenied()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", Status = "active" };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(roleId, "Member");
+
+        var policies = new List<WorkspaceDocumentAccessPolicy>
+        {
+            new() { DocumentId = documentId, SubjectType = WorkspacePolicyConstants.SubjectTypeUser, SubjectId = userId, Permission = "view", Effect = WorkspacePolicyConstants.EffectDeny }
+        };
+        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(policies);
+
+        // Act
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "download");
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.AccessDeniedByPolicy, result.Error);
+    }
+
+    [Fact]
+    public async Task EvaluateAccessAsync_ShouldAllowView_WhenDownloadIsAllowed()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed" };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(roleId, "Member");
+
+        var policies = new List<WorkspaceDocumentAccessPolicy>
+        {
+            new() { DocumentId = documentId, SubjectType = WorkspacePolicyConstants.SubjectTypeUser, SubjectId = userId, Permission = "download", Effect = WorkspacePolicyConstants.EffectAllow }
+        };
+        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(policies);
+
+        // Act
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "view");
+
+        // Assert
+        Assert.True(result.IsSuccess);
+    }
+
     #endregion
 }

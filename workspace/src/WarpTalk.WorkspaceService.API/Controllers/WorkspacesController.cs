@@ -111,4 +111,19 @@ public class WorkspacesController : ControllerBase
         }
         return NoContent();
     }
+
+    [Authorize]
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> DeleteWorkspace(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
 }

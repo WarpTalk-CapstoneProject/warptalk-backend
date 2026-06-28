@@ -27,17 +27,20 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly ILogger<WorkspaceService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
         IUnitOfWork unitOfWork, 
         IWorkspaceCacheService workspaceCache, 
         ILogger<WorkspaceService> logger,
-        IAuthIdentityClient authIdentity)
+        IAuthIdentityClient authIdentity,
+        IWorkspaceEventPublisher eventPublisher)
     {
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
         _logger = logger;
         _authIdentity = authIdentity;
+        _eventPublisher = eventPublisher;
     }
 
 
@@ -133,21 +136,7 @@ public class WorkspaceService : IWorkspaceService
             {
                 foreach (var domain in domainsToVerify)
                 {
-                    var verifiedDomain = new WorkspaceVerifiedDomain
-                    {
-                        Id = Guid.NewGuid(),
-                        WorkspaceId = workspace.Id,
-                        Domain = domain,
-                        Status = "verified",
-                        VerificationMethod = "system",
-                        VerificationToken = Guid.NewGuid().ToString(),
-                        VerifiedAt = DateTime.UtcNow,
-                        VerifiedBy = userId,
-                        CreatedAt = DateTime.UtcNow,
-                        CreatedBy = userId,
-                        UpdatedAt = DateTime.UtcNow,
-                        UpdatedBy = userId
-                    };
+                    var verifiedDomain = WorkspaceMapper.ToVerifiedDomainEntity(workspace.Id, domain, userId);
                     await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
                 }
             }
@@ -341,6 +330,46 @@ public class WorkspaceService : IWorkspaceService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while updating workspace settings. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> SoftDeleteWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null || workspace.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (executingMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            if (!execRoleName.IsOwner())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
+            }
+
+            workspace.DeletedAt = DateTime.UtcNow;
+            workspace.UpdatedBy = userId;
+            
+            _unitOfWork.WorkspaceRepository.Update(workspace);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while deleting workspace. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }

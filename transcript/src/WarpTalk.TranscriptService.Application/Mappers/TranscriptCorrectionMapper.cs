@@ -33,8 +33,8 @@ public static class TranscriptCorrectionMapper
             UserId = dto.UserId,
             OriginalText = dto.OriginalText,
             CorrectedText = dto.CorrectedText,
-            CorrectionType = dto.CorrectionType,
-            Status = CorrectionStatus.Pending,
+            CorrectionType = dto.CorrectionType ?? "STT",
+            Status = "PENDING",
             TriggeredRetranslation = true,
             CreatedAt = DateTime.UtcNow
         };

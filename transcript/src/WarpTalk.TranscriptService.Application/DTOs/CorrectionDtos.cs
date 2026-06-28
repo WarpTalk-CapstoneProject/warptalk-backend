@@ -15,9 +15,8 @@ public record CreateCorrectionDto(
     [Required(ErrorMessage = "CorrectedText is required.")]
     [MaxLength(2000, ErrorMessage = "CorrectedText cannot exceed 2000 characters.")]
     string CorrectedText,
-
-    [Required(ErrorMessage = "CorrectionType is required.")]
-    CorrectionType CorrectionType
+    [Required(ErrorMessage = "CorrectionType is required.")] 
+    string CorrectionType
 );
 
 public record TranscriptCorrectionDto(
@@ -26,8 +25,8 @@ public record TranscriptCorrectionDto(
     Guid UserId,
     string OriginalText,
     string CorrectedText,
-    CorrectionType CorrectionType,
-    CorrectionStatus Status,
+    string CorrectionType,
+    string Status,
     bool TriggeredRetranslation,
     Guid? ReviewedBy,
     DateTime? ReviewedAt,

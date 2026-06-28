@@ -27,17 +27,17 @@ public class MeetingChatService : IMeetingChatService
 
     public async Task<Result<IEnumerable<MeetingChatMessageDto>>> GetRoomMessagesAsync(Guid roomId, Guid userId, CancellationToken ct = default)
     {
-        var room = await _unitOfWork.MeetingRoomRepository.GetByIdAsync(roomId, ct);
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == roomId && p.UserId == userId, ct: ct);
-        bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        bool isParticipant = participant != null;
 
-        if (room.CreatedBy != userId && !isActiveParticipant)
-            return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Not an active participant.", "FORBIDDEN");
+        if (room.CreatedBy != userId && !isParticipant)
+            return Result.Failure<IEnumerable<MeetingChatMessageDto>>($"Not a participant. Debug: roomCreatedBy={room.CreatedBy}, userId={userId}", "FORBIDDEN");
 
-        var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == roomId, ct: ct);
+        var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
         
         var dtos = messages.Where(m => !m.IsHidden || room.CreatedBy == userId)
                            .OrderBy(m => m.CreatedAt)
@@ -48,11 +48,11 @@ public class MeetingChatService : IMeetingChatService
 
     public async Task<Result<MeetingChatMessageDto>> SendMessageAsync(Guid roomId, Guid userId, SendMeetingChatMessageRequest request, CancellationToken ct = default)
     {
-        var room = await _unitOfWork.MeetingRoomRepository.GetByIdAsync(roomId, ct);
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == roomId && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
@@ -62,7 +62,7 @@ public class MeetingChatService : IMeetingChatService
         // Assuming Guid.Empty for workspaceId if not available, or get from somewhere else.
         var workspaceId = Guid.Empty; 
 
-        var message = request.ToEntity(roomId, workspaceId, userId, participant);
+        var message = request.ToEntity(room.Id, workspaceId, userId, participant);
 
         await _unitOfWork.MeetingChatMessageRepository.AddAsync(message, ct);
         await _unitOfWork.SaveChangesAsync(ct);
@@ -70,16 +70,17 @@ public class MeetingChatService : IMeetingChatService
         var dto = message.ToDto();
         await _chatNotifier.BroadcastMessageReceivedAsync(roomId, dto, ct);
         
-        if (request.ContainsWarpbotMention)
+        var agentMentions = request.Mentions.Where(m => m.Type == "agent").ToList();
+        if (agentMentions.Any())
         {
             var assistantRequest = new MeetingChatAssistantRequest
             {
                 Id = Guid.NewGuid(),
                 TriggerMessageId = message.Id,
-                MeetingRoomId = roomId,
+                MeetingRoomId = room.Id,
                 WorkspaceId = workspaceId,
                 RequestedByUserId = userId,
-                Prompt = request.OriginalText, // or extract prompt from mention
+                Prompt = request.OriginalText, // Extract prompt from mention if needed
                 ContextScope = "recent_messages",
                 Status = "pending",
                 CreatedAt = DateTime.UtcNow
@@ -91,10 +92,11 @@ public class MeetingChatService : IMeetingChatService
             await _redisService.PublishEventAsync("meeting.chat.assistant_requested", new
             {
                 RequestId = assistantRequest.Id,
-                RoomId = roomId,
+                RoomId = room.Id,
                 MessageId = message.Id,
                 UserId = userId,
-                Prompt = assistantRequest.Prompt
+                Prompt = assistantRequest.Prompt,
+                AgentIds = agentMentions.Select(m => m.Id).ToArray()
             });
         }
         else if (request.TranslationEnabled)
@@ -103,7 +105,7 @@ public class MeetingChatService : IMeetingChatService
             await _redisService.PublishEventAsync("meeting.chat.translation_requested", new
             {
                 MessageId = message.Id,
-                RoomId = roomId,
+                RoomId = room.Id,
                 Text = message.OriginalText,
                 SourceLanguage = message.OriginalLanguage,
                 TargetLanguage = "auto" // or specific default
@@ -115,25 +117,24 @@ public class MeetingChatService : IMeetingChatService
 
     public async Task<Result<bool>> RequestTranslationAsync(Guid roomId, Guid messageId, Guid userId, TranslateMeetingChatMessageRequest request, CancellationToken ct = default)
     {
-        var room = await _unitOfWork.MeetingRoomRepository.GetByIdAsync(roomId, ct);
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<bool>("Room not found.", "NOT_FOUND");
 
-        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == roomId && p.UserId == userId, ct: ct);
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
             return Result.Failure<bool>("Not an active participant.", "FORBIDDEN");
 
         var message = await _unitOfWork.MeetingChatMessageRepository.GetByIdAsync(messageId, ct);
-        if (message == null || message.MeetingRoomId != roomId)
+        if (message == null || message.MeetingRoomId != room.Id)
             return Result.Failure<bool>("Message not found.", "NOT_FOUND");
 
-        // Publish to Redis for async translation.
         await _redisService.PublishEventAsync("meeting.chat.translation_requested", new
         {
             MessageId = message.Id,
-            RoomId = roomId,
+            RoomId = room.Id,
             Text = message.OriginalText,
             SourceLanguage = message.OriginalLanguage,
             TargetLanguage = request.TargetLanguage
@@ -144,7 +145,7 @@ public class MeetingChatService : IMeetingChatService
 
     public async Task<Result<bool>> ModerateMessageAsync(Guid roomId, Guid messageId, Guid userId, ModerateMeetingChatMessageRequest request, CancellationToken ct = default)
     {
-        var room = await _unitOfWork.MeetingRoomRepository.GetByIdAsync(roomId, ct);
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<bool>("Room not found.", "NOT_FOUND");
 
@@ -153,7 +154,7 @@ public class MeetingChatService : IMeetingChatService
             return Result.Failure<bool>("Only host can moderate messages.", "FORBIDDEN");
 
         var message = await _unitOfWork.MeetingChatMessageRepository.GetByIdAsync(messageId, ct);
-        if (message == null || message.MeetingRoomId != roomId)
+        if (message == null || message.MeetingRoomId != room.Id)
             return Result.Failure<bool>("Message not found.", "NOT_FOUND");
 
         if (!message.IsHidden)
@@ -164,7 +165,7 @@ public class MeetingChatService : IMeetingChatService
             {
                 Id = Guid.NewGuid(),
                 MessageId = messageId,
-                MeetingRoomId = roomId,
+                MeetingRoomId = room.Id,
                 ModeratedByUserId = userId,
                 Action = "hidden",
                 Reason = request.Reason,

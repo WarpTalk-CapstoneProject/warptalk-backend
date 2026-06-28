@@ -8,6 +8,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using FluentValidation;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Models;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
@@ -35,7 +36,7 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.GetTranslationRoomsAsync(request, userId.Value, ct);
+        var result = await _translationRoomService.GetTranslationRoomsAsync(request, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
@@ -43,6 +44,7 @@ public class TranslationRoomsController : ControllerBase
     }
 
     [HttpPost]
+
     public async Task<IActionResult> CreateTranslationRoom([FromBody] CreateTranslationRoomRequest request)
     {
         var hostId = User.GetUserId();
@@ -81,7 +83,9 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.JoinTranslationRoomAsync(request, userId.Value, ct);
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+
+        var result = await _translationRoomService.JoinTranslationRoomAsync(request, userId.Value, userEmail, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
@@ -193,7 +197,7 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.GetTranslationRoomHistoryAsync(request, userId.Value, ct);
+        var result = await _translationRoomService.GetTranslationRoomHistoryAsync(request, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -220,6 +224,24 @@ public class TranslationRoomsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    [HttpGet("{id}/invitations")]
+    public async Task<IActionResult> GetTranslationRoomInvitations(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomInvitationsAsync(id, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

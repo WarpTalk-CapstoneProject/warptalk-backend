@@ -53,7 +53,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             if (transcript == null)
                 return Result.Failure($"Transcript with ID {segment.TranscriptId} not found.", "NOT_FOUND");
 
-            if (transcript.Status != TranscriptStatus.Finalized)
+            if (transcript.Status != "FINALIZED")
                 return Result.Failure("Corrections can only be submitted for finalized transcripts.", "BAD_REQUEST");
 
             if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
@@ -62,7 +62,7 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             var correction = dto.ToEntity(segmentId);
 
             segment.IsCorrected = true;
-            if (dto.CorrectionType == CorrectionType.Stt)
+            if (dto.CorrectionType?.Equals("STT", StringComparison.OrdinalIgnoreCase) == true)
             {
                 segment.OriginalText = dto.CorrectedText;
             }

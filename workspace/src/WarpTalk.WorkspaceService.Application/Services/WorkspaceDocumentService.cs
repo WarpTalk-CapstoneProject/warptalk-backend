@@ -17,6 +17,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
+using WarpTalk.WorkspaceService.Application.Models;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
 
@@ -27,6 +28,9 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceUrlProvider _urlProvider;
+    private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IWorkspaceDocumentStorage _storage;
+    private readonly IDocumentTextExtractor _textExtractor;
     private readonly ILogger<WorkspaceDocumentService> _logger;
 
     public WorkspaceDocumentService(
@@ -35,6 +39,9 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         IWorkspaceDocumentEventPublisher eventPublisher,
         IAuthIdentityClient authIdentity,
         IWorkspaceUrlProvider urlProvider,
+        ITranslationRoomClient translationRoomClient,
+        IWorkspaceDocumentStorage storage,
+        IDocumentTextExtractor textExtractor,
         ILogger<WorkspaceDocumentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -42,10 +49,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _eventPublisher = eventPublisher;
         _authIdentity = authIdentity;
         _urlProvider = urlProvider;
+        _translationRoomClient = translationRoomClient;
+        _storage = storage;
+        _textExtractor = textExtractor;
         _logger = logger;
     }
 
-    public async Task<Result<WorkspaceDocumentDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentRequest request, Guid userId, CancellationToken ct = default)
+    public async Task<Result<WorkspaceDocumentDto>> UploadDocumentAsync(Guid workspaceId, UploadDocumentApiRequest request, Guid userId, CancellationToken ct = default)
     {
         try
         {
@@ -66,7 +76,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
 
             var docId = Guid.NewGuid();
-            var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, request.FileExtension);
+            var extension = System.IO.Path.GetExtension(request.File.FileName);
+            var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
             var status = isOwnerOrAdmin 
                 ? WorkspaceDocumentStatus.active 
@@ -80,12 +91,18 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var document = request.ToEntity(docId, workspaceId, userId, storageKey, status, ingestionStatus, aiEligible);
 
+            // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
+            using (var stream = request.File.OpenReadStream())
+            {
+                await _storage.SaveDocumentContentAsync(document, stream, ct);
+            }
+
             await _unitOfWork.WorkspaceDocumentRepository.AddAsync(document, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
             if (isOwnerOrAdmin)
             {
-                // Publish event to Redis Stream for AI Ingestion
+                // Publish upload event to trigger Pre-Ingestion security scan and eventual Qdrant sync
                 await _eventPublisher.PublishDocumentUploadedAsync(
                     document.Id,
                     workspaceId,
@@ -144,6 +161,50 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     d.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
             }
 
+            Dictionary<Guid, TranslationRoomDto?>? roomCache = null;
+            Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null;
+
+            if (string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                var meetingIds = filteredDocs
+                    .Where(d => string.Equals(d.SourceType, WorkspaceDocumentConstants.SourceTypeMeeting, StringComparison.OrdinalIgnoreCase) && d.SourceId.HasValue)
+                    .Select(d => d.SourceId!.Value)
+                    .Distinct()
+                    .ToList();
+
+                if (meetingIds.Any())
+                {
+                    roomCache = new Dictionary<Guid, TranslationRoomDto?>();
+                    participantsCache = new Dictionary<Guid, List<TranslationRoomParticipantDto>>();
+
+                    var roomTasks = meetingIds.Select(async id =>
+                    {
+                        var room = await _translationRoomClient.GetTranslationRoomAsync(id, ct);
+                        return (id, room);
+                    }).ToList();
+
+                    var participantTasks = meetingIds.Select(async id =>
+                    {
+                        var participants = await _translationRoomClient.GetParticipantsAsync(id, ct);
+                        return (id, participants);
+                    }).ToList();
+
+                    await Task.WhenAll(roomTasks.Cast<Task>().Concat(participantTasks.Cast<Task>()));
+
+                    foreach (var task in roomTasks)
+                    {
+                        var res = await task;
+                        roomCache[res.id] = res.room;
+                    }
+
+                    foreach (var task in participantTasks)
+                    {
+                        var res = await task;
+                        participantsCache[res.id] = res.participants;
+                    }
+                }
+            }
+
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
             {
@@ -156,6 +217,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     member,
                     roleName,
                     docPolicies,
+                    roomCache,
+                    participantsCache,
                     ct);
 
                 if (accessResult.IsSuccess)
@@ -492,6 +555,172 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         {
             _logger.LogError(ex, "Error occurred while deleting document. DocumentId: {DocumentId}", documentId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ArchiveDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+            var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure("Forbidden. Only owner, admin, or document owner can archive.", ErrorCodes.Forbidden);
+            }
+
+            document.Status = WorkspaceDocumentStatus.archived.ToString();
+            document.AiEligible = false;
+
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Publish archived event to Redis Stream to clean up embeddings from Qdrant
+            await _eventPublisher.PublishDocumentArchivedAsync(documentId, workspaceId, ct);
+
+            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ArchiveDocument, logger: _logger, ct: ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while archiving document. DocumentId: {DocumentId}", documentId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> RestoreDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.WorkspaceId != workspaceId || document.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.DocumentNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+            var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                return Result.Failure("Forbidden. Only owner, admin, or document owner can restore.", ErrorCodes.Forbidden);
+            }
+
+            if (document.Status != WorkspaceDocumentStatus.archived.ToString())
+            {
+                return Result.Failure("Document is not archived.", ErrorCodes.ValidationError);
+            }
+
+            document.Status = WorkspaceDocumentStatus.active.ToString();
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
+            document.AiEligible = false; // Scanner will re-evaluate on background security scan
+
+            _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Re-publish upload event to trigger security scan and Qdrant index refresh
+            await _eventPublisher.PublishDocumentUploadedAsync(
+                document.Id,
+                workspaceId,
+                document.StorageKey,
+                document.FileName,
+                document.FileExtension,
+                document.UploadedBy ?? userId,
+                document.IsSensitive,
+                ct);
+
+            await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RestoreDocument, logger: _logger, ct: ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while restoring document. DocumentId: {DocumentId}", documentId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<ExtractedTextDto>> GetExtractedTextAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            if (!accessResult.IsSuccess)
+            {
+                return Result.Failure<ExtractedTextDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.DeletedAt != null)
+            {
+                return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
+            }
+
+            var extractedText = await _storage.GetExtractedTextAsync(document, ct);
+            if (string.IsNullOrEmpty(extractedText))
+            {
+                ExtractedDocumentContent content;
+                using (var decryptedStream = await _storage.GetDecryptedStreamAsync(document, ct))
+                {
+                    content = await _textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                }
+                // Save it so that next time we don't have to extract it on-the-fly (serialized as JSON)
+                extractedText = JsonSerializer.Serialize(content);
+                await _storage.SaveExtractedTextAsync(document, extractedText, ct);
+            }
+
+            ExtractedTextDto textDto;
+            if (extractedText.TrimStart().StartsWith("{"))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<ExtractedDocumentContent>(extractedText, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    textDto = new ExtractedTextDto(
+                        parsed?.FullText ?? string.Empty,
+                        parsed?.Pages?.Select(p => new ExtractedPageDto(p.PageNumber, p.Text)).ToList() ?? new(),
+                        parsed?.Sheets?.Select(s => new ExtractedSheetDto(s.SheetName, s.Rows)).ToList() ?? new()
+                    );
+                }
+                catch
+                {
+                    textDto = new ExtractedTextDto(extractedText, new(), new());
+                }
+            }
+            else
+            {
+                textDto = new ExtractedTextDto(extractedText, new(), new());
+            }
+
+            return Result.Success(textDto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while retrieving extracted text. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 }

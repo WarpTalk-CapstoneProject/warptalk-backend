@@ -7,6 +7,10 @@ public enum TranslationRoomType
 {
 
     INSTANT,
-    SCHEDULED
+    SCHEDULED,
+    ONE_TO_ONE,
+    GROUP,
+    WEBINAR,
+    B2B_VIRTUAL_MIC
 
 }

@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package meeting;
+
+service MeetingGrpcService {
+  rpc PushWarpBotResponse (PushWarpBotResponseRequest) returns (PushWarpBotResponseResponse);
+}
+
+message PushWarpBotResponseRequest {
+  string room_id = 1;
+  string trigger_message_id = 2;
+  string response_text = 3;
+}
+
+message PushWarpBotResponseResponse {
+  bool success = 1;
+}

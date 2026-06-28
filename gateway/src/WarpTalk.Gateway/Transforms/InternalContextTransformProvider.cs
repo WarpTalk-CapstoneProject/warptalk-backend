@@ -35,7 +35,8 @@ public class InternalContextTransformProvider : Yarp.ReverseProxy.Transforms.Bui
             if (user?.Identity?.IsAuthenticated == true)
             {
                 var sub = user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? user.FindFirst("sub")?.Value;
-                var workspaceId = user.FindFirst("workspace_id")?.Value;
+                var workspaceId = user.FindFirst("workspace_id")?.Value
+                    ?? httpContext.Request.Cookies["active_workspace_id"];
                 var role = user.FindFirst("role")?.Value ?? user.FindFirst(ClaimTypes.Role)?.Value;
                 var membershipType = user.FindFirst("membership_type")?.Value;
 

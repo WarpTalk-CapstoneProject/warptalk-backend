@@ -155,7 +155,24 @@ Hệ thống WarpTalk quyết định chọn **Phương án A (Polymorphic Subje
 
 ---
 
-## 7. Verification Plan
+## 7. Business Rules and User Stories (Linear WT-158 Aligned)
+
+Nguồn: Linear WT-158 định hướng B2B: Documents thuộc Enterprise Workspace, không thuộc tài khoản cá nhân. Access, retention và AI usage phải theo workspace membership và enterprise policy. Acceptance criteria yêu cầu document CRUD/read contracts testable, permission-denied/missing-file/unsupported-type/retention states được handle, metadata tách khỏi binary storage, và có security/privacy notes.
+
+| Business Rule | User story | Acceptance scenarios |
+|---|---|---|
+| BR-158-001 - Documents are workspace-owned knowledge assets | Là enterprise workspace member, tôi muốn upload, organize và access internal documents để meeting và AI dùng company knowledge an toàn. | Given active workspace member uploads supported file, Then metadata is persisted with workspaceId/storageKey; Given user outside workspace, Then document is invisible/forbidden. |
+| BR-158-002 - Metadata and binary storage are separated | Là backend engineer, tôi muốn DB chỉ lưu metadata/storage pointer để storage provider có thể thay đổi mà không phá domain model. | Given upload succeeds, Then DB stores file metadata and storageKey, not binary; Given storage provider changes, Then metadata contract remains stable. |
+| BR-158-003 - Permission evaluation uses deny-overrides | Là document owner/admin, tôi muốn policy conflict được xử lý nhất quán để DENY luôn thắng ALLOW. | Given role Member has ALLOW and MembershipType External has DENY, When External Member requests access, Then result DENY; Given only ALLOW matches and no DENY, Then allow. |
+| BR-158-004 - Sensitive and pending-ingestion documents are fail-closed | Là enterprise admin, tôi muốn tài liệu nhạy cảm hoặc đang AI scan không bị lộ trong lúc chưa phân loại xong. | Given sensitive document with no allow policy, Then deny-by-default; Given ingestion pending, Then only Owner/Admin/Document Owner can view/download. |
+| BR-158-005 - External document access is explicit or meeting-exception scoped | Là external collaborator, tôi chỉ được xem tài liệu được grant rõ ràng hoặc gắn với meeting tôi tham gia. | Given External Member has explicit allow policy, Then allow unless deny exists; Given meeting artifact/document and participant within grace period, Then allow; Otherwise deny. |
+| BR-158-006 - Unsupported type/size must be rejected with typed error | Là workspace member, tôi muốn biết rõ file nào không được phép upload để sửa đúng. | Given file extension outside PDF/DOCX/TXT/meeting artifact policy or over size limit, When upload, Then reject 400 with typed error; Given valid file, Then create document metadata. |
+| BR-158-007 - Deleted/archived documents are excluded from AI retrieval | Là enterprise owner, tôi muốn tài liệu đã xóa/lưu trữ không còn làm context cho AI để tránh dùng dữ liệu hết hiệu lực. | Given document deleted/archived, When AI retrieval filters workspace documents, Then document is excluded; Given active+completed+eligible document, Then can be considered. |
+| BR-158-008 - Sensitive actions require audit trail | Là compliance reviewer, tôi muốn upload/view/download/delete sensitive documents có audit để truy vết. | Given sensitive document upload/view/download/delete, Then audit row includes actor, workspaceId, documentId, action and metadata; Given audit write fails, Then operation must be logged/retried according to NFR. |
+
+---
+
+## 8. Verification Plan
 
 ### Automated Tests
 * Tạo bộ unit test cho `DocumentAccessEvaluator` kiểm thử các trường hợp:

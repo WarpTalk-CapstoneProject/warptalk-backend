@@ -46,7 +46,7 @@ public class WorkspaceMembersControllerTests
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: null);
         var expectedList = new List<WorkspaceMemberDto>
         {
-            new(Guid.NewGuid(), workspaceId, _userId, "John Doe", "john@warptalk.vn", null, "Member", "Active", DateTime.UtcNow, "Internal")
+            new(Guid.NewGuid(), workspaceId, _userId, "John Doe", "john@warptalk.vn", null, "Member", "Active", DateTime.UtcNow, "Internal", true)
         };
         var expectedPagedResult = new PagedResult<WorkspaceMemberDto>(expectedList, 1, 10, 1);
 

@@ -1,6 +1,5 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Domain.Entities;
 

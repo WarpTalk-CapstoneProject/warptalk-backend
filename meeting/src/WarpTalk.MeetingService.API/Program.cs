@@ -43,7 +43,19 @@ if (!string.IsNullOrEmpty(redisConnectionString))
 var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("DefaultConnection"));
 var dataSource = dataSourceBuilder.Build();
 
+var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
+    ?? ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "https://warptalk.vn", "https://admin.warptalk.vn"];
 
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(dataSource));
@@ -101,10 +113,19 @@ builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
+builder.Services.AddHostedService<WarpTalk.MeetingService.Infrastructure.Workers.FractionalBillingWorker>();
+
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:TranslationRoomService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:TranslationRoomService is missing in configuration.");
+    o.Address = new Uri(url);
+});
+
+builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
+{
+    var url = builder.Configuration["GrpcUrls:BillingService"];
+    if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:BillingService is missing in configuration.");
     o.Address = new Uri(url);
 });
 
@@ -116,6 +137,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseCors();
 
 app.UseAuthentication();
 app.UseAuthorization();

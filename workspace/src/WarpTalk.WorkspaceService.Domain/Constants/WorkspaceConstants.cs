@@ -32,6 +32,7 @@ public static class WorkspaceConstants
         public const string OnlyOwnerAdminCanUpdateSettings = "Only Owner or Admin can update workspace settings.";
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
+        public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
         
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";
@@ -46,6 +47,7 @@ public static class WorkspaceConstants
         public const string CannotDemoteLastOwner = "Cannot demote the last owner. Please transfer ownership first.";
         public const string CannotChangeOwnerRole = "Cannot change the Owner's role.";
         public const string AdminCannotChangeAdminRole = "Admin cannot change another Admin's role.";
+        public const string AdminCannotModifyPeerAdmin = "Admin cannot modify settings of other Admins.";
         public const string AdminCannotPromoteToAdmin = "Admin cannot promote members to Admin role.";
         public const string RoleNotFound = "Role not found.";
 
