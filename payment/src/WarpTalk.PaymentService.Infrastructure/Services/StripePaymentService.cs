@@ -31,7 +31,9 @@ public class StripePaymentService : IStripePaymentService
                 {
                     PriceData = new SessionLineItemPriceDataOptions
                     {
-                        UnitAmount = (long)(amount * 100), // amount in cents
+                        UnitAmount = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
+                            ? (long)amount
+                            : (long)(amount * 100), // amount in cents
                         Currency = currency,
                         ProductData = new SessionLineItemPriceDataProductDataOptions
                         {
@@ -118,7 +120,9 @@ public class StripePaymentService : IStripePaymentService
                 {
                     PriceData = new SubscriptionItemPriceDataOptions
                     {
-                        UnitAmount = (long)(newAmount * 100),
+                        UnitAmount = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
+                            ? (long)newAmount
+                            : (long)(newAmount * 100),
                         Currency = currency,
                         Product = subscription.Items.Data[0].Price.ProductId,
                         Recurring = new SubscriptionItemPriceDataRecurringOptions

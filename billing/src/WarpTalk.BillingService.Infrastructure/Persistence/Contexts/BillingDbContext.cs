@@ -85,6 +85,15 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.DedicatedGpu)
                 .HasDefaultValue(false)
                 .HasColumnName("dedicated_gpu");
+            entity.Property(e => e.VoiceCloneLimitMins)
+                .HasDefaultValue(0)
+                .HasColumnName("voice_clone_limit_mins");
+            entity.Property(e => e.AllowGlossary)
+                .HasDefaultValue(false)
+                .HasColumnName("allow_glossary");
+            entity.Property(e => e.AllowAcl)
+                .HasDefaultValue(false)
+                .HasColumnName("allow_acl");
             entity.Property(e => e.Features)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")

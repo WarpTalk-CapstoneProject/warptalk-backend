@@ -35,73 +35,46 @@ public class RealtimeCostCalculatorTests
     public void CalculateCreditCost_WithoutVoiceClone_ShouldUseBaseRates()
     {
         // Arrange
-        var plan = new Plan { Tier = "Pro", VoiceCloneEnabled = true };
-
-        // Audio: 10 * 0.5 = 5
-        // Token: 2000 / 1000 * 2.0 = 4
-        // GPU: 100 * 0.005 = 0.5
-        // Base = 9.5 -> Ceil = 10
+        var plan = new Plan { Tier = "Startup", VoiceCloneEnabled = true };
 
         // Act
         var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: false, plan: plan);
 
         // Assert
-        cost.Should().Be(10);
+        cost.Should().Be(5);
     }
 
     [Fact]
-    public void CalculateCreditCost_WithVoiceClone_ProPlan_ShouldApplyMultiplier1_2()
+    public void CalculateCreditCost_WithVoiceClone_StartupPlan_ShouldUseVoiceCloneRate()
     {
         // Arrange
-        var plan = new Plan { Tier = "Pro", VoiceCloneEnabled = true };
-
-        // Base = 9.5
-        // Pro Voice Clone = 9.5 * 1.2 = 11.4 -> Ceil = 12
+        var plan = new Plan { Tier = "Startup", VoiceCloneEnabled = true };
 
         // Act
         var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: true, plan: plan);
 
         // Assert
-        cost.Should().Be(12);
+        cost.Should().Be(5);
     }
 
     [Fact]
-    public void CalculateCreditCost_WithVoiceClone_PremiumPlan_ShouldApplyMultiplier1_0()
+    public void CalculateCreditCost_WithVoiceClone_EnterprisePlan_ShouldUseVoiceCloneRate()
     {
         // Arrange
-        var plan = new Plan { Tier = "Premium", VoiceCloneEnabled = true };
-
-        // Base = 9.5
-        // Premium Voice Clone = 9.5 * 1.0 = 9.5 -> Ceil = 10
+        var plan = new Plan { Tier = "Enterprise", VoiceCloneEnabled = true };
 
         // Act
         var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: true, plan: plan);
 
         // Assert
-        cost.Should().Be(10);
-    }
-
-    [Fact]
-    public void CalculateCreditCost_WithVoiceClone_FreePlan_ShouldApplyMultiplier2_0()
-    {
-        // Arrange
-        var plan = new Plan { Tier = "Free", VoiceCloneEnabled = false };
-
-        // Base = 9.5
-        // Free Voice Clone = 9.5 * 2.0 = 19.0 -> Ceil = 19
-
-        // Act
-        var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: true, plan: plan);
-
-        // Assert
-        cost.Should().Be(19);
+        cost.Should().Be(5);
     }
 
     [Fact]
     public void CalculateCreditCost_AllZeroInputs_ShouldReturnMinimumCost()
     {
         // Edge case: zero audio/token/gpu — cost should be at minimum 1 (not 0)
-        var plan = new Plan { Tier = "Pro", VoiceCloneEnabled = true };
+        var plan = new Plan { Tier = "Startup", VoiceCloneEnabled = true };
 
         var cost = _calculator.CalculateCreditCost(audioSeconds: 0, tokenCount: 0, gpuInferenceMs: 0, isVoiceClone: false, plan: plan);
 

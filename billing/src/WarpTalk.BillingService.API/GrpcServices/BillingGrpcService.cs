@@ -428,8 +428,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         var plan = planResult.Value;
 
         bool isRenewal = request.PaymentType == "SubscriptionRenewal";
+        bool isTopUp = request.PaymentType == "CreditTopUp";
 
-        if (!sub.IsActive || isRenewal)
+        if (!isTopUp && (!sub.IsActive || isRenewal))
         {
             if (!sub.IsActive)
             {
@@ -467,8 +468,33 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         if (existingTopup == null)
         {
-            sub.CreditsRemaining += plan.CreditsPerCycle;
-            sub.CreditsUsedThisCycle = 0;
+            int creditsToAdd = plan.CreditsPerCycle;
+            if (isTopUp)
+            {
+                var amountVnd = (decimal)request.Amount;
+                if (amountVnd >= 400000m)
+                {
+                    creditsToAdd = (int)Math.Round(amountVnd / 8m);
+                }
+                else if (amountVnd >= 212500m)
+                {
+                    creditsToAdd = (int)Math.Round(amountVnd / 8.5m);
+                }
+                else if (amountVnd >= 90000m)
+                {
+                    creditsToAdd = (int)Math.Round(amountVnd / 9m);
+                }
+                else
+                {
+                    creditsToAdd = (int)Math.Round(amountVnd / 10m);
+                }
+            }
+
+            sub.CreditsRemaining += creditsToAdd;
+            if (!isTopUp)
+            {
+                sub.CreditsUsedThisCycle = 0;
+            }
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
 
@@ -477,9 +503,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 SubscriptionId = sub.Id,
                 UserId = userId,
                 WorkspaceId = workspaceId,
-                Amount = plan.CreditsPerCycle,
+                Amount = creditsToAdd,
                 Type = "top_up",
-                Description = "Stripe Payment Success (gRPC)",
+                Description = isTopUp ? "Credit Top-Up via Stripe" : "Stripe Payment Success (gRPC)",
                 ReferenceId = Guid.NewGuid(),
                 CorrelationId = providerTxId,
                 ReferenceType = "stripe_payment",

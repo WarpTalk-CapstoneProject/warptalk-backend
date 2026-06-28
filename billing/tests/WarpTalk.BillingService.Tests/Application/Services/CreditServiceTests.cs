@@ -419,4 +419,65 @@ public class CreditAndUsageServiceTests
         result.Value!.TotalConsumedCredits.Should().Be(0);
         result.Value.UsageBreakdown.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task RecordUsageAsync_VoiceCloneLimitExceeded_ShouldReturnFailure()
+    {
+        var hostWorkspaceId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        var subId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = subId, WorkspaceId = hostWorkspaceId,
+            PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0,
+            CurrentPeriodStart = DateTime.UtcNow.AddDays(-10), CurrentPeriodEnd = DateTime.UtcNow.AddDays(20)
+        };
+        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, VoiceCloneLimitMins = 120, Name = "Startup" };
+
+        var existingUsages = new List<UsageRecord>
+        {
+            new() { SubscriptionId = subId, UsageType = "voice_clone", DurationSeconds = 7200, RecordedAt = DateTime.UtcNow.AddDays(-1) } // 120 mins
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _mockUsageRepo.Setup(r => r.FindAsync(It.IsAny<Expression<Func<UsageRecord, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(existingUsages);
+
+        var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, null);
+        var result = await _creditService.RecordUsageAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be("VOICE_CLONE_LIMIT_EXCEEDED");
+    }
+
+    [Fact]
+    public async Task ReserveCreditsAsync_VoiceCloneLimitExceeded_ShouldReturnFailure()
+    {
+        var hostWorkspaceId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        var subId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = subId, WorkspaceId = hostWorkspaceId,
+            PlanId = planId, IsActive = true, CreditsRemaining = 500,
+            CurrentPeriodStart = DateTime.UtcNow.AddDays(-10), CurrentPeriodEnd = DateTime.UtcNow.AddDays(20)
+        };
+        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, VoiceCloneLimitMins = 120, Name = "Startup" };
+
+        var existingUsages = new List<UsageRecord>
+        {
+            new() { SubscriptionId = subId, UsageType = "voice_clone", DurationSeconds = 7200, RecordedAt = DateTime.UtcNow.AddDays(-1) } // 120 mins
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _mockTxRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<CreditTransaction, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync((CreditTransaction?)null);
+        _mockUsageRepo.Setup(r => r.FindAsync(It.IsAny<Expression<Func<UsageRecord, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(existingUsages);
+
+        var request = new ReserveCreditsRequest(hostWorkspaceId, "key_limit_test", 10, 0, 0, true);
+        var result = await _creditService.ReserveCreditsAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be("VOICE_CLONE_LIMIT_EXCEEDED");
+    }
 }

@@ -62,51 +62,39 @@ public class CreditAndUsageService : ICreditAndUsageService
 
     public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
     {
-        // Get rates from configuration or use defaults
-        var audioRateStr = _configuration["BillingRates:AudioPerSecond"] ?? "0.5";
-        var tokenRateStr = _configuration["BillingRates:Per1000Tokens"] ?? "2.0";
-        var gpuRateMsStr = _configuration["BillingRates:GpuPerMs"] ?? "0.005";
+        var sttRateMin = double.Parse(_configuration["BillingRates:SttPerMinute"] ?? "10.0", System.Globalization.CultureInfo.InvariantCulture);
+        var transRateMin = double.Parse(_configuration["BillingRates:TranslationPerMinute"] ?? "10.0", System.Globalization.CultureInfo.InvariantCulture);
+        var ttsRateMin = double.Parse(_configuration["BillingRates:StandardTtsPerMinute"] ?? "5.0", System.Globalization.CultureInfo.InvariantCulture);
+        var vcRateMin = double.Parse(_configuration["BillingRates:VoiceClonePerMinute"] ?? "25.0", System.Globalization.CultureInfo.InvariantCulture);
 
-        var audioRate = decimal.Parse(audioRateStr, System.Globalization.CultureInfo.InvariantCulture);
-        var tokenRate = decimal.Parse(tokenRateStr, System.Globalization.CultureInfo.InvariantCulture);
-        var gpuRateMs = decimal.Parse(gpuRateMsStr, System.Globalization.CultureInfo.InvariantCulture);
-
-        // 1. Audio Cost
-        var audioCost = audioSeconds * audioRate;
-
-        // 2. Token Cost
-        var tokenCost = (tokenCount / 1000m) * tokenRate;
-
-        // 3. GPU Cost
-        var gpuCost = gpuInferenceMs * gpuRateMs;
-
-        // Sum up base cost
-        var baseCost = audioCost + tokenCost + gpuCost;
-
-        // Apply Multiplier based on Plan and Voice Clone
-        var multiplier = 1.0m;
-
+        double ratePerMinute = 0;
         if (isVoiceClone)
         {
-            if (plan.Tier.Equals("Pro", System.StringComparison.OrdinalIgnoreCase))
+            ratePerMinute = vcRateMin;
+        }
+        else
+        {
+            if (audioSeconds > 0)
             {
-                multiplier = 1.2m;
+                ratePerMinute += sttRateMin;
             }
-            else if (plan.Tier.Equals("Premium", System.StringComparison.OrdinalIgnoreCase))
+            if (tokenCount > 0)
             {
-                multiplier = 1.0m;
+                ratePerMinute += transRateMin;
             }
-            else if (plan.Tier.Equals("Free", System.StringComparison.OrdinalIgnoreCase))
+            if (gpuInferenceMs > 0)
             {
-                // Voice clone not supported on Free, but if somehow passed, charge high or throw
-                multiplier = 2.0m;
+                ratePerMinute += ttsRateMin;
             }
         }
 
-        // Final cost rounded up, minimum 1
-        var finalCost = Math.Max(1, Math.Ceiling(baseCost * multiplier));
+        double baseCost = (audioSeconds / 60.0) * ratePerMinute;
+        if (baseCost <= 0 && (audioSeconds > 0 || tokenCount > 0 || gpuInferenceMs > 0))
+        {
+            return 1;
+        }
 
-        return (int)finalCost;
+        return (int)Math.Max(1, Math.Ceiling(baseCost));
     }
 
     // --- Credit Management ---
@@ -313,10 +301,26 @@ public class CreditAndUsageService : ICreditAndUsageService
             if (plan is null)
                 return Result.Failure<CreditBalanceDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
 
-            if (request.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase) && !plan.VoiceCloneEnabled)
-                return Result.Failure<CreditBalanceDto>(
-                    $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
-                    "FEATURE_NOT_AVAILABLE");
+            if (request.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!plan.VoiceCloneEnabled)
+                {
+                    return Result.Failure<CreditBalanceDto>(
+                        $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
+                        "FEATURE_NOT_AVAILABLE");
+                }
+
+                if (plan.VoiceCloneLimitMins > 0)
+                {
+                    var usedMins = await GetVoiceCloneMinutesUsedThisCycleAsync(sub.Id, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, cancellationToken);
+                    if (usedMins >= plan.VoiceCloneLimitMins)
+                    {
+                        return Result.Failure<CreditBalanceDto>(
+                            $"Voice clone monthly limit of {plan.VoiceCloneLimitMins} minutes exceeded for the '{plan.Name}' plan.",
+                            "VOICE_CLONE_LIMIT_EXCEEDED");
+                    }
+                }
+            }
 
             if (sub.CreditsRemaining < request.CreditsConsumed)
             {
@@ -379,10 +383,26 @@ public class CreditAndUsageService : ICreditAndUsageService
                 return Result.Failure<CreditReservationDto>("Plan not found.", "PLAN_NOT_FOUND");
 
             // --- Feature Gate: hard-block voice clone for unsupported plans ---
-            if (request.IsVoiceClone && !plan.VoiceCloneEnabled)
-                return Result.Failure<CreditReservationDto>(
-                    $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade to Pro or Premium.",
-                    "FEATURE_NOT_AVAILABLE");
+            if (request.IsVoiceClone)
+            {
+                if (!plan.VoiceCloneEnabled)
+                {
+                    return Result.Failure<CreditReservationDto>(
+                        $"Voice clone is not available on the '{plan.Name}' plan. Please upgrade.",
+                        "FEATURE_NOT_AVAILABLE");
+                }
+
+                if (plan.VoiceCloneLimitMins > 0)
+                {
+                    var usedMins = await GetVoiceCloneMinutesUsedThisCycleAsync(sub.Id, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, cancellationToken);
+                    if (usedMins >= plan.VoiceCloneLimitMins)
+                    {
+                        return Result.Failure<CreditReservationDto>(
+                            $"Voice clone monthly limit of {plan.VoiceCloneLimitMins} minutes exceeded for the '{plan.Name}' plan.",
+                            "VOICE_CLONE_LIMIT_EXCEEDED");
+                    }
+                }
+            }
 
             var cost = CalculateCreditCost(request.AudioSeconds, request.TokenCount, request.GpuInferenceMs, request.IsVoiceClone, plan);
 
@@ -785,5 +805,18 @@ public class CreditAndUsageService : ICreditAndUsageService
         var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
         return (null, reservation);
+    }
+
+    private async Task<int> GetVoiceCloneMinutesUsedThisCycleAsync(Guid subscriptionId, DateTime periodStart, DateTime periodEnd, CancellationToken cancellationToken)
+    {
+        var voiceCloneUsages = await _unitOfWork.UsageRecordRepository.FindAsync(
+            u => u.SubscriptionId == subscriptionId &&
+                 u.UsageType.Contains("voice_clone", StringComparison.OrdinalIgnoreCase) &&
+                 u.RecordedAt >= periodStart &&
+                 u.RecordedAt < periodEnd,
+            cancellationToken);
+
+        var totalSeconds = voiceCloneUsages.Sum(u => u.DurationSeconds ?? 0);
+        return (int)Math.Ceiling(totalSeconds / 60.0);
     }
 }
