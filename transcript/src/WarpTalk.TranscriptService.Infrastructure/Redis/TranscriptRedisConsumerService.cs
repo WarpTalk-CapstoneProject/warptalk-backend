@@ -20,6 +20,11 @@ public class TranscriptRedisConsumerService : BackgroundService
     private const string ConsumerGroup = "transcript-persistence";
     private readonly string _consumerName = $"transcript-{Environment.MachineName}-{Guid.NewGuid():N}";
 
+    // Cache stream keys to avoid an expensive Redis SCAN on every 2-second poll iteration.
+    private List<string> _streamKeyCache = new();
+    private DateTime _streamKeyCachedAt = DateTime.MinValue;
+    private static readonly TimeSpan StreamKeyCacheDuration = TimeSpan.FromSeconds(30);
+
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
         ILogger<TranscriptRedisConsumerService> logger,
@@ -39,11 +44,16 @@ public class TranscriptRedisConsumerService : BackgroundService
         {
             try
             {
-                // Find all active streams. Using endpoints to run keys command.
-                var server = _redis.GetServer(_redis.GetEndPoints().First());
-                var sttKeys = server.Keys(pattern: "stt:results:*").Select(k => (string)k);
-                var transKeys = server.Keys(pattern: "translate:results:*").Select(k => (string)k);
-                var streamKeys = sttKeys.Concat(transKeys).ToList();
+                // Refresh stream key list at most once per cache window (SCAN is O(N) over keyspace).
+                if (DateTime.UtcNow - _streamKeyCachedAt >= StreamKeyCacheDuration)
+                {
+                    var server = _redis.GetServer(_redis.GetEndPoints().First());
+                    _streamKeyCache = server.Keys(pattern: "stt:results:*").Select(k => (string)k)
+                        .Concat(server.Keys(pattern: "translate:results:*").Select(k => (string)k))
+                        .ToList();
+                    _streamKeyCachedAt = DateTime.UtcNow;
+                }
+                var streamKeys = _streamKeyCache;
 
                 if (streamKeys.Count == 0)
                 {
@@ -147,20 +157,6 @@ public class TranscriptRedisConsumerService : BackgroundService
                 var roomResponse = await roomClient.GetTranslationRoomByIdAsync(
                     new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomIdStr },
                     cancellationToken: cancellationToken);
-
-                // Fetch speaker name
-                string speakerName = speakerId.ToString();
-                try 
-                {
-                    var userResponse = await authClient.GetUserByIdAsync(
-                        new WarpTalk.Shared.Protos.GetUserRequest { Id = speakerId.ToString() },
-                        cancellationToken: cancellationToken);
-                    speakerName = userResponse.FullName;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to resolve speaker name for {SpeakerId}", speakerId);
-                }
 
                 // Create new transcript
                 transcript = new Transcript

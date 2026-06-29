@@ -15,6 +15,8 @@ public static class BillingErrorMessages
     public const string INVALID_WORKSPACE_ID = "Workspace ID cannot be empty";
     public const string INVALID_AMOUNT = "Amount must be greater than 0";
     public const string INSUFFICIENT_CREDITS = "Insufficient credits";
+    public const string WORKSPACE_NOT_FOUND = "Workspace not found";
+    public const string CONCURRENCY_CONFLICT = "A conflict occurred. Please retry.";
 
     public static string GetMessage(string code)
     {

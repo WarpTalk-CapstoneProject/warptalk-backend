@@ -102,11 +102,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
@@ -151,11 +151,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
@@ -213,11 +213,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
@@ -302,15 +302,15 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (InvalidOperationException ex)
         {
-            return Conflict(new ApiErrorResponse(ex.Message, BillingErrorCodes.CONCURRENCY_CONFLICT));
+            return Conflict(new ApiErrorResponse(BillingErrorMessages.CONCURRENCY_CONFLICT, BillingErrorCodes.CONCURRENCY_CONFLICT));
         }
         catch (Exception ex)
         {
@@ -403,15 +403,15 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (InvalidOperationException ex)
         {
-            return Conflict(new ApiErrorResponse(ex.Message, BillingErrorCodes.CONCURRENCY_CONFLICT));
+            return Conflict(new ApiErrorResponse(BillingErrorMessages.CONCURRENCY_CONFLICT, BillingErrorCodes.CONCURRENCY_CONFLICT));
         }
         catch (Exception ex)
         {
@@ -475,11 +475,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
@@ -543,11 +543,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
@@ -602,11 +602,11 @@ public class BillingController : ControllerBase
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, BillingErrorCodes.WORKSPACE_NOT_FOUND));
+            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
         catch (UnauthorizedAccessException ex)
         {
-            return StatusCode(403, new ApiErrorResponse(ex.Message, BillingErrorCodes.VALIDATION_FAILED));
+            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {

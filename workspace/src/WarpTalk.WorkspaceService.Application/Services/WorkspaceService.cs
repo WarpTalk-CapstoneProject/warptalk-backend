@@ -186,7 +186,7 @@ public class WorkspaceService : IWorkspaceService
         try
         {
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == userId,
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null,
                 "",
                 ct
             );
