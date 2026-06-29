@@ -41,7 +41,9 @@ public class StripePaymentService : IStripePaymentService
                         },
                         Recurring = isSubscription ? new SessionLineItemPriceDataRecurringOptions
                         {
-                            Interval = "month"
+                            Interval = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
+                                ? (amount >= 1000000m ? "year" : "month")
+                                : (amount > 50m ? "year" : "month")
                         } : null
                     },
                     Quantity = 1,

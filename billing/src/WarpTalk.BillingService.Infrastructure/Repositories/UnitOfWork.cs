@@ -17,6 +17,7 @@ public class UnitOfWork : IUnitOfWork
     private IGenericRepository<CreditBalanceSnapshot>? _creditBalanceSnapshots;
     private IGenericRepository<UsageRecord>? _usageRecords;
     private IGenericRepository<Payment>? _payments;
+    private IGenericRepository<Invoice>? _invoices;
 
     private IGenericRepository<SchemaMigration>? _schemaMigrations;
 
@@ -43,7 +44,8 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<Payment> PaymentRepository =>
         _payments ??= new GenericRepository<Payment>(_context);
 
-
+    public IGenericRepository<Invoice> InvoiceRepository =>
+        _invoices ??= new GenericRepository<Invoice>(_context);
 
     public IGenericRepository<SchemaMigration> SchemaMigrationRepository =>
         _schemaMigrations ??= new GenericRepository<SchemaMigration>(_context);

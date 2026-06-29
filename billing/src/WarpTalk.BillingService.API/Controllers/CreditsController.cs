@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -100,9 +101,15 @@ public class CreditsController : ControllerBase
         Guid workspaceId,
         [FromQuery] int pageNumber = 1,
         [FromQuery] int pageSize = 20,
+        [FromQuery] string? type = null,
+        [FromQuery] DateTime? fromDate = null,
+        [FromQuery] DateTime? toDate = null,
+        [FromQuery] int? minAmount = null,
+        [FromQuery] int? maxAmount = null,
         CancellationToken cancellationToken = default)
     {
-        var result = await _creditService.GetCreditHistoryAsync(workspaceId, pageNumber, pageSize, cancellationToken);
+        var result = await _creditService.GetCreditHistoryAsync(
+            workspaceId, pageNumber, pageSize, cancellationToken, type, fromDate, toDate, minAmount, maxAmount);
         if (!result.IsSuccess) return HandleFailure(result);
 
         return Ok(result.Value);
@@ -123,6 +130,93 @@ public class CreditsController : ControllerBase
         if (!result.IsSuccess) return HandleFailure(result);
 
         return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Get paginated invoices for a workspace.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId:guid}/invoices")]
+    public async Task<ActionResult<PagedResult<InvoiceDto>>> GetWorkspaceInvoices(
+        [FromServices] IPaymentAndLedgerService paymentService,
+        Guid workspaceId,
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await paymentService.GetInvoicesAsync(workspaceId, pageNumber, pageSize, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Simulate a Stripe payment event (Development/Testing only).
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("workspace/{workspaceId:guid}/simulate-payment")]
+    public async Task<ActionResult> SimulatePayment(
+        [FromServices] IUnitOfWork unitOfWork,
+        [FromServices] ISubscriptionManagementService subscriptionService,
+        Guid workspaceId,
+        [FromQuery] decimal amount = 190000m,
+        [FromQuery] string currency = "vnd")
+    {
+        var subResult = await subscriptionService.GetActiveSubscriptionAsync(workspaceId);
+        Guid subId;
+        if (!subResult.IsSuccess || subResult.Value == null)
+        {
+            var plans = await subscriptionService.GetActivePlansAsync();
+            var plan = plans.Value?.FirstOrDefault() ?? throw new Exception("No active plans found.");
+            var newSub = await subscriptionService.CreateSubscriptionAsync(new CreateSubscriptionRequest(workspaceId, plan.Id, Guid.Empty));
+            subId = newSub.Value!.Id;
+        }
+        else
+        {
+            subId = subResult.Value.Id;
+        }
+
+        var paymentId = Guid.NewGuid();
+        var stripeInvoiceId = "in_test_" + Guid.NewGuid().ToString().Substring(0, 8);
+        var payment = new WarpTalk.BillingService.Domain.Entities.Payment
+        {
+            Id = paymentId,
+            SubscriptionId = subId,
+            UserId = Guid.Empty,
+            WorkspaceId = workspaceId,
+            Amount = amount,
+            TaxAmount = 0m,
+            TotalAmount = amount,
+            Currency = currency,
+            PaymentMethod = "card",
+            Provider = "stripe",
+            ProviderTransactionId = stripeInvoiceId,
+            Status = "paid",
+            PaidAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+        await _creditService.TopUpCreditsAsync(workspaceId, new TopUpRequest((int)(amount / 10m), "stripe_payment", null));
+        
+        await unitOfWork.PaymentRepository.AddAsync(payment);
+
+        var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            SubscriptionId = subId,
+            PaymentId = paymentId,
+            StripeInvoiceId = stripeInvoiceId,
+            Amount = amount,
+            Currency = currency,
+            Status = "paid",
+            InvoicePdfUrl = "https://stripe.com/files/payments/pdf/invoice_sample.pdf",
+            HostedInvoiceUrl = "https://dashboard.stripe.com/receipts/invoices",
+            CreatedAt = DateTime.UtcNow
+        };
+        await unitOfWork.InvoiceRepository.AddAsync(invoice);
+        await unitOfWork.SaveChangesAsync();
+
+        return Ok(new { message = "Payment simulated successfully.", invoiceId = invoice.Id, stripeInvoiceId = stripeInvoiceId });
     }
 
     private ActionResult HandleFailure<T>(Result<T> result) =>

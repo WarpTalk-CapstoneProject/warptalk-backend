@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.BillingService.Application.DTOs;
@@ -8,6 +8,7 @@ public record CreditBalanceDto(
     Guid WorkspaceId,
     int CurrentCredits,
     int CreditsUsedThisCycle,
+    int TotalCredits,
     string Status,
     DateTime CurrentPeriodStart,
     DateTime CurrentPeriodEnd

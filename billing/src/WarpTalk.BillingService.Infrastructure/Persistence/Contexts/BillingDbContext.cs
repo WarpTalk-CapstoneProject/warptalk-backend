@@ -159,6 +159,9 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("auto_renew");
             entity.Property(e => e.CancellationReason).HasColumnName("cancellation_reason");
             entity.Property(e => e.CancelledAt).HasColumnName("cancelled_at");
+            entity.Property(e => e.CancelAtPeriodEnd)
+                .HasDefaultValue(false)
+                .HasColumnName("cancel_at_period_end");
             entity.Property(e => e.TrialEndsAt).HasColumnName("trial_ends_at");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)

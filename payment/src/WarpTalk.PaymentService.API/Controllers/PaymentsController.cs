@@ -25,8 +25,51 @@ public class PaymentsController : ControllerBase
     [HttpPost("checkout")]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
+        Console.WriteLine($"[PAYMENTS-DIAGNOSTIC] Received checkout request: Amount={request.Amount}, Currency='{request.Currency}', PaymentType='{request.PaymentType}', WorkspaceId={request.WorkspaceId}");
         var url = await _paymentAppService.CreateCheckoutSessionAsync(request);
         return Ok(new { url });
+    }
+
+    [HttpGet("checkout-session/{sessionId}")]
+    public async Task<IActionResult> GetCheckoutSession(string sessionId)
+    {
+        try
+        {
+            var service = new Stripe.Checkout.SessionService();
+            var session = await service.GetAsync(sessionId);
+            
+            if (session != null && session.PaymentStatus == "paid")
+            {
+                Console.WriteLine($"[PAYMENTS-LOCAL-FALLBACK] Processing checkout session {session.Id} directly via success page API call");
+                var isZeroDecimal = string.Equals(session.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
+                var finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+
+                await _paymentAppService.ProcessPaymentEventAsync(
+                    session.Id,
+                    !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
+                    finalAmount,
+                    session.Currency,
+                    session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
+                    session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,
+                    session.Metadata.ContainsKey("PaymentType") ? session.Metadata["PaymentType"] : string.Empty,
+                    "paid"
+                );
+            }
+
+            return Ok(new {
+                id = session.Id,
+                amountTotal = session.AmountTotal,
+                currency = session.Currency,
+                metadata = session.Metadata,
+                paymentStatus = session.PaymentStatus,
+                status = session.Status,
+                paymentIntentId = session.PaymentIntentId
+            });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(ex.Message);
+        }
     }
 
     [HttpPost("webhook")]
@@ -51,10 +94,13 @@ public class PaymentsController : ControllerBase
                 var session = stripeEvent.Data.Object as Stripe.Checkout.Session;
                 if (session != null)
                 {
+                    var isZeroDecimal = string.Equals(session.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
+                    var finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+
                     await _paymentAppService.ProcessPaymentEventAsync(
                         session.Id,
                         !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
-                        (session.AmountTotal ?? 0) / 100m,
+                        finalAmount,
                         session.Currency,
                         session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
                         session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,

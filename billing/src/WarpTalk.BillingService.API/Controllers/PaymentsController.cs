@@ -34,7 +34,6 @@ public class PaymentsController : ControllerBase
         return Ok(result.Value);
     }
 
-    // GetInvoicesAsync removed per cleanup
 
     /// <summary>
     /// Create a pending payment checkout for a subscription.

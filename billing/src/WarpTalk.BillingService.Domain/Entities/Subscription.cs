@@ -28,6 +28,12 @@ public partial class Subscription
 
     public DateTime? CancelledAt { get; set; }
 
+    /// <summary>
+    /// If true, the subscription will be cancelled at the end of the current period (CurrentPeriodEnd)
+    /// rather than immediately. IsActive remains true until the period ends.
+    /// </summary>
+    public bool CancelAtPeriodEnd { get; set; } = false;
+
     public DateTime? TrialEndsAt { get; set; }
 
     public bool IsActive { get; set; }

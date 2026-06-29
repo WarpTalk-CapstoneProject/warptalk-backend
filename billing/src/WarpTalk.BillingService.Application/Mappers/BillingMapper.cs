@@ -25,18 +25,20 @@ public static class BillingMapper
         plan.SortOrder
     );
 
-    public static SubscriptionDto ToDto(this Subscription sub, string planName) => new(
+    public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price) => new(
         sub.Id,
         sub.UserId,
         sub.WorkspaceId,
         sub.PlanId,
         planName,
+        price,
         sub.Status,
         sub.CreditsRemaining,
         sub.CreditsUsedThisCycle,
         sub.CurrentPeriodStart,
         sub.CurrentPeriodEnd,
         sub.AutoRenew,
+        sub.CancelAtPeriodEnd,
         sub.CreatedAt,
         sub.CancelledAt
     );
@@ -83,14 +85,32 @@ public static class BillingMapper
         };
     }
 
+    /// <summary>
+    /// Marks the subscription to cancel at the end of the current billing period.
+    /// The subscription remains active (IsActive = true) until CurrentPeriodEnd.
+    /// </summary>
     public static void Cancel(this Subscription sub, string? reason)
+    {
+        var now = DateTime.UtcNow;
+        sub.CancelAtPeriodEnd = true;
+        sub.CancellationReason = reason;
+        sub.AutoRenew = false;
+        sub.UpdatedAt = now;
+        // Status stays "active" — user can use until CurrentPeriodEnd
+        // IsActive stays true — scheduler will deactivate it at period end
+    }
+
+    /// <summary>
+    /// Immediately cancels the subscription (used internally for upgrade/downgrade flow).
+    /// </summary>
+    public static void CancelImmediately(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
         sub.Status = "cancelled";
         sub.CancellationReason = reason;
         sub.CancelledAt = now;
         sub.AutoRenew = false;
-        // Do not set IsActive = false here, allow user to use until current_period_end
+        sub.IsActive = false;
         sub.UpdatedAt = now;
     }
 
@@ -98,6 +118,7 @@ public static class BillingMapper
         workspaceId,
         sub.CreditsRemaining,
         sub.CreditsUsedThisCycle,
+        sub.CreditsRemaining + sub.CreditsUsedThisCycle,
         sub.Status,
         sub.CurrentPeriodStart,
         sub.CurrentPeriodEnd

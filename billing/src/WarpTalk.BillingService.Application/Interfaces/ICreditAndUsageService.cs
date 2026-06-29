@@ -36,7 +36,12 @@ public interface ICreditAndUsageService
         Guid workspaceId,
         int pageNumber,
         int pageSize,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? type = null,
+        DateTime? fromDate = null,
+        DateTime? toDate = null,
+        int? minAmount = null,
+        int? maxAmount = null);
 
     Task<Result<BillingReportDto>> GetBillingReportAsync(
         Guid workspaceId,

@@ -13,6 +13,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<CreditBalanceSnapshot> CreditBalanceSnapshotRepository { get; }
     IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     IGenericRepository<Payment> PaymentRepository { get; }
+    IGenericRepository<Invoice> InvoiceRepository { get; }
 
     IGenericRepository<SchemaMigration> SchemaMigrationRepository { get; }
 

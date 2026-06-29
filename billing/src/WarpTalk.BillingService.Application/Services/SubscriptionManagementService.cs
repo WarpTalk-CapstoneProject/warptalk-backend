@@ -109,7 +109,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                     ErrorCodes.BillingSubscriptionNotFound);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            return Result.Success(sub.ToDto(plan?.Name ?? string.Empty));
+            return Result.Success(sub.ToDto(plan?.Name ?? string.Empty, plan?.Price ?? 0));
         }
         catch (Exception ex)
         {
@@ -148,7 +148,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
 
             await PublishRealtimeUpdateAsync(subscription.UserId, "created", plan.Name, cancellationToken);
 
-            return Result.Success(subscription.ToDto(plan.Name));
+            return Result.Success(subscription.ToDto(plan.Name, plan.Price));
         }
         catch (Exception ex)
         {
@@ -232,7 +232,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                     $"New Plan '{request.NewPlanId}' not found or inactive.",
                     ErrorCodes.BillingPlanNotFound);
 
-            oldSub.Cancel("upgraded/downgraded");
+            oldSub.CancelImmediately("upgraded/downgraded");
             _unitOfWork.SubscriptionRepository.Update(oldSub);
 
             // Try to update the Stripe subscription directly with proration
@@ -292,7 +292,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
 
             await PublishRealtimeUpdateAsync(newSub.UserId, "changed", newPlan.Name, cancellationToken);
 
-            return Result.Success(newSub.ToDto(newPlan.Name));
+            return Result.Success(newSub.ToDto(newPlan.Name, newPlan.Price));
         }
         catch (Exception ex)
         {

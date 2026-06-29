@@ -31,12 +31,14 @@ public record SubscriptionDto(
     Guid? WorkspaceId,
     Guid PlanId,
     string PlanName,
+    decimal Price,
     string Status,
     int CreditsRemaining,
     int CreditsUsedThisCycle,
     DateTime CurrentPeriodStart,
     DateTime CurrentPeriodEnd,
     bool AutoRenew,
+    bool CancelAtPeriodEnd,
     DateTime CreatedAt,
     DateTime? CancelledAt
 );

@@ -15,6 +15,12 @@ public interface IPaymentAndLedgerService
         int pageSize,
         CancellationToken cancellationToken = default);
 
+    Task<Result<PagedResult<InvoiceDto>>> GetInvoicesAsync(
+        Guid workspaceId,
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default);
+
     Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,
         CancellationToken cancellationToken = default);

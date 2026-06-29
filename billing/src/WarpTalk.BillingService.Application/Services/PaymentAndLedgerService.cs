@@ -108,6 +108,45 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
         }
     }
 
+    public async Task<Result<PagedResult<InvoiceDto>>> GetInvoicesAsync(
+        Guid workspaceId, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var size = pageSize > 0 ? pageSize : 20;
+            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+
+            var items = await _unitOfWork.InvoiceRepository.GetPagedAsync(
+                i => i.WorkspaceId == workspaceId,
+                skip, size,
+                q => q.OrderByDescending(i => i.CreatedAt),
+                cancellationToken);
+
+            var total = await _unitOfWork.InvoiceRepository.CountAsync(
+                i => i.WorkspaceId == workspaceId,
+                cancellationToken);
+
+            var dtos = items.Select(i => new InvoiceDto
+            {
+                Id = i.Id.ToString(),
+                StripeInvoiceId = i.StripeInvoiceId,
+                Amount = i.Amount,
+                Currency = i.Currency,
+                Status = i.Status,
+                InvoicePdfUrl = i.InvoicePdfUrl,
+                HostedInvoiceUrl = i.HostedInvoiceUrl,
+                CreatedAt = i.CreatedAt
+            });
+
+            return Result.Success(new PagedResult<InvoiceDto>(total, dtos));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting invoices for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<PagedResult<InvoiceDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
     public async Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,
         CancellationToken cancellationToken = default)

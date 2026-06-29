@@ -217,7 +217,15 @@ public class CreditAndUsageService : ICreditAndUsageService
     }
 
     public async Task<Result<PagedResult<CreditTransactionDto>>> GetCreditHistoryAsync(
-        Guid workspaceId, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+        Guid workspaceId,
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default,
+        string? type = null,
+        DateTime? fromDate = null,
+        DateTime? toDate = null,
+        int? minAmount = null,
+        int? maxAmount = null)
     {
         try
         {
@@ -233,14 +241,22 @@ public class CreditAndUsageService : ICreditAndUsageService
             var size = pageSize > 0 ? pageSize : 20;
             var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
 
+            System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t => 
+                t.SubscriptionId == sub.Id &&
+                (string.IsNullOrEmpty(type) || t.Type == type) &&
+                (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
+                (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&
+                (!minAmount.HasValue || Math.Abs(t.Amount) >= minAmount.Value) &&
+                (!maxAmount.HasValue || Math.Abs(t.Amount) <= maxAmount.Value);
+
             var items = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
-                t => t.SubscriptionId == sub.Id,
+                predicate,
                 skip, size,
                 q => q.OrderByDescending(t => t.CreatedAt),
                 cancellationToken);
 
             var total = await _unitOfWork.CreditTransactionRepository.CountAsync(
-                t => t.SubscriptionId == sub.Id,
+                predicate,
                 cancellationToken);
 
             return Result.Success(new PagedResult<CreditTransactionDto>(

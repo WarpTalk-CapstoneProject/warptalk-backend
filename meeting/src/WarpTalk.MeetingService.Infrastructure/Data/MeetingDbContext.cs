@@ -207,7 +207,6 @@ public partial class MeetingDbContext : DbContext
         });
 
         modelBuilder.Entity<MeetingParticipant>(entity =>
-        modelBuilder.Entity<MeetingParticipant>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("meeting_participants_pkey");
 
@@ -242,7 +241,9 @@ public partial class MeetingDbContext : DbContext
             entity.Property(e => e.UserId).HasColumnName("user_id");
 
             entity.HasOne(d => d.MeetingRoom).WithMany(p => p.MeetingParticipants)
-                .HasForeignKey(d => d.MeetingRoomId)
+                .HasForeignKey(d => d.MeetingRoomId);
+        });
+
         modelBuilder.Entity<MeetingRoom>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("meeting_rooms_pkey");
@@ -314,7 +315,6 @@ public partial class MeetingDbContext : DbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
->>>>>>> development
 
             entity.HasOne(d => d.MeetingParticipant).WithMany(p => p.MeetingTracks)
                 .HasForeignKey(d => d.MeetingParticipantId)

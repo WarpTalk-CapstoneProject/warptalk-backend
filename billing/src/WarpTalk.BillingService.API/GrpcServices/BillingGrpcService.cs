@@ -414,10 +414,41 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             if (oldSub == null)
             {
-                _logger.LogWarning("No subscription found for Workspace {WorkspaceId}. Cannot process payment.", workspaceId);
-                return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Subscription not found." };
+                _logger.LogInformation("No existing subscription found for Workspace {WorkspaceId}. Creating new subscription dynamically.", workspaceId);
+                var plans = await _unitOfWork.PlanRepository.FindAsync(p => p.IsActive && p.DeletedAt == null);
+                var isEnterprise = request.Amount == 490000 || request.Amount == 4800000 || request.Amount == 4900000 || request.Amount == 408000 || request.Amount == 49000;
+                var planToUse = plans.FirstOrDefault(p => isEnterprise 
+                    ? p.Name.Equals("Enterprise", StringComparison.OrdinalIgnoreCase) 
+                    : p.Name.Equals("Startup", StringComparison.OrdinalIgnoreCase)) ?? plans.FirstOrDefault();
+
+                if (planToUse == null)
+                {
+                    return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "No active plans found in DB." };
+                }
+
+                sub = new WarpTalk.BillingService.Domain.Entities.Subscription
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    WorkspaceId = workspaceId,
+                    PlanId = planToUse.Id,
+                    Status = "active",
+                    IsActive = true,
+                    CreditsRemaining = 0,
+                    CreditsUsedThisCycle = 0,
+                    CurrentPeriodStart = DateTime.UtcNow,
+                    CurrentPeriodEnd = DateTime.UtcNow.AddMonths(1),
+                    AutoRenew = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.SubscriptionRepository.AddAsync(sub);
+                await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             }
-            sub = oldSub;
+            else
+            {
+                sub = oldSub;
+            }
         }
 
         var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
@@ -451,7 +482,13 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             
             var baseDate = (isRenewal && sub.CurrentPeriodEnd > DateTime.UtcNow) ? sub.CurrentPeriodEnd : DateTime.UtcNow;
 
-            sub.CurrentPeriodEnd = plan.BillingCycle switch
+            var billingCycle = plan.BillingCycle;
+            if (request.Amount == 1800000 || request.Amount == 4800000 || request.Amount == 1900000 || request.Amount == 4900000 || request.Amount > 50)
+            {
+                billingCycle = "yearly";
+            }
+
+            sub.CurrentPeriodEnd = billingCycle switch
             {
                 "yearly" => baseDate.AddYears(1),
                 "semiannual" => baseDate.AddMonths(6),
@@ -535,7 +572,21 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             };
             await _unitOfWork.PaymentRepository.AddAsync(paymentTx);
 
-
+            var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                SubscriptionId = sub.Id,
+                PaymentId = paymentTx.Id,
+                StripeInvoiceId = providerTxId ?? Guid.NewGuid().ToString(),
+                Amount = (decimal)request.Amount,
+                Currency = request.Currency ?? "VND",
+                Status = "paid",
+                InvoicePdfUrl = request.InvoicePdf ?? string.Empty,
+                HostedInvoiceUrl = request.InvoiceUrl ?? string.Empty,
+                CreatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.InvoiceRepository.AddAsync(invoice);
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             _logger.LogInformation("Successfully updated subscription and added credits for Workspace {WorkspaceId} via gRPC", workspaceId);
