@@ -12,15 +12,20 @@ public static class TranslationRoomMapper
 {
     public static TranslationRoomDto ToResponseDto(this TranslationRoom room)
     {
-        if (string.IsNullOrEmpty(room.Settings))
+        var defaultSettings = new RoomSettingsResponse(true, "HOST_ONLY");
+        RoomSettingsResponse settings = defaultSettings;
+        if (!string.IsNullOrEmpty(room.Settings))
         {
-            throw new InvalidOperationException($"TranslationRoom {room.Id} is missing Settings configuration in the database.");
+            try
+            {
+                settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
+                    room.Settings,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? defaultSettings;
+            }
+            catch { /* malformed JSON in DB — use default */ }
         }
 
-        RoomSettingsResponse settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
-            room.Settings,
-            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-            ?? throw new InvalidOperationException($"Failed to deserialize Settings for TranslationRoom {room.Id}");
 
         return new TranslationRoomDto(
             room.Id,
@@ -59,7 +64,10 @@ public static class TranslationRoomMapper
             MaxParticipants = request.MaxParticipants,
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
-            Settings = request.Settings != null ? System.Text.Json.JsonSerializer.Serialize(new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval, ArtifactAccess = request.Settings.ArtifactAccess }) : "{\"requires_approval\":true,\"artifact_access\":\"HOST_ONLY\"}",
+            Settings = System.Text.Json.JsonSerializer.Serialize(
+                request.Settings != null
+                    ? new TranslationRoomSettings { RequiresApproval = request.Settings.RequiresApproval, ArtifactAccess = request.Settings.ArtifactAccess }
+                    : new TranslationRoomSettings { RequiresApproval = true, ArtifactAccess = "HOST_ONLY" }),
             ScheduledAt = request.ScheduledAt,
             IsActive = true
         };
@@ -67,15 +75,20 @@ public static class TranslationRoomMapper
 
     public static TranslationRoomDto ToHistoryDto(this TranslationRoom room)
     {
-        if (string.IsNullOrEmpty(room.Settings))
+        var defaultSettings = new RoomSettingsResponse(true, "HOST_ONLY");
+        RoomSettingsResponse settings = defaultSettings;
+        if (!string.IsNullOrEmpty(room.Settings))
         {
-            throw new InvalidOperationException($"TranslationRoom {room.Id} is missing Settings configuration in the database.");
+            try
+            {
+                settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
+                    room.Settings,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? defaultSettings;
+            }
+            catch { /* malformed JSON in DB — use default */ }
         }
 
-        RoomSettingsResponse settings = System.Text.Json.JsonSerializer.Deserialize<RoomSettingsResponse>(
-            room.Settings,
-            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-            ?? throw new InvalidOperationException($"Failed to deserialize Settings for TranslationRoom {room.Id}");
 
         var artifacts = room.TranslationRoomArtifacts?.Select(a => a.ToDto()).ToList() ?? new List<RoomArtifactDto>();
 

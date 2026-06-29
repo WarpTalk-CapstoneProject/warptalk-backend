@@ -35,7 +35,7 @@ public class MeetingChatService : IMeetingChatService
         bool isParticipant = participant != null;
 
         if (room.CreatedBy != userId && !isParticipant)
-            return Result.Failure<IEnumerable<MeetingChatMessageDto>>($"Not a participant. Debug: roomCreatedBy={room.CreatedBy}, userId={userId}", "FORBIDDEN");
+            return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Not a participant.", "FORBIDDEN");
 
         var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
         
@@ -58,9 +58,12 @@ public class MeetingChatService : IMeetingChatService
         if (room.CreatedBy != userId && !isActiveParticipant)
             return Result.Failure<MeetingChatMessageDto>("Not an active participant.", "FORBIDDEN");
 
-        // For Capstone, WorkspaceId might not be directly on MeetingRoom, but we can assume a placeholder or get it.
-        // Assuming Guid.Empty for workspaceId if not available, or get from somewhere else.
-        var workspaceId = Guid.Empty; 
+        // Resolve WorkspaceId from Redis cache populated by MeetingRoomService on join.
+        var workspaceId = Guid.Empty;
+        var roomCacheKey = $"meeting:room:{roomId}";
+        var cachedRoom = await _redisService.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
+        if (cachedRoom.Value != null && Guid.TryParse(cachedRoom.Value.WorkspaceId, out var wsId))
+            workspaceId = wsId;
 
         var message = request.ToEntity(room.Id, workspaceId, userId, participant);
 

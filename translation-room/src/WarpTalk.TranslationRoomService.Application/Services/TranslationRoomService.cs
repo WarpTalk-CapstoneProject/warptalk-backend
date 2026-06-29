@@ -4,8 +4,11 @@ using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -28,8 +31,9 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly ILogger<TranslationRoomService> _logger;
+    private readonly string _frontendBaseUrl;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, WarpTalk.Shared.Interfaces.IEmailService emailService, ILogger<TranslationRoomService> logger)
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, WarpTalk.Shared.Interfaces.IEmailService emailService, ILogger<TranslationRoomService> logger, IOptions<AppSettings>? appSettings = null)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
@@ -38,6 +42,7 @@ public class TranslationRoomService : ITranslationRoomService
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _logger = logger;
+        _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl ?? "http://localhost:3000";
     }
 
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
@@ -121,7 +126,7 @@ public class TranslationRoomService : ITranslationRoomService
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
-                var meetingLink = $"http://localhost:3000/room/{roomCode}";
+                var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
                 
@@ -154,7 +159,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while creating translation room for HostId: {HostId}", hostId);
-            return Result.Failure<TranslationRoomDto>($"Error: {ex.Message} Inner: {ex.InnerException?.Message}", ErrorCodes.InternalServerError);
+            return Result.Failure<TranslationRoomDto>("An unexpected error occurred while creating the room.", ErrorCodes.InternalServerError);
         }
     }
 
@@ -185,7 +190,7 @@ public class TranslationRoomService : ITranslationRoomService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while fetching invitations for TranslationRoomId: {TranslationRoomId}", translationRoomId);
-            return Result.Failure<IEnumerable<TranslationRoomInvitationDto>>($"Error: {ex.Message} Inner: {ex.InnerException?.Message}", ErrorCodes.InternalServerError);
+            return Result.Failure<IEnumerable<TranslationRoomInvitationDto>>("An unexpected error occurred while fetching invitations.", ErrorCodes.InternalServerError);
         }
     }
 
@@ -219,12 +224,12 @@ public class TranslationRoomService : ITranslationRoomService
             var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
             query = ApplyRoomFilters(query, activeRequest);
 
-            var total = query.Count();
-            var roomEntities = query
+            var total = await query.CountAsync(ct);
+            var roomEntities = await query
                 .OrderByDescending(r => r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .ToList();
+                .ToListAsync(ct);
 
             var rooms = roomEntities.Select(r => ToListItemDto(r, userId)).ToList();
 
@@ -243,7 +248,6 @@ public class TranslationRoomService : ITranslationRoomService
         {
             // WT-65: First check if room exists at all
             var translationRoom = await _translationRoomRepository.GetByCodeAsync(request.TranslationRoomCode, null, ct);
-            _logger.LogInformation($"[DEBUG] JoinTranslationRoomAsync - Code: '{request.TranslationRoomCode}', Length: {request.TranslationRoomCode?.Length}, Found: {translationRoom != null}");
             if (translationRoom == null)
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
@@ -647,7 +651,7 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
-                var meetingLink = $"http://localhost:3000/room/{translationRoom.TranslationRoomCode}";
+                var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<WarpTalk.TranslationRoomService.Domain.Entities.TranslationRoomInvitation>();
                 
@@ -726,28 +730,30 @@ public class TranslationRoomService : ITranslationRoomService
             var query = ApplyRoomFilters(BuildAccessibleRoomsQuery(userId, userEmail), historyRequest)
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
-            var total = query.Count();
+            var total = await query.CountAsync(ct);
 
-            var roomEntities = query
+            var roomEntities = await query
                 .OrderByDescending(r => r.EndedAt ?? r.StartedAt ?? r.CreatedAt)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .ToList();
+                .ToListAsync(ct);
 
             var roomIds = roomEntities.Select(r => r.Id).ToList();
 
-            var participantsByRoom = _unitOfWork.Repository<TranslationRoomParticipant>()
+            var participantEntities = await _unitOfWork.Repository<TranslationRoomParticipant>()
                 .Query()
                 .Where(p => roomIds.Contains(p.TranslationRoomId))
-                .ToList()
+                .ToListAsync(ct);
+            var participantsByRoom = participantEntities
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
 
-            var artifactsByRoom = _unitOfWork.Repository<TranslationRoomArtifact>()
+            var artifactEntities = await _unitOfWork.Repository<TranslationRoomArtifact>()
                 .Query()
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
-                .ToList()
+                .ToListAsync(ct);
+            var artifactsByRoom = artifactEntities
                 .GroupBy(a => a.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
 
@@ -774,12 +780,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (!await CanAccessRoomAsync(translationRoomId, userId, ct))
                 return Result.Failure<List<TranslationRoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            var artifacts = _unitOfWork.Repository<TranslationRoomArtifact>()
+            var artifactEntities = await _unitOfWork.Repository<TranslationRoomArtifact>()
                 .Query()
                 .Where(a => a.TranslationRoomId == translationRoomId && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
-                .Select(a => ToArtifactDto(a))
-                .ToList();
+                .ToListAsync(ct);
+            var artifacts = artifactEntities.Select(ToArtifactDto).ToList();
 
             return Result.Success(artifacts);
         }
