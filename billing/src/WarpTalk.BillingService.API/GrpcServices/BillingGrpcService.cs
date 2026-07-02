@@ -459,6 +459,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         bool isRenewal = request.PaymentType == "SubscriptionRenewal";
         bool isTopUp = request.PaymentType == "CreditTopUp";
+        bool planChanged = false;
 
         if (!isTopUp && !string.IsNullOrWhiteSpace(request.PlanSlug))
         {
@@ -468,6 +469,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 _logger.LogInformation("Updating subscription PlanId from {OldPlanId} to {NewPlanId} based on PlanSlug {PlanSlug}", sub.PlanId, newPlan.Id, request.PlanSlug);
                 sub.PlanId = newPlan.Id;
+                planChanged = true;
             }
         }
 
@@ -478,7 +480,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         }
         var plan = planResult.Value;
 
-        if (!isTopUp && (!sub.IsActive || isRenewal))
+        // Activate and update dates if: subscription was inactive, or it is a renewal, or the plan has changed (Upgrade/Downgrade)
+        if (!isTopUp && (!sub.IsActive || isRenewal || planChanged))
         {
             if (!sub.IsActive)
             {
