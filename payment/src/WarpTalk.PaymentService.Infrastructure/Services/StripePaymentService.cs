@@ -118,10 +118,6 @@ public class StripePaymentService : IStripePaymentService
                 new SubscriptionItemOptions
                 {
                     Id = subscriptionItemId,
-                    Deleted = true
-                },
-                new SubscriptionItemOptions
-                {
                     PriceData = new SubscriptionItemPriceDataOptions
                     {
                         UnitAmount = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
