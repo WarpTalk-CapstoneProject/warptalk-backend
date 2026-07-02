@@ -285,6 +285,27 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                     "semiannual" => DateTime.UtcNow.AddMonths(6),
                     _ => DateTime.UtcNow.AddMonths(1)
                 };
+
+                // Grant new plan's credits immediately since webhook is not triggered for direct subscription updates
+                newSub.CreditsRemaining += newPlan.CreditAllowance;
+
+                var upgradeTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    SubscriptionId = newSub.Id,
+                    UserId = newSub.UserId,
+                    WorkspaceId = newSub.WorkspaceId,
+                    Amount = newPlan.CreditAllowance,
+                    Type = "top_up",
+                    Description = $"Plan upgrade to {newPlan.Name} (Stripe Direct)",
+                    ReferenceId = Guid.NewGuid(),
+                    CorrelationId = $"upgrade_{Guid.NewGuid()}",
+                    ReferenceType = "stripe_payment",
+                    Status = "committed",
+                    BalanceAfter = newSub.CreditsRemaining,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.CreditTransactionRepository.AddAsync(upgradeTx, cancellationToken);
             }
 
             await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
