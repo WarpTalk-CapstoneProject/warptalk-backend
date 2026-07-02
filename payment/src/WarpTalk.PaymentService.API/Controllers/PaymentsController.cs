@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Stripe;
 using WarpTalk.PaymentService.Application.DTOs;
 using WarpTalk.PaymentService.Application.Interfaces;
@@ -15,11 +16,13 @@ public class PaymentsController : ControllerBase
 {
     private readonly IPaymentAppService _paymentAppService;
     private readonly IConfiguration _configuration;
+    private readonly IHostEnvironment _environment;
 
-    public PaymentsController(IPaymentAppService paymentAppService, IConfiguration configuration)
+    public PaymentsController(IPaymentAppService paymentAppService, IConfiguration configuration, IHostEnvironment environment)
     {
         _paymentAppService = paymentAppService;
         _configuration = configuration;
+        _environment = environment;
     }
 
     [HttpPost("checkout")]
@@ -52,7 +55,11 @@ public class PaymentsController : ControllerBase
                     session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
                     session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,
                     session.Metadata.ContainsKey("PaymentType") ? session.Metadata["PaymentType"] : string.Empty,
-                    "paid"
+                    "paid",
+                    "",
+                    "",
+                    session.Metadata.ContainsKey("PlanSlug") ? session.Metadata["PlanSlug"] : string.Empty,
+                    session.Metadata.ContainsKey("BillingCycle") ? session.Metadata["BillingCycle"] : string.Empty
                 );
             }
 
@@ -82,6 +89,11 @@ public class PaymentsController : ControllerBase
             Event stripeEvent;
             if (string.IsNullOrEmpty(webhookSecret) || webhookSecret == "whsec_test_secret")
             {
+                if (!_environment.IsDevelopment())
+                {
+                    return StatusCode(500, "Stripe webhook secret is not configured.");
+                }
+
                 stripeEvent = EventUtility.ParseEvent(json, throwOnApiVersionMismatch: false);
             }
             else
@@ -105,7 +117,11 @@ public class PaymentsController : ControllerBase
                         session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
                         session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,
                         session.Metadata.ContainsKey("PaymentType") ? session.Metadata["PaymentType"] : string.Empty,
-                        "paid"
+                        "paid",
+                        "",
+                        "",
+                        session.Metadata.ContainsKey("PlanSlug") ? session.Metadata["PlanSlug"] : string.Empty,
+                        session.Metadata.ContainsKey("BillingCycle") ? session.Metadata["BillingCycle"] : string.Empty
                     );
                 }
             }
@@ -123,7 +139,11 @@ public class PaymentsController : ControllerBase
                         intent.Metadata.ContainsKey("WorkspaceId") ? intent.Metadata["WorkspaceId"] : string.Empty,
                         intent.Metadata.ContainsKey("PaymentType") ? intent.Metadata["PaymentType"] : string.Empty,
                         "failed",
-                        intent.LastPaymentError?.Message ?? "Payment failed"
+                        intent.LastPaymentError?.Message ?? "Payment failed",
+                        "",
+                        "",
+                        intent.Metadata.ContainsKey("PlanSlug") ? intent.Metadata["PlanSlug"] : string.Empty,
+                        intent.Metadata.ContainsKey("BillingCycle") ? intent.Metadata["BillingCycle"] : string.Empty
                     );
                 }
             }
@@ -140,7 +160,11 @@ public class PaymentsController : ControllerBase
                         charge.Metadata.ContainsKey("UserId") ? charge.Metadata["UserId"] : string.Empty,
                         charge.Metadata.ContainsKey("WorkspaceId") ? charge.Metadata["WorkspaceId"] : string.Empty,
                         charge.Metadata.ContainsKey("PaymentType") ? charge.Metadata["PaymentType"] : string.Empty,
-                        "refunded"
+                        "refunded",
+                        "",
+                        "",
+                        charge.Metadata.ContainsKey("PlanSlug") ? charge.Metadata["PlanSlug"] : string.Empty,
+                        charge.Metadata.ContainsKey("BillingCycle") ? charge.Metadata["BillingCycle"] : string.Empty
                     );
                 }
             }
@@ -157,7 +181,11 @@ public class PaymentsController : ControllerBase
                         string.Empty,
                         string.Empty,
                         string.Empty,
-                        "disputed"
+                        "disputed",
+                        "",
+                        "",
+                        string.Empty,
+                        string.Empty
                     );
                 }
             }
@@ -174,7 +202,11 @@ public class PaymentsController : ControllerBase
                         subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
                         subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
                         "Subscription",
-                        "cancelled"
+                        "cancelled",
+                        "",
+                        "",
+                        subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
+                        subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
                     );
                 }
             }
@@ -190,11 +222,13 @@ public class PaymentsController : ControllerBase
                         var subscription = await subscriptionService.GetAsync(subId);
 
                         string paymentType = invoice.BillingReason == "subscription_create" ? "Subscription" : "SubscriptionRenewal";
+                        var isZeroDecimal = string.Equals(invoice.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
+                        var finalAmount = isZeroDecimal ? (decimal)invoice.AmountPaid : ((decimal)invoice.AmountPaid / 100m);
 
                         await _paymentAppService.ProcessPaymentEventAsync(
                             string.Empty,
                             invoice.Id, // Use invoice.Id as ProviderTransactionId
-                            invoice.AmountPaid / 100m,
+                            finalAmount,
                             invoice.Currency,
                             subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
                             subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
@@ -202,7 +236,9 @@ public class PaymentsController : ControllerBase
                             "paid",
                             "",
                             invoice.HostedInvoiceUrl,
-                            invoice.InvoicePdf
+                            invoice.InvoicePdf,
+                            subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
+                            subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
                         );
                     }
                 }

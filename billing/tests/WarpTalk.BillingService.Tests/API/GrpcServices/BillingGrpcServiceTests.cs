@@ -111,7 +111,7 @@ public class BillingGrpcServiceTests
         mockPaymentRepo.Setup(u => u.FirstOrDefaultAsync(
             It.IsAny<System.Linq.Expressions.Expression<System.Func<WarpTalk.BillingService.Domain.Entities.Payment, bool>>>(),
             It.IsAny<CancellationToken>()))
-            .ReturnsAsync((WarpTalk.BillingService.Domain.Entities.Payment)null);
+            .ReturnsAsync((WarpTalk.BillingService.Domain.Entities.Payment?)null);
 
         // Act
         var result = await _service.ProcessPaymentEvent(request, contextMock.Object);

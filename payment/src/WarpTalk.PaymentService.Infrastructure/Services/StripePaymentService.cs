@@ -18,9 +18,26 @@ public class StripePaymentService : IStripePaymentService
         _configuration = configuration;
     }
 
-    public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType)
+    public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType, string planSlug = "", string billingCycle = "")
     {
         bool isSubscription = paymentType == "Subscription";
+
+        var metadata = new Dictionary<string, string>
+        {
+            { "UserId", userId.ToString() },
+            { "WorkspaceId", workspaceId.ToString() },
+            { "PaymentType", paymentType }
+        };
+
+        if (!string.IsNullOrWhiteSpace(planSlug))
+        {
+            metadata["PlanSlug"] = planSlug;
+        }
+
+        if (!string.IsNullOrWhiteSpace(billingCycle))
+        {
+            metadata["BillingCycle"] = billingCycle;
+        }
 
         var options = new SessionCreateOptions
         {
@@ -52,36 +69,21 @@ public class StripePaymentService : IStripePaymentService
             Mode = isSubscription ? "subscription" : "payment",
             SuccessUrl = _configuration["Stripe:SuccessUrl"] ?? "http://localhost:3000/sandbox/workspace-billing?session_id={CHECKOUT_SESSION_ID}",
             CancelUrl = _configuration["Stripe:CancelUrl"] ?? "http://localhost:3000/payment-cancelled",
-            Metadata = new Dictionary<string, string>
-            {
-                { "UserId", userId.ToString() },
-                { "WorkspaceId", workspaceId.ToString() },
-                { "PaymentType", paymentType }
-            }
+            Metadata = metadata
         };
 
         if (isSubscription)
         {
             options.SubscriptionData = new SessionSubscriptionDataOptions
             {
-                Metadata = new Dictionary<string, string>
-                {
-                    { "UserId", userId.ToString() },
-                    { "WorkspaceId", workspaceId.ToString() },
-                    { "PaymentType", paymentType }
-                }
+                Metadata = metadata
             };
         }
         else
         {
             options.PaymentIntentData = new SessionPaymentIntentDataOptions
             {
-                Metadata = new Dictionary<string, string>
-                {
-                    { "UserId", userId.ToString() },
-                    { "WorkspaceId", workspaceId.ToString() },
-                    { "PaymentType", paymentType }
-                }
+                Metadata = metadata
             };
         }
 

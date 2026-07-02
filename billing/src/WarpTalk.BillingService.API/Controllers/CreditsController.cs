@@ -152,7 +152,6 @@ public class CreditsController : ControllerBase
     /// <summary>
     /// Simulate a Stripe payment event (Development/Testing only).
     /// </summary>
-    [AllowAnonymous]
     [HttpPost("workspace/{workspaceId:guid}/simulate-payment")]
     public async Task<ActionResult> SimulatePayment(
         [FromServices] IUnitOfWork unitOfWork,

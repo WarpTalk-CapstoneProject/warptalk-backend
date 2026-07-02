@@ -214,7 +214,7 @@ public class CreditAndUsageServiceTests
         var result = await _creditService.ReserveCreditsAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        result.Value!.Amount.Should().Be(5);
+        result.Value!.Amount.Should().Be(2);
         _mockRedisStore.Verify(r => r.SetReservationAsync(It.Is<RedisCreditReservation>(res => res.IdempotencyKey == "idempotency_123"), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }

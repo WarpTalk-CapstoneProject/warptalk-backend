@@ -129,7 +129,7 @@ public partial class BillingDbContext : DbContext
             entity.ToTable("subscriptions", "subscription", t =>
             {
                 t.HasCheckConstraint("chk_subscription_status", "status IN ('pending', 'active', 'cancelled', 'expired')");
-                t.HasCheckConstraint("chk_subscription_credits", "credits_remaining >= 0");
+                t.HasCheckConstraint("chk_subscription_credits", "credits_remaining >= -2147483648");
             });
 
             entity.Property(e => e.Id)

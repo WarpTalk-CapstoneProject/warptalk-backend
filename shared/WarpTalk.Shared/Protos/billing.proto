@@ -70,6 +70,8 @@ message ProcessPaymentEventRequest {
   string workspace_id            = 9;
   string invoice_url             = 10;
   string invoice_pdf             = 11;
+  string plan_slug               = 12;
+  string billing_cycle           = 13;
 }
 
 message ProcessPaymentResponse {
@@ -220,6 +222,8 @@ message GetFeatureAccessResponse {
   bool   glossary_enabled       = 7;
   bool   dedicated_gpu          = 8;
   string features_json          = 9;
+  bool   allow_glossary         = 10;
+  bool   allow_acl              = 11;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -255,6 +259,8 @@ message PlanResponse {
   bool   dedicated_gpu          = 14;
   string features               = 15; // JSON blob
   int32  sort_order             = 16;
+  bool   allow_glossary         = 17;
+  bool   allow_acl              = 18;
 }
 
 // ─────────────────────────────────────────────────────────────

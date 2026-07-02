@@ -21,6 +21,8 @@ public static class BillingMapper
         plan.AiAssistantEnabled,
         plan.GlossaryEnabled,
         plan.DedicatedGpu,
+        plan.AllowGlossary,
+        plan.AllowAcl,
         plan.Features,
         plan.SortOrder
     );
@@ -95,6 +97,7 @@ public static class BillingMapper
         sub.CancelAtPeriodEnd = true;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
+        sub.Status = "cancelled";
         sub.UpdatedAt = now;
         // Status stays "active" — user can use until CurrentPeriodEnd
         // IsActive stays true — scheduler will deactivate it at period end

@@ -287,7 +287,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             AiAssistantEnabled = plan.AiAssistantEnabled,
             GlossaryEnabled = plan.GlossaryEnabled,
             DedicatedGpu = plan.DedicatedGpu,
-            FeaturesJson = plan.Features ?? "{}"
+            FeaturesJson = plan.Features ?? "{}",
+            AllowGlossary = plan.AllowGlossary,
+            AllowAcl = plan.AllowAcl
         };
     }
 
@@ -416,10 +418,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 _logger.LogInformation("No existing subscription found for Workspace {WorkspaceId}. Creating new subscription dynamically.", workspaceId);
                 var plans = await _unitOfWork.PlanRepository.FindAsync(p => p.IsActive && p.DeletedAt == null);
-                var isEnterprise = request.Amount == 490000 || request.Amount == 4800000 || request.Amount == 4900000 || request.Amount == 408000 || request.Amount == 49000;
-                var planToUse = plans.FirstOrDefault(p => isEnterprise 
-                    ? p.Name.Equals("Enterprise", StringComparison.OrdinalIgnoreCase) 
-                    : p.Name.Equals("Startup", StringComparison.OrdinalIgnoreCase)) ?? plans.FirstOrDefault();
+                WarpTalk.BillingService.Domain.Entities.Plan? planToUse = null;
+
+                if (!string.IsNullOrWhiteSpace(request.PlanSlug))
+                {
+                    planToUse = plans.FirstOrDefault(p => p.Slug.Equals(request.PlanSlug, StringComparison.OrdinalIgnoreCase));
+                }
+
+                planToUse ??= plans.FirstOrDefault();
 
                 if (planToUse == null)
                 {
@@ -451,15 +457,26 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             }
         }
 
+        bool isRenewal = request.PaymentType == "SubscriptionRenewal";
+        bool isTopUp = request.PaymentType == "CreditTopUp";
+
+        if (!isTopUp && !string.IsNullOrWhiteSpace(request.PlanSlug))
+        {
+            var plansList = await _unitOfWork.PlanRepository.FindAsync(p => p.IsActive && p.DeletedAt == null);
+            var newPlan = plansList.FirstOrDefault(p => p.Slug.Equals(request.PlanSlug, StringComparison.OrdinalIgnoreCase));
+            if (newPlan != null && sub.PlanId != newPlan.Id)
+            {
+                _logger.LogInformation("Updating subscription PlanId from {OldPlanId} to {NewPlanId} based on PlanSlug {PlanSlug}", sub.PlanId, newPlan.Id, request.PlanSlug);
+                sub.PlanId = newPlan.Id;
+            }
+        }
+
         var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
         {
             return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Plan not found." };
         }
         var plan = planResult.Value;
-
-        bool isRenewal = request.PaymentType == "SubscriptionRenewal";
-        bool isTopUp = request.PaymentType == "CreditTopUp";
 
         if (!isTopUp && (!sub.IsActive || isRenewal))
         {
@@ -482,11 +499,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             
             var baseDate = (isRenewal && sub.CurrentPeriodEnd > DateTime.UtcNow) ? sub.CurrentPeriodEnd : DateTime.UtcNow;
 
-            var billingCycle = plan.BillingCycle;
-            if (request.Amount == 1800000 || request.Amount == 4800000 || request.Amount == 1900000 || request.Amount == 4900000 || request.Amount > 50)
-            {
-                billingCycle = "yearly";
-            }
+            var billingCycle = !string.IsNullOrWhiteSpace(request.BillingCycle)
+                ? request.BillingCycle
+                : plan.BillingCycle;
 
             sub.CurrentPeriodEnd = billingCycle switch
             {
@@ -610,9 +625,17 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         if (sub == null) return;
 
-        var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
-        if (!planResult.IsSuccess || planResult.Value == null) return;
-        var plan = planResult.Value;
+        var creditedTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
+            tx => tx.CorrelationId == payment.ProviderTransactionId && tx.Type == "top_up" && tx.SubscriptionId == sub.Id,
+            context.CancellationToken);
+
+        if (creditedTx == null)
+        {
+            _logger.LogWarning("Refund/dispute for Payment {PaymentId} had no matching credited top_up transaction.", payment.Id);
+            return;
+        }
+
+        var reversalAmount = Math.Abs(creditedTx.Amount);
 
         // Cancel the subscription immediately to prevent further abuse/usage
         if (sub.IsActive)
@@ -625,7 +648,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         // Deduct the equivalent credits for the cycle
         // Allow it to go negative if they've already spent the credits.
-        sub.CreditsRemaining -= plan.CreditsPerCycle;
+        sub.CreditsRemaining -= reversalAmount;
         sub.UpdatedAt = DateTime.UtcNow;
         _unitOfWork.SubscriptionRepository.Update(sub);
 
@@ -635,7 +658,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             SubscriptionId = sub.Id,
             UserId = payment.UserId,
             WorkspaceId = payment.WorkspaceId,
-            Amount = -plan.CreditsPerCycle,
+            Amount = -reversalAmount,
             Type = "refund_deduction",
             Description = $"Credits deducted due to {payment.Status}",
             ReferenceId = payment.Id,
@@ -648,7 +671,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         await _unitOfWork.CreditTransactionRepository.AddAsync(tx);
 
         _logger.LogWarning("Cancelled subscription {SubId} and deducted {Amount} credits due to {Status}. New Balance: {Balance}",
-            sub.Id, plan.CreditsPerCycle, payment.Status, sub.CreditsRemaining);
+            sub.Id, reversalAmount, payment.Status, sub.CreditsRemaining);
     }
 
 
@@ -791,6 +814,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         GlossaryEnabled = dto.GlossaryEnabled,
         DedicatedGpu = dto.DedicatedGpu,
         Features = dto.Features,
-        SortOrder = dto.SortOrder
+        SortOrder = dto.SortOrder,
+        AllowGlossary = dto.AllowGlossary,
+        AllowAcl = dto.AllowAcl
     };
 }

@@ -29,11 +29,13 @@ public class PaymentAppService : IPaymentAppService
             request.WorkspaceId,
             request.Amount,
             request.Currency,
-            request.PaymentType
+            request.PaymentType,
+            request.PlanSlug,
+            request.BillingCycle
         );
     }
 
-    public async Task ProcessPaymentEventAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string workspaceId, string paymentType, string status, string failureReason = "", string invoiceUrl = "", string invoicePdf = "")
+    public async Task ProcessPaymentEventAsync(string stripeSessionId, string paymentIntentId, decimal amount, string currency, string userId, string workspaceId, string paymentType, string status, string failureReason = "", string invoiceUrl = "", string invoicePdf = "", string planSlug = "", string billingCycle = "")
     {
         var request = new ProcessPaymentEventRequest
         {
@@ -47,7 +49,9 @@ public class PaymentAppService : IPaymentAppService
             FailureReason = failureReason ?? string.Empty,
             WorkspaceId = workspaceId ?? string.Empty,
             InvoiceUrl = invoiceUrl ?? string.Empty,
-            InvoicePdf = invoicePdf ?? string.Empty
+            InvoicePdf = invoicePdf ?? string.Empty,
+            PlanSlug = planSlug ?? string.Empty,
+            BillingCycle = billingCycle ?? string.Empty
         };
 
         await _billingClient.ProcessPaymentEventAsync(request);
