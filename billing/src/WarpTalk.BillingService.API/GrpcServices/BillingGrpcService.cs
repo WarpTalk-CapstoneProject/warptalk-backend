@@ -1,4 +1,4 @@
-using Grpc.Core;
+﻿using Grpc.Core;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -606,13 +606,15 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             };
             await _unitOfWork.InvoiceRepository.AddAsync(invoice);
 
-            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             _logger.LogInformation("Successfully updated subscription and added credits for Workspace {WorkspaceId} via gRPC", workspaceId);
         }
         else
         {
             _logger.LogInformation("Payment already processed for Stripe Session {SessionId}", request.StripeSessionId);
         }
+
+        await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
@@ -698,7 +700,10 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             if (existingPayment.Status == request.Status)
             {
                 _logger.LogInformation("Payment {ProviderTxId} already in status {Status}. Ignoring (Idempotent).", providerTxId, request.Status);
-                return new Shared.Protos.ProcessPaymentResponse { Success = true };
+                await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
+
+        return new Shared.Protos.ProcessPaymentResponse { Success = true };
             }
 
             existingPayment.Status = request.Status;
@@ -717,7 +722,10 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-            return new Shared.Protos.ProcessPaymentResponse { Success = true };
+            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
+
+        return new Shared.Protos.ProcessPaymentResponse { Success = true };
         }
 
         if (request.Status == "paid")
@@ -779,6 +787,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 }
             }
         }
+
+        await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
