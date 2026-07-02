@@ -124,10 +124,6 @@ public class StripePaymentService : IStripePaymentService
                             ? (long)newAmount
                             : (long)(newAmount * 100),
                         Currency = currency,
-                        ProductData = new SubscriptionItemPriceDataProductDataOptions
-                        {
-                            Name = $"{newPlanName} Subscription"
-                        },
                         Recurring = new SubscriptionItemPriceDataRecurringOptions
                         {
                             Interval = "month"

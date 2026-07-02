@@ -289,7 +289,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                 };
 
                 // Grant new plan's credits immediately since webhook is not triggered for direct subscription updates
-                newSub.CreditsRemaining += newPlan.CreditAllowance;
+                newSub.CreditsRemaining += newPlan.CreditsPerCycle;
 
                 var upgradeTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
                 {
@@ -297,7 +297,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                     SubscriptionId = newSub.Id,
                     UserId = newSub.UserId,
                     WorkspaceId = newSub.WorkspaceId,
-                    Amount = newPlan.CreditAllowance,
+                    Amount = newPlan.CreditsPerCycle,
                     Type = "top_up",
                     Description = $"Plan upgrade to {newPlan.Name} (Stripe Direct)",
                     ReferenceId = Guid.NewGuid(),
