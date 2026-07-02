@@ -1,4 +1,4 @@
-﻿using Grpc.Core;
+using Grpc.Core;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -701,7 +701,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 _logger.LogInformation("Payment {ProviderTxId} already in status {Status}. Ignoring (Idempotent).", providerTxId, request.Status);
                 await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
             }
@@ -723,7 +723,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
         }
@@ -789,7 +789,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         }
 
         await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
+        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
