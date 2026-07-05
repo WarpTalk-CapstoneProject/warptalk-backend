@@ -12,6 +12,8 @@ using WarpTalk.BillingService.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddMemoryCache();
+
 builder.WebHost.ConfigureKestrel(options =>
 {
     // HTTP/1 — REST API (via Gateway)
@@ -95,6 +97,12 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>(o =>
 {
     var url = builder.Configuration["PaymentServiceGrpcUrl"] ?? "http://127.0.0.1:50058"; // Adjust port if needed
+    o.Address = new Uri(url);
+});
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+{
+    var url = builder.Configuration["WorkspaceServiceGrpcUrl"] ?? "http://127.0.0.1:50056";
     o.Address = new Uri(url);
 });
 

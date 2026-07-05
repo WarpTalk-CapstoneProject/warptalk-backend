@@ -48,7 +48,7 @@ public static class UserMapper
         return new User
         {
             Email = payload.Email.ToLowerInvariant().Trim(),
-            PasswordHash = "", 
+            PasswordHash = "",
             FullName = payload.Name ?? "Google User",
             AvatarUrl = payload.Picture,
             EmailVerified = payload.EmailVerified,

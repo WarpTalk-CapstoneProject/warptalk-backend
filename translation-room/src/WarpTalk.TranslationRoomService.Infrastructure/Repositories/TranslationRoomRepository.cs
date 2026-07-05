@@ -24,9 +24,9 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
             foreach (var status in excludedStatuses)
             {
                 if (Enum.TryParse<WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus>(status, true, out var roomStatus))
-            {
-                query = query.Where(r => r.Status != roomStatus.ToString());
-            }
+                {
+                    query = query.Where(r => r.Status != roomStatus.ToString());
+                }
             }
         }
 
@@ -42,9 +42,9 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
             foreach (var status in excludedStatuses)
             {
                 if (Enum.TryParse<WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus>(status, true, out var roomStatus))
-            {
-                query = query.Where(r => r.Status != roomStatus.ToString());
-            }
+                {
+                    query = query.Where(r => r.Status != roomStatus.ToString());
+                }
             }
         }
 

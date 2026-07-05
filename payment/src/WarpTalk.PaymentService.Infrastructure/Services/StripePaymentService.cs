@@ -20,6 +20,29 @@ public class StripePaymentService : IStripePaymentService
 
     public async Task<string> CreateCheckoutSessionAsync(Guid userId, Guid workspaceId, decimal amount, string currency, string paymentType, string planSlug = "", string billingCycle = "")
     {
+        var isPlaceholder = string.IsNullOrEmpty(_configuration["Stripe:SecretKey"]) || 
+                            _configuration["Stripe:SecretKey"] == "sk_test_placeholder";
+
+        if (isPlaceholder)
+        {
+            var payload = new
+            {
+                UserId = userId,
+                WorkspaceId = workspaceId,
+                Amount = amount,
+                Currency = currency,
+                PaymentType = paymentType,
+                PlanSlug = planSlug,
+                BillingCycle = billingCycle
+            };
+
+            var payloadJson = System.Text.Json.JsonSerializer.Serialize(payload);
+            var payloadBase64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payloadJson));
+            var successUrl = _configuration["Stripe:SuccessUrl"] ?? "http://localhost:3000/workspace/payment/success?session_id={CHECKOUT_SESSION_ID}";
+            var redirectUrl = successUrl.Replace("{CHECKOUT_SESSION_ID}", "mock_session_" + payloadBase64);
+            return redirectUrl;
+        }
+
         bool isSubscription = paymentType == "Subscription";
 
         var metadata = new Dictionary<string, string>
@@ -95,13 +118,13 @@ public class StripePaymentService : IStripePaymentService
 
     public async Task<bool> UpdateSubscriptionAsync(Guid workspaceId, decimal newAmount, string currency, string newPlanName)
     {
-        var service = new SubscriptionService();
+        var subscriptionService = new SubscriptionService();
         var searchOptions = new SubscriptionSearchOptions
         {
             Query = $"metadata['WorkspaceId']:'{workspaceId}' AND status:'active'"
         };
 
-        var searchResults = await service.SearchAsync(searchOptions);
+        var searchResults = await subscriptionService.SearchAsync(searchOptions);
         
         if (searchResults.Data.Count == 0)
         {
@@ -111,6 +134,45 @@ public class StripePaymentService : IStripePaymentService
         var subscription = searchResults.Data.First();
         var subscriptionItemId = subscription.Items.Data[0].Id;
 
+        // Step 1: Create or reuse a Stripe Product for the plan
+        var productService = new ProductService();
+        var productList = await productService.ListAsync(new ProductListOptions { Active = true, Limit = 100 });
+        var existingProduct = productList.Data.FirstOrDefault(p => p.Name == newPlanName);
+        
+        string productId;
+        if (existingProduct != null)
+        {
+            productId = existingProduct.Id;
+        }
+        else
+        {
+            var newProduct = await productService.CreateAsync(new ProductCreateOptions
+            {
+                Name = newPlanName,
+                Metadata = new System.Collections.Generic.Dictionary<string, string>
+                {
+                    { "PlanSlug", newPlanName.ToLowerInvariant() }
+                }
+            });
+            productId = newProduct.Id;
+        }
+
+        // Step 2: Create a new Price for the product
+        var priceService = new PriceService();
+        var newPrice = await priceService.CreateAsync(new PriceCreateOptions
+        {
+            Product = productId,
+            UnitAmount = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
+                ? (long)newAmount
+                : (long)(newAmount * 100),
+            Currency = currency,
+            Recurring = new PriceRecurringOptions
+            {
+                Interval = "month"
+            }
+        });
+
+        // Step 3: Update the subscription with the new price
         var options = new SubscriptionUpdateOptions
         {
             Items = new List<SubscriptionItemOptions>
@@ -118,25 +180,16 @@ public class StripePaymentService : IStripePaymentService
                 new SubscriptionItemOptions
                 {
                     Id = subscriptionItemId,
-                    PriceData = new SubscriptionItemPriceDataOptions
-                    {
-                        UnitAmount = string.Equals(currency, "vnd", StringComparison.OrdinalIgnoreCase)
-                            ? (long)newAmount
-                            : (long)(newAmount * 100),
-                        Currency = currency,
-                        Recurring = new SubscriptionItemPriceDataRecurringOptions
-                        {
-                            Interval = "month"
-                        }
-                    }
+                    Price = newPrice.Id
                 }
             },
             ProrationBehavior = "always_invoice"
         };
 
-        await service.UpdateAsync(subscription.Id, options);
+        await subscriptionService.UpdateAsync(subscription.Id, options);
         return true;
     }
+
 
     public async Task<bool> CancelSubscriptionAsync(Guid workspaceId)
     {

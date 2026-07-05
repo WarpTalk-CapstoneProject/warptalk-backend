@@ -15,7 +15,7 @@ public record CreateCorrectionDto(
     [Required(ErrorMessage = "CorrectedText is required.")]
     [MaxLength(2000, ErrorMessage = "CorrectedText cannot exceed 2000 characters.")]
     string CorrectedText,
-    [Required(ErrorMessage = "CorrectionType is required.")] 
+    [Required(ErrorMessage = "CorrectionType is required.")]
     string CorrectionType
 );
 

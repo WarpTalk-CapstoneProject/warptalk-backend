@@ -15,8 +15,8 @@ public class SubscriptionManagementService : ISubscriptionManagementService
     private readonly WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient _paymentServiceClient;
 
     public SubscriptionManagementService(
-        IUnitOfWork unitOfWork, 
-        ILogger<SubscriptionManagementService> logger, 
+        IUnitOfWork unitOfWork,
+        ILogger<SubscriptionManagementService> logger,
         IBillingMessagePublisher messagePublisher,
         WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient paymentServiceClient)
     {
@@ -280,7 +280,7 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                 newSub.IsActive = true;
                 newSub.Status = "active";
                 newSub.CurrentPeriodStart = DateTime.UtcNow;
-                
+
                 newSub.CurrentPeriodEnd = newPlan.BillingCycle switch
                 {
                     "yearly" => DateTime.UtcNow.AddYears(1),
@@ -308,6 +308,43 @@ public class SubscriptionManagementService : ISubscriptionManagementService
                     CreatedAt = DateTime.UtcNow
                 };
                 await _unitOfWork.CreditTransactionRepository.AddAsync(upgradeTx, cancellationToken);
+
+                var randomSuffix = Guid.NewGuid().ToString().Replace("-", "")[..14].ToLower();
+                var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
+                {
+                    Id = Guid.NewGuid(),
+                    SubscriptionId = newSub.Id,
+                    UserId = newSub.UserId,
+                    WorkspaceId = newSub.WorkspaceId,
+                    Amount = newPlan.Price,
+                    TaxAmount = 0m,
+                    TotalAmount = newPlan.Price,
+                    Currency = newPlan.Currency,
+                    PaymentMethod = "Stripe Upgrade (Direct)",
+                    Provider = "stripe",
+                    ProviderTransactionId = $"ch_{randomSuffix}",
+                    Status = "paid",
+                    PaidAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
+
+                var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
+                {
+                    Id = Guid.NewGuid(),
+                    WorkspaceId = newSub.WorkspaceId,
+                    SubscriptionId = newSub.Id,
+                    PaymentId = paymentTx.Id,
+                    StripeInvoiceId = $"in_{randomSuffix}",
+                    Amount = newPlan.Price,
+                    Currency = newPlan.Currency.ToLower(),
+                    Status = "paid",
+                    InvoicePdfUrl = string.Empty,
+                    HostedInvoiceUrl = string.Empty,
+                    CreatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.InvoiceRepository.AddAsync(invoice, cancellationToken);
             }
 
             await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
@@ -321,6 +358,112 @@ public class SubscriptionManagementService : ISubscriptionManagementService
         {
             _logger.LogError(ex, "Error changing subscription for WorkspaceId {WorkspaceId} to NewPlanId {NewPlanId}", request.WorkspaceId, request.NewPlanId);
             return Result.Failure<SubscriptionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<PlanDto>> CreatePlanAsync(
+        CreatePlanRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(request.Name))
+                return Result.Failure<PlanDto>("Plan name is required.", "INVALID_REQUEST");
+
+            if (string.IsNullOrWhiteSpace(request.Slug))
+                return Result.Failure<PlanDto>("Slug is required.", "INVALID_REQUEST");
+
+            if (request.Price < 0)
+                return Result.Failure<PlanDto>("Price must be non-negative.", "INVALID_REQUEST");
+
+            if (request.CreditsPerCycle < 0)
+                return Result.Failure<PlanDto>("Credits per cycle must be non-negative.", "INVALID_REQUEST");
+
+            var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
+            var existing = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Slug == normalizedSlug && p.DeletedAt == null,
+                cancellationToken);
+
+            if (existing is not null)
+                return Result.Failure<PlanDto>("A plan with this slug already exists.", "DUPLICATE_SLUG");
+
+            var plan = request.ToEntity();
+            await _unitOfWork.PlanRepository.AddAsync(plan, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(plan.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating plan");
+            return Result.Failure<PlanDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<PlanDto>> UpdatePlanAsync(
+        Guid id, UpdatePlanRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Id == id && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<PlanDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+
+            if (string.IsNullOrWhiteSpace(request.Name))
+                return Result.Failure<PlanDto>("Plan name is required.", "INVALID_REQUEST");
+
+            if (request.Price < 0)
+                return Result.Failure<PlanDto>("Price must be non-negative.", "INVALID_REQUEST");
+
+            var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
+            if (plan.Slug != normalizedSlug)
+            {
+                var existing = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                    p => p.Slug == normalizedSlug && p.Id != id && p.DeletedAt == null,
+                    cancellationToken);
+
+                if (existing is not null)
+                    return Result.Failure<PlanDto>("A plan with this slug already exists.", "DUPLICATE_SLUG");
+            }
+
+            plan.UpdateFromRequest(request);
+            _unitOfWork.PlanRepository.Update(plan);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(plan.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating plan");
+            return Result.Failure<PlanDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<bool>> DeactivatePlanAsync(
+        Guid id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Id == id && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<bool>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+
+            plan.IsActive = false;
+            plan.DeletedAt = DateTime.UtcNow;
+            _unitOfWork.PlanRepository.Update(plan);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deactivating plan");
+            return Result.Failure<bool>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

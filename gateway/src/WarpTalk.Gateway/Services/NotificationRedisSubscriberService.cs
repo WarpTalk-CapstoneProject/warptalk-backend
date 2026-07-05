@@ -39,10 +39,13 @@ public class NotificationRedisSubscriberService : BackgroundService
                 var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
                 if (payload == null || string.IsNullOrEmpty(payload.UserId)) return;
 
-                var groupName = $"user:{payload.UserId}";
-                await _hubContext.Clients.Group(groupName).SendAsync("NewNotification", payload, stoppingToken);
+                var userGroupName = $"user:{payload.UserId}";
+                await _hubContext.Clients.Group(userGroupName).SendAsync("NewNotification", payload, stoppingToken);
 
-                _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {GroupName}", groupName);
+                var workspaceGroupName = $"workspace:{payload.UserId}";
+                await _hubContext.Clients.Group(workspaceGroupName).SendAsync("NewNotification", payload, stoppingToken);
+
+                _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {UserGroupName} and {WorkspaceGroupName}", userGroupName, workspaceGroupName);
             }
             catch (Exception ex)
             {

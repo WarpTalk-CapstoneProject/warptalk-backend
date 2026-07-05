@@ -101,17 +101,17 @@ public class SmtpEmailService : IEmailService
     private async Task SendEmailAsync(MimeMessage message, CancellationToken ct)
     {
         using var client = new SmtpClient();
-        
+
         // Accept all SSL certificates (in case the server supports STARTTLS)
         client.ServerCertificateValidationCallback = (s, c, h, e) => true;
 
         await client.ConnectAsync(_settings.Host, _settings.Port, SecureSocketOptions.Auto, ct);
-        
+
         if (!string.IsNullOrEmpty(_settings.Username))
         {
             await client.AuthenticateAsync(_settings.Username, _settings.Password, ct);
         }
-        
+
         await client.SendAsync(message, ct);
         await client.DisconnectAsync(true, ct);
     }

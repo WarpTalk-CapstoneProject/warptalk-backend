@@ -65,229 +65,229 @@ public class MeetingRoomService : IMeetingRoomService
         await _unitOfWork.BeginTransactionAsync();
         try
         {
-        // 2. Provision / Get Meeting Room
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+            // 2. Provision / Get Meeting Room
+            var meetingRoom = await _unitOfWork.MeetingRoomRepository
+                .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
 
-        if (meetingRoom == null)
-        {
-            meetingRoom = new MeetingRoom
+            if (meetingRoom == null)
             {
-                TranslationRoomId = translationRoomId,
-                ProviderRoomName = translationRoomId.ToString(),
-                Status = roomDetails.Status
-            };
-            await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
+                meetingRoom = new MeetingRoom
+                {
+                    TranslationRoomId = translationRoomId,
+                    ProviderRoomName = translationRoomId.ToString(),
+                    Status = roomDetails.Status
+                };
+                await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
+                await _unitOfWork.SaveChangesAsync();
 
-            // Notify WorkspaceService to capture Context Snapshot
-            await _redisService.PublishEventAsync("meeting.started", new
-            {
-                TranslationRoomId = translationRoomId.ToString(),
-                WorkspaceId = roomDetails.WorkspaceId
-            });
-        }
-        else if (meetingRoom.Status != roomDetails.Status)
-        {
-            meetingRoom.Status = roomDetails.Status;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-
-            // If it transitions to IN_PROGRESS, might want to trigger too if not done
-            if (meetingRoom.Status == "IN_PROGRESS")
-            {
+                // Notify WorkspaceService to capture Context Snapshot
                 await _redisService.PublishEventAsync("meeting.started", new
                 {
                     TranslationRoomId = translationRoomId.ToString(),
                     WorkspaceId = roomDetails.WorkspaceId
                 });
             }
-        }
-
-        // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
-        bool isHost = roomDetails.HostId == userIdString;
-        bool isAuthorized = isHost;
-        Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
-
-        if (!isHost)
-        {
-            // Check MeetingInvitation Table first (for explicit invites & external guests)
-            var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
-            var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
-
-            if (explicitInvite != null)
+            else if (meetingRoom.Status != roomDetails.Status)
             {
-                if (explicitInvite.Status == "REVOKED")
-                {
-                    await _unitOfWork.RollbackTransactionAsync();
-                    return Result.Failure<JoinMeetingResponse>("Your invitation has been revoked.", ErrorCodes.Forbidden);
-                }
+                meetingRoom.Status = roomDetails.Status;
+                _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+                await _unitOfWork.SaveChangesAsync();
 
-                if (explicitInvite.ExpiresAt.HasValue && explicitInvite.ExpiresAt.Value < DateTime.UtcNow)
+                // If it transitions to IN_PROGRESS, might want to trigger too if not done
+                if (meetingRoom.Status == "IN_PROGRESS")
                 {
-                    await _unitOfWork.RollbackTransactionAsync();
-                    return Result.Failure<JoinMeetingResponse>("Your invitation has expired.", ErrorCodes.Forbidden);
+                    await _redisService.PublishEventAsync("meeting.started", new
+                    {
+                        TranslationRoomId = translationRoomId.ToString(),
+                        WorkspaceId = roomDetails.WorkspaceId
+                    });
                 }
+            }
 
-                isAuthorized = true;
+            // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
+            bool isHost = roomDetails.HostId == userIdString;
+            bool isAuthorized = isHost;
+            Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
+
+            if (!isHost)
+            {
+                // Check MeetingInvitation Table first (for explicit invites & external guests)
+                var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+                var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
+
+                if (explicitInvite != null)
+                {
+                    if (explicitInvite.Status == "REVOKED")
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("Your invitation has been revoked.", ErrorCodes.Forbidden);
+                    }
+
+                    if (explicitInvite.ExpiresAt.HasValue && explicitInvite.ExpiresAt.Value < DateTime.UtcNow)
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("Your invitation has expired.", ErrorCodes.Forbidden);
+                    }
+
+                    isAuthorized = true;
+                }
+                else
+                {
+                    // Fallback to Dynamic Workspace/Group resolution via gRPC
+                    var participantsCacheKey = $"meeting:participants:{translationRoomId}";
+                    var participantsResult = await _redisService.GetCacheAsync<Shared.Protos.GetParticipantsByRoomIdResponse>(participantsCacheKey);
+                    participantsResponse = participantsResult.Value;
+
+                    if (participantsResponse == null)
+                    {
+                        var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                        if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                        {
+                            participantsResponse = grpcPartsResult.Value;
+                            await _redisService.SetCacheAsync(participantsCacheKey, participantsResponse, TimeSpan.FromMinutes(1));
+                        }
+                    }
+
+                    if (participantsResponse != null)
+                    {
+                        var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
+                        if (p != null && p.IsActive)
+                        {
+                            isAuthorized = true;
+                        }
+                    }
+                }
+            }
+
+            if (!isAuthorized)
+            {
+                await _unitOfWork.RollbackTransactionAsync();
+                return Result.Failure<JoinMeetingResponse>("You are not authorized to join this meeting.", ErrorCodes.Forbidden);
+            }
+
+            // 4. Register or Update Participant
+            var providerIdentity = userIdString;
+            var participant = await _unitOfWork.MeetingParticipantRepository
+                .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
+
+            if (participant == null)
+            {
+                participant = new MeetingParticipant
+                {
+                    MeetingRoomId = meetingRoom.Id,
+                    UserId = userId,
+                    ProviderIdentity = providerIdentity,
+                    IsActive = true,
+                    JoinedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
+                await _unitOfWork.SaveChangesAsync();
             }
             else
             {
-                // Fallback to Dynamic Workspace/Group resolution via gRPC
-                var participantsCacheKey = $"meeting:participants:{translationRoomId}";
-                var participantsResult = await _redisService.GetCacheAsync<Shared.Protos.GetParticipantsByRoomIdResponse>(participantsCacheKey);
-                participantsResponse = participantsResult.Value;
-
-                if (participantsResponse == null)
+                if (!participant.IsActive || participant.LeftAt.HasValue)
                 {
-                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                    {
-                        participantsResponse = grpcPartsResult.Value;
-                        await _redisService.SetCacheAsync(participantsCacheKey, participantsResponse, TimeSpan.FromMinutes(1));
-                    }
-                }
-
-                if (participantsResponse != null)
-                {
-                    var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
-                    if (p != null && p.IsActive)
-                    {
-                        isAuthorized = true;
-                    }
+                    participant.IsActive = true;
+                    participant.JoinedAt = DateTime.UtcNow;
+                    participant.LeftAt = null;
+                    _unitOfWork.MeetingParticipantRepository.Update(participant);
+                    await _unitOfWork.SaveChangesAsync();
                 }
             }
-        }
 
-        if (!isAuthorized)
-        {
-            await _unitOfWork.RollbackTransactionAsync();
-            return Result.Failure<JoinMeetingResponse>("You are not authorized to join this meeting.", ErrorCodes.Forbidden);
-        }
-
-        // 4. Register or Update Participant
-        var providerIdentity = userIdString;
-        var participant = await _unitOfWork.MeetingParticipantRepository
-            .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
-
-        if (participant == null)
-        {
-            participant = new MeetingParticipant
+            // 5. Lobby / Waiting Room Logic
+            if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
             {
-                MeetingRoomId = meetingRoom.Id,
-                UserId = userId,
-                ProviderIdentity = providerIdentity,
-                IsActive = true,
-                JoinedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
-            await _unitOfWork.SaveChangesAsync();
-        }
-        else
-        {
-            if (!participant.IsActive || participant.LeftAt.HasValue)
-            {
-                participant.IsActive = true;
-                participant.JoinedAt = DateTime.UtcNow;
-                participant.LeftAt = null;
-                _unitOfWork.MeetingParticipantRepository.Update(participant);
-                await _unitOfWork.SaveChangesAsync();
+                if (isHost)
+                {
+                    meetingRoom.ActiveHostId = userId;
+                    _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+                    await _unitOfWork.SaveChangesAsync();
+                }
+                else
+                {
+                    await _unitOfWork.CommitTransactionAsync();
+                    return Result.Success(new JoinMeetingResponse
+                    {
+                        Token = string.Empty,
+                        ProviderRoomName = meetingRoom.ProviderRoomName,
+                        ParticipantIdentity = providerIdentity,
+                        IsWaitingRoom = true
+                    });
+                }
             }
-        }
-
-        // 5. Lobby / Waiting Room Logic
-        if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
-        {
-            if (isHost)
+            else if (isHost && meetingRoom.ActiveHostId == null)
             {
                 meetingRoom.ActiveHostId = userId;
                 _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
                 await _unitOfWork.SaveChangesAsync();
             }
-            else
+
+            // 6. Resolve participant display name for LiveKit token
+            // Priority: 1) displayName from controller (from JWT/frontend), 2) gRPC participant lookup, 3) fallback
+            string participantName = displayName ?? "Participant";
+
+            // If no displayName was provided, reuse participants already fetched during auth (or fetch once)
+            if (string.IsNullOrEmpty(displayName))
             {
-                await _unitOfWork.CommitTransactionAsync();
-                return Result.Success(new JoinMeetingResponse
+                try
                 {
-                    Token = string.Empty,
-                    ProviderRoomName = meetingRoom.ProviderRoomName,
-                    ParticipantIdentity = providerIdentity,
-                    IsWaitingRoom = true
-                });
+                    if (participantsResponse == null)
+                    {
+                        var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                        if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                            participantsResponse = grpcPartsResult.Value;
+                    }
+                    if (participantsResponse != null)
+                    {
+                        var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
+                        if (p != null && !string.IsNullOrEmpty(p.DisplayName))
+                            participantName = p.DisplayName;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to resolve participant display name via gRPC");
+                }
             }
-        }
-        else if (isHost && meetingRoom.ActiveHostId == null)
-        {
-            meetingRoom.ActiveHostId = userId;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-        }
 
-        // 6. Resolve participant display name for LiveKit token
-        // Priority: 1) displayName from controller (from JWT/frontend), 2) gRPC participant lookup, 3) fallback
-        string participantName = displayName ?? "Participant";
+            var tokenResult = _tokenService.GenerateToken(
+                roomName: meetingRoom.ProviderRoomName,
+                participantIdentity: providerIdentity,
+                participantName: participantName,
+                canPublish: true,
+                canSubscribe: true);
 
-        // If no displayName was provided, reuse participants already fetched during auth (or fetch once)
-        if (string.IsNullOrEmpty(displayName))
-        {
+            if (!tokenResult.IsSuccess)
+            {
+                await _unitOfWork.RollbackTransactionAsync();
+                return Result.Failure<JoinMeetingResponse>(tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
+            }
+
+            await _unitOfWork.CommitTransactionAsync();
+
+            // 7. Notify AI Worker via Redis Pub/Sub
             try
             {
-                if (participantsResponse == null)
+                await _redisService.PublishEventAsync("meeting.track_published", new
                 {
-                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                        participantsResponse = grpcPartsResult.Value;
-                }
-                if (participantsResponse != null)
-                {
-                    var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
-                    if (p != null && !string.IsNullOrEmpty(p.DisplayName))
-                        participantName = p.DisplayName;
-                }
+                    room_name = meetingRoom.ProviderRoomName,
+                    participant_identity = providerIdentity,
+                    track_sid = "audio_track_1"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to resolve participant display name via gRPC");
+                _logger.LogWarning(ex, "Failed to auto-trigger AI worker for room {RoomName}", meetingRoom.ProviderRoomName);
             }
-        }
 
-        var tokenResult = _tokenService.GenerateToken(
-            roomName: meetingRoom.ProviderRoomName,
-            participantIdentity: providerIdentity,
-            participantName: participantName,
-            canPublish: true,
-            canSubscribe: true);
-
-        if (!tokenResult.IsSuccess)
-        {
-            await _unitOfWork.RollbackTransactionAsync();
-            return Result.Failure<JoinMeetingResponse>(tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
-        }
-
-        await _unitOfWork.CommitTransactionAsync();
-
-        // 7. Notify AI Worker via Redis Pub/Sub
-        try
-        {
-            await _redisService.PublishEventAsync("meeting.track_published", new
+            return Result.Success(new JoinMeetingResponse
             {
-                room_name = meetingRoom.ProviderRoomName,
-                participant_identity = providerIdentity,
-                track_sid = "audio_track_1"
+                Token = tokenResult.Value!,
+                ProviderRoomName = meetingRoom.ProviderRoomName,
+                ParticipantIdentity = providerIdentity,
+                IsWaitingRoom = false
             });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to auto-trigger AI worker for room {RoomName}", meetingRoom.ProviderRoomName);
-        }
-
-        return Result.Success(new JoinMeetingResponse
-        {
-            Token = tokenResult.Value!,
-            ProviderRoomName = meetingRoom.ProviderRoomName,
-            ParticipantIdentity = providerIdentity,
-            IsWaitingRoom = false
-        });
         } // end try (BeginTransactionAsync)
         catch (Exception ex)
         {

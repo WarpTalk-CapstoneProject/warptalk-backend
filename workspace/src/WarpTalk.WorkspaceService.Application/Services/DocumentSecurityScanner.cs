@@ -23,9 +23,9 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
         // PII Scan (GDPR, HIPAA, local security compliance)
         if (piiEnabled)
         {
-            if (EmailRegex.IsMatch(content) || 
-                PhoneRegex.IsMatch(content) || 
-                SsnRegex.IsMatch(content) || 
+            if (EmailRegex.IsMatch(content) ||
+                PhoneRegex.IsMatch(content) ||
+                SsnRegex.IsMatch(content) ||
                 VnIdRegex.IsMatch(content))
             {
                 piiDetected = true;

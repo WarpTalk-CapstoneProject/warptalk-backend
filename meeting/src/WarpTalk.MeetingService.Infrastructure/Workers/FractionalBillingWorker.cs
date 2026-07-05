@@ -86,10 +86,10 @@ public class FractionalBillingWorker : BackgroundService
                     if (!string.IsNullOrEmpty(workspaceId) && endMs > startMs)
                     {
                         double durationSeconds = (endMs - startMs) / 1000.0;
-                        
+
                         _accumulatedSeconds.AddOrUpdate(
-                            workspaceId, 
-                            durationSeconds, 
+                            workspaceId,
+                            durationSeconds,
                             (_, existing) => existing + durationSeconds);
                     }
 
@@ -126,7 +126,7 @@ public class FractionalBillingWorker : BackgroundService
                 {
                     // Deduct whole seconds
                     int secondsToBill = (int)Math.Floor(kvp.Value);
-                    
+
                     if (_accumulatedSeconds.TryUpdate(kvp.Key, kvp.Value - secondsToBill, kvp.Value))
                     {
                         try
@@ -138,7 +138,7 @@ public class FractionalBillingWorker : BackgroundService
                                 ReferenceType = "AI_SPEECH_TRANSLATION",
                                 ReferenceId = "stt-stream"
                             }, cancellationToken: ct);
-                            
+
                             _logger.LogInformation("Billed {Seconds} seconds for Workspace {WorkspaceId}", secondsToBill, kvp.Key);
                         }
                         catch (Exception ex)

@@ -27,6 +27,6 @@ public partial class Invoice
     public DateTime CreatedAt { get; set; }
 
     public virtual Subscription? Subscription { get; set; }
-    
+
     public virtual Payment? Payment { get; set; }
 }

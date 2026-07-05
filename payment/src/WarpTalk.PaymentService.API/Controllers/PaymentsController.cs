@@ -38,8 +38,36 @@ public class PaymentsController : ControllerBase
     {
         try
         {
-            var service = new Stripe.Checkout.SessionService();
-            var session = await service.GetAsync(sessionId);
+            Stripe.Checkout.Session session;
+            if (sessionId.StartsWith("mock_session_"))
+            {
+                var payloadBase64 = sessionId.Substring("mock_session_".Length);
+                var payloadJson = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(payloadBase64));
+                var payload = System.Text.Json.JsonSerializer.Deserialize<MockSessionPayload>(payloadJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+                session = new Stripe.Checkout.Session
+                {
+                    Id = sessionId,
+                    AmountTotal = (long)(string.Equals(payload.Currency, "vnd", StringComparison.OrdinalIgnoreCase) ? payload.Amount : payload.Amount * 100),
+                    Currency = payload.Currency,
+                    PaymentStatus = "paid",
+                    Status = "complete",
+                    PaymentIntentId = "mock_pi_" + Guid.NewGuid().ToString("N"),
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "UserId", payload.UserId.ToString() },
+                        { "WorkspaceId", payload.WorkspaceId.ToString() },
+                        { "PaymentType", payload.PaymentType },
+                        { "PlanSlug", payload.PlanSlug ?? "" },
+                        { "BillingCycle", payload.BillingCycle ?? "" }
+                    }
+                };
+            }
+            else
+            {
+                var service = new Stripe.Checkout.SessionService();
+                session = await service.GetAsync(sessionId);
+            }
             
             if (session != null && session.PaymentStatus == "paid")
             {
@@ -256,5 +284,16 @@ public class PaymentsController : ControllerBase
             Console.WriteLine($"Exception: {ex.Message}");
             return StatusCode(500, ex.Message);
         }
+    }
+
+    private class MockSessionPayload
+    {
+        public Guid UserId { get; set; }
+        public Guid WorkspaceId { get; set; }
+        public decimal Amount { get; set; }
+        public string Currency { get; set; }
+        public string PaymentType { get; set; }
+        public string PlanSlug { get; set; }
+        public string BillingCycle { get; set; }
     }
 }

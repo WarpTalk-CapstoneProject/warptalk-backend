@@ -460,7 +460,7 @@ public partial class BillingDbContext : DbContext
                 .HasForeignKey(d => d.SubscriptionId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("fk_invoices_subscription");
-                
+
             entity.HasOne(d => d.Payment)
                 .WithMany()
                 .HasForeignKey(d => d.PaymentId)

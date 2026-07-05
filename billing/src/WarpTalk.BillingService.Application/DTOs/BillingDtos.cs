@@ -16,11 +16,31 @@ public record BillingReportDto(
     int EndingBalance,
     int TotalTopUpCredits,
     int TotalConsumedCredits,
+    decimal? AverageTranslationCostPerMinute,
+    int? AverageCostPerMeeting,
     IEnumerable<UsageSummaryDto> UsageBreakdown
 );
 
 public record UsageSummaryDto(
     string UsageType,
+    int TotalCreditsConsumed
+);
+
+public record UsageChartDto(
+    int Year,
+    IEnumerable<MonthlyUsageDto> MonthlyData
+);
+
+public record MonthlyUsageDto(
+    int Month,
+    string MonthName,
+    int ConsumedCredits,
+    int TopUpCredits
+);
+
+public record FeatureAdoptionDto(
+    string FeatureName,
+    int UsageCount,
     int TotalCreditsConsumed
 );
 

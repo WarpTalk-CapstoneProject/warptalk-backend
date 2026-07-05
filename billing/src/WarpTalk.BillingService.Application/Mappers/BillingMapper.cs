@@ -27,6 +27,56 @@ public static class BillingMapper
         plan.SortOrder
     );
 
+    public static Plan ToEntity(this CreatePlanRequest request) => new()
+    {
+        Id = Guid.NewGuid(),
+        Name = request.Name,
+        Slug = request.Slug.ToLowerInvariant().Trim(),
+        Tier = request.Tier,
+        Price = request.Price,
+        Currency = request.Currency,
+        BillingCycle = request.BillingCycle,
+        CreditsPerCycle = request.CreditsPerCycle,
+        MaxParticipants = request.MaxParticipants,
+        MaxLanguages = request.MaxLanguages,
+        VoiceCloneEnabled = request.VoiceCloneEnabled,
+        AiAssistantEnabled = request.AiAssistantEnabled,
+        GlossaryEnabled = request.GlossaryEnabled,
+        DedicatedGpu = request.DedicatedGpu,
+        VoiceCloneLimitMins = request.VoiceCloneLimitMins,
+        AllowGlossary = request.AllowGlossary,
+        AllowAcl = request.AllowAcl,
+        Features = request.Features,
+        SortOrder = request.SortOrder,
+        IsActive = true,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow
+    };
+
+    public static void UpdateFromRequest(this Plan plan, UpdatePlanRequest request)
+    {
+        plan.Name = request.Name;
+        plan.Slug = request.Slug.ToLowerInvariant().Trim();
+        plan.Tier = request.Tier;
+        plan.Price = request.Price;
+        plan.Currency = request.Currency;
+        plan.BillingCycle = request.BillingCycle;
+        plan.CreditsPerCycle = request.CreditsPerCycle;
+        plan.MaxParticipants = request.MaxParticipants;
+        plan.MaxLanguages = request.MaxLanguages;
+        plan.VoiceCloneEnabled = request.VoiceCloneEnabled;
+        plan.AiAssistantEnabled = request.AiAssistantEnabled;
+        plan.GlossaryEnabled = request.GlossaryEnabled;
+        plan.DedicatedGpu = request.DedicatedGpu;
+        plan.VoiceCloneLimitMins = request.VoiceCloneLimitMins;
+        plan.AllowGlossary = request.AllowGlossary;
+        plan.AllowAcl = request.AllowAcl;
+        plan.Features = request.Features;
+        plan.SortOrder = request.SortOrder;
+        plan.IsActive = request.IsActive;
+        plan.UpdatedAt = DateTime.UtcNow;
+    }
+
     public static SubscriptionDto ToDto(this Subscription sub, string planName, decimal price) => new(
         sub.Id,
         sub.UserId,
@@ -222,6 +272,7 @@ public static class BillingMapper
         Type = "consumption",
         Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
         ReferenceType = "usage_record",
+        ReferenceId = request.TranslationRoomId,
         Status = "committed",
         BalanceAfter = sub.CreditsRemaining,
         CreatedAt = DateTime.UtcNow

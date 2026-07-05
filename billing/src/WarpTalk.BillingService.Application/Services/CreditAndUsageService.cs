@@ -19,9 +19,9 @@ public class CreditAndUsageService : ICreditAndUsageService
     private readonly IConfiguration _configuration;
 
     public CreditAndUsageService(
-        IUnitOfWork unitOfWork, 
-        ILogger<CreditAndUsageService> logger, 
-        IBillingMessagePublisher messagePublisher, 
+        IUnitOfWork unitOfWork,
+        ILogger<CreditAndUsageService> logger,
+        IBillingMessagePublisher messagePublisher,
         IRedisBillingStore redisStore,
         IConfiguration configuration)
     {
@@ -62,10 +62,10 @@ public class CreditAndUsageService : ICreditAndUsageService
 
     public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
     {
-        var sttRateMin = double.Parse(_configuration["BillingRates:SttPerMinute"] ?? "10.0", System.Globalization.CultureInfo.InvariantCulture);
-        var transRateMin = double.Parse(_configuration["BillingRates:TranslationPerMinute"] ?? "10.0", System.Globalization.CultureInfo.InvariantCulture);
-        var ttsRateMin = double.Parse(_configuration["BillingRates:StandardTtsPerMinute"] ?? "5.0", System.Globalization.CultureInfo.InvariantCulture);
-        var vcRateMin = double.Parse(_configuration["BillingRates:VoiceClonePerMinute"] ?? "25.0", System.Globalization.CultureInfo.InvariantCulture);
+        var sttRateMin = double.Parse(_configuration["BillingRates:SttPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
+        var transRateMin = double.Parse(_configuration["BillingRates:TranslationPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
+        var ttsRateMin = double.Parse(_configuration["BillingRates:StandardTtsPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
+        var vcRateMin = double.Parse(_configuration["BillingRates:VoiceClonePerMinute"] ?? "40.0", System.Globalization.CultureInfo.InvariantCulture);
 
         double ratePerMinute = 0;
         if (isVoiceClone)
@@ -157,6 +157,7 @@ public class CreditAndUsageService : ICreditAndUsageService
                 SubscriptionId = sub.Id,
                 UserId = sub.UserId,
                 WorkspaceId = sub.WorkspaceId,
+                TranslationRoomId = request.ReferenceId,
                 UsageType = request.ReferenceType,
                 Unit = "request",
                 Quantity = 1,
@@ -241,8 +242,8 @@ public class CreditAndUsageService : ICreditAndUsageService
             var size = pageSize > 0 ? pageSize : 20;
             var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
 
-            System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t => 
-                t.SubscriptionId == sub.Id &&
+            System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t =>
+                t.WorkspaceId == workspaceId &&
                 (string.IsNullOrEmpty(type) || t.Type == type) &&
                 (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
                 (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&
@@ -708,7 +709,7 @@ public class CreditAndUsageService : ICreditAndUsageService
 
             // Get all transactions for the month
             var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
-                tx => tx.WorkspaceId == workspaceId && tx.CreatedAt >= startDate && tx.CreatedAt < endDate, 
+                tx => tx.WorkspaceId == workspaceId && tx.CreatedAt >= startDate && tx.CreatedAt < endDate,
                 cancellationToken);
             var transactions = txs.OrderBy(tx => tx.CreatedAt).ToList();
 
@@ -726,7 +727,7 @@ public class CreditAndUsageService : ICreditAndUsageService
                     0, 1,
                     q => q.OrderByDescending(tx => tx.CreatedAt),
                     cancellationToken);
-                
+
                 var priorTx = priorTxs.FirstOrDefault();
                 if (priorTx != null)
                 {
@@ -754,9 +755,21 @@ public class CreditAndUsageService : ICreditAndUsageService
                 breakdown.Add(new UsageSummaryDto("Unknown / Generic API Consumption", totalConsumed));
             }
 
+            var translationUsages = usages.Where(u => u.UsageType.Contains("translation", StringComparison.OrdinalIgnoreCase) && u.Quantity > 0).ToList();
+            decimal? averageTranslationCost = translationUsages.Any()
+                ? Math.Round(translationUsages.Sum(u => (decimal)u.CreditsConsumed) / translationUsages.Sum(u => u.Quantity), 2)
+                : null;
+
+            var meetingGroups = usages.Where(u => u.TranslationRoomId.HasValue)
+                                      .GroupBy(u => u.TranslationRoomId.Value)
+                                      .ToList();
+            int? averageCostPerMeeting = meetingGroups.Any()
+                ? (int)Math.Round(meetingGroups.Average(g => g.Sum(u => u.CreditsConsumed)))
+                : null;
+
             var report = new BillingReportDto(
                 workspaceId, month, year, startingBalance, endingBalance,
-                totalTopUps, totalConsumed, breakdown
+                totalTopUps, totalConsumed, averageTranslationCost, averageCostPerMeeting, breakdown
             );
 
             return Result.Success(report);
@@ -793,7 +806,7 @@ public class CreditAndUsageService : ICreditAndUsageService
             {
                 _logger.LogWarning(ex, "Concurrency conflict for WorkspaceId {WorkspaceId}. Attempt {Attempt} of {MaxRetries}", workspaceId, attempt, maxRetries);
                 if (attempt == maxRetries) return Result.Failure<T>("System is busy. Please try again later.", "CONCURRENCY_ERROR");
-                
+
                 await Task.Delay(50 * attempt, cancellationToken);
                 _unitOfWork.ClearTracking();
             }
@@ -834,5 +847,68 @@ public class CreditAndUsageService : ICreditAndUsageService
 
         var totalSeconds = voiceCloneUsages.Sum(u => u.DurationSeconds ?? 0);
         return (int)Math.Ceiling(totalSeconds / 60.0);
+    }
+    public async Task<Result<UsageChartDto>> GetWorkspaceUsageChartAsync(Guid workspaceId, int year, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var startDate = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var endDate = startDate.AddYears(1);
+
+            var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
+                tx => tx.WorkspaceId == workspaceId && tx.CreatedAt >= startDate && tx.CreatedAt < endDate,
+                cancellationToken);
+
+            var monthlyData = Enumerable.Range(1, 12).Select(month =>
+            {
+                var monthTxs = txs.Where(t => t.CreatedAt.Month == month).ToList();
+                var topUp = monthTxs.Where(t => t.Type == "top_up" && t.Status == "committed").Sum(t => t.Amount);
+                var consumed = Math.Abs(monthTxs.Where(t => (t.Type == "consumption" || t.Type == "reserve") && t.Status == "committed").Sum(t => t.Amount));
+
+                return new MonthlyUsageDto(
+                    month,
+                    new DateTime(year, month, 1).ToString("MMM"),
+                    consumed,
+                    topUp
+                );
+            }).ToList();
+
+            _logger.LogInformation("Chart data for WorkspaceId {WorkspaceId} in {Year}: {Data}", workspaceId, year, System.Text.Json.JsonSerializer.Serialize(monthlyData));
+
+            return Result.Success(new UsageChartDto(year, monthlyData));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting usage chart for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<UsageChartDto>("Failed to generate chart.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoptionAsync(Guid workspaceId, int days, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var startDate = DateTime.UtcNow.AddDays(-days);
+
+            var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
+                u => u.WorkspaceId == workspaceId && u.RecordedAt >= startDate,
+                cancellationToken);
+
+            var adoption = usages.GroupBy(u => u.UsageType)
+                .Select(g => new FeatureAdoptionDto(
+                    g.Key,
+                    g.Count(),
+                    g.Sum(x => x.CreditsConsumed)
+                ))
+                .OrderByDescending(x => x.TotalCreditsConsumed)
+                .ToList();
+
+            return Result.Success(adoption.AsEnumerable());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting feature adoption for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<IEnumerable<FeatureAdoptionDto>>("Failed to generate feature adoption.", "INTERNAL_ERROR");
+        }
     }
 }

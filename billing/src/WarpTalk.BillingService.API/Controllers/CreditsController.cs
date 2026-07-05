@@ -4,6 +4,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -25,6 +26,7 @@ public class CreditsController : ControllerBase
     /// Get the current credit balance for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(
         Guid workspaceId,
         CancellationToken cancellationToken)
@@ -97,6 +99,7 @@ public class CreditsController : ControllerBase
     /// Paginated credit transaction history for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}/history")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<PagedResult<CreditTransactionDto>>> GetCreditHistory(
         Guid workspaceId,
         [FromQuery] int pageNumber = 1,
@@ -119,6 +122,7 @@ public class CreditsController : ControllerBase
     /// Generate a billing report for a workspace for a specific month and year.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}/report")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<BillingReportDto>> GetBillingReport(
         [FromServices] ISubscriptionManagementService subscriptionService,
         Guid workspaceId,
@@ -136,6 +140,7 @@ public class CreditsController : ControllerBase
     /// Get paginated invoices for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}/invoices")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<PagedResult<InvoiceDto>>> GetWorkspaceInvoices(
         [FromServices] IPaymentAndLedgerService paymentService,
         Guid workspaceId,
@@ -195,7 +200,7 @@ public class CreditsController : ControllerBase
             UpdatedAt = DateTime.UtcNow
         };
         await _creditService.TopUpCreditsAsync(workspaceId, new TopUpRequest((int)(amount / 10m), "stripe_payment", null));
-        
+
         await unitOfWork.PaymentRepository.AddAsync(payment);
 
         var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
@@ -216,6 +221,67 @@ public class CreditsController : ControllerBase
         await unitOfWork.SaveChangesAsync();
 
         return Ok(new { message = "Payment simulated successfully.", invoiceId = invoice.Id, stripeInvoiceId = stripeInvoiceId });
+    }
+
+    /// <summary>
+    /// Manually adjust credits for a workspace (Admin only).
+    /// </summary>
+    [HttpPost("workspace/{workspaceId:guid}/adjust")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<CreditTransactionDto>> AdjustCredits(
+        Guid workspaceId,
+        [FromBody] AdjustCreditsRequest request,
+        [FromServices] IUnitOfWork unitOfWork,
+        CancellationToken cancellationToken)
+    {
+        var sub = await unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        if (sub is null)
+            return NotFound(new { message = "No active subscription found for workspace." });
+
+        // Retrieve adminUserId from claims
+        var adminUserId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value
+            ?? Guid.Empty.ToString();
+
+        var result = await _creditService.AdjustCreditsAsync(
+            sub.Id, request.Amount, request.Reason, adminUserId, cancellationToken);
+
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Gets usage chart data for a workspace.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId:guid}/chart")]
+    [RequireWorkspaceRole("Owner", "Admin")]
+    public async Task<ActionResult<UsageChartDto>> GetWorkspaceUsageChart(
+        Guid workspaceId,
+        [FromQuery] int year,
+        CancellationToken cancellationToken)
+    {
+        var result = await _creditService.GetWorkspaceUsageChartAsync(workspaceId, year, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Gets feature adoption metrics for a workspace.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId:guid}/breakdown")]
+    [AllowAnonymous]
+    public async Task<ActionResult<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoption(
+        Guid workspaceId,
+        [FromQuery] int days = 30,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetWorkspaceFeatureAdoptionAsync(workspaceId, days, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
     }
 
     private ActionResult HandleFailure<T>(Result<T> result) =>

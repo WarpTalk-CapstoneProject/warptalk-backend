@@ -30,8 +30,8 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
-        IUnitOfWork unitOfWork, 
-        IWorkspaceCacheService workspaceCache, 
+        IUnitOfWork unitOfWork,
+        IWorkspaceCacheService workspaceCache,
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher)
@@ -359,7 +359,7 @@ public class WorkspaceService : IWorkspaceService
 
             workspace.DeletedAt = DateTime.UtcNow;
             workspace.UpdatedBy = userId;
-            
+
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _unitOfWork.SaveChangesAsync(ct);
 

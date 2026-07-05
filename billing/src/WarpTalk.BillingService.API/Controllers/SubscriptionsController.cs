@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -37,6 +38,7 @@ public class SubscriptionsController : ControllerBase
     /// Get the active subscription for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(
         Guid workspaceId,
         CancellationToken cancellationToken)
@@ -51,6 +53,7 @@ public class SubscriptionsController : ControllerBase
     /// Cancel the active subscription for a workspace.
     /// </summary>
     [HttpDelete("workspace/{workspaceId:guid}")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<IActionResult> CancelSubscription(
         Guid workspaceId,
         [FromBody] CancelSubscriptionRequest request,
@@ -66,6 +69,7 @@ public class SubscriptionsController : ControllerBase
     /// Change the active subscription plan for a workspace.
     /// </summary>
     [HttpPut("workspace/{workspaceId:guid}/change-plan")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(
         Guid workspaceId,
         [FromBody] ChangeSubscriptionRequest request,

@@ -43,6 +43,15 @@ public class NotificationHub : Hub
         await base.OnConnectedAsync();
     }
 
+    public async Task JoinWorkspace(string workspaceId)
+    {
+        if (!string.IsNullOrEmpty(workspaceId))
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, $"workspace:{workspaceId}");
+            _logger.LogInformation("NotificationHub: Connection {ConnectionId} joined workspace group workspace:{WorkspaceId}", Context.ConnectionId, workspaceId);
+        }
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var userId = GetUserId();

@@ -79,12 +79,12 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var extension = System.IO.Path.GetExtension(request.File.FileName);
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
-            var status = isOwnerOrAdmin 
-                ? WorkspaceDocumentStatus.active 
+            var status = isOwnerOrAdmin
+                ? WorkspaceDocumentStatus.active
                 : WorkspaceDocumentStatus.pending_approval;
 
-            var ingestionStatus = isOwnerOrAdmin 
-                ? WorkspaceDocumentIngestionStatus.pending 
+            var ingestionStatus = isOwnerOrAdmin
+                ? WorkspaceDocumentIngestionStatus.pending
                 : WorkspaceDocumentIngestionStatus.awaiting_approval;
 
             var aiEligible = isOwnerOrAdmin;

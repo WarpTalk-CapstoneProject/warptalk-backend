@@ -17,6 +17,19 @@ public interface ISubscriptionManagementService
         string slug,
         CancellationToken cancellationToken = default);
 
+    Task<Result<PlanDto>> CreatePlanAsync(
+        CreatePlanRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PlanDto>> UpdatePlanAsync(
+        Guid id,
+        UpdatePlanRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<bool>> DeactivatePlanAsync(
+        Guid id,
+        CancellationToken cancellationToken = default);
+
     // --- Subscription Methods ---
     Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
         Guid workspaceId,

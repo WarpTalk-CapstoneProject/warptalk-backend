@@ -37,7 +37,7 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 
 // Database
-var connectionString = builder.Configuration.GetConnectionString("WorkspaceDb") 
+var connectionString = builder.Configuration.GetConnectionString("WorkspaceDb")
                       ?? "Host=localhost;Database=warptalk;Username=postgres;Password=postgres;Search Path=workspace,public";
 builder.Services.AddDbContext<WorkspaceDbContext>(options =>
 {
@@ -94,12 +94,12 @@ builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 builder.Services.AddControllers();
 
 var rawJwtSecret = builder.Configuration["Jwt:Secret"];
-var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) || 
+var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) ||
                          rawJwtSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                          rawJwtSecret.Length < 32;
 
-var validatedSecret = isDefaultOrInvalid 
-    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!" 
+var validatedSecret = isDefaultOrInvalid
+    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
     : rawJwtSecret;
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

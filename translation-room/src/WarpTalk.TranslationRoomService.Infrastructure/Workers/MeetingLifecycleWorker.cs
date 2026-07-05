@@ -49,7 +49,7 @@ public class MeetingLifecycleWorker : BackgroundService
     private async Task DetectAndCloseGhostMeetingsAsync(CancellationToken cancellationToken)
     {
         _logger.LogDebug("Scanning for Ghost Meetings...");
-        
+
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -72,7 +72,7 @@ public class MeetingLifecycleWorker : BackgroundService
                 if ((participants == null || participants.Count == 0) && (DateTime.UtcNow - room.StartedAt) > _ghostThreshold)
                 {
                     _logger.LogWarning("Ghost meeting detected: Room {RoomId}. Terminating.", room.Id);
-                    
+
                     room.Status = WarpTalk.TranslationRoomService.Domain.Enums.RoomStatus.ENDED.ToString();
                     room.EndedAt = DateTime.UtcNow;
                     unitOfWork.TranslationRoomRepository.Update(room);

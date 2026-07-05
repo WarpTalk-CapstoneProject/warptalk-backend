@@ -49,6 +49,16 @@ public interface ICreditAndUsageService
         int month,
         CancellationToken cancellationToken = default);
 
+    Task<Result<UsageChartDto>> GetWorkspaceUsageChartAsync(
+        Guid workspaceId,
+        int year,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoptionAsync(
+        Guid workspaceId,
+        int days,
+        CancellationToken cancellationToken = default);
+
     Task<Result<CreditReservationDto>> ReserveCreditsAsync(
         ReserveCreditsRequest request,
         CancellationToken cancellationToken = default);

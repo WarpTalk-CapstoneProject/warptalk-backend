@@ -36,9 +36,9 @@ public static class WorkspaceHelper
             "Workspace",
             ct);
 
-        return memberships.Any(m => 
+        return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
-            && m.Workspace != null 
+            && m.Workspace != null
             && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 
@@ -68,11 +68,11 @@ public static class WorkspaceHelper
         var emailDomain = emailAddress.Domain;
 
         var isDomainVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-            vd => vd.WorkspaceId == workspaceId 
-                  && vd.Domain.ToLower() == emailDomain.ToLower() 
-                  && vd.Status == "verified" 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null, 
+            vd => vd.WorkspaceId == workspaceId
+                  && vd.Domain.ToLower() == emailDomain.ToLower()
+                  && vd.Status == "verified"
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
             ct);
         return !isDomainVerified;
     }
@@ -109,15 +109,15 @@ public static class WorkspaceHelper
         }
 
         var emailDomain = emailAddress.Domain;
-        
+
         var isDomainVerified = await unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-            vd => vd.WorkspaceId == workspace.Id 
-                  && vd.Domain.ToLower() == emailDomain.ToLower() 
-                  && vd.Status == "verified" 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null, 
+            vd => vd.WorkspaceId == workspace.Id
+                  && vd.Domain.ToLower() == emailDomain.ToLower()
+                  && vd.Status == "verified"
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
             ct);
-        
+
         return isDomainVerified ? MembershipType.Internal : MembershipType.External;
     }
 
@@ -126,11 +126,11 @@ public static class WorkspaceHelper
         if (string.IsNullOrWhiteSpace(domain)) return null;
 
         var verifiedDomain = await unitOfWork.Repository<WorkspaceVerifiedDomain>().FirstOrDefaultAsync(
-            vd => vd.Domain.ToLower() == domain.ToLower() 
-                  && vd.Status == "verified" 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null 
-                  && vd.Workspace.IsActive 
+            vd => vd.Domain.ToLower() == domain.ToLower()
+                  && vd.Status == "verified"
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null
+                  && vd.Workspace.IsActive
                   && vd.Workspace.DeletedAt == null,
             "Workspace",
             ct);

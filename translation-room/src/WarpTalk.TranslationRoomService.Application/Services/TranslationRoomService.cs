@@ -129,9 +129,9 @@ public class TranslationRoomService : ITranslationRoomService
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
-                
+
                 var emailTasks = new List<Task>();
-                
+
                 foreach (var email in request.InvitedEmails)
                 {
                     // 1. Store the invitation
@@ -145,10 +145,10 @@ public class TranslationRoomService : ITranslationRoomService
                     // 2. Send the email
                     emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
                 }
-                
+
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
-                
+
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
@@ -496,7 +496,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
                                 p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
                     .ToList();
 
@@ -639,13 +639,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
-                
+
             if (request.Description != null)
                 translationRoom.Description = request.Description;
-                
+
             if (request.MaxParticipants.HasValue)
                 translationRoom.MaxParticipants = request.MaxParticipants.Value;
-                
+
             if (request.ScheduledAt.HasValue)
                 translationRoom.ScheduledAt = request.ScheduledAt.Value;
 
@@ -654,7 +654,7 @@ public class TranslationRoomService : ITranslationRoomService
                 var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<WarpTalk.TranslationRoomService.Domain.Entities.TranslationRoomInvitation>();
-                
+
                 var existingInvitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoom.Id, ct: ct);
                 var existingEmails = existingInvitations.Select(i => i.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
 

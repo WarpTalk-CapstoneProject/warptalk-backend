@@ -499,7 +499,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             sub.Status = "active";
             sub.IsActive = true;
             sub.CurrentPeriodStart = DateTime.UtcNow;
-            
+
             var baseDate = (isRenewal && sub.CurrentPeriodEnd > DateTime.UtcNow) ? sub.CurrentPeriodEnd : DateTime.UtcNow;
 
             var billingCycle = !string.IsNullOrWhiteSpace(request.BillingCycle)
@@ -701,9 +701,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 _logger.LogInformation("Payment {ProviderTxId} already in status {Status}. Ignoring (Idempotent).", providerTxId, request.Status);
                 await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
+                _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
-        return new Shared.Protos.ProcessPaymentResponse { Success = true };
+                return new Shared.Protos.ProcessPaymentResponse { Success = true };
             }
 
             existingPayment.Status = request.Status;
@@ -723,9 +723,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
             await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-        _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
+            _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
-        return new Shared.Protos.ProcessPaymentResponse { Success = true };
+            return new Shared.Protos.ProcessPaymentResponse { Success = true };
         }
 
         if (request.Status == "paid")

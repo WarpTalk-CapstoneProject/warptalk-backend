@@ -198,7 +198,7 @@ public class GoogleAuthService : IGoogleAuthService
             // Check rate limit window (Max 5 requests per 15 minutes) - Fixed Window
             var windowKey = $"resend:window:{user.Id}";
             var attemptsString = await _cache.GetStringAsync(windowKey, ct);
-            
+
             int attemptsCount = 0;
             DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
             if (!string.IsNullOrEmpty(attemptsString))

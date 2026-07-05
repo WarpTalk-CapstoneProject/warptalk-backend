@@ -17,8 +17,8 @@ public static class TranslationRoomParticipantMapper
         bool isHost)
     {
         var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
-        var initialStatus = (requiresApproval && !isHost) 
-            ? "WAITING" 
+        var initialStatus = (requiresApproval && !isHost)
+            ? "WAITING"
             : "CONNECTED";
 
         return new TranslationRoomParticipant
@@ -53,8 +53,8 @@ public static class TranslationRoomParticipantMapper
             participant.Status == "LEFT" ||
             participant.Status == "INVITED")
         {
-            participant.Status = (requiresApproval && !isHost) 
-                ? "WAITING" 
+            participant.Status = (requiresApproval && !isHost)
+                ? "WAITING"
                 : "CONNECTED";
         }
 

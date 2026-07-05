@@ -70,12 +70,12 @@ public class MeetingsController : ControllerBase
         }
 
         var result = await _meetingRoomService.RejectParticipantAsync(translationRoomId, hostUserId.Value, participantId);
-        
+
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            
+
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
 
@@ -95,12 +95,12 @@ public class MeetingsController : ControllerBase
         }
 
         var result = await _meetingRoomService.TransferHostAsync(translationRoomId, currentHostUserId.Value, newHostUserId);
-        
+
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            
+
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
 
@@ -123,12 +123,12 @@ public class MeetingsController : ControllerBase
         }
 
         var result = await _meetingRoomService.KickParticipantAsync(translationRoomId, hostUserId.Value, participantId);
-        
+
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            
+
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
 
@@ -148,12 +148,12 @@ public class MeetingsController : ControllerBase
         }
 
         var result = await _meetingRoomService.EndMeetingAsync(translationRoomId, hostUserId.Value);
-        
+
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            
+
             if (result.ErrorCode == ErrorCodes.Forbidden)
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
 

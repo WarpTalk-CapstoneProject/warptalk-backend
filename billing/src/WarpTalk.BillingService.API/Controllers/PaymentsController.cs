@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -22,6 +23,7 @@ public class PaymentsController : ControllerBase
     /// Paginated payment/transaction history for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}/history")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<PagedResult<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] int pageNumber = 1,
@@ -39,6 +41,7 @@ public class PaymentsController : ControllerBase
     /// Create a pending payment checkout for a subscription.
     /// </summary>
     [HttpPost]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment(
         [FromBody] CreatePaymentRequest request,
         CancellationToken cancellationToken)

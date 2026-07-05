@@ -50,3 +50,10 @@ public record CreditTransactionDto(
     int BalanceAfter,
     DateTime CreatedAt
 );
+
+public record AdjustCreditsRequest(
+    [Required]
+    int Amount,
+    [Required]
+    string Reason
+);

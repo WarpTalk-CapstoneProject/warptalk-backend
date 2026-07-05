@@ -22,7 +22,7 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
         var repo = _unitOfWork.Repository<NotificationPreference>();
-        
+
         // We do a simple fallback if multiple matching items exist
         // Real implementation usually handles SingleOrDefault correctly
         var prefs = await repo.FindAsync(p => p.UserId == userId);
@@ -79,9 +79,9 @@ public class NotificationService : INotificationService
         var repo = _unitOfWork.Repository<NotificationMessage>();
         var count = await repo.CountAsync(n => n.UserId == userId);
         var items = await repo.FindWithPaginationAsync(
-            n => n.UserId == userId, 
-            (page - 1) * pageSize, 
-            pageSize, 
+            n => n.UserId == userId,
+            (page - 1) * pageSize,
+            pageSize,
             q => q.OrderByDescending(n => n.CreatedAt)
         );
 
@@ -96,7 +96,7 @@ public class NotificationService : INotificationService
     {
         var repo = _unitOfWork.NotificationMessageRepository;
         var notification = await repo.GetByIdAndUserIdAsync(notificationId, userId, ct);
-        
+
         if (notification == null)
             return Result.Failure("Notification not found", ErrorCodes.NotFound);
         if (!notification.IsRead)
@@ -123,10 +123,10 @@ public class NotificationService : INotificationService
     {
         var repo = _unitOfWork.Repository<NotificationMessage>();
         var notification = NotificationMessageMapper.ToEntity(dto);
-        
+
         await repo.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
-        
+
         return Result.Success(NotificationMessageMapper.ToDto(notification));
     }
 

@@ -71,16 +71,16 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
             AudioRouteStatus.BROADCASTING => eventType switch
             {
                 AudioRoutingEventType.room_pause => Result.Success(AudioRouteStatus.PAUSED),
-                
+
                 // Degraded / Latency transitions
                 AudioRoutingEventType.stt_latency_high => Result.Success(AudioRouteStatus.SPEECH_DELAYED),
                 AudioRoutingEventType.translation_latency_high => Result.Success(AudioRouteStatus.TRANSLATION_DELAYED),
                 AudioRoutingEventType.tts_latency_high => Result.Success(AudioRouteStatus.VOICE_DELAYED),
-                
+
                 // Voice clone fallback path (technical or token exhaustion)
                 AudioRoutingEventType.voice_clone_unavailable => Result.Success(AudioRouteStatus.STANDARD_VOICE),
                 AudioRoutingEventType.token_exhausted => Result.Success(AudioRouteStatus.STANDARD_VOICE),
-                
+
                 // Complete audio failure
                 AudioRoutingEventType.audio_unavailable => Result.Success(AudioRouteStatus.CAPTION_ONLY),
                 _ => InvalidTransition(currentState, eventType)

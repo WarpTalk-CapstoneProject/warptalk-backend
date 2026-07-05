@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -53,10 +54,54 @@ public class PlansController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Create a new plan (Admin only).
+    /// </summary>
+    [HttpPost]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<PlanDto>> CreatePlan(
+        [FromBody] CreatePlanRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _planService.CreatePlanAsync(request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return CreatedAtAction(nameof(GetPlanById), new { id = result.Value!.Id }, result.Value);
+    }
+
+    /// <summary>
+    /// Update an existing plan (Admin only).
+    /// </summary>
+    [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<PlanDto>> UpdatePlan(
+        Guid id, [FromBody] UpdatePlanRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Deactivate/soft-delete a plan (Admin only).
+    /// </summary>
+    [HttpDelete("{id:guid}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult> DeactivatePlan(
+        Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _planService.DeactivatePlanAsync(id, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return NoContent();
+    }
+
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {
             ErrorCodes.BillingPlanNotFound => NotFound(new { Message = result.Error }),
+            "DUPLICATE_SLUG" => BadRequest(new { Message = result.Error }),
+            "INVALID_REQUEST" => BadRequest(new { Message = result.Error }),
             _ => StatusCode(500, new { Message = result.Error })
         };
 }

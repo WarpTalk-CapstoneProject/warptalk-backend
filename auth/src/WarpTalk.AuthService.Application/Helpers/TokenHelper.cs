@@ -9,8 +9,8 @@ namespace WarpTalk.AuthService.Application.Helpers;
 public static class TokenHelper
 {
     public static (string AccessToken, string RefreshToken, DateTime ExpiresAt) GenerateTokens(
-        this IJwtTokenGenerator jwtGenerator, 
-        User user, 
+        this IJwtTokenGenerator jwtGenerator,
+        User user,
         List<string> roles)
     {
         var accessToken = jwtGenerator.GenerateAccessToken(user.Id, user.Email, user.EmailVerified, roles);
@@ -20,10 +20,10 @@ public static class TokenHelper
     }
 
     public static RefreshToken CreateRefreshTokenEntity(
-        this IJwtTokenGenerator jwtGenerator, 
-        Guid userId, 
-        string rawToken, 
-        string? ip, 
+        this IJwtTokenGenerator jwtGenerator,
+        Guid userId,
+        string rawToken,
+        string? ip,
         string? device)
     {
         return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device);
