@@ -48,12 +48,23 @@ public record CreditTransactionDto(
     string? ReferenceType,
     Guid? ReferenceId,
     int BalanceAfter,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    Guid? WorkspaceId = null,
+    string? WorkspaceName = null,
+    Guid? UserId = null,
+    string? UserName = null
 );
 
 public record AdjustCreditsRequest(
     [Required]
     int Amount,
     [Required]
+    string Reason
+);
+
+public record UsageAlertDto(
+    Guid WorkspaceId,
+    string WorkspaceName,
+    int ConsumedCreditsIn24h,
     string Reason
 );

@@ -7,6 +7,8 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using NotificationClient = WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient;
+using NotificationRequest = WarpTalk.Shared.Protos.SendNotificationRequest;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -17,19 +19,22 @@ public class CreditAndUsageService : ICreditAndUsageService
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IRedisBillingStore _redisStore;
     private readonly IConfiguration _configuration;
+    private readonly NotificationClient? _notificationClient;
 
     public CreditAndUsageService(
         IUnitOfWork unitOfWork,
         ILogger<CreditAndUsageService> logger,
         IBillingMessagePublisher messagePublisher,
         IRedisBillingStore redisStore,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        NotificationClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _redisStore = redisStore;
         _configuration = configuration;
+        _notificationClient = notificationClient;
     }
 
     // --- Session Heartbeat ---
@@ -230,14 +235,7 @@ public class CreditAndUsageService : ICreditAndUsageService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
-
-            if (sub is null)
-                return Result.Failure<PagedResult<CreditTransactionDto>>(
-                    "No active subscription found for this workspace.",
-                    ErrorCodes.BillingSubscriptionNotFound);
+            // Removed active subscription check so transaction history is always accessible
 
             var size = pageSize > 0 ? pageSize : 20;
             var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
@@ -654,6 +652,7 @@ public class CreditAndUsageService : ICreditAndUsageService
             {
                 SubscriptionId = sub.Id,
                 UserId = sub.UserId, // User whose credits are affected
+                WorkspaceId = sub.WorkspaceId,
                 Amount = amount,
                 Type = "adjustment",
                 Description = string.IsNullOrEmpty(reason) ? "Manual credit adjustment" : reason,
@@ -667,6 +666,12 @@ public class CreditAndUsageService : ICreditAndUsageService
 
             await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Publish realtime credit update to trigger SignalR listeners on the front-end
+            await PublishCreditUpdateAsync(sub.WorkspaceId, sub.CreditsRemaining, 
+                amount > 0 ? "Credits Added" : "Credits Deducted", 
+                $"Admin adjusted credit balance by {(amount > 0 ? "+" : "")}{amount} credits. Reason: {reason}", 
+                cancellationToken);
 
             return Result.Success(adjustmentTx.ToDto());
         }
@@ -909,6 +914,482 @@ public class CreditAndUsageService : ICreditAndUsageService
         {
             _logger.LogError(ex, "Error getting feature adoption for WorkspaceId {WorkspaceId}", workspaceId);
             return Result.Failure<IEnumerable<FeatureAdoptionDto>>("Failed to generate feature adoption.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<GlobalBillingMetricsDto>> GetGlobalMetricsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var subs = await _unitOfWork.SubscriptionRepository.FindAsync(s => s.IsActive && s.DeletedAt == null, cancellationToken);
+            var totalBalance = subs.Sum(s => s.CreditsRemaining);
+            var activeWorkspaces = subs.Select(s => s.WorkspaceId).Distinct().Count();
+            
+            var currentMonthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var usages = await _unitOfWork.UsageRecordRepository.FindAsync(u => u.RecordedAt >= currentMonthStart, cancellationToken);
+            var monthlyUsage = usages.Sum(u => u.CreditsConsumed);
+
+            var thirtyDaysAgo = DateTime.UtcNow.AddDays(-30);
+            var auditEvents = await _unitOfWork.CreditTransactionRepository.CountAsync(t => t.CreatedAt >= thirtyDaysAgo, cancellationToken);
+
+            return Result.Success(new GlobalBillingMetricsDto(totalBalance, activeWorkspaces, monthlyUsage, auditEvents));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global metrics");
+            return Result.Failure<GlobalBillingMetricsDto>("Failed to generate global metrics.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<UsageChartDto>> GetGlobalUsageChartAsync(int year, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var startDate = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var endDate = startDate.AddYears(1);
+
+            var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
+                t => t.CreatedAt >= startDate && t.CreatedAt < endDate,
+                cancellationToken);
+
+            var monthlyData = new List<MonthlyUsageDto>();
+            for (int i = 1; i <= 12; i++)
+            {
+                var monthTxs = txs.Where(t => t.CreatedAt.Month == i).ToList();
+                var consumed = monthTxs.Where(t => t.Type == "consumption").Sum(t => Math.Abs(t.Amount));
+                var topUp = monthTxs.Where(t => t.Type == "top_up" && t.Amount > 0).Sum(t => t.Amount);
+
+                monthlyData.Add(new MonthlyUsageDto(i, new DateTime(year, i, 1).ToString("MMM"), consumed, topUp));
+            }
+
+            return Result.Success(new UsageChartDto(year, monthlyData));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global usage chart");
+            return Result.Failure<UsageChartDto>("Failed to generate global chart.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdownAsync(int days, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var startDate = DateTime.UtcNow.AddDays(-days);
+
+            var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
+                u => u.RecordedAt >= startDate,
+                cancellationToken);
+
+            var breakdown = usages.GroupBy(u => u.UsageType)
+                .Select(g => new UsageSummaryDto(
+                    g.Key,
+                    g.Sum(x => x.CreditsConsumed)
+                ))
+                .OrderByDescending(x => x.TotalCreditsConsumed)
+                .ToList();
+
+            return Result.Success(breakdown.AsEnumerable());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global usage breakdown");
+            return Result.Failure<IEnumerable<UsageSummaryDto>>("Failed to generate global usage breakdown.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<IEnumerable<TopWorkspaceDto>>> GetTopWorkspacesAsync(int days, int limit, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var startDate = DateTime.UtcNow.AddDays(-days);
+            
+            var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
+                u => u.RecordedAt >= startDate,
+                cancellationToken);
+
+            var topWorkspaces = usages.GroupBy(u => u.WorkspaceId)
+                .Select(g => new TopWorkspaceDto(
+                    g.Key,
+                    $"Workspace {g.Key.ToString()[..8].ToUpper()}",
+                    g.Sum(x => x.CreditsConsumed)
+                ))
+                .OrderByDescending(x => x.TotalCreditsConsumed)
+                .Take(limit)
+                .ToList();
+
+            if (topWorkspaces.Any())
+            {
+                try
+                {
+                    // Reuse the existing EF Core DB connection from UnitOfWork
+                    var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                    var wasOpen = connection.State == System.Data.ConnectionState.Open;
+                    if (!wasOpen) await connection.OpenAsync(cancellationToken);
+
+                    var ids = topWorkspaces.Select(w => w.WorkspaceId).Distinct().ToArray();
+                    using var cmd = new Npgsql.NpgsqlCommand(
+                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
+                        connection);
+                    cmd.Parameters.AddWithValue("ids", ids);
+
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    var workspaceNames = new Dictionary<Guid, string>();
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
+                    }
+                    await reader.CloseAsync();
+
+                    var resolvedTopWorkspaces = new List<TopWorkspaceDto>();
+                    foreach (var tw in topWorkspaces)
+                    {
+                        if (workspaceNames.TryGetValue(tw.WorkspaceId, out var realName))
+                        {
+                            resolvedTopWorkspaces.Add(tw with { WorkspaceName = realName });
+                        }
+                        else
+                        {
+                            resolvedTopWorkspaces.Add(tw);
+                        }
+                    }
+                    topWorkspaces = resolvedTopWorkspaces;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to resolve real workspace names for Top Workspaces");
+                }
+            }
+
+            return Result.Success(topWorkspaces.AsEnumerable());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting top workspaces");
+            return Result.Failure<IEnumerable<TopWorkspaceDto>>("Failed to generate top workspaces.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<PagedResult<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default,
+        Guid? workspaceId = null,
+        string? type = null,
+        DateTime? fromDate = null,
+        DateTime? toDate = null,
+        int? minAmount = null,
+        int? maxAmount = null)
+    {
+        try
+        {
+            var size = pageSize > 0 ? pageSize : 20;
+            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+
+            System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t =>
+                (!workspaceId.HasValue || t.WorkspaceId == workspaceId.Value) &&
+                (string.IsNullOrEmpty(type) || t.Type == type) &&
+                (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
+                (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&
+                (!minAmount.HasValue || Math.Abs(t.Amount) >= minAmount.Value) &&
+                (!maxAmount.HasValue || Math.Abs(t.Amount) <= maxAmount.Value);
+
+            var items = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
+                predicate,
+                skip, size,
+                q => q.OrderByDescending(t => t.CreatedAt),
+                cancellationToken);
+
+            var total = await _unitOfWork.CreditTransactionRepository.CountAsync(
+                predicate,
+                cancellationToken);
+
+            var dtos = items.Select(t => new CreditTransactionDto(
+                t.Id,
+                t.Amount,
+                t.Type,
+                t.Description,
+                t.ReferenceType,
+                t.ReferenceId,
+                t.BalanceAfter,
+                t.CreatedAt,
+                t.WorkspaceId,
+                null,
+                t.UserId,
+                null
+            )).ToList();
+
+            var workspaceIds = dtos.Select(d => d.WorkspaceId).Distinct().ToArray();
+            var resolvedDtos = new List<CreditTransactionDto>();
+
+            try
+            {
+                var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                if (connection.State != System.Data.ConnectionState.Open)
+                    await connection.OpenAsync(cancellationToken);
+
+                using var command = new Npgsql.NpgsqlCommand(
+                    "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
+                command.Parameters.AddWithValue("ids", workspaceIds);
+
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                var workspaceNames = new Dictionary<Guid, string>();
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
+                }
+
+                foreach (var tx in dtos)
+                {
+                    if (Guid.TryParse(tx.WorkspaceId?.ToString(), out var gId) && workspaceNames.TryGetValue(gId, out var realName))
+                        resolvedDtos.Add(tx with { WorkspaceName = realName });
+                    else
+                        resolvedDtos.Add(tx);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve workspace names from identity schema");
+                resolvedDtos = dtos.ToList();
+            }
+
+            return Result.Success(new PagedResult<CreditTransactionDto>(total, resolvedDtos));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global credit history");
+            return Result.Failure<PagedResult<CreditTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result<IEnumerable<UsageAlertDto>>> GetUsageAlertsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var yesterday = DateTime.UtcNow.AddDays(-1);
+
+            // Fetch transactions for the last 24 hours that are negative (consumption/reserve)
+            var recentConsumptions = await _unitOfWork.CreditTransactionRepository.FindAsync(
+                tx => tx.CreatedAt >= yesterday && tx.Amount < 0 && tx.Status == "committed",
+                cancellationToken);
+
+            var grouped = recentConsumptions
+                .GroupBy(tx => tx.WorkspaceId)
+                .Select(g => new
+                {
+                    WorkspaceId = g.Key,
+                    ConsumedCredits = Math.Abs(g.Sum(tx => tx.Amount))
+                })
+                .Where(x => x.ConsumedCredits > 50000)
+                .ToList();
+
+            if (!grouped.Any())
+                return Result.Success(Enumerable.Empty<UsageAlertDto>());
+
+            var workspaceIds = grouped.Select(g => g.WorkspaceId).Distinct().ToArray();
+            var workspaceNames = new Dictionary<Guid, string>();
+
+            try
+            {
+                var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                if (connection.State != System.Data.ConnectionState.Open)
+                    await connection.OpenAsync(cancellationToken);
+
+                using var command = new Npgsql.NpgsqlCommand(
+                    "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
+                command.Parameters.AddWithValue("ids", workspaceIds);
+
+                using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve workspace names for alerts");
+            }
+
+            var alerts = grouped.Select(g => new UsageAlertDto(
+                WorkspaceId: g.WorkspaceId,
+                WorkspaceName: workspaceNames.TryGetValue(g.WorkspaceId, out var name) ? name : "Unknown Workspace",
+                ConsumedCreditsIn24h: g.ConsumedCredits,
+                Reason: $"Unusually high consumption: {g.ConsumedCredits} credits in 24h"
+            ));
+
+            return Result.Success(alerts);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting usage alerts");
+            return Result.Failure<IEnumerable<UsageAlertDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    // --- Service Rates ---
+
+    private double GetRate(string key, double fallback) =>
+        double.TryParse(_configuration[key], System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    public Result<ServiceRatesDto> GetServiceRates()
+    {
+        var dto = new ServiceRatesDto(
+            SttPerMinute: GetRate("BillingRates:SttPerMinute", 15.0),
+            TranslationPerMinute: GetRate("BillingRates:TranslationPerMinute", 15.0),
+            StandardTtsPerMinute: GetRate("BillingRates:StandardTtsPerMinute", 15.0),
+            VoiceClonePerMinute: GetRate("BillingRates:VoiceClonePerMinute", 40.0),
+            AiSummaryPerRequest: GetRate("BillingRates:AiSummaryPerRequest", 5.0),
+            AiChatPerRequest: GetRate("BillingRates:AiChatPerRequest", 2.0)
+        );
+        return Result.Success(dto);
+    }
+
+    public async Task<Result<ServiceRatesDto>> UpdateServiceRatesAsync(
+        UpdateServiceRatesRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Validate — all values must be positive
+            if (request.SttPerMinute <= 0 || request.TranslationPerMinute <= 0 ||
+                request.StandardTtsPerMinute <= 0 || request.VoiceClonePerMinute <= 0 ||
+                request.AiSummaryPerRequest <= 0 || request.AiChatPerRequest <= 0)
+            {
+                return Result.Failure<ServiceRatesDto>("All rate values must be greater than zero.", "INVALID_REQUEST");
+            }
+
+            // Find appsettings.json next to the running assembly
+            var appSettingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+            if (!File.Exists(appSettingsPath))
+                return Result.Failure<ServiceRatesDto>("appsettings.json not found on server.", "INTERNAL_ERROR");
+
+            // Capture old rates BEFORE writing so we can diff them for notifications
+            var oldRates = GetServiceRates().Value;
+
+            var json = await File.ReadAllTextAsync(appSettingsPath, cancellationToken);
+            var doc = JsonDocument.Parse(json);
+            using var stream = new System.IO.MemoryStream();
+            using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
+
+            writer.WriteStartObject();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Name == "BillingRates")
+                    continue; // we will rewrite this section
+                prop.WriteTo(writer);
+            }
+
+            // Write updated BillingRates section
+            writer.WritePropertyName("BillingRates");
+            writer.WriteStartObject();
+            writer.WriteNumber("SttPerMinute", request.SttPerMinute);
+            writer.WriteNumber("TranslationPerMinute", request.TranslationPerMinute);
+            writer.WriteNumber("StandardTtsPerMinute", request.StandardTtsPerMinute);
+            writer.WriteNumber("VoiceClonePerMinute", request.VoiceClonePerMinute);
+            writer.WriteNumber("AiSummaryPerRequest", request.AiSummaryPerRequest);
+            writer.WriteNumber("AiChatPerRequest", request.AiChatPerRequest);
+            writer.WriteEndObject();
+
+            writer.WriteEndObject();
+            await writer.FlushAsync(cancellationToken);
+
+            var updatedJson = System.Text.Encoding.UTF8.GetString(stream.ToArray());
+            await File.WriteAllTextAsync(appSettingsPath, updatedJson, cancellationToken);
+
+            // Reload configuration so _configuration reflects the new values immediately
+            if (_configuration is IConfigurationRoot configRoot)
+                configRoot.Reload();
+
+            _logger.LogInformation("BillingRates updated by admin.");
+
+            // --- Notify all workspace owners ---
+            var savedRates = GetServiceRates();
+            await NotifyWorkspaceOwnersAsync(oldRates, request, cancellationToken);
+            return savedRates;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating service rates");
+            return Result.Failure<ServiceRatesDto>("An unexpected error occurred while saving rates.", "INTERNAL_ERROR");
+        }
+    }
+
+    private async Task NotifyWorkspaceOwnersAsync(
+        ServiceRatesDto? oldRates,
+        UpdateServiceRatesRequest newRates,
+        CancellationToken cancellationToken)
+    {
+        if (_notificationClient is null) return;
+
+        try
+        {
+            // Build human-readable diff lines
+            var changes = new List<string>();
+            void AddChange(string label, double oldVal, double newVal, string unit)
+            {
+                if (Math.Abs(oldVal - newVal) > 0.0001)
+                    changes.Add($"• {label}: {oldVal:0.##} → {newVal:0.##} {unit}");
+            }
+
+            if (oldRates is not null)
+            {
+                AddChange("Speech-to-Text (STT)",       oldRates.SttPerMinute,           newRates.SttPerMinute,           "credits/min");
+                AddChange("Real-time Translation",      oldRates.TranslationPerMinute,   newRates.TranslationPerMinute,   "credits/min");
+                AddChange("Text-to-Speech (TTS)",       oldRates.StandardTtsPerMinute,   newRates.StandardTtsPerMinute,   "credits/min");
+                AddChange("Voice Clone TTS",            oldRates.VoiceClonePerMinute,    newRates.VoiceClonePerMinute,    "credits/min");
+                AddChange("AI Summary",                 oldRates.AiSummaryPerRequest,    newRates.AiSummaryPerRequest,    "credits/req");
+                AddChange("AI Workspace Chat",          oldRates.AiChatPerRequest,       newRates.AiChatPerRequest,       "credits/req");
+            }
+
+            if (changes.Count == 0) return; // Nothing actually changed, skip
+
+            var changedList  = string.Join("\n", changes);
+            var body = $"WarpTalk has updated the AI service credit rates that apply to your workspace:\n\n{changedList}\n\nNew rates are effective immediately for all future sessions.";
+
+            // Get distinct owner user IDs from active subscriptions
+            var ownerUserIds = new List<Guid>();
+            try
+            {
+                using var conn = _unitOfWork.GetDbConnection();
+                await conn.OpenAsync(cancellationToken);
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT DISTINCT user_id FROM subscription.subscriptions WHERE is_active = true AND deleted_at IS NULL AND user_id IS NOT NULL";
+                using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    if (!reader.IsDBNull(0))
+                        ownerUserIds.Add(reader.GetGuid(0));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not load workspace owner IDs for rate change notification.");
+                return;
+            }
+
+            _logger.LogInformation("Sending AI rate change notifications to {Count} workspace owners.", ownerUserIds.Count);
+
+            var tasks = ownerUserIds.Select(userId =>
+            {
+                var req = new NotificationRequest
+                {
+                    UserId    = userId.ToString(),
+                    Type      = "billing.rate_change",
+                    Title     = "AI Service Rates Updated",
+                    Body      = body,
+                    ActionUrl = "/billing"
+                };
+                req.Metadata["changed_services"] = changes.Count.ToString();
+                return _notificationClient.SendNotificationAsync(req, cancellationToken: cancellationToken).ResponseAsync;
+            });
+
+            await Task.WhenAll(tasks);
+        }
+        catch (Exception ex)
+        {
+            // Notification failure must never block the main save operation
+            _logger.LogError(ex, "Failed to send rate change notifications to workspace owners.");
         }
     }
 }

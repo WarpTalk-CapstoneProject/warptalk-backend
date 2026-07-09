@@ -21,6 +21,7 @@ public static class BillingMapper
         plan.AiAssistantEnabled,
         plan.GlossaryEnabled,
         plan.DedicatedGpu,
+        plan.VoiceCloneLimitMins,
         plan.AllowGlossary,
         plan.AllowAcl,
         plan.Features,

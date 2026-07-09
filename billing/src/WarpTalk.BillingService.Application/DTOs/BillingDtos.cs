@@ -60,7 +60,8 @@ public record SubscriptionDto(
     bool AutoRenew,
     bool CancelAtPeriodEnd,
     DateTime CreatedAt,
-    DateTime? CancelledAt
+    DateTime? CancelledAt,
+    string? WorkspaceName = null
 );
 
 public record CreateSubscriptionRequest(
@@ -105,4 +106,17 @@ public record RecordUsageRequest(
     int? DurationSeconds,
     Guid? TranslationRoomId,
     string? Details
+);
+
+public record GlobalBillingMetricsDto(
+    int TotalBalance,
+    int ActiveWorkspaces,
+    int MonthlyUsage,
+    int AuditEventsLast30Days
+);
+
+public record TopWorkspaceDto(
+    Guid WorkspaceId,
+    string? WorkspaceName,
+    int TotalCreditsConsumed
 );

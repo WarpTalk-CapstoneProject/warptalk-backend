@@ -10,4 +10,6 @@ public class InvoiceDto
     public string? InvoicePdfUrl { get; set; }
     public string? HostedInvoiceUrl { get; set; }
     public DateTime CreatedAt { get; set; }
+    public string? WorkspaceId { get; set; }
+    public string? WorkspaceName { get; set; }
 }

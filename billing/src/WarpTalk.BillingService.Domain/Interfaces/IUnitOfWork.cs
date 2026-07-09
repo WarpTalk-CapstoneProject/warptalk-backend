@@ -17,6 +17,8 @@ public interface IUnitOfWork : IDisposable
 
     IGenericRepository<SchemaMigration> SchemaMigrationRepository { get; }
 
+    System.Data.Common.DbConnection GetDbConnection();
+
     void ClearTracking();
 
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);

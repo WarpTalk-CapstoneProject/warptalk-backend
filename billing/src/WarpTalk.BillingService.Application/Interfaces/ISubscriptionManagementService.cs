@@ -35,6 +35,11 @@ public interface ISubscriptionManagementService
         Guid workspaceId,
         CancellationToken cancellationToken = default);
 
+    Task<Result<PagedResult<SubscriptionDto>>> GetGlobalSubscriptionsAsync(
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default);
+
     Task<Result<SubscriptionDto>> CreateSubscriptionAsync(
         CreateSubscriptionRequest request,
         CancellationToken cancellationToken = default);

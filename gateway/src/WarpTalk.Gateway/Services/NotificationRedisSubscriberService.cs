@@ -39,13 +39,27 @@ public class NotificationRedisSubscriberService : BackgroundService
                 var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
                 if (payload == null || string.IsNullOrEmpty(payload.UserId)) return;
 
-                var userGroupName = $"user:{payload.UserId}";
-                await _hubContext.Clients.Group(userGroupName).SendAsync("NewNotification", payload, stoppingToken);
+                if (payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _hubContext.Clients.All.SendAsync("NewNotification", payload, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted global NewNotification to all connected clients");
+                }
+                else
+                {
+                    var userGroupName = $"user:{payload.UserId}";
+                    await _hubContext.Clients.Group(userGroupName).SendAsync("NewNotification", payload, stoppingToken);
 
-                var workspaceGroupName = $"workspace:{payload.UserId}";
-                await _hubContext.Clients.Group(workspaceGroupName).SendAsync("NewNotification", payload, stoppingToken);
+                    var workspaceGroupName = $"workspace:{payload.UserId}";
+                    await _hubContext.Clients.Group(workspaceGroupName).SendAsync("NewNotification", payload, stoppingToken);
 
-                _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {UserGroupName} and {WorkspaceGroupName}", userGroupName, workspaceGroupName);
+                    // Forward billing updates to the admin:billing group for real-time admin monitoring
+                    if (payload.Type != null && payload.Type.StartsWith("billing.", StringComparison.OrdinalIgnoreCase))
+                    {
+                        await _hubContext.Clients.Group("admin:billing").SendAsync("NewNotification", payload, stoppingToken);
+                    }
+
+                    _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {UserGroupName}, {WorkspaceGroupName} and admin:billing", userGroupName, workspaceGroupName);
+                }
             }
             catch (Exception ex)
             {

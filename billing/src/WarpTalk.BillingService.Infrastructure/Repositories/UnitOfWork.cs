@@ -1,6 +1,8 @@
 using System;
+using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
@@ -49,6 +51,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IGenericRepository<SchemaMigration> SchemaMigrationRepository =>
         _schemaMigrations ??= new GenericRepository<SchemaMigration>(_context);
+
+    public System.Data.Common.DbConnection GetDbConnection()
+        => _context.Database.GetDbConnection();
 
     public void ClearTracking()
     {

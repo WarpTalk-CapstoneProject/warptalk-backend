@@ -147,6 +147,82 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
         }
     }
 
+    public async Task<Result<PagedResult<InvoiceDto>>> GetGlobalInvoicesAsync(
+        int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var size = pageSize > 0 ? pageSize : 20;
+            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+
+            var items = await _unitOfWork.InvoiceRepository.GetPagedAsync(
+                i => true, // All invoices
+                skip, size,
+                q => q.OrderByDescending(i => i.CreatedAt),
+                cancellationToken);
+
+            var total = await _unitOfWork.InvoiceRepository.CountAsync(
+                i => true,
+                cancellationToken);
+
+            var dtos = items.Select(i => new InvoiceDto
+            {
+                Id = i.Id.ToString(),
+                StripeInvoiceId = i.StripeInvoiceId,
+                Amount = i.Amount,
+                Currency = i.Currency,
+                Status = i.Status,
+                InvoicePdfUrl = i.InvoicePdfUrl,
+                HostedInvoiceUrl = i.HostedInvoiceUrl,
+                CreatedAt = i.CreatedAt,
+                WorkspaceId = i.WorkspaceId.ToString(),
+                WorkspaceName = "Unknown Workspace"
+            }).ToList();
+
+            // Resolve workspace names
+            try
+            {
+                var workspaceIds = items.Select(i => i.WorkspaceId).Distinct().ToArray();
+                if (workspaceIds.Length > 0)
+                {
+                    var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                    if (connection.State != System.Data.ConnectionState.Open)
+                        await connection.OpenAsync(cancellationToken);
+
+                    using var command = new Npgsql.NpgsqlCommand(
+                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
+                    command.Parameters.AddWithValue("ids", workspaceIds);
+
+                    using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                    var workspaceNames = new Dictionary<Guid, string>();
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
+                    }
+
+                    foreach (var dto in dtos)
+                    {
+                        if (Guid.TryParse(dto.WorkspaceId, out var gId) && workspaceNames.TryGetValue(gId, out var realName))
+                        {
+                            dto.WorkspaceName = realName;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to resolve workspace names for global invoices from identity schema");
+            }
+
+            return Result.Success(new PagedResult<InvoiceDto>(total, dtos));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting global invoices");
+            return Result.Failure<PagedResult<InvoiceDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
     public async Task<Result<PaymentTransactionDto>> CreatePaymentAsync(
         CreatePaymentRequest request,
         CancellationToken cancellationToken = default)

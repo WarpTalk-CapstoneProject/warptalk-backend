@@ -106,6 +106,12 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
     o.Address = new Uri(url);
 });
 
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://127.0.0.1:50055";
+    o.Address = new Uri(url);
+});
+
 builder.Services.AddOpenApi();
 builder.Services.AddGrpc();
 

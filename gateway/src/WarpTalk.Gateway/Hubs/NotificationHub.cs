@@ -36,6 +36,13 @@ public class NotificationHub : Hub
         // Automatically subscribe to the user's personal notification group
         await Groups.AddToGroupAsync(Context.ConnectionId, UserGroupName(userId));
 
+        // Automatically subscribe admins to the admin:billing group for real-time monitoring
+        if (Context.User != null && Context.User.IsInRole("Admin"))
+        {
+            await Groups.AddToGroupAsync(Context.ConnectionId, "admin:billing");
+            _logger.LogInformation("NotificationHub: Admin user {UserId} connected and joined admin:billing group", userId);
+        }
+
         _logger.LogInformation(
             "NotificationHub: User {UserId} connected (ConnectionId: {ConnectionId})",
             userId, Context.ConnectionId);

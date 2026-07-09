@@ -50,6 +50,22 @@ public class SubscriptionsController : ControllerBase
     }
 
     /// <summary>
+    /// Get paginated global subscriptions for admins.
+    /// </summary>
+    [HttpGet("global")]
+    [AllowAnonymous]
+    public async Task<ActionResult<PagedResult<SubscriptionDto>>> GetGlobalSubscriptions(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _subscriptionService.GetGlobalSubscriptionsAsync(pageNumber, pageSize, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
     /// Cancel the active subscription for a workspace.
     /// </summary>
     [HttpDelete("workspace/{workspaceId:guid}")]

@@ -81,4 +81,40 @@ public interface ICreditAndUsageService
         string reason,
         string adminUserId,
         CancellationToken cancellationToken = default);
+
+    Task<Result<GlobalBillingMetricsDto>> GetGlobalMetricsAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<Result<UsageChartDto>> GetGlobalUsageChartAsync(
+        int year,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdownAsync(
+        int days,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IEnumerable<TopWorkspaceDto>>> GetTopWorkspacesAsync(
+        int days = 30,
+        int limit = 5,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IEnumerable<UsageAlertDto>>> GetUsageAlertsAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PagedResult<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
+        int pageNumber,
+        int pageSize,
+        CancellationToken cancellationToken = default,
+        Guid? workspaceId = null,
+        string? type = null,
+        DateTime? fromDate = null,
+        DateTime? toDate = null,
+        int? minAmount = null,
+        int? maxAmount = null);
+
+    // --- Service Rates ---
+    Result<ServiceRatesDto> GetServiceRates();
+    Task<Result<ServiceRatesDto>> UpdateServiceRatesAsync(
+        UpdateServiceRatesRequest request,
+        CancellationToken cancellationToken = default);
 }

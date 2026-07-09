@@ -284,6 +284,103 @@ public class CreditsController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpGet("metrics/global")]
+    [AllowAnonymous]
+    public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetGlobalMetricsAsync(cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    [HttpGet("metrics/global/chart")]
+    [AllowAnonymous]
+    public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart(
+        [FromQuery] int year,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetGlobalUsageChartAsync(year, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    [HttpGet("metrics/global/breakdown")]
+    [AllowAnonymous]
+    public async Task<ActionResult<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdown(
+        [FromQuery] int days = 30,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetGlobalUsageBreakdownAsync(days, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    [HttpGet("metrics/global/top-workspaces")]
+    [AllowAnonymous]
+    public async Task<ActionResult<IEnumerable<TopWorkspaceDto>>> GetTopWorkspaces(
+        [FromQuery] int days = 30,
+        [FromQuery] int limit = 5,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetTopWorkspacesAsync(days, limit, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    [HttpGet("history/global")]
+    [AllowAnonymous]
+    public async Task<ActionResult<PagedResult<CreditTransactionDto>>> GetGlobalCreditHistory(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] Guid? workspaceId = null,
+        [FromQuery] string? type = null,
+        [FromQuery] DateTime? fromDate = null,
+        [FromQuery] DateTime? toDate = null,
+        [FromQuery] int? minAmount = null,
+        [FromQuery] int? maxAmount = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetGlobalCreditHistoryAsync(pageNumber, pageSize, cancellationToken, workspaceId, type, fromDate, toDate, minAmount, maxAmount);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    [HttpGet("metrics/global/alerts")]
+    [AllowAnonymous]
+    public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
+    {
+        var result = await _creditService.GetUsageAlertsAsync(cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Get current AI service credit rates (admin only).
+    /// </summary>
+    [HttpGet("rates")]
+    [Authorize(Roles = "Admin")]
+    public ActionResult<ServiceRatesDto> GetServiceRates()
+    {
+        var result = _creditService.GetServiceRates();
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Update AI service credit rates (admin only).
+    /// Changes are persisted to appsettings.json and take effect immediately.
+    /// </summary>
+    [HttpPut("rates")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ServiceRatesDto>> UpdateServiceRates(
+        [FromBody] UpdateServiceRatesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _creditService.UpdateServiceRatesAsync(request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result);
+        return Ok(result.Value);
+    }
+
     private ActionResult HandleFailure<T>(Result<T> result) =>
         result.ErrorCode switch
         {

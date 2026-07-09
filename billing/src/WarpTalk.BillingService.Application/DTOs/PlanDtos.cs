@@ -18,6 +18,7 @@ public record PlanDto(
     bool AiAssistantEnabled,
     bool GlossaryEnabled,
     bool DedicatedGpu,
+    int VoiceCloneLimitMins,
     bool AllowGlossary,
     bool AllowAcl,
     string Features,       // JSON blob

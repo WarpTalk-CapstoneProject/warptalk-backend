@@ -37,6 +37,13 @@ public class RequireWorkspaceRoleFilter : IAsyncActionFilter
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
+        // System Admin bypasses all workspace-specific role checks
+        if (context.HttpContext.User.IsInRole("Admin"))
+        {
+            await next();
+            return;
+        }
+
         var userId = context.HttpContext.User.GetUserId();
         if (userId == null)
         {
