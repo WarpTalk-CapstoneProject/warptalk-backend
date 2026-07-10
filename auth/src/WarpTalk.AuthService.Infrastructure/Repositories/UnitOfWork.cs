@@ -15,7 +15,10 @@ public class UnitOfWork : IUnitOfWork
         IPermissionRepository permissionRepository,
         IUserRoleRepository userRoleRepository,
         IUserSettingRepository userSettingRepository,
-        IRefreshTokenRepository refreshTokenRepository)
+        IRefreshTokenRepository refreshTokenRepository,
+        IVoiceProfileRepository voiceProfileRepository,
+        IVoiceConsentRepository voiceConsentRepository,
+        IVoiceSampleRepository voiceSampleRepository)
     {
         _context = context;
         UserRepository = userRepository;
@@ -24,6 +27,9 @@ public class UnitOfWork : IUnitOfWork
         UserRoleRepository = userRoleRepository;
         UserSettingRepository = userSettingRepository;
         RefreshTokenRepository = refreshTokenRepository;
+        VoiceProfileRepository = voiceProfileRepository;
+        VoiceConsentRepository = voiceConsentRepository;
+        VoiceSampleRepository = voiceSampleRepository;
     }
 
     public IUserRepository UserRepository { get; }
@@ -32,6 +38,9 @@ public class UnitOfWork : IUnitOfWork
     public IUserRoleRepository UserRoleRepository { get; }
     public IUserSettingRepository UserSettingRepository { get; }
     public IRefreshTokenRepository RefreshTokenRepository { get; }
+    public IVoiceProfileRepository VoiceProfileRepository { get; }
+    public IVoiceConsentRepository VoiceConsentRepository { get; }
+    public IVoiceSampleRepository VoiceSampleRepository { get; }
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

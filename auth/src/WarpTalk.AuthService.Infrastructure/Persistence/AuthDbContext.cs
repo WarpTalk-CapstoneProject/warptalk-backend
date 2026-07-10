@@ -27,13 +27,19 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<UserSetting> UserSettings { get; set; }
 
+    public virtual DbSet<VoiceProfile> VoiceProfiles { get; set; }
+
+    public virtual DbSet<VoiceConsent> VoiceConsents { get; set; }
+
+    public virtual DbSet<VoiceSample> VoiceSamples { get; set; }
+
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
             .HasPostgresEnum("artifact_type", new[] { "TRANSCRIPT_EXPORT", "SUMMARY_EXPORT", "DEBUG_LOG", "OPTIONAL_RECORDING", "AUDIO_SAMPLE" })
-            .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
+            .HasPostgresEnum("consent_status", new[] { "granted", "revoked", "expired" })
             .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
             .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
             .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
@@ -396,6 +402,121 @@ public partial class AuthDbContext : DbContext
             entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.UserSettings)
                 .HasForeignKey(d => d.UpdatedBy)
                 .HasConstraintName("user_settings_updated_by_fkey");
+        });
+
+        modelBuilder.Entity<VoiceProfile>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_profiles_pkey");
+
+            entity.ToTable("voice_profiles", "voice");
+
+            entity.HasIndex(e => new { e.UserId, e.Status }, "voice_profiles_user_id_status_idx");
+            entity.HasIndex(e => e.WorkspaceId, "voice_profiles_workspace_id_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.DisplayName)
+                .HasMaxLength(100)
+                .HasColumnName("display_name");
+            entity.Property(e => e.Provider)
+                .HasMaxLength(50)
+                .HasColumnName("provider");
+            entity.Property(e => e.EmbeddingRef)
+                .HasMaxLength(500)
+                .HasColumnName("embedding_ref");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
+        });
+
+        modelBuilder.Entity<VoiceConsent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_consents_pkey");
+
+            entity.ToTable("voice_consents", "voice");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.ConsentType)
+                .HasMaxLength(50)
+                .HasColumnName("consent_type");
+            entity.Property(e => e.ConsentStatus)
+                .HasColumnType("consent_status")
+                .HasColumnName("consent_status");
+            entity.Property(e => e.ConsentTextVersion)
+                .HasMaxLength(50)
+                .HasColumnName("consent_text_version");
+            entity.Property(e => e.GrantedAt).HasColumnName("granted_at");
+            entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
+            entity.Property(e => e.IpAddress)
+                .HasMaxLength(45)
+                .HasColumnName("ip_address");
+            entity.Property(e => e.UserAgent)
+                .HasMaxLength(500)
+                .HasColumnName("user_agent");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.HasOne(d => d.VoiceProfile).WithMany(p => p.Consents)
+                .HasForeignKey(d => d.VoiceProfileId)
+                .HasConstraintName("voice_consents_voice_profile_id_fkey");
+        });
+
+        modelBuilder.Entity<VoiceSample>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_samples_pkey");
+
+            entity.ToTable("voice_samples", "voice");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.SampleType)
+                .HasMaxLength(30)
+                .HasColumnName("sample_type");
+            entity.Property(e => e.FileUrl)
+                .HasMaxLength(500)
+                .HasColumnName("file_url");
+            entity.Property(e => e.DurationSeconds).HasColumnName("duration_seconds");
+            entity.Property(e => e.Language)
+                .HasMaxLength(15)
+                .HasColumnName("language");
+            entity.Property(e => e.ContainsRawAudio)
+                .HasDefaultValue(true)
+                .HasColumnName("contains_raw_audio");
+            entity.Property(e => e.RetentionUntil).HasColumnName("retention_until");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
+
+            entity.HasOne(d => d.VoiceProfile).WithMany(p => p.Samples)
+                .HasForeignKey(d => d.VoiceProfileId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("voice_samples_voice_profile_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

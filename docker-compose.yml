@@ -52,7 +52,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__AuthDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=auth,public"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
     ports:
@@ -77,9 +77,10 @@ services:
       ConnectionStrings__TranslationRoomDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=translation_room,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
       GrpcSettings__TranscriptServiceUrl: "http://transcript-service:50053"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      Redis__ConnectionString: "redis:6379"
     ports:
       - "5102:5102"
       - "50052:50052"
@@ -104,9 +105,10 @@ services:
       ConnectionStrings__TranscriptDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=transcript,public"
       GrpcUrls__AuthServiceUrl: "http://auth-service:50051"
       GrpcUrls__TranslationRoomServiceUrl: "http://translation-room-service:50052"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      Redis__ConnectionString: "redis:6379"
     ports:
       - "5103:5103"
       - "50053:50053"
@@ -131,7 +133,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=notification,public"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
       Redis__ConnectionString: "redis:6379"
@@ -156,7 +158,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=meeting,public"
       GrpcUrls__TranslationRoomService: "http://translation-room-service:50052"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
       LiveKit__ApiKey: "APIBVnfFo9PzzoQ"
@@ -185,9 +187,10 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__WorkspaceDb: "Host=postgres;Port=5432;Database=warptalk;Username=postgres;Password=postgres;Search Path=workspace,public"
       GrpcSettings__AuthServiceUrl: "http://auth-service:50051"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
+      Redis__ConnectionString: "redis:6379"
     ports:
       - "5106:5106"
       - "50056:50056"
@@ -210,7 +213,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://0.0.0.0:5200"
-      Jwt__Secret: "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+      Jwt__Secret: "LOCAL_DEV_SUPER_SECRET_KEY_MIN_32_CHARS_LONG_12345"
       Jwt__Issuer: "WarpTalk.AuthService"
       Jwt__Audience: "WarpTalk"
       GrpcUrls__NotificationServiceUrl: "http://notification-service:50054"

@@ -35,5 +35,17 @@ public static class ApiMessageConstants
         public const string InvalidRoomType = "Invalid translation room type.";
         public const string InvalidSpeakLanguage = "Invalid default speak language format.";
         public const string InvalidListenLanguage = "Invalid default listen language format.";
+
+        // Voice Profiles
+        public const string VoiceDisplayNameMaxLength = "Voice profile display name cannot exceed 100 characters.";
+        public const string VoiceProviderMaxLength = "Voice provider cannot exceed 50 characters.";
+        public const string VoiceReferenceMaxLength = "Voice reference cannot exceed 500 characters.";
+        public const string VoiceStatusInvalid = "Invalid voice profile status.";
+        public const string VoiceSampleTypeInvalid = "Invalid voice sample type.";
+        public const string VoiceSampleFileUrlRequired = "Voice sample file URL is required.";
+        public const string VoiceSampleDurationOutOfBounds = "Voice sample duration must be between {0} and {1} seconds.";
+        public const string VoiceSampleLanguageInvalid = "Voice sample language format is invalid.";
+        public const string VoiceConsentTypeInvalid = "Invalid voice consent type.";
+        public const string VoiceConsentTextVersionRequired = "Voice consent text version is required.";
     }
 }

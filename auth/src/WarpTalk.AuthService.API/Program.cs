@@ -12,6 +12,7 @@ using WarpTalk.AuthService.Infrastructure.Repositories;
 using WarpTalk.AuthService.Infrastructure.Security;
 using WarpTalk.AuthService.API.GrpcServices;
 using WarpTalk.AuthService.Domain.Constants;
+using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.API.Extensions;
 using WarpTalk.AuthService.API.Validators;
@@ -32,7 +33,9 @@ builder.WebHost.ConfigureKestrel(options =>
 
 // --- DbContext ---
 builder.Services.AddDbContext<AuthDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("AuthDb")));
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("AuthDb"),
+        npgsqlOptions => npgsqlOptions.MapEnum<ConsentStatus>("consent_status")));
 
 // --- Configuration ---
 builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
@@ -45,6 +48,9 @@ builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
 builder.Services.AddScoped<IUserRoleRepository, UserRoleRepository>();
 builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
+builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
+builder.Services.AddScoped<IVoiceSampleRepository, VoiceSampleRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // --- Application Services ---
@@ -54,6 +60,7 @@ builder.Services.AddScoped<IAuthService, WarpTalk.AuthService.Application.Servic
 builder.Services.AddScoped<ITokenService, WarpTalk.AuthService.Application.Services.TokenService>();
 builder.Services.AddScoped<IProfileService, WarpTalk.AuthService.Application.Services.ProfileService>();
 builder.Services.AddScoped<IUserSettingsService, WarpTalk.AuthService.Application.Services.UserSettingsService>();
+builder.Services.AddScoped<IVoiceProfileService, WarpTalk.AuthService.Application.Services.VoiceProfileService>();
 builder.Services.AddScoped<IGoogleAuthService, WarpTalk.AuthService.Application.Services.GoogleAuthService>();
 
 // --- Infrastructure Services ---
