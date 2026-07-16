@@ -629,6 +629,46 @@ public class CreditService : ICreditService
                 null
             )).ToList();
 
+            // Resolve workspace names from workspace.workspaces cross-schema
+            try
+            {
+                var workspaceIds = dtos
+                    .Where(d => d.WorkspaceId.HasValue && d.WorkspaceId != Guid.Empty)
+                    .Select(d => d.WorkspaceId!.Value)
+                    .Distinct()
+                    .ToArray();
+
+                if (workspaceIds.Length > 0)
+                {
+                    var dbConnection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                    var wasOpen = dbConnection.State == System.Data.ConnectionState.Open;
+                    if (!wasOpen) await dbConnection.OpenAsync(cancellationToken);
+
+                    using var cmd = new Npgsql.NpgsqlCommand(
+                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
+                        dbConnection);
+                    cmd.Parameters.AddWithValue("ids", workspaceIds);
+
+                    var workspaceNames = new Dictionary<Guid, string>();
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        workspaceNames[reader.GetGuid(0)] = reader.GetString(1);
+                    }
+                    await reader.CloseAsync();
+
+                    dtos = dtos.Select(d =>
+                        d.WorkspaceId.HasValue && workspaceNames.TryGetValue(d.WorkspaceId.Value, out var wName)
+                            ? d with { WorkspaceName = wName }
+                            : d
+                    ).ToList();
+                }
+            }
+            catch (Exception wsEx)
+            {
+                _logger.LogWarning(wsEx, "Failed to resolve workspace names for global credit history");
+            }
+
             return Result.Success(new PagedResult<CreditTransactionDto>(total, dtos));
         }
         catch (Exception ex)
