@@ -243,18 +243,19 @@ public class UsageService : IUsageService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
                 s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
                 cancellationToken);
 
-            if (sub is null)
+            var subIds = subs.Select(s => s.Id).ToList();
+            if (!subIds.Any())
                 return Result.Failure<UsageChartDto>("No subscription found for this workspace.", ErrorCodes.BillingSubscriptionNotFound);
 
             var startDate = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddYears(1);
 
             var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
-                tx => tx.SubscriptionId == sub.Id && tx.CreatedAt >= startDate && tx.CreatedAt < endDate,
+                tx => subIds.Contains(tx.SubscriptionId) && tx.CreatedAt >= startDate && tx.CreatedAt < endDate,
                 cancellationToken);
 
             var monthlyData = Enumerable.Range(1, 12).Select(month =>
