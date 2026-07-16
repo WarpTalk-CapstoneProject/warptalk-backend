@@ -45,3 +45,6 @@ Thumbs.db
 .env
 *.local
 appsettings.Development.json
+
+## Custom Build Out
+*-build-out/
