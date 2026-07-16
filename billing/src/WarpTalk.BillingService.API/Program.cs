@@ -52,8 +52,12 @@ builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.Subscripti
 builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.StaleReservationWorker>();
 // --- Messaging (Redis) ---
 var redisConnString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
+var redisOptions = StackExchange.Redis.ConfigurationOptions.Parse(redisConnString);
+redisOptions.AbortOnConnectFail = false;
+redisOptions.ConnectRetry = 5;
+redisOptions.ReconnectRetryPolicy = new StackExchange.Redis.ExponentialRetry(500);
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
-    StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnString));
+    StackExchange.Redis.ConnectionMultiplexer.Connect(redisOptions));
 builder.Services.AddSingleton<IBillingMessagePublisher, WarpTalk.BillingService.Infrastructure.Messaging.RedisBillingMessagePublisher>();
 
 // Note: BillingGrpcService no longer injects IUnitOfWork directly.
