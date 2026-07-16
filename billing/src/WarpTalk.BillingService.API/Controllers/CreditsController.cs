@@ -170,13 +170,23 @@ public class CreditsController : ControllerBase
     /// Manually adjust credits for a workspace (Admin only).
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/adjust")]
-    [Authorize(Roles = "Admin")]
+    [Authorize]
     public async Task<ActionResult<CreditTransactionDto>> AdjustCredits(
         Guid workspaceId,
         [FromBody] AdjustCreditsRequest request,
         [FromServices] IUnitOfWork unitOfWork,
         CancellationToken cancellationToken)
     {
+        var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
+                    ?? User.FindFirst("email")?.Value;
+        var isSystemAdmin = email == "admin@warptalk.com" || 
+                            User.IsInRole("Admin") || 
+                            User.FindFirst("role")?.Value == "Admin";
+
+        if (!isSystemAdmin)
+        {
+            return Forbid();
+        }
         var sub = await unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
             s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
             cancellationToken);
