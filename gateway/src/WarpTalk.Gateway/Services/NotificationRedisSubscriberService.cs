@@ -36,7 +36,12 @@ public class NotificationRedisSubscriberService : BackgroundService
             {
                 if (message.IsNullOrEmpty) return;
 
-                var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+                    PropertyNameCaseInsensitive = true
+                };
+                var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString(), options);
                 if (payload == null || string.IsNullOrEmpty(payload.UserId)) return;
 
                 if (payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase))
