@@ -82,6 +82,46 @@ public class SubscriptionService : ISubscriptionService
                 items.Add(sub.ToDto(plan?.Name ?? "Unknown Plan", plan?.Price ?? 0m));
             }
 
+            // Resolve workspace names cross-schema
+            try
+            {
+                var workspaceIds = items
+                    .Where(i => i.WorkspaceId.HasValue && i.WorkspaceId != Guid.Empty)
+                    .Select(i => i.WorkspaceId!.Value)
+                    .Distinct()
+                    .ToArray();
+
+                if (workspaceIds.Length > 0)
+                {
+                    var dbConnection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
+                    var wasOpen = dbConnection.State == System.Data.ConnectionState.Open;
+                    if (!wasOpen) await dbConnection.OpenAsync(cancellationToken);
+
+                    using var cmd = new Npgsql.NpgsqlCommand(
+                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
+                        dbConnection);
+                    cmd.Parameters.AddWithValue("ids", workspaceIds);
+
+                    var workspaceNames = new Dictionary<Guid, string>();
+                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                    while (await reader.ReadAsync(cancellationToken))
+                    {
+                        workspaceNames[reader.GetGuid(0)] = reader.GetString(1);
+                    }
+                    await reader.CloseAsync();
+
+                    items = items.Select(i =>
+                        i.WorkspaceId.HasValue && workspaceNames.TryGetValue(i.WorkspaceId.Value, out var wName)
+                            ? i with { WorkspaceName = wName }
+                            : i
+                    ).ToList();
+                }
+            }
+            catch (Exception wsEx)
+            {
+                _logger.LogWarning(wsEx, "Failed to resolve workspace names for global subscriptions history");
+            }
+
             return Result.Success(new PagedResult<SubscriptionDto>(total, items));
         }
         catch (Exception ex)
