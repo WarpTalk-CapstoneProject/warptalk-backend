@@ -23,7 +23,8 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi", "fr" },
             Settings: null,
-            ScheduledAt: null
+            ScheduledAt: null,
+            InvitedEmails: null
         );
 
         // Set Auth Headers for Host
@@ -81,7 +82,8 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
             SourceLanguage: "en",
             TargetLanguages: new List<string> { "vi" },
             Settings: null,
-            ScheduledAt: scheduledTime
+            ScheduledAt: scheduledTime,
+            InvitedEmails: null
         );
 
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());

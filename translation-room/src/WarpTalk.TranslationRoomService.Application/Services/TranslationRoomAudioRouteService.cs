@@ -111,7 +111,11 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                             TargetParticipantId = listener.Id,
                             SourceLanguage = sourceLang,
                             TargetLanguage = targetLang,
-                            VoiceCloneEnabled = true,
+                            // Default to false per policy — matches TranslationRoomAudioRouteMapper.
+                            // ToEntity's documented default. Voice cloning is opt-in (biometric
+                            // data): the speaker must explicitly enable it via ToggleVoiceCloneAsync
+                            // before tts_worker is allowed to clone their voice.
+                            VoiceCloneEnabled = false,
                             Status = AudioRouteStatus.PENDING.ToString(),
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow

@@ -41,7 +41,14 @@ public static class TranslationRoomAudioRouteMapper
             entity.Status,
             entity.StartedAt,
             entity.EndedAt,
-            entity.CreatedAt
+            entity.CreatedAt,
+            // Nullable: only populated when the caller eager-loaded SourceParticipant/
+            // TargetParticipant (see TranslationRoomAudioRouteRepository.GetRoutesByRoomIdAsync).
+            // The AI pipeline (tts_worker) matches its speaker_id (= auth user id) against
+            // these, not against SourceParticipantId/TargetParticipantId (translation_room_
+            // participants.id) — the two id spaces are different.
+            entity.SourceParticipant?.UserId,
+            entity.TargetParticipant?.UserId
         );
     }
 }
