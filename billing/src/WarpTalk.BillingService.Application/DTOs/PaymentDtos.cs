@@ -32,3 +32,21 @@ public record PaymentWebhookRequest(
     string Status,    // "PAID", "CANCELLED", etc.
     string TransactionId
 );
+
+public class RefundDto
+{
+    public string Id { get; set; } = string.Empty;
+    public string PaymentId { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+}
+
+public record RefundPaymentRequest(
+    decimal Amount,
+    string Reason
+);
+
+

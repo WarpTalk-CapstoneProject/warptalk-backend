@@ -36,21 +36,7 @@ public class PaymentsController : ControllerBase
         return Ok(result.Value);
     }
 
-    /// <summary>
-    /// Paginated global invoice history for admins.
-    /// </summary>
-    [HttpGet("global/invoices")]
-    [AllowAnonymous]
-    public async Task<ActionResult<PagedResult<InvoiceDto>>> GetGlobalInvoices(
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _paymentService.GetGlobalInvoicesAsync(pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
 
-        return Ok(result.Value);
-    }
 
 
     /// <summary>

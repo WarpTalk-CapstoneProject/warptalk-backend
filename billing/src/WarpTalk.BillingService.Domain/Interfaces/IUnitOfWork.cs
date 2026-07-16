@@ -14,6 +14,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     IGenericRepository<Payment> PaymentRepository { get; }
     IGenericRepository<Invoice> InvoiceRepository { get; }
+    IGenericRepository<Refund> RefundRepository { get; }
 
     IGenericRepository<SchemaMigration> SchemaMigrationRepository { get; }
 

@@ -1,3 +1,7 @@
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
@@ -13,10 +17,10 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/credits")]
 public class CreditsController : ControllerBase
 {
-    private readonly ICreditAndUsageService _creditService;
+    private readonly ICreditService _creditService;
     private readonly IWebHostEnvironment _env;
 
-    public CreditsController(ICreditAndUsageService creditService, IWebHostEnvironment env)
+    public CreditsController(ICreditService creditService, IWebHostEnvironment env)
     {
         _creditService = creditService;
         _env = env;
@@ -48,33 +52,6 @@ public class CreditsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsAsync(workspaceId, request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Record usage for a workspace.
-    /// Requires [Authorize] in production; bypassed only in Development for sandbox testing.
-    /// </summary>
-    [HttpPost("workspace/{workspaceId:guid}/record-usage")]
-    public async Task<ActionResult> RecordUsage(
-        Guid workspaceId,
-        [FromBody] RecordUsageRequest request,
-        CancellationToken cancellationToken)
-    {
-        var actualRequest = new RecordUsageRequest(
-            workspaceId,
-            request.UserId,
-            request.UsageType,
-            request.Unit,
-            request.Quantity,
-            request.CreditsConsumed,
-            request.DurationSeconds,
-            request.TranslationRoomId,
-            request.Details);
-
-        var result = await _creditService.RecordUsageAsync(actualRequest, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
 
         return Ok(result.Value);
@@ -119,48 +96,13 @@ public class CreditsController : ControllerBase
     }
 
     /// <summary>
-    /// Generate a billing report for a workspace for a specific month and year.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}/report")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<BillingReportDto>> GetBillingReport(
-        [FromServices] ISubscriptionManagementService subscriptionService,
-        Guid workspaceId,
-        [FromQuery] int month,
-        [FromQuery] int year,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetBillingReportAsync(workspaceId, year, month, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Get paginated invoices for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}/invoices")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<PagedResult<InvoiceDto>>> GetWorkspaceInvoices(
-        [FromServices] IPaymentAndLedgerService paymentService,
-        Guid workspaceId,
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await paymentService.GetInvoicesAsync(workspaceId, pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
-    }
-
-    /// <summary>
     /// Simulate a Stripe payment event (Development/Testing only).
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/simulate-payment")]
     public async Task<ActionResult> SimulatePayment(
         [FromServices] IUnitOfWork unitOfWork,
-        [FromServices] ISubscriptionManagementService subscriptionService,
+        [FromServices] IPlanService planService,
+        [FromServices] ISubscriptionService subscriptionService,
         Guid workspaceId,
         [FromQuery] decimal amount = 190000m,
         [FromQuery] string currency = "vnd")
@@ -169,9 +111,9 @@ public class CreditsController : ControllerBase
         Guid subId;
         if (!subResult.IsSuccess || subResult.Value == null)
         {
-            var plans = await subscriptionService.GetActivePlansAsync();
+            var plans = await planService.GetActivePlansAsync();
             var plan = plans.Value?.FirstOrDefault() ?? throw new Exception("No active plans found.");
-            var newSub = await subscriptionService.CreateSubscriptionAsync(new CreateSubscriptionRequest(workspaceId, plan.Id, Guid.Empty));
+            var newSub = await subscriptionService.CreateSubscriptionAsync(new SubscriptionRequest(workspaceId, plan.Id, Guid.Empty));
             subId = newSub.Value!.Id;
         }
         else
@@ -186,7 +128,6 @@ public class CreditsController : ControllerBase
             Id = paymentId,
             SubscriptionId = subId,
             UserId = Guid.Empty,
-            WorkspaceId = workspaceId,
             Amount = amount,
             TaxAmount = 0m,
             TotalAmount = amount,
@@ -206,15 +147,17 @@ public class CreditsController : ControllerBase
         var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
         {
             Id = Guid.NewGuid(),
-            WorkspaceId = workspaceId,
-            SubscriptionId = subId,
+            UserId = Guid.Empty,
             PaymentId = paymentId,
-            StripeInvoiceId = stripeInvoiceId,
-            Amount = amount,
+            InvoiceNumber = stripeInvoiceId,
+            Subtotal = amount,
+            Tax = 0,
+            Total = amount,
             Currency = currency,
             Status = "paid",
-            InvoicePdfUrl = "https://stripe.com/files/payments/pdf/invoice_sample.pdf",
-            HostedInvoiceUrl = "https://dashboard.stripe.com/receipts/invoices",
+            PdfUrl = "https://stripe.com/files/payments/pdf/invoice_sample.pdf",
+            LineItems = "[]",
+            IssuedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow
         };
         await unitOfWork.InvoiceRepository.AddAsync(invoice);
@@ -241,7 +184,6 @@ public class CreditsController : ControllerBase
         if (sub is null)
             return NotFound(new { message = "No active subscription found for workspace." });
 
-        // Retrieve adminUserId from claims
         var adminUserId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value
             ?? Guid.Empty.ToString();
@@ -251,79 +193,6 @@ public class CreditsController : ControllerBase
 
         if (!result.IsSuccess) return HandleFailure(result);
 
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Gets usage chart data for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}/chart")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<UsageChartDto>> GetWorkspaceUsageChart(
-        Guid workspaceId,
-        [FromQuery] int year,
-        CancellationToken cancellationToken)
-    {
-        var result = await _creditService.GetWorkspaceUsageChartAsync(workspaceId, year, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Gets feature adoption metrics for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}/breakdown")]
-    [AllowAnonymous]
-    public async Task<ActionResult<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoption(
-        Guid workspaceId,
-        [FromQuery] int days = 30,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetWorkspaceFeatureAdoptionAsync(workspaceId, days, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpGet("metrics/global")]
-    [AllowAnonymous]
-    public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetGlobalMetricsAsync(cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpGet("metrics/global/chart")]
-    [AllowAnonymous]
-    public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart(
-        [FromQuery] int year,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetGlobalUsageChartAsync(year, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpGet("metrics/global/breakdown")]
-    [AllowAnonymous]
-    public async Task<ActionResult<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdown(
-        [FromQuery] int days = 30,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetGlobalUsageBreakdownAsync(days, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpGet("metrics/global/top-workspaces")]
-    [AllowAnonymous]
-    public async Task<ActionResult<IEnumerable<TopWorkspaceDto>>> GetTopWorkspaces(
-        [FromQuery] int days = 30,
-        [FromQuery] int limit = 5,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetTopWorkspacesAsync(days, limit, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
         return Ok(result.Value);
     }
 
@@ -341,42 +210,6 @@ public class CreditsController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(pageNumber, pageSize, cancellationToken, workspaceId, type, fromDate, toDate, minAmount, maxAmount);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpGet("metrics/global/alerts")]
-    [AllowAnonymous]
-    public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
-    {
-        var result = await _creditService.GetUsageAlertsAsync(cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Get current AI service credit rates (admin only).
-    /// </summary>
-    [HttpGet("rates")]
-    [Authorize(Roles = "Admin")]
-    public ActionResult<ServiceRatesDto> GetServiceRates()
-    {
-        var result = _creditService.GetServiceRates();
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Update AI service credit rates (admin only).
-    /// Changes are persisted to appsettings.json and take effect immediately.
-    /// </summary>
-    [HttpPut("rates")]
-    [Authorize(Roles = "Admin")]
-    public async Task<ActionResult<ServiceRatesDto>> UpdateServiceRates(
-        [FromBody] UpdateServiceRatesRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _creditService.UpdateServiceRatesAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
         return Ok(result.Value);
     }

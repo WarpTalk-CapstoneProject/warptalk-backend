@@ -11,9 +11,9 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/plans")]
 public class PlansController : ControllerBase
 {
-    private readonly ISubscriptionManagementService _planService;
+    private readonly IPlanService _planService;
 
-    public PlansController(ISubscriptionManagementService planService)
+    public PlansController(IPlanService planService)
     {
         _planService = planService;
     }
@@ -60,7 +60,7 @@ public class PlansController : ControllerBase
     [HttpPost]
     [Authorize]
     public async Task<ActionResult<PlanDto>> CreatePlan(
-        [FromBody] CreatePlanRequest request, CancellationToken cancellationToken)
+        [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
@@ -74,7 +74,7 @@ public class PlansController : ControllerBase
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin")]
     public async Task<ActionResult<PlanDto>> UpdatePlan(
-        Guid id, [FromBody] UpdatePlanRequest request, CancellationToken cancellationToken)
+        Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);

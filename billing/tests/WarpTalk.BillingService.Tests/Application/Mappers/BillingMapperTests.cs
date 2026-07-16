@@ -12,7 +12,7 @@ public class BillingMapperTests
     [Fact]
     public void ToEntity_Should_Create_Pending_Subscription_With_Correct_Initial_Dates()
     {
-        var request = new CreateSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var request = new SubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         var plan = new Plan { Id = request.PlanId, BillingCycle = "monthly", CreditsPerCycle = 1000 };
         var beforeTime = DateTime.UtcNow;
 

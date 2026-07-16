@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace WarpTalk.MeetingService.Infrastructure.Workers;
 
@@ -63,6 +64,36 @@ public class FractionalBillingWorker : BackgroundService
         // Start a periodic flush task
         _ = Task.Run(() => FlushAccumulatedCreditsAsync(stoppingToken));
 
+        // Subscribe to meeting.billing.stop to immediately flush credits when meeting ends
+        try
+        {
+            var subscriber = _redis.GetSubscriber();
+            await subscriber.SubscribeAsync("meeting.billing.stop", async (channel, message) =>
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(message.ToString());
+                    if (doc.RootElement.TryGetProperty("WorkspaceId", out var wsProp))
+                    {
+                        var workspaceId = wsProp.GetString();
+                        if (!string.IsNullOrEmpty(workspaceId))
+                        {
+                            _logger.LogInformation("Received meeting.billing.stop event for Workspace {WorkspaceId}. Triggering immediate final flush.", workspaceId);
+                            await FlushWorkspaceCreditsAsync(workspaceId, isFinal: true);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing meeting.billing.stop Pub/Sub message.");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to subscribe to meeting.billing.stop channel.");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -73,12 +104,16 @@ public class FractionalBillingWorker : BackgroundService
                 foreach (var entry in entries)
                 {
                     string workspaceId = string.Empty;
+                    string roomId = string.Empty;
+                    string userId = string.Empty;
                     int startMs = 0;
                     int endMs = 0;
 
                     foreach (var value in entry.Values)
                     {
                         if (value.Name == "workspace_id") workspaceId = value.Value.ToString();
+                        if (value.Name == "room_id") roomId = value.Value.ToString();
+                        if (value.Name == "user_id") userId = value.Value.ToString();
                         if (value.Name == "start_ms") int.TryParse(value.Value.ToString(), out startMs);
                         if (value.Name == "end_ms") int.TryParse(value.Value.ToString(), out endMs);
                     }
@@ -91,6 +126,12 @@ public class FractionalBillingWorker : BackgroundService
                             workspaceId,
                             durationSeconds,
                             (_, existing) => existing + durationSeconds);
+
+                        // Track room/user for last seen (for analytics)
+                        if (!string.IsNullOrEmpty(roomId))
+                            _lastSeenRoomId[workspaceId] = roomId;
+                        if (!string.IsNullOrEmpty(userId))
+                            _lastSeenUserId[workspaceId] = userId;
                     }
 
                     await db.StreamAcknowledgeAsync(StreamKey, ConsumerGroupName, entry.Id);
@@ -113,6 +154,52 @@ public class FractionalBillingWorker : BackgroundService
         }
     }
 
+    // Last seen room/user for analytics
+    private readonly ConcurrentDictionary<string, string> _lastSeenRoomId = new();
+    private readonly ConcurrentDictionary<string, string> _lastSeenUserId = new();
+
+    private async Task FlushWorkspaceCreditsAsync(string workspaceId, bool isFinal = false)
+    {
+        if (_accumulatedSeconds.TryGetValue(workspaceId, out double value))
+        {
+            if (value <= 0) return;
+
+            int secondsToBill = isFinal ? (int)Math.Ceiling(value) : (int)Math.Floor(value);
+            if (secondsToBill <= 0) return;
+
+            if (_accumulatedSeconds.TryUpdate(workspaceId, value - secondsToBill, value))
+            {
+                try
+                {
+                    _lastSeenRoomId.TryGetValue(workspaceId, out var roomId);
+                    _lastSeenUserId.TryGetValue(workspaceId, out var userId);
+
+                    // Use LogUsageOnly — credits already deducted by ReserveCreditsAsync.
+                    // This only creates UsageRecord for analytics (Feature Adoption, Cost by AI service)
+                    await _billingClient.LogUsageOnlyAsync(new RecordUsageGrpcRequest
+                    {
+                        HostWorkspaceId = workspaceId,
+                        UserId = string.IsNullOrEmpty(userId) ? Guid.Empty.ToString() : userId,
+                        UsageType = "voice_translation",
+                        Unit = "seconds",
+                        Quantity = secondsToBill,
+                        CreditsConsumed = secondsToBill,
+                        DurationSeconds = secondsToBill,
+                        TranslationRoomId = roomId ?? string.Empty,
+                    });
+
+                    _logger.LogInformation("Immediately billed {Seconds} seconds for Workspace {WorkspaceId} (isFinal: {IsFinal})", secondsToBill, workspaceId, isFinal);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to publish ConsumeCreditsEvent for Workspace {WorkspaceId} during immediate flush.", workspaceId);
+                    // Revert deduction on failure
+                    _accumulatedSeconds.AddOrUpdate(workspaceId, secondsToBill, (_, existing) => existing + secondsToBill);
+                }
+            }
+        }
+    }
+
     private async Task FlushAccumulatedCreditsAsync(CancellationToken ct)
     {
         // Flush every 10 seconds
@@ -131,12 +218,21 @@ public class FractionalBillingWorker : BackgroundService
                     {
                         try
                         {
-                            await _billingClient.ConsumeCreditsAsync(new ConsumeCreditsRequest
+                            _lastSeenRoomId.TryGetValue(kvp.Key, out var roomId);
+                            _lastSeenUserId.TryGetValue(kvp.Key, out var userId);
+
+                            // Use LogUsageOnly — credits already deducted by ReserveCreditsAsync.
+                            // This only creates UsageRecord for analytics (Feature Adoption, Cost by AI service)
+                            await _billingClient.LogUsageOnlyAsync(new RecordUsageGrpcRequest
                             {
-                                WorkspaceId = kvp.Key,
-                                Amount = secondsToBill,
-                                ReferenceType = "AI_SPEECH_TRANSLATION",
-                                ReferenceId = "stt-stream"
+                                HostWorkspaceId = kvp.Key,
+                                UserId = string.IsNullOrEmpty(userId) ? Guid.Empty.ToString() : userId,
+                                UsageType = "voice_translation",
+                                Unit = "seconds",
+                                Quantity = secondsToBill,
+                                CreditsConsumed = secondsToBill,
+                                DurationSeconds = secondsToBill,
+                                TranslationRoomId = roomId ?? string.Empty,
                             }, cancellationToken: ct);
 
                             _logger.LogInformation("Billed {Seconds} seconds for Workspace {WorkspaceId}", secondsToBill, kvp.Key);

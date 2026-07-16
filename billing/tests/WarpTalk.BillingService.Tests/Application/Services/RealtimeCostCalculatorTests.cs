@@ -10,22 +10,18 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 public class RealtimeCostCalculatorTests
 {
     private readonly Mock<IConfiguration> _mockConfig;
-    private readonly CreditAndUsageService _calculator;
+    private readonly UsageService _calculator;
 
     public RealtimeCostCalculatorTests()
     {
         _mockConfig = new Mock<IConfiguration>();
 
-        // Setup default config mock simulating appsettings.json
-        var configSectionMock = new Mock<IConfigurationSection>();
+        _mockConfig.Setup(c => c["BillingRates:SttPerMinute"]).Returns("10.0");
+        _mockConfig.Setup(c => c["BillingRates:TranslationPerMinute"]).Returns("10.0");
+        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerMinute"]).Returns("5.0");
+        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerMinute"]).Returns("25.0");
 
-        _mockConfig.Setup(c => c["BillingRates:AudioPerSecond"]).Returns("0.5");
-        _mockConfig.Setup(c => c["BillingRates:Per1000Tokens"]).Returns("2.0");
-        _mockConfig.Setup(c => c["BillingRates:GpuPerMs"]).Returns("0.005");
-
-        _calculator = new CreditAndUsageService(
-            null!, 
-            null!, 
+        _calculator = new UsageService(
             null!, 
             null!, 
             _mockConfig.Object);

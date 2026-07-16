@@ -10,8 +10,6 @@ public partial class Payment
 
     public Guid UserId { get; set; }
 
-    public Guid WorkspaceId { get; set; }
-
     public decimal Amount { get; set; }
 
     public decimal TaxAmount { get; set; }
@@ -43,4 +41,6 @@ public partial class Payment
     public DateTime UpdatedAt { get; set; }
 
     public virtual Subscription Subscription { get; set; } = null!;
+
+    public virtual ICollection<Refund> Refunds { get; set; } = new List<Refund>();
 }

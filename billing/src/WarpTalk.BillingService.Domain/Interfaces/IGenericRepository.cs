@@ -23,5 +23,6 @@ public interface IGenericRepository<T> where T : class
         int skip,
         int take,
         Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Expression<Func<T, object>>[]? includes = null);
 }

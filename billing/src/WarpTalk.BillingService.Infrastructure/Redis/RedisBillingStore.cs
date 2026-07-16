@@ -44,14 +44,44 @@ public class RedisBillingStore : IRedisBillingStore
         await Task.WhenAll(t1, t2);
 
         return JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
+    }    public async Task<IEnumerable<RedisCreditReservation>> GetExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        var maxScore = now.ToUnixTimeMilliseconds();
+        var expiredKeys = await _db.SortedSetRangeByScoreAsync(ReservationZSetKey, 0, maxScore);
+
+        var reservations = new List<RedisCreditReservation>();
+        foreach (var key in expiredKeys)
+        {
+            var json = await _db.HashGetAsync(ReservationHashKey, key);
+            if (!json.IsNullOrEmpty)
+            {
+                var res = JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
+                if (res != null) reservations.Add(res);
+            }
+        }
+        return reservations;
     }
 
-
+    public async Task RemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        var t1 = _db.SortedSetRemoveAsync(ReservationZSetKey, idempotencyKey);
+        var t2 = _db.HashDeleteAsync(ReservationHashKey, idempotencyKey);
+        await Task.WhenAll(t1, t2);
+    }
 
     public async Task SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default)
     {
         var expireTime = DateTimeOffset.UtcNow.Add(ttl).ToUnixTimeMilliseconds();
         await _db.SortedSetAddAsync(SessionZSetKey, sessionId.ToString(), expireTime);
+    }
+
+    public async Task<bool> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        var score = await _db.SortedSetScoreAsync(SessionZSetKey, sessionId.ToString());
+        if (!score.HasValue) return false;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return score.Value > now;
     }
 
     public async Task<IEnumerable<Guid>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)

@@ -18,7 +18,7 @@ public record BillingReportDto(
     int TotalConsumedCredits,
     decimal? AverageTranslationCostPerMinute,
     int? AverageCostPerMeeting,
-    IEnumerable<UsageSummaryDto> UsageBreakdown
+    IEnumerable<UsageBreakdownDto> UsageBreakdown
 );
 
 public record UsageSummaryDto(
@@ -64,28 +64,14 @@ public record SubscriptionDto(
     string? WorkspaceName = null
 );
 
-public record CreateSubscriptionRequest(
+public record SubscriptionRequest(
     [Required(ErrorMessage = "WorkspaceId is required.")]
     Guid WorkspaceId,
 
     [Required(ErrorMessage = "PlanId is required.")]
     Guid PlanId,
 
-    [Required(ErrorMessage = "UserId is required.")]
-    Guid UserId
-);
-
-public record CancelSubscriptionRequest(
-    [MaxLength(500, ErrorMessage = "Reason cannot exceed 500 characters.")]
-    string? Reason
-);
-
-public record ChangeSubscriptionRequest(
-    [Required(ErrorMessage = "WorkspaceId is required.")]
-    Guid WorkspaceId,
-
-    [Required(ErrorMessage = "NewPlanId is required.")]
-    Guid NewPlanId
+    Guid? UserId = null
 );
 
 public record RecordUsageRequest(
@@ -105,7 +91,8 @@ public record RecordUsageRequest(
     int CreditsConsumed,
     int? DurationSeconds,
     Guid? TranslationRoomId,
-    string? Details
+    Guid? SegmentId = null,
+    string? Details = null
 );
 
 public record GlobalBillingMetricsDto(
@@ -120,3 +107,10 @@ public record TopWorkspaceDto(
     string? WorkspaceName,
     int TotalCreditsConsumed
 );
+
+public record UsageBreakdownDto(
+    string UsageType,
+    int TotalCreditsConsumed,
+    decimal TotalQuantity
+);
+

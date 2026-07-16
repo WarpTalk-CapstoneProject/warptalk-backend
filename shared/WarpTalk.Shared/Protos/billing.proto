@@ -18,6 +18,9 @@ service BillingService {
   // Record AI usage and apply Host-Pays model
   rpc RecordUsage (RecordUsageGrpcRequest) returns (RecordUsageGrpcResponse);
 
+  // Log AI usage for analytics only (no credit deduction) — used when credits already reserved
+  rpc LogUsageOnly (RecordUsageGrpcRequest) returns (RecordUsageGrpcResponse);
+
   // Credit transaction history (paginated)
   rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
 
@@ -167,6 +170,7 @@ message RecordUsageGrpcRequest {
   int32  duration_seconds   = 7;
   string translation_room_id = 8;
   string details_json       = 9;
+  string segment_id         = 10;
 }
 
 message RecordUsageGrpcResponse {

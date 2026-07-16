@@ -38,9 +38,13 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
 // --- Application Services ---
-builder.Services.AddScoped<ISubscriptionManagementService, SubscriptionManagementService>();
-builder.Services.AddScoped<ICreditAndUsageService, CreditAndUsageService>();
+builder.Services.AddScoped<IPlanService, PlanService>();
+builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<ICreditService, CreditService>();
+builder.Services.AddScoped<IUsageService, UsageService>();
 builder.Services.AddScoped<IPaymentAndLedgerService, PaymentAndLedgerService>();
+builder.Services.AddScoped<IInvoiceService, InvoiceService>();
+builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
 // --- Background Workers ---
 builder.Services.AddHostedService<WarpTalk.BillingService.API.Workers.SessionMonitorWorker>();

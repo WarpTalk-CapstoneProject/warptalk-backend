@@ -16,16 +16,16 @@ using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
-public class SubscriptionManagementServiceTests
+public class SubscriptionServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
     private readonly Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient> _mockPaymentClient;
-    private readonly SubscriptionManagementService _subscriptionService;
+    private readonly SubscriptionService _subscriptionService;
 
-    public SubscriptionManagementServiceTests()
+    public SubscriptionServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
@@ -37,9 +37,9 @@ public class SubscriptionManagementServiceTests
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
 
-        _subscriptionService = new SubscriptionManagementService(
+        _subscriptionService = new SubscriptionService(
             _mockUnitOfWork.Object,
-            new Mock<ILogger<SubscriptionManagementService>>().Object,
+            new Mock<ILogger<SubscriptionService>>().Object,
             new Mock<IBillingMessagePublisher>().Object,
             _mockPaymentClient.Object);
     }
@@ -51,7 +51,7 @@ public class SubscriptionManagementServiceTests
     [Fact]
     public async Task CreateSubscriptionAsync_Should_Create_Pending_Subscription()
     {
-        var request = new CreateSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var request = new SubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         var plan = new Plan { Id = request.PlanId, Name = "Pro", CreditsPerCycle = 1000, BillingCycle = "monthly" };
 
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
@@ -70,7 +70,7 @@ public class SubscriptionManagementServiceTests
     {
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);
 
-        var result = await _subscriptionService.CreateSubscriptionAsync(new CreateSubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()));
+        var result = await _subscriptionService.CreateSubscriptionAsync(new SubscriptionRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingPlanNotFound);
@@ -87,7 +87,7 @@ public class SubscriptionManagementServiceTests
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(existing);
 
-        var result = await _subscriptionService.CreateSubscriptionAsync(new CreateSubscriptionRequest(Guid.NewGuid(), workspaceId, plan.Id));
+        var result = await _subscriptionService.CreateSubscriptionAsync(new SubscriptionRequest(workspaceId, plan.Id, Guid.NewGuid()));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionAlreadyActive);
@@ -158,7 +158,7 @@ public class SubscriptionManagementServiceTests
             It.IsAny<CancellationToken>()))
             .Returns(mockCall);
 
-        var result = await _subscriptionService.ChangeSubscriptionAsync(new ChangeSubscriptionRequest(workspaceId, newPlanId));
+        var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, newPlanId));
 
         result.IsSuccess.Should().BeTrue();
         oldSub.Status.Should().Be("cancelled");
@@ -175,7 +175,7 @@ public class SubscriptionManagementServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
 
-        var result = await _subscriptionService.ChangeSubscriptionAsync(new ChangeSubscriptionRequest(workspaceId, planId));
+        var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, planId));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionAlreadyActive);
@@ -190,58 +190,9 @@ public class SubscriptionManagementServiceTests
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);
 
-        var result = await _subscriptionService.ChangeSubscriptionAsync(new ChangeSubscriptionRequest(workspaceId, Guid.NewGuid()));
+        var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, Guid.NewGuid()));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingPlanNotFound);
-    }
-
-    // ─────────────────────────────────────────────
-    //  Plan CRUD Tests
-    // ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task CreatePlanAsync_ShouldCreatePlan_WhenValidRequest()
-    {
-        var request = new CreatePlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, 5, true, true, true, false, 0, true, true, "{}", 0);
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);
-
-        var result = await _subscriptionService.CreatePlanAsync(request);
-
-        result.IsSuccess.Should().BeTrue();
-        result.Value!.Name.Should().Be("Gold");
-        result.Value.Slug.Should().Be("gold-tier");
-        _mockPlanRepo.Verify(r => r.AddAsync(It.Is<Plan>(p => p.Name == "Gold" && p.Slug == "gold-tier"), default), Times.Once);
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
-    }
-
-    [Fact]
-    public async Task CreatePlanAsync_ShouldReturnFailure_WhenDuplicateSlug()
-    {
-        var request = new CreatePlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, 5, true, true, true, false, 0, true, true, "{}", 0);
-        var existing = new Plan { Id = Guid.NewGuid(), Name = "Gold Plan", Slug = "gold-tier" };
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(existing);
-
-        var result = await _subscriptionService.CreatePlanAsync(request);
-
-        result.IsSuccess.Should().BeFalse();
-        result.ErrorCode.Should().Be("DUPLICATE_SLUG");
-    }
-
-    [Fact]
-    public async Task DeactivatePlanAsync_ShouldDeactivatePlan_WhenFound()
-    {
-        var planId = Guid.NewGuid();
-        var plan = new Plan { Id = planId, Name = "Premium", Slug = "premium", IsActive = true };
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
-        _mockSubRepo.Setup(r => r.CountAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(0);
-
-        var result = await _subscriptionService.DeactivatePlanAsync(planId);
-
-        result.IsSuccess.Should().BeTrue();
-        plan.IsActive.Should().BeFalse();
-        plan.DeletedAt.Should().NotBeNull();
-        _mockPlanRepo.Verify(r => r.Update(plan), Times.Once);
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
 }

@@ -44,6 +44,10 @@ public class PaymentsController : ControllerBase
                 var payloadBase64 = sessionId.Substring("mock_session_".Length);
                 var payloadJson = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(payloadBase64));
                 var payload = System.Text.Json.JsonSerializer.Deserialize<MockSessionPayload>(payloadJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (payload == null)
+                {
+                    return BadRequest("Invalid mock session payload.");
+                }
 
                 session = new Stripe.Checkout.Session
                 {
@@ -69,7 +73,12 @@ public class PaymentsController : ControllerBase
                 session = await service.GetAsync(sessionId);
             }
             
-            if (session != null && session.PaymentStatus == "paid")
+            if (session == null)
+            {
+                return NotFound("Session not found.");
+            }
+            
+            if (session.PaymentStatus == "paid")
             {
                 Console.WriteLine($"[PAYMENTS-LOCAL-FALLBACK] Processing checkout session {session.Id} directly via success page API call");
                 var isZeroDecimal = string.Equals(session.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
@@ -291,9 +300,9 @@ public class PaymentsController : ControllerBase
         public Guid UserId { get; set; }
         public Guid WorkspaceId { get; set; }
         public decimal Amount { get; set; }
-        public string Currency { get; set; }
-        public string PaymentType { get; set; }
-        public string PlanSlug { get; set; }
-        public string BillingCycle { get; set; }
+        public string Currency { get; set; } = string.Empty;
+        public string PaymentType { get; set; } = string.Empty;
+        public string? PlanSlug { get; set; }
+        public string? BillingCycle { get; set; }
     }
 }

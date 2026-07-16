@@ -21,14 +21,11 @@ public static class BillingMapper
         plan.AiAssistantEnabled,
         plan.GlossaryEnabled,
         plan.DedicatedGpu,
-        plan.VoiceCloneLimitMins,
-        plan.AllowGlossary,
-        plan.AllowAcl,
         plan.Features,
         plan.SortOrder
     );
 
-    public static Plan ToEntity(this CreatePlanRequest request) => new()
+    public static Plan ToEntity(this PlanRequest request) => new()
     {
         Id = Guid.NewGuid(),
         Name = request.Name,
@@ -44,17 +41,14 @@ public static class BillingMapper
         AiAssistantEnabled = request.AiAssistantEnabled,
         GlossaryEnabled = request.GlossaryEnabled,
         DedicatedGpu = request.DedicatedGpu,
-        VoiceCloneLimitMins = request.VoiceCloneLimitMins,
-        AllowGlossary = request.AllowGlossary,
-        AllowAcl = request.AllowAcl,
         Features = request.Features,
         SortOrder = request.SortOrder,
-        IsActive = true,
+        IsActive = request.IsActive,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
     };
 
-    public static void UpdateFromRequest(this Plan plan, UpdatePlanRequest request)
+    public static void UpdateFromRequest(this Plan plan, PlanRequest request)
     {
         plan.Name = request.Name;
         plan.Slug = request.Slug.ToLowerInvariant().Trim();
@@ -69,9 +63,6 @@ public static class BillingMapper
         plan.AiAssistantEnabled = request.AiAssistantEnabled;
         plan.GlossaryEnabled = request.GlossaryEnabled;
         plan.DedicatedGpu = request.DedicatedGpu;
-        plan.VoiceCloneLimitMins = request.VoiceCloneLimitMins;
-        plan.AllowGlossary = request.AllowGlossary;
-        plan.AllowAcl = request.AllowAcl;
         plan.Features = request.Features;
         plan.SortOrder = request.SortOrder;
         plan.IsActive = request.IsActive;
@@ -91,18 +82,18 @@ public static class BillingMapper
         sub.CurrentPeriodStart,
         sub.CurrentPeriodEnd,
         sub.AutoRenew,
-        sub.CancelAtPeriodEnd,
+        !sub.AutoRenew,
         sub.CreatedAt,
         sub.CancelledAt
     );
 
-    public static Subscription ToEntity(this CreateSubscriptionRequest request, Plan plan)
+    public static Subscription ToEntity(this SubscriptionRequest request, Plan plan)
     {
         var now = DateTime.UtcNow;
         return new Subscription
         {
             Id = Guid.NewGuid(),
-            UserId = request.UserId,
+            UserId = request.UserId ?? Guid.Empty,
             WorkspaceId = request.WorkspaceId,
             PlanId = request.PlanId,
             Status = "pending",
@@ -117,7 +108,7 @@ public static class BillingMapper
         };
     }
 
-    public static Subscription ToEntity(this ChangeSubscriptionRequest request, Subscription oldSub, Plan newPlan)
+    public static Subscription ToEntity(this SubscriptionRequest request, Subscription oldSub, Plan newPlan)
     {
         var now = DateTime.UtcNow;
         return new Subscription
@@ -145,7 +136,6 @@ public static class BillingMapper
     public static void Cancel(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
-        sub.CancelAtPeriodEnd = true;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
         sub.Status = "cancelled";
@@ -203,7 +193,6 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = sub.UserId,
-        WorkspaceId = sub.WorkspaceId,
         Amount = -request.Amount,
         Type = "consumption",
         ReferenceType = request.ReferenceType,
@@ -217,7 +206,6 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = sub.UserId,
-        WorkspaceId = sub.WorkspaceId,
         Amount = request.Amount,
         Type = "top_up",
         ReferenceType = request.ReferenceType,
@@ -268,13 +256,11 @@ public static class BillingMapper
         Id = Guid.NewGuid(),
         SubscriptionId = sub.Id,
         UserId = request.UserId,
-        WorkspaceId = sub.WorkspaceId,
         Amount = -request.CreditsConsumed, // Negative for consumption
         Type = "consumption",
         Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
         ReferenceType = "usage_record",
         ReferenceId = request.TranslationRoomId,
-        Status = "committed",
         BalanceAfter = sub.CreditsRemaining,
         CreatedAt = DateTime.UtcNow
     };
@@ -286,6 +272,7 @@ public static class BillingMapper
         UserId = request.UserId,
         WorkspaceId = request.HostWorkspaceId,
         TranslationRoomId = request.TranslationRoomId,
+        SegmentId = request.SegmentId,
         UsageType = request.UsageType,
         Unit = request.Unit,
         Quantity = request.Quantity,

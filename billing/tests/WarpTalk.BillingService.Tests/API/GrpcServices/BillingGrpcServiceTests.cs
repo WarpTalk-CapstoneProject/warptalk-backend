@@ -16,8 +16,10 @@ namespace WarpTalk.BillingService.Tests.API.GrpcServices;
 
 public class BillingGrpcServiceTests
 {
-    private readonly Mock<ICreditAndUsageService> _mockCreditService;
-    private readonly Mock<ISubscriptionManagementService> _mockSubscriptionService;
+    private readonly Mock<ICreditService> _mockCreditService;
+    private readonly Mock<IUsageService> _mockUsageService;
+    private readonly Mock<IPlanService> _mockPlanService;
+    private readonly Mock<ISubscriptionService> _mockSubscriptionService;
     private readonly Mock<IPaymentAndLedgerService> _mockPaymentService;
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IConnectionMultiplexer> _mockRedis;
@@ -27,8 +29,10 @@ public class BillingGrpcServiceTests
 
     public BillingGrpcServiceTests()
     {
-        _mockCreditService = new Mock<ICreditAndUsageService>();
-        _mockSubscriptionService = new Mock<ISubscriptionManagementService>();
+        _mockCreditService = new Mock<ICreditService>();
+        _mockUsageService = new Mock<IUsageService>();
+        _mockPlanService = new Mock<IPlanService>();
+        _mockSubscriptionService = new Mock<ISubscriptionService>();
         _mockPaymentService = new Mock<IPaymentAndLedgerService>();
         _mockUnitOfWork = new Mock<IUnitOfWork> { DefaultValue = DefaultValue.Mock };
         _mockRedis = new Mock<IConnectionMultiplexer>();
@@ -39,6 +43,8 @@ public class BillingGrpcServiceTests
 
         _service = new BillingGrpcService(
             _mockCreditService.Object,
+            _mockUsageService.Object,
+            _mockPlanService.Object,
             _mockSubscriptionService.Object,
             _mockPaymentService.Object,
             _mockUnitOfWork.Object,
@@ -67,7 +73,7 @@ public class BillingGrpcServiceTests
         // Assert
         result.Success.Should().BeFalse();
         result.ErrorMessage.Should().Contain("Duration exceeds maximum allowed limit");
-        _mockCreditService.Verify(x => x.RecordUsageAsync(It.IsAny<WarpTalk.BillingService.Application.DTOs.RecordUsageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockUsageService.Verify(x => x.RecordUsageAsync(It.IsAny<WarpTalk.BillingService.Application.DTOs.RecordUsageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -90,7 +96,7 @@ public class BillingGrpcServiceTests
         // Assert
         result.Success.Should().BeFalse();
         result.ErrorMessage.Should().Contain("Credits consumed cannot be negative");
-        _mockCreditService.Verify(x => x.RecordUsageAsync(It.IsAny<WarpTalk.BillingService.Application.DTOs.RecordUsageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockUsageService.Verify(x => x.RecordUsageAsync(It.IsAny<WarpTalk.BillingService.Application.DTOs.RecordUsageRequest>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
 

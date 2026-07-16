@@ -13,9 +13,9 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/subscriptions")]
 public class SubscriptionsController : ControllerBase
 {
-    private readonly ISubscriptionManagementService _subscriptionService;
+    private readonly ISubscriptionService _subscriptionService;
 
-    public SubscriptionsController(ISubscriptionManagementService subscriptionService)
+    public SubscriptionsController(ISubscriptionService subscriptionService)
     {
         _subscriptionService = subscriptionService;
     }
@@ -25,7 +25,7 @@ public class SubscriptionsController : ControllerBase
     /// </summary>
     [HttpPost]
     public async Task<ActionResult<SubscriptionDto>> CreateSubscription(
-        [FromBody] CreateSubscriptionRequest request,
+        [FromBody] SubscriptionRequest request,
         CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CreateSubscriptionAsync(request, cancellationToken);
@@ -72,10 +72,10 @@ public class SubscriptionsController : ControllerBase
     [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<IActionResult> CancelSubscription(
         Guid workspaceId,
-        [FromBody] CancelSubscriptionRequest request,
+        [FromQuery] string? reason,
         CancellationToken cancellationToken)
     {
-        var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, request.Reason, cancellationToken);
+        var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
 
         return NoContent();
@@ -88,7 +88,7 @@ public class SubscriptionsController : ControllerBase
     [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(
         Guid workspaceId,
-        [FromBody] ChangeSubscriptionRequest request,
+        [FromBody] SubscriptionRequest request,
         CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)

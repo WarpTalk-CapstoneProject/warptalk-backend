@@ -549,7 +549,8 @@ public class MeetingRoomService : IMeetingRoomService
         await _redisService.PublishEventAsync("meeting.billing.stop", new
         {
             TranslationRoomId = translationRoomId.ToString(),
-            MeetingRoomId = meetingRoom?.Id.ToString() ?? Guid.Empty.ToString()
+            MeetingRoomId = meetingRoom?.Id.ToString() ?? Guid.Empty.ToString(),
+            WorkspaceId = roomDetails.WorkspaceId
         });
 
         return Result.Success(true);

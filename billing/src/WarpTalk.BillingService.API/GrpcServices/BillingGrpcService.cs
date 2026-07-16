@@ -11,22 +11,28 @@ namespace WarpTalk.BillingService.API.GrpcServices;
 /// </summary>
 public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBase
 {
-    private readonly ICreditAndUsageService _creditService;
-    private readonly ISubscriptionManagementService _subscriptionService;
+    private readonly ICreditService _creditService;
+    private readonly IUsageService _usageService;
+    private readonly IPlanService _planService;
+    private readonly ISubscriptionService _subscriptionService;
     private readonly IPaymentAndLedgerService _paymentService;
     private readonly WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork _unitOfWork;
     private readonly StackExchange.Redis.IConnectionMultiplexer _redis;
     private readonly ILogger<BillingGrpcService> _logger;
 
     public BillingGrpcService(
-        ICreditAndUsageService creditService,
-        ISubscriptionManagementService subscriptionService,
+        ICreditService creditService,
+        IUsageService usageService,
+        IPlanService planService,
+        ISubscriptionService subscriptionService,
         IPaymentAndLedgerService paymentService,
         WarpTalk.BillingService.Domain.Interfaces.IUnitOfWork unitOfWork,
         StackExchange.Redis.IConnectionMultiplexer redis,
         ILogger<BillingGrpcService> logger)
     {
         _creditService = creditService;
+        _usageService = usageService;
+        _planService = planService;
         _subscriptionService = subscriptionService;
         _paymentService = paymentService;
         _unitOfWork = unitOfWork;
@@ -162,6 +168,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         }
 
         Guid? translationRoomId = Guid.TryParse(request.TranslationRoomId, out var trId) ? trId : null;
+        Guid? segmentId = Guid.TryParse(request.SegmentId, out var segId) ? segId : null;
 
         var dtoRequest = new RecordUsageRequest(
             hostWorkspaceId,
@@ -172,10 +179,11 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             request.CreditsConsumed,
             request.DurationSeconds > 0 ? request.DurationSeconds : null,
             translationRoomId,
+            segmentId,
             string.IsNullOrWhiteSpace(request.DetailsJson) ? null : request.DetailsJson
         );
 
-        var result = await _creditService.RecordUsageAsync(dtoRequest, context.CancellationToken);
+        var result = await _usageService.RecordUsageAsync(dtoRequest, context.CancellationToken);
 
         if (!result.IsSuccess)
             return new Shared.Protos.RecordUsageGrpcResponse
@@ -189,6 +197,41 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             Success = true,
             NewBalance = result.Value!.CurrentCredits
         };
+    }
+
+    public override async Task<Shared.Protos.RecordUsageGrpcResponse> LogUsageOnly(
+        Shared.Protos.RecordUsageGrpcRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.HostWorkspaceId, out var hostWorkspaceId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid host_workspace_id."));
+
+        Guid.TryParse(request.UserId, out var userId);
+        Guid? translationRoomId = Guid.TryParse(request.TranslationRoomId, out var trId) ? trId : null;
+        Guid? segmentId = Guid.TryParse(request.SegmentId, out var segId) ? segId : null;
+
+        var dtoRequest = new RecordUsageRequest(
+            hostWorkspaceId,
+            userId,
+            request.UsageType,
+            request.Unit,
+            (decimal)request.Quantity,
+            request.CreditsConsumed,
+            request.DurationSeconds > 0 ? request.DurationSeconds : null,
+            translationRoomId,
+            segmentId,
+            string.IsNullOrWhiteSpace(request.DetailsJson) ? null : request.DetailsJson
+        );
+
+        var result = await _usageService.LogUsageOnlyAsync(dtoRequest, context.CancellationToken);
+
+        if (!result.IsSuccess)
+            return new Shared.Protos.RecordUsageGrpcResponse
+            {
+                Success = false,
+                ErrorMessage = result.Error
+            };
+
+        return new Shared.Protos.RecordUsageGrpcResponse { Success = true };
     }
 
     public override async Task<Shared.Protos.CreditHistoryResponse> GetCreditHistory(
@@ -239,7 +282,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         Guid.TryParse(request.UserId, out var userId);
 
         var result = await _subscriptionService.CreateSubscriptionAsync(
-            new CreateSubscriptionRequest(workspaceId, planId, userId),
+            new SubscriptionRequest(workspaceId, planId, userId),
             context.CancellationToken);
 
         if (!result.IsSuccess)
@@ -272,7 +315,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!subResult.IsSuccess || subResult.Value == null)
             return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
 
-        var planResult = await _subscriptionService.GetPlanByIdAsync(subResult.Value.PlanId, context.CancellationToken);
+        var planResult = await _planService.GetPlanByIdAsync(subResult.Value.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
             return new Shared.Protos.GetFeatureAccessResponse { HasActiveSubscription = false };
 
@@ -288,8 +331,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             GlossaryEnabled = plan.GlossaryEnabled,
             DedicatedGpu = plan.DedicatedGpu,
             FeaturesJson = plan.Features ?? "{}",
-            AllowGlossary = plan.AllowGlossary,
-            AllowAcl = plan.AllowAcl
+            AllowGlossary = plan.GlossaryEnabled,
+            AllowAcl = plan.AiAssistantEnabled
         };
     }
 
@@ -317,7 +360,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
     public override async Task<Shared.Protos.GetPlansResponse> GetPlans(
         Shared.Protos.GetPlansRequest request, ServerCallContext context)
     {
-        var result = await _subscriptionService.GetActivePlansAsync(context.CancellationToken);
+        var result = await _planService.GetActivePlansAsync(context.CancellationToken);
 
         var response = new Shared.Protos.GetPlansResponse();
         if (!result.IsSuccess) return response;
@@ -334,7 +377,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (!Guid.TryParse(request.PlanId, out var planId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid plan_id."));
 
-        var result = await _subscriptionService.GetPlanByIdAsync(planId, context.CancellationToken);
+        var result = await _planService.GetPlanByIdAsync(planId, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw new RpcException(new Status(StatusCode.NotFound, result.Error ?? "Plan not found."));
@@ -473,7 +516,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             }
         }
 
-        var planResult = await _subscriptionService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
         {
             return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Plan not found." };
@@ -516,12 +559,12 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         var providerTxId = string.IsNullOrEmpty(request.ProviderTransactionId) ? request.StripeSessionId : request.ProviderTransactionId;
 
-        var existingTopup = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-            c => c.CorrelationId == providerTxId,
+        var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
+            p => p.ProviderTransactionId == providerTxId,
             context.CancellationToken
         );
 
-        if (existingTopup == null)
+        if (existingPayment == null)
         {
             int creditsToAdd = plan.CreditsPerCycle;
             if (isTopUp)
@@ -553,18 +596,17 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
 
+            var paymentId = Guid.NewGuid();
+
             var topupTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
             {
                 SubscriptionId = sub.Id,
                 UserId = userId,
-                WorkspaceId = workspaceId,
                 Amount = creditsToAdd,
                 Type = "top_up",
                 Description = isTopUp ? "Credit Top-Up via Stripe" : "Stripe Payment Success (gRPC)",
-                ReferenceId = Guid.NewGuid(),
-                CorrelationId = providerTxId,
+                ReferenceId = paymentId,
                 ReferenceType = "stripe_payment",
-                Status = "committed",
                 BalanceAfter = sub.CreditsRemaining,
                 CreatedAt = DateTime.UtcNow
             };
@@ -572,10 +614,9 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
             {
-                Id = Guid.NewGuid(),
+                Id = paymentId,
                 SubscriptionId = sub.Id,
                 UserId = userId,
-                WorkspaceId = workspaceId,
                 Amount = (decimal)request.Amount,
                 TaxAmount = 0m,
                 TotalAmount = (decimal)request.Amount,
@@ -593,15 +634,17 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
             {
                 Id = Guid.NewGuid(),
-                WorkspaceId = workspaceId,
-                SubscriptionId = sub.Id,
+                UserId = userId,
                 PaymentId = paymentTx.Id,
-                StripeInvoiceId = providerTxId ?? Guid.NewGuid().ToString(),
-                Amount = (decimal)request.Amount,
+                InvoiceNumber = providerTxId ?? Guid.NewGuid().ToString(),
+                Subtotal = (decimal)request.Amount,
+                Tax = 0,
+                Total = (decimal)request.Amount,
                 Currency = request.Currency ?? "VND",
                 Status = "paid",
-                InvoicePdfUrl = request.InvoicePdf ?? string.Empty,
-                HostedInvoiceUrl = request.InvoiceUrl ?? string.Empty,
+                PdfUrl = request.InvoicePdf ?? string.Empty,
+                LineItems = "[]",
+                IssuedAt = DateTime.UtcNow,
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.InvoiceRepository.AddAsync(invoice);
@@ -631,7 +674,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         if (sub == null) return;
 
         var creditedTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-            tx => tx.CorrelationId == payment.ProviderTransactionId && tx.Type == "top_up" && tx.SubscriptionId == sub.Id,
+            tx => tx.ReferenceId == payment.Id && tx.Type == "top_up" && tx.SubscriptionId == sub.Id,
             context.CancellationToken);
 
         if (creditedTx == null)
@@ -662,14 +705,11 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         {
             SubscriptionId = sub.Id,
             UserId = payment.UserId,
-            WorkspaceId = payment.WorkspaceId,
             Amount = -reversalAmount,
             Type = "refund_deduction",
             Description = $"Credits deducted due to {payment.Status}",
             ReferenceId = payment.Id,
-            CorrelationId = payment.ProviderTransactionId,
             ReferenceType = "stripe_payment",
-            Status = "committed",
             BalanceAfter = sub.CreditsRemaining,
             CreatedAt = DateTime.UtcNow
         };
@@ -769,7 +809,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                         Id = Guid.NewGuid(),
                         SubscriptionId = sub.Id,
                         UserId = Guid.TryParse(request.UserId, out var uid) ? uid : Guid.Empty,
-                        WorkspaceId = workspaceId,
                         Amount = (decimal)request.Amount,
                         TaxAmount = 0m,
                         TotalAmount = (decimal)request.Amount,
@@ -829,7 +868,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         DedicatedGpu = dto.DedicatedGpu,
         Features = dto.Features,
         SortOrder = dto.SortOrder,
-        AllowGlossary = dto.AllowGlossary,
-        AllowAcl = dto.AllowAcl
+        AllowGlossary = dto.GlossaryEnabled,
+        AllowAcl = dto.AiAssistantEnabled
     };
 }

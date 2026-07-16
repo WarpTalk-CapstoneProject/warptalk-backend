@@ -14,6 +14,8 @@ public partial class UsageRecord
 
     public Guid? TranslationRoomId { get; set; }
 
+    public Guid? SegmentId { get; set; }
+
     public string UsageType { get; set; } = null!;
 
     public string Unit { get; set; } = null!;

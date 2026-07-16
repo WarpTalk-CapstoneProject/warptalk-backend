@@ -7,6 +7,5 @@ public enum CreditTransactionType
     Refund,
     Adjustment,
     Expiry,
-    TopUp,
-    Bonus
+    TopUp
 }

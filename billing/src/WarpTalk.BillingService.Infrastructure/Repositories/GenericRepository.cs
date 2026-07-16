@@ -76,9 +76,17 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
         int skip,
         int take,
         Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Expression<Func<T, object>>[]? includes = null)
     {
         IQueryable<T> query = _dbSet.Where(predicate);
+        if (includes != null)
+        {
+            foreach (var include in includes)
+            {
+                query = query.Include(include);
+            }
+        }
         if (orderBy != null)
         {
             query = orderBy(query);

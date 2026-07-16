@@ -32,12 +32,6 @@ public partial class Plan
 
     public bool DedicatedGpu { get; set; }
 
-    public int VoiceCloneLimitMins { get; set; }
-
-    public bool AllowGlossary { get; set; }
-
-    public bool AllowAcl { get; set; }
-
     public string Features { get; set; } = null!;
 
     public int SortOrder { get; set; }
