@@ -31,13 +31,6 @@ try
     {
         // HTTP 1.1 for Swagger/REST
         options.ListenAnyIP(5201, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
-        
-        // HTTPS for Secure REST
-        options.ListenAnyIP(5202, listenOptions => 
-        {
-            listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1AndHttp2;
-            listenOptions.UseHttps();
-        });
 
         // HTTP/2 for gRPC
         options.ListenAnyIP(50056, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);

@@ -33,5 +33,13 @@ public partial class TranscriptCorrection
 
     public DateTime CreatedAt { get; set; }
 
+    /// <summary>Only set when CorrectionType == "TRANSLATION" — points at the translation_contents row this correction re-does.</summary>
+    public Guid? TranslationContentId { get; set; }
+
+    /// <summary>Soft ref -> subscription.credit_transactions (cross-service, no physical FK) — the reversal transaction issued when this correction invalidates a prior charge.</summary>
+    public Guid? ReversalCreditTransactionId { get; set; }
+
     public virtual TranscriptSegment Segment { get; set; } = null!;
+
+    public virtual TranslationContent? TranslationContent { get; set; }
 }

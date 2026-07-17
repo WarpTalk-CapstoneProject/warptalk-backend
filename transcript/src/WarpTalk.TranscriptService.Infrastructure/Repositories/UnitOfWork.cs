@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
@@ -19,6 +21,9 @@ public class UnitOfWork : IUnitOfWork
     private IGenericRepository<Glossary>? _glossaries;
     private IGenericRepository<GlossaryTerm>? _glossaryTerms;
     private IGenericRepository<TranscriptExport>? _transcriptExports;
+    private IGenericRepository<TranslationContent>? _translationContents;
+    private IGenericRepository<SegmentTranslationLink>? _segmentTranslationLinks;
+    private IGenericRepository<AudioDubbing>? _audioDubbings;
 
     public UnitOfWork(TranscriptDbContext context)
     {
@@ -43,8 +48,35 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<GlossaryTerm> GlossaryTerms => 
         _glossaryTerms ??= new GenericRepository<GlossaryTerm>(_context);
 
-    public IGenericRepository<TranscriptExport> TranscriptExports => 
+    public IGenericRepository<TranscriptExport> TranscriptExports =>
         _transcriptExports ??= new GenericRepository<TranscriptExport>(_context);
+
+    public IGenericRepository<TranslationContent> TranslationContents =>
+        _translationContents ??= new GenericRepository<TranslationContent>(_context);
+
+    public IGenericRepository<SegmentTranslationLink> SegmentTranslationLinks =>
+        _segmentTranslationLinks ??= new GenericRepository<SegmentTranslationLink>(_context);
+
+    public IGenericRepository<AudioDubbing> AudioDubbings =>
+        _audioDubbings ??= new GenericRepository<AudioDubbing>(_context);
+
+    public async Task<int> AdvanceTranscriptForNewSegmentAsync(Guid transcriptId, int endTimeMs, CancellationToken cancellationToken = default)
+    {
+        var result = await _context.Database
+            .SqlQueryRaw<int>(
+                """
+                UPDATE transcript.transcripts
+                SET last_sequence_order = last_sequence_order + 1,
+                    total_segments = last_sequence_order + 1,
+                    total_duration_ms = GREATEST(total_duration_ms, {1}),
+                    updated_at = now()
+                WHERE id = {0}
+                RETURNING last_sequence_order
+                """,
+                transcriptId, endTimeMs)
+            .ToListAsync(cancellationToken);
+        return result.Single();
+    }
 
     public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

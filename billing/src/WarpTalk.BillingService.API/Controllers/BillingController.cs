@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -201,7 +202,10 @@ public class BillingController : ControllerBase
             if (!ModelState.IsValid)
                 return BadRequest(new ApiErrorResponse(BillingErrorMessages.VALIDATION_FAILED, BillingErrorCodes.VALIDATION_FAILED));
 
-            var result = await _billingService.CreateSubscriptionAsync(workspaceId, request.PlanId, ct);
+            var userId = Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId)
+                ? parsedUserId
+                : (Guid?)null;
+            var result = await _billingService.CreateSubscriptionAsync(workspaceId, request.PlanId, ct, userId);
             return result.IsSuccess
                 ? CreatedAtAction(nameof(GetWorkspaceCredits), new { workspaceId }, result.Value)
                 : StatusCode(result.ErrorCode == BillingErrorCodes.SUBSCRIPTION_ALREADY_ACTIVE ? 409 : 400,
