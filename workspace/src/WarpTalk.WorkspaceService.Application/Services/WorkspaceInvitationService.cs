@@ -50,7 +50,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var inviterMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == inviterUserId, "", ct);
+                m => m.WorkspaceId == workspaceId && m.UserId == inviterUserId && m.RemovedAt == null, "", ct);
 
             if (inviterMember == null)
             {

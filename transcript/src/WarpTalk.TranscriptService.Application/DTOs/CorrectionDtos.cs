@@ -16,8 +16,11 @@ public record CreateCorrectionDto(
     [MaxLength(2000, ErrorMessage = "CorrectedText cannot exceed 2000 characters.")]
     string CorrectedText,
     
-    [Required(ErrorMessage = "CorrectionType is required.")] 
-    string CorrectionType
+    [Required(ErrorMessage = "CorrectionType is required.")]
+    string CorrectionType,
+
+    /// <summary>Required when CorrectionType == "MT" — identifies which target-language translation is being corrected, so the correction record can link to the right transcript.translation_contents row.</summary>
+    string? TargetLanguage = null
 );
 
 public record TranscriptCorrectionDto(

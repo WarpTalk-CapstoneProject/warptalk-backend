@@ -3,15 +3,20 @@ using Microsoft.AspNetCore.SignalR;
 using System;
 using System.Security.Claims;
 using System.Threading.Tasks;
+using WarpTalk.MeetingService.Domain.Interfaces;
 
 namespace WarpTalk.MeetingService.API.Hubs;
 
 [Authorize]
 public class MeetingChatHub : Hub
 {
-    // Clients connect to /api/v1/meetings/chat-hub
-    // Then they join a room group to receive messages
-    
+    private readonly IUnitOfWork _unitOfWork;
+
+    public MeetingChatHub(IUnitOfWork unitOfWork)
+    {
+        _unitOfWork = unitOfWork;
+    }
+
     public override async Task OnConnectedAsync()
     {
         await base.OnConnectedAsync();
@@ -21,25 +26,16 @@ public class MeetingChatHub : Hub
     {
         var userIdString = Context.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
-        {
             throw new HubException("Unauthorized");
-        }
 
-        // Validate Participant is active
-        var unitOfWork = Context.GetHttpContext()?.RequestServices.GetService(typeof(WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork)) as WarpTalk.MeetingService.Domain.Interfaces.IUnitOfWork;
-        if (unitOfWork != null)
-        {
-            var room = await unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId);
-            if (room == null) throw new HubException("Room not found");
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId);
+        if (room == null) throw new HubException("Room not found");
 
-            var participant = await unitOfWork.MeetingParticipantRepository
-                .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
+        var participant = await _unitOfWork.MeetingParticipantRepository
+            .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
 
-            if (participant == null || !participant.IsActive)
-            {
-                throw new HubException("Forbidden: You are not an active participant in this room.");
-            }
-        }
+        if (participant == null || !participant.IsActive)
+            throw new HubException("Forbidden: You are not an active participant in this room.");
 
         var groupName = GetRoomGroupName(roomId);
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);

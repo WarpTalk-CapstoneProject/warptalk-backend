@@ -26,6 +26,7 @@ public static class TranslationRoomConstants
     public const string ErrorInvalidTransitionToEnded = "Room must be IN_PROGRESS or PAUSED to end.";
     public const string ErrorInvalidTransitionToCancelled = "Room must be SCHEDULED or WAITING to cancel.";
     public const string ErrorInvalidTransitionToExpired = "Room must be SCHEDULED or WAITING to expire.";
+    public const string ErrorNoAudioRoutesConfigured = "The room needs at least one source/target audio route configured before it can start.";
         
     public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";

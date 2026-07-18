@@ -59,7 +59,8 @@ public static class WorkspaceMapper
             config.VerifiedDomains,
             config.AllowExternalCollaboration,
             config.RequireVerifiedDomainForInternal,
-            config.AiUsagePolicy?.ToDto()
+            config.AiUsagePolicy?.ToDto(),
+            config.IsProfanityFilterEnabled
         );
     }
 
@@ -77,7 +78,8 @@ public static class WorkspaceMapper
             VerifiedDomains = dto.VerifiedDomains,
             AllowExternalCollaboration = dto.AllowExternalCollaboration,
             RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
-            AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration()
+            AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),
+            IsProfanityFilterEnabled = dto.IsProfanityFilterEnabled
         };
     }
 

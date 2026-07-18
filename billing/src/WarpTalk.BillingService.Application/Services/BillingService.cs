@@ -50,8 +50,8 @@ public class BillingService : IBillingService
         }
     }
 
-    /// <summary>Create a new subscription for workspace</summary>
-    public async Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default)
+    /// <summary>Create a new subscription for workspace, attributed to the creating user (falls back to Guid.Empty when the caller has no user context — e.g. the gRPC path — since subscriptions.user_id is required but this app doesn't yet thread a user identity through every billing entrypoint).</summary>
+    public async Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default, Guid? userId = null)
     {
         if (workspaceId == Guid.Empty)
             return Result.Failure<SubscriptionDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
@@ -60,10 +60,12 @@ public class BillingService : IBillingService
         {
             _logger.LogInformation("Creating subscription for workspace {WorkspaceId} with plan {PlanId}", workspaceId, planId);
 
-            // Check for existing active subscription
+            // Check for existing active subscription — is_active is the authoritative flag
+            // (matches subscriptions_one_active_per_workspace_idx and billing_worker's own
+            // resolve_subscription() query), not Status.
             var existingActive = await _uow.Subscriptions
                     .FirstOrDefaultAsync(
-                        s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                        s => s.WorkspaceId == workspaceId && s.IsActive,
                         "",
                         ct);
 
@@ -87,13 +89,16 @@ public class BillingService : IBillingService
             var subscription = new Subscription
             {
                 Id = Guid.NewGuid(),
+                UserId = userId ?? Guid.Empty,
                 WorkspaceId = workspaceId,
                 PlanId = planId,
                 Status = SubscriptionStatus.Active,
+                IsActive = true,
                 CurrentCredits = plan.CreditsPerMonth,
                 StartDate = DateTime.UtcNow,
                 EndDate = DateTime.UtcNow.AddMonths(1),
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
             };
 
             await _uow.Subscriptions.AddAsync(subscription, ct);
@@ -130,7 +135,7 @@ public class BillingService : IBillingService
 
             var subscription = await _uow.Subscriptions
                 .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                    s => s.WorkspaceId == workspaceId && s.IsActive,
                     "Plan",
                     ct);
 
@@ -163,7 +168,7 @@ public class BillingService : IBillingService
 
             var activeSubscription = await _uow.Subscriptions
                 .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                    s => s.WorkspaceId == workspaceId && s.IsActive,
                         "",
                         ct);
 
@@ -203,7 +208,7 @@ public class BillingService : IBillingService
 
             var subscription = await _uow.Subscriptions
                 .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                    s => s.WorkspaceId == workspaceId && s.IsActive,
                         "",
                         ct);
 
@@ -214,7 +219,11 @@ public class BillingService : IBillingService
             }
 
             subscription.Status = SubscriptionStatus.Cancelled;
+            subscription.IsActive = false;
+            subscription.CancellationReason = reason;
+            subscription.CancelledAt = DateTime.UtcNow;
             subscription.EndDate = DateTime.UtcNow;
+            subscription.UpdatedAt = DateTime.UtcNow;
 
             _uow.Subscriptions.Update(subscription);
             await _uow.SaveChangesAsync(ct);
@@ -239,7 +248,8 @@ public class BillingService : IBillingService
         int amount,
         string referenceType = "topup",
         Guid? referenceId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? userId = null)
     {
         if (workspaceId == Guid.Empty)
             return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
@@ -252,7 +262,7 @@ public class BillingService : IBillingService
 
             var subscription = await _uow.Subscriptions
                 .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                    s => s.WorkspaceId == workspaceId && s.IsActive,
                         "",
                         ct);
 
@@ -262,17 +272,20 @@ public class BillingService : IBillingService
                     BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
 
             subscription.CurrentCredits += amount;
+            subscription.UpdatedAt = DateTime.UtcNow;
             _uow.Subscriptions.Update(subscription);
 
             // Log credit transaction
             var creditTx = new CreditTransaction
             {
                 Id = Guid.NewGuid(),
-                WorkspaceId = workspaceId,
+                SubscriptionId = subscription.Id,
+                UserId = userId ?? Guid.Empty,
                 Amount = amount,
                 Type = CreditTransactionType.TopUp,
                 ReferenceId = referenceId,
-                ReferenceType = referenceType != null ? Enum.Parse<CreditReferenceType>(referenceType, true) : null,
+                ReferenceType = referenceType,
+                BalanceAfter = subscription.CurrentCredits,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -301,7 +314,8 @@ public class BillingService : IBillingService
         int amount,
         string referenceType,
         Guid? referenceId = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Guid? userId = null)
     {
         if (workspaceId == Guid.Empty)
             return Result.Failure<WorkspaceCreditsDto>("Workspace ID cannot be empty", BillingErrorCodes.INVALID_WORKSPACE_ID);
@@ -317,7 +331,7 @@ public class BillingService : IBillingService
 
             var subscription = await _uow.Subscriptions
                 .FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId && s.Status == SubscriptionStatus.Active,
+                    s => s.WorkspaceId == workspaceId && s.IsActive,
                         "",
                         ct);
 
@@ -336,17 +350,21 @@ public class BillingService : IBillingService
             }
 
             subscription.CurrentCredits -= amount;
+            subscription.CreditsUsedThisCycle += amount;
+            subscription.UpdatedAt = DateTime.UtcNow;
             _uow.Subscriptions.Update(subscription);
 
             // Log credit transaction
             var creditTx = new CreditTransaction
             {
                 Id = Guid.NewGuid(),
-                WorkspaceId = workspaceId,
+                SubscriptionId = subscription.Id,
+                UserId = userId ?? Guid.Empty,
                 Amount = -amount,
                 Type = CreditTransactionType.Consume,
                 ReferenceId = referenceId,
-                ReferenceType = Enum.Parse<CreditReferenceType>(referenceType, true),
+                ReferenceType = referenceType,
+                BalanceAfter = subscription.CurrentCredits,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -396,9 +414,16 @@ public class BillingService : IBillingService
                 "Fetching credit history for workspace {WorkspaceId}: page {PageNumber}, size {PageSize}",
                 workspaceId, pageNumber, pageSize);
 
+            // subscription.credit_transactions has no workspace_id column — resolve via
+            // the subscriptions that ever belonged to this workspace (not just the active
+            // one, so history survives cancel/resubscribe).
+            var subscriptionIds = (await _uow.Subscriptions.FindAsync(s => s.WorkspaceId == workspaceId, "", ct))
+                .Select(s => s.Id)
+                .ToList();
+
             var query = _uow.CreditTransactions
                 .Query()
-                .Where(ct => ct.WorkspaceId == workspaceId)
+                .Where(ct => subscriptionIds.Contains(ct.SubscriptionId))
                 .OrderByDescending(ct => ct.CreatedAt);
 
             var totalCount = await query.CountAsync(ct);
@@ -409,7 +434,7 @@ public class BillingService : IBillingService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var items = transactions.Select(MapToDto).ToList();
+            var items = transactions.Select(tx => MapToDto(tx, workspaceId)).ToList();
 
             var response = new PaginatedResponse<CreditTransactionDto>(
                 items,
@@ -457,7 +482,7 @@ public class BillingService : IBillingService
 
             var query = _uow.Transactions
                 .Query()
-                .Where(t => t.WorkspaceId == workspaceId)
+                .Where(t => t.Subscription!.WorkspaceId == workspaceId)
                 .OrderByDescending(t => t.CreatedAt);
 
             var totalCount = await query.CountAsync(ct);
@@ -468,7 +493,7 @@ public class BillingService : IBillingService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var items = transactions.Select(MapToDto).ToList();
+            var items = transactions.Select(tx => MapToDto(tx, workspaceId)).ToList();
 
             var response = new PaginatedResponse<TransactionDto>(
                 items,
@@ -507,23 +532,23 @@ public class BillingService : IBillingService
             subscription.CreatedAt);
     }
 
-    private CreditTransactionDto MapToDto(CreditTransaction tx)
+    private CreditTransactionDto MapToDto(CreditTransaction tx, Guid workspaceId)
     {
         return new CreditTransactionDto(
             tx.Id,
-            tx.WorkspaceId,
+            workspaceId,
             tx.Amount,
             tx.Type.ToString(),
             tx.ReferenceId,
-            tx.ReferenceType?.ToString(),
+            tx.ReferenceType,
             tx.CreatedAt);
     }
 
-    private TransactionDto MapToDto(Transaction tx)
+    private TransactionDto MapToDto(Transaction tx, Guid workspaceId)
     {
         return new TransactionDto(
             tx.Id,
-            tx.WorkspaceId,
+            workspaceId,
             tx.SubscriptionId,
             tx.Amount,
             tx.Status.ToString(),

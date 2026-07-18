@@ -135,35 +135,36 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
             }
 
+            // Fetch all user profiles in parallel (eliminates N sequential gRPC calls)
+            var userResults = await Task.WhenAll(members.Select(m => _authIdentity.GetUserByIdAsync(m.UserId, ct)));
+            var userMap = members.Zip(userResults, (m, u) => (m.UserId, User: u))
+                .ToDictionary(x => x.UserId, x => x.User);
+
+            // Fetch all distinct roles in parallel
+            var distinctRoleIds = members.Select(m => m.RoleId).Distinct().ToList();
+            var roleResults = await Task.WhenAll(distinctRoleIds.Select(rId => _authIdentity.GetRoleByIdAsync(rId, ct)));
+            var roleMap = distinctRoleIds.Zip(roleResults, (id, r) => (id, Name: r?.Name ?? "Member"))
+                .ToDictionary(x => x.id, x => x.Name);
+
             var filteredDtos = new List<WorkspaceMemberDto>();
-            var roleCache = new Dictionary<Guid, string>();
 
             foreach (var m in members)
             {
-                var user = await _authIdentity.GetUserByIdAsync(m.UserId, ct);
+                var user = userMap.GetValueOrDefault(m.UserId);
                 var fullName = user?.FullName ?? "Unknown";
                 var email = (isOwnerOrAdmin || m.UserId == userId) ? (user?.Email ?? string.Empty) : string.Empty;
                 var avatarUrl = user?.AvatarUrl;
-
-                if (!roleCache.TryGetValue(m.RoleId, out var roleName))
-                {
-                    var role = await _authIdentity.GetRoleByIdAsync(m.RoleId, ct);
-                    roleName = role?.Name ?? "Member";
-                    roleCache[m.RoleId] = roleName;
-                }
+                var roleName = roleMap.GetValueOrDefault(m.RoleId, "Member");
 
                 if (!string.IsNullOrWhiteSpace(query.Search))
                 {
                     var searchLower = query.Search.ToLower();
                     var userEmail = user?.Email ?? "Unknown";
                     if (!fullName.ToLower().Contains(searchLower) && !userEmail.ToLower().Contains(searchLower))
-                    {
                         continue;
-                    }
                 }
 
-                var dto = m.ToDto(fullName, email, avatarUrl, roleName);
-                filteredDtos.Add(dto);
+                filteredDtos.Add(m.ToDto(fullName, email, avatarUrl, roleName));
             }
 
             var totalCount = filteredDtos.Count;
@@ -184,9 +185,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     {
         try
         {
+            await _unitOfWork.BeginTransactionAsync(ct);
+
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
@@ -194,6 +198,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
@@ -206,12 +211,14 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                     var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
+                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
                     }
 
                     var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
                     if (activeOwnersCount <= 1)
                     {
+                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.CannotLeaveAsLastOwner, ErrorCodes.ValidationError);
                     }
                 }
@@ -222,11 +229,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _unitOfWork.SaveChangesAsync(ct);
+                await _unitOfWork.CommitTransactionAsync(ct);
                 return Result.Success();
             }
 
             if (!execRoleName.IsOwnerOrAdmin())
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanRemoveMembers, ErrorCodes.Forbidden);
             }
 
@@ -234,6 +243,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
@@ -241,6 +251,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             if (targetRoleName.IsOwner())
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.CannotRemoveOwner, ErrorCodes.Forbidden);
             }
 
@@ -250,10 +261,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _unitOfWork.SaveChangesAsync(ct);
+            await _unitOfWork.CommitTransactionAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
         {
+            await _unitOfWork.RollbackTransactionAsync(ct);
             _logger.LogError(ex, "Error occurred while removing member. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
@@ -263,14 +276,18 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     {
         try
         {
+            await _unitOfWork.BeginTransactionAsync(ct);
+
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             if (!roleName.IsAdmin() && roleName != WorkspaceMemberRole.Member.ToRoleName())
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
             }
 
@@ -278,12 +295,14 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
             var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
             if (!execRoleName.IsOwnerOrAdmin())
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
             }
 
@@ -291,6 +310,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
@@ -303,12 +323,14 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                     var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
+                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
                     }
 
                     var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
                     if (activeOwnersCount <= 1)
                     {
+                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.CannotDemoteLastOwner, ErrorCodes.ValidationError);
                     }
                 }
@@ -317,6 +339,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             {
                 if (targetRoleName.IsOwner())
                 {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
                     return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
                 }
             }
@@ -325,11 +348,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             {
                 if (targetRoleName.IsAdmin() && memberUserId != executingUserId)
                 {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
                     return Result.Failure(WorkspaceConstants.Errors.AdminCannotChangeAdminRole, ErrorCodes.Forbidden);
                 }
 
                 if (roleName.IsAdmin() && memberUserId != executingUserId)
                 {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
                     return Result.Failure(WorkspaceConstants.Errors.AdminCannotPromoteToAdmin, ErrorCodes.Forbidden);
                 }
             }
@@ -337,6 +362,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var newRoleId = await _authIdentity.GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
+                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.RoleNotFound, ErrorCodes.ValidationError);
             }
 
@@ -344,10 +370,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _unitOfWork.SaveChangesAsync(ct);
+            await _unitOfWork.CommitTransactionAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
         {
+            await _unitOfWork.RollbackTransactionAsync(ct);
             _logger.LogError(ex, "Error occurred while changing member role. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }

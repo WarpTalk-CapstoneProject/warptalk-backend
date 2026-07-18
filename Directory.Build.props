@@ -1,6 +1,8 @@
 <Project>
   <PropertyGroup Condition="'$(DOTNET_RUNNING_IN_CONTAINER)' == 'true'">
-    <BaseIntermediateOutputPath>/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
-    <BaseOutputPath>/bin/$(MSBuildProjectName)/</BaseOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' == 'Development'">/obj-dev/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseIntermediateOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' != 'Development'">/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' == 'Development'">/bin-dev/$(MSBuildProjectName)/</BaseOutputPath>
+    <BaseOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' != 'Development'">/bin/$(MSBuildProjectName)/</BaseOutputPath>
   </PropertyGroup>
 </Project>

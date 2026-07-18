@@ -18,8 +18,10 @@ public class TranslationRoomServiceTests
     private readonly Mock<IUnitOfWork> _mockUow;
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
+    private readonly Mock<ITranslationRoomAudioRouteRepository> _mockAudioRouteRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
+    private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
@@ -28,20 +30,28 @@ public class TranslationRoomServiceTests
         _mockUow = new Mock<IUnitOfWork>();
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
+        _mockAudioRouteRepo = new Mock<ITranslationRoomAudioRouteRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
+        _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
+        _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
 
         _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<TranslationRoomParticipant>());
 
+        // Default: a room has at least one route configured. Tests that specifically cover the
+        // "no routes" rejection path override this.
+        _mockAudioRouteRepo.Setup(r => r.GetRoutesByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomAudioRoute> { new TranslationRoomAudioRoute() });
+
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockLogger.Object);
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockEmailService.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -212,6 +222,39 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
+    public async Task StartTranslationRoomAsync_NoAudioRoutes_ReturnsError()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            WorkspaceId = Guid.NewGuid(),
+            HostId = hostId,
+            Title = "Test room",
+            TranslationRoomCode = "ABC-DEF-GHI",
+            Status = "WAITING",
+            TranslationRoomType = "INSTANT".ToString(),
+            MaxParticipants = 10,
+            SourceLanguage = "vi",
+            TargetLanguages = "[\"en\"]",
+            CreatedAt = DateTime.UtcNow,
+            Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockAudioRouteRepo.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomAudioRoute>());
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().Be(TranslationRoomConstants.ErrorNoAudioRoutesConfigured);
+        room.Status.Should().Be("WAITING");
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
+    }
+
+    [Fact]
     public async Task EndTranslationRoomAsync_CalculatesDurationAndFiresEvent()
     {
         var roomId = Guid.NewGuid();
@@ -262,9 +305,14 @@ public class TranslationRoomServiceTests
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
         var request = new UpdateRoomSettingsRequest(
-            new RoomSettingsRequest(false),
-            "en",
-            new List<string> { "vi" }
+            Title: null,
+            Description: null,
+            MaxParticipants: null,
+            ScheduledAt: null,
+            InvitedEmails: null,
+            Settings: new RoomSettingsRequest(false),
+            SourceLanguage: "en",
+            TargetLanguages: new List<string> { "vi" }
         );
 
         // Act

@@ -113,10 +113,19 @@ builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
+builder.Services.AddHostedService<WarpTalk.MeetingService.Infrastructure.Workers.FractionalBillingWorker>();
+
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:TranslationRoomService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:TranslationRoomService is missing in configuration.");
+    o.Address = new Uri(url);
+});
+
+builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
+{
+    var url = builder.Configuration["GrpcUrls:BillingService"];
+    if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:BillingService is missing in configuration.");
     o.Address = new Uri(url);
 });
 

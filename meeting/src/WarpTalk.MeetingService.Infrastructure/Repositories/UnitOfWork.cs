@@ -31,26 +31,45 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<T> Repository<T>() where T : class
     {
         _repositories ??= new Dictionary<Type, object>();
-
         var type = typeof(T);
-
         if (!_repositories.ContainsKey(type))
-        {
-            var repositoryType = typeof(GenericRepository<>);
-            var repositoryInstance = Activator.CreateInstance(repositoryType.MakeGenericType(type), _context);
-            _repositories.Add(type, repositoryInstance!);
-        }
-
+            _repositories.Add(type, new GenericRepository<T>(_context));
         return (IGenericRepository<T>)_repositories[type];
     }
 
+    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
+
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
+        => await _context.SaveChangesAsync(ct);
+
+    public async Task BeginTransactionAsync(CancellationToken ct = default)
     {
-        return await _context.SaveChangesAsync(ct);
+        _currentTransaction = await _context.Database.BeginTransactionAsync(ct);
+    }
+
+    public async Task CommitTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.CommitAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
+    }
+
+    public async Task RollbackTransactionAsync(CancellationToken ct = default)
+    {
+        if (_currentTransaction != null)
+        {
+            await _currentTransaction.RollbackAsync(ct);
+            await _currentTransaction.DisposeAsync();
+            _currentTransaction = null;
+        }
     }
 
     public void Dispose()
     {
+        _currentTransaction?.Dispose();
         _context.Dispose();
         GC.SuppressFinalize(this);
     }

@@ -168,6 +168,7 @@ builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<WarpTalk.Gateway.Services.SttSimulatorWorker>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
+builder.Services.AddHostedService<TranslationRoomRedisSubscriberService>();
 
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
@@ -181,6 +182,34 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
                   ?? "http://localhost:50054";
     o.Address = new Uri(address);
 })
+.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    if (builder.Environment.IsDevelopment())
+    {
+        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    }
+    return handler;
+})
+.AddCallCredentials((context, metadata, serviceProvider) =>
+{
+    var config = serviceProvider.GetRequiredService<IConfiguration>();
+    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
+    var rawGrpcSecret = config["Grpc:InternalSecret"];
+    var secret = string.IsNullOrWhiteSpace(rawGrpcSecret) || rawGrpcSecret.Contains("CHANGE_ME") ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" : rawGrpcSecret;
+    metadata.Add("x-internal-token", secret);
+    return Task.CompletedTask;
+});
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+{
+    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"] 
+                  ?? builder.Configuration["ReverseProxy:Clusters:workspace-cluster:Destinations:workspace-service:Address"] 
+                  ?? "http://localhost:5103";
+    o.Address = new Uri(address);
+})
+.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
 .ConfigurePrimaryHttpMessageHandler(() =>
 {
     var handler = new HttpClientHandler();
@@ -211,6 +240,33 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
         ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
         : rawGrpcSecret!;
         
+    metadata.Add("x-internal-token", secret);
+    return Task.CompletedTask;
+});
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
+{
+    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"] 
+                  ?? builder.Configuration["ReverseProxy:Clusters:translation-room-cluster:Destinations:translation-room-service:Address"] 
+                  ?? "http://localhost:50052";
+    o.Address = new Uri(address);
+})
+.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler();
+    if (builder.Environment.IsDevelopment())
+    {
+        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+    }
+    return handler;
+})
+.AddCallCredentials((context, metadata, serviceProvider) =>
+{
+    var config = serviceProvider.GetRequiredService<IConfiguration>();
+    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
+    var rawGrpcSecret = config["Grpc:InternalSecret"];
+    var secret = string.IsNullOrWhiteSpace(rawGrpcSecret) || rawGrpcSecret.Contains("CHANGE_ME") ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" : rawGrpcSecret;
     metadata.Add("x-internal-token", secret);
     return Task.CompletedTask;
 });

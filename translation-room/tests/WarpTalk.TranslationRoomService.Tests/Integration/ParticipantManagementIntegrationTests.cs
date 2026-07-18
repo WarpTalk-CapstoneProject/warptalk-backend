@@ -20,7 +20,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var memberId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 
@@ -49,7 +49,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var hackerId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 
@@ -78,7 +78,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var memberId = Guid.NewGuid();
         
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
-        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null);
+        var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
 

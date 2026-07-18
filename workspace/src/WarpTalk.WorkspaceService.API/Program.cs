@@ -18,6 +18,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Storage;
 using WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 using WarpTalk.WorkspaceService.API.Providers;
 using WarpTalk.WorkspaceService.Infrastructure.Services;
+using MassTransit;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -50,7 +51,7 @@ builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = redisConnectionString;
 });
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString));
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 builder.Services.AddScoped<IWorkspaceCacheService, WorkspaceCacheService>();
 
 // Auth identity (gRPC → UserService in WarpTalk.Shared, implemented by UserServiceGrpc in Auth API)
@@ -81,11 +82,31 @@ builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>(
 builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
 builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
-builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, RedisDocumentEventPublisher>();
+builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, HybridWorkspaceDocumentEventPublisher>();
 builder.Services.AddScoped<IWorkspaceEventPublisher, RedisWorkspaceEventPublisher>();
 builder.Services.AddSingleton<IWorkspaceDocumentStorage, LocalEncryptedWorkspaceDocumentStorage>();
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
+builder.Services.AddHostedService<MeetingStartedEventConsumer>();
+
+builder.Services.AddMassTransit(x =>
+{
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        var host = builder.Configuration["RabbitMQ:Host"] ?? "localhost";
+        var virtualHost = builder.Configuration["RabbitMQ:VirtualHost"] ?? "/";
+        var username = builder.Configuration["RabbitMQ:Username"] ?? "guest";
+        var password = builder.Configuration["RabbitMQ:Password"] ?? "guest";
+
+        cfg.Host(host, virtualHost, h =>
+        {
+            h.Username(username);
+            h.Password(password);
+        });
+
+        cfg.ConfigureEndpoints(context);
+    });
+});
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();

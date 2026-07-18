@@ -38,7 +38,8 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             HostId = result.Value!.HostId.ToString(),
             Status = result.Value!.Status.ToString(),
             StartedAt = result.Value!.StartedAt?.ToString("O") ?? string.Empty,
-            EndedAt = result.Value!.EndedAt?.ToString("O") ?? string.Empty
+            EndedAt = result.Value!.EndedAt?.ToString("O") ?? string.Empty,
+            ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty
         };
     }
 

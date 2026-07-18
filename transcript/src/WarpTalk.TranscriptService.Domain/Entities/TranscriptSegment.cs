@@ -34,9 +34,17 @@ public partial class TranscriptSegment
 
     public DateTime UpdatedAt { get; set; }
 
+    /// <summary>Billing (STT/TRANSLATION/AUDIO_DUBBING charges) must only fire once this is true — never on interim STT drafts.</summary>
+    public bool IsFinal { get; set; } = true;
+
+    /// <summary>Cross-version match — the equivalent segment in a previous transcript version (re-recording/re-STT), self-referencing FK.</summary>
+    public Guid? MatchedSegmentId { get; set; }
+
     public virtual Transcript Transcript { get; set; } = null!;
 
     public virtual ICollection<TranscriptCorrection> TranscriptCorrections { get; set; } = new List<TranscriptCorrection>();
 
     public virtual ICollection<TranscriptTranslation> TranscriptTranslations { get; set; } = new List<TranscriptTranslation>();
+
+    public virtual ICollection<SegmentTranslationLink> SegmentTranslationLinks { get; set; } = new List<SegmentTranslationLink>();
 }

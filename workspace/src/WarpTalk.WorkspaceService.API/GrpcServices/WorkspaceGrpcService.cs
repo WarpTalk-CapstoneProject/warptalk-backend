@@ -159,7 +159,8 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         return new GetWorkspaceSettingsResponse
         {
             ArtifactRetentionDays = config.ArtifactRetentionDays,
-            AllowExternalCollaboration = config.AllowExternalCollaboration
+            AllowExternalCollaboration = config.AllowExternalCollaboration,
+            IsProfanityFilterEnabled = config.IsProfanityFilterEnabled
         };
     }
 

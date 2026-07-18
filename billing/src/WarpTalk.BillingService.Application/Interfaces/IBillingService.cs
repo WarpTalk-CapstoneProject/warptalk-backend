@@ -14,7 +14,7 @@ public interface IBillingService
 
     // --- SUBSCRIPTIONS ---
     /// <summary>Create a new subscription for workspace</summary>
-    Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default);
+    Task<Result<SubscriptionDto>> CreateSubscriptionAsync(Guid workspaceId, Guid planId, CancellationToken ct = default, Guid? userId = null);
 
     /// <summary>Get active subscription for workspace</summary>
     Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(Guid workspaceId, CancellationToken ct = default);
@@ -27,10 +27,10 @@ public interface IBillingService
 
     // --- CREDIT MANAGEMENT ---
     /// <summary>Top-up credits (admin only or via payment)</summary>
-    Task<Result<WorkspaceCreditsDto>> TopUpCreditsAsync(Guid workspaceId, int amount, string referenceType = "topup", Guid? referenceId = null, CancellationToken ct = default);
+    Task<Result<WorkspaceCreditsDto>> TopUpCreditsAsync(Guid workspaceId, int amount, string referenceType = "topup", Guid? referenceId = null, CancellationToken ct = default, Guid? userId = null);
 
     /// <summary>Consume credits for service usage</summary>
-    Task<Result<WorkspaceCreditsDto>> ConsumeCreditsAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default);
+    Task<Result<WorkspaceCreditsDto>> ConsumeCreditsAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default, Guid? userId = null);
 
     /// <summary>Get credit transaction history</summary>
     Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(Guid workspaceId, int pageNumber = 1, int pageSize = 50, CancellationToken ct = default);

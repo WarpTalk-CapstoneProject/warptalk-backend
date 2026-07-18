@@ -15,5 +15,7 @@ public record TranslationRoomAudioRouteDto(
     string Status,
     DateTime StartedAt,
     DateTime? EndedAt,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    Guid? SourceUserId = null,
+    Guid? TargetUserId = null
 );

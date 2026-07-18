@@ -52,6 +52,16 @@ public partial class Transcript
     /// </summary>
     public Guid? DeletedBy { get; set; }
 
+    /// <summary>Head-pointer: at most one transcript per translation_room_id has this true (transcripts_one_current_per_room_idx).</summary>
+    public bool IsCurrent { get; set; } = true;
+
+    public Guid? PreviousTranscriptId { get; set; }
+
+    public string? EngineVersion { get; set; }
+
+    /// <summary>Advance with `UPDATE ... SET last_sequence_order = last_sequence_order + 1 RETURNING` in the same transaction as the segment insert — never read-MAX-then-insert.</summary>
+    public int LastSequenceOrder { get; set; }
+
     public virtual ICollection<TranscriptExport> TranscriptExports { get; set; } = new List<TranscriptExport>();
 
     public virtual ICollection<TranscriptSegment> TranscriptSegments { get; set; } = new List<TranscriptSegment>();
