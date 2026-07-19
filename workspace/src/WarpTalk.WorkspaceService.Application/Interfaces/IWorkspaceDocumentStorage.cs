@@ -36,4 +36,10 @@ public interface IWorkspaceDocumentStorage
     /// Decrypts and reads the stored extracted text of a document.
     /// </summary>
     Task<string> GetExtractedTextAsync(WorkspaceDocument document, CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes the physical storage blob for a document, if it exists. Best-effort compensating
+    /// action for callers that wrote the blob before a subsequent step (e.g. the DB insert) failed.
+    /// </summary>
+    Task DeleteDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default);
 }

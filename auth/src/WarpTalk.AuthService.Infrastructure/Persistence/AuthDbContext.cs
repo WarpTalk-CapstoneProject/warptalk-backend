@@ -112,6 +112,9 @@ public partial class AuthDbContext : DbContext
                 .HasMaxLength(255)
                 .HasColumnName("device_info");
             entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
+            entity.Property(e => e.FamilyId)
+                .HasDefaultValueSql("gen_random_uuid()")
+                .HasColumnName("family_id");
             entity.Property(e => e.IpAddress)
                 .HasMaxLength(45)
                 .HasColumnName("ip_address");
@@ -284,12 +287,6 @@ public partial class AuthDbContext : DbContext
                 .HasForeignKey(d => d.DeletedBy)
                 .HasConstraintName("users_deleted_by_fkey");
 
-            entity.HasOne(d => d.IdNavigation).WithOne(p => p.User)
-                .HasPrincipalKey<UserSetting>(p => p.UserId)
-                .HasForeignKey<User>(d => d.Id)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("users_id_fkey");
-
             entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.InverseUpdatedByNavigation)
                 .HasForeignKey(d => d.UpdatedBy)
                 .HasConstraintName("users_updated_by_fkey");
@@ -396,6 +393,20 @@ public partial class AuthDbContext : DbContext
             entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.UserSettings)
                 .HasForeignKey(d => d.UpdatedBy)
                 .HasConstraintName("user_settings_updated_by_fkey");
+
+            // Migration 018 fixed the real FK direction (user_settings.user_id ->
+            // users.id — a settings row depends on a user, not the other way round),
+            // but this scaffolded model was never regenerated to match: it previously
+            // declared users.id as the FK referencing user_settings.user_id via a
+            // "users_id_fkey" constraint that no longer exists in the database at all.
+            // That backwards mapping made EF insert UserSetting before User in the same
+            // SaveChanges batch, which the real constraint (user_settings_user_id_fkey)
+            // then rejected. Configuring it here, on the actual dependent side, fixes
+            // insert ordering to match reality.
+            entity.HasOne(d => d.User).WithOne(p => p.IdNavigation)
+                .HasForeignKey<UserSetting>(d => d.UserId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("user_settings_user_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

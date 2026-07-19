@@ -1,10 +1,13 @@
 using System;
+using System.Linq.Expressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Services;
+using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
@@ -70,6 +73,57 @@ public class MeetingRoomServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal("Redis unavailable", result.Error);
         Assert.Equal("REDIS_ERROR", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task JoinMeetingAsync_RejectsDeclinedInvitation()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+
+        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+        {
+            HostId = hostId.ToString(),
+            Status = "IN_PROGRESS",
+            WorkspaceId = Guid.NewGuid().ToString()
+        };
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = meetingRoomId,
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS"
+        };
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(meetingRoom);
+        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+
+        var invitation = new MeetingInvitation
+        {
+            Id = Guid.NewGuid(),
+            MeetingRoomId = meetingRoomId,
+            InviteeUserId = userId,
+            Status = "DECLINED"
+        };
+        var invitationRepoMock = new Mock<IGenericRepository<MeetingInvitation>>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingInvitation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(invitation);
+        _unitOfWorkMock.Setup(u => u.Repository<MeetingInvitation>()).Returns(invitationRepoMock.Object);
+
+        var result = await _sut.JoinMeetingAsync(translationRoomId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(), Times.Once);
     }
 
     private static bool HasProperty(object payload, string propertyName, string expectedValue)

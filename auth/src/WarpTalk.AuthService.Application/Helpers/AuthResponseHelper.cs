@@ -18,11 +18,14 @@ public static class AuthResponseHelper
         IRefreshTokenRepository refreshTokenRepository,
         IUnitOfWork unitOfWork,
         string defaultRole,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? tokenFamilyId = null)
     {
         var roles = user.GetRoles(defaultRole);
         var (accessToken, refreshToken, expiresAt) = jwtGenerator.GenerateTokens(user, roles);
-        var token = jwtGenerator.CreateRefreshTokenEntity(user.Id, refreshToken, ipAddress, deviceInfo);
+        // A fresh login/register starts a new rotation family; a refresh carries the
+        // presented token's family forward so reuse detection can revoke the whole chain.
+        var token = jwtGenerator.CreateRefreshTokenEntity(user.Id, refreshToken, ipAddress, deviceInfo, tokenFamilyId);
         await refreshTokenRepository.AddAsync(token, ct);
         await unitOfWork.SaveChangesAsync(ct);
 

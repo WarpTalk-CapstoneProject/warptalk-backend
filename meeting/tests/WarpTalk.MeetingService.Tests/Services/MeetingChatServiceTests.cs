@@ -48,6 +48,11 @@ public class MeetingChatServiceTests
         _unitOfWorkMock.Setup(u => u.MeetingChatAssistantRequestRepository).Returns(_assistantRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingChatModerationEventRepository).Returns(_moderationRepoMock.Object);
 
+        // SendMessageAsync always looks up the cached room to resolve WorkspaceId; an
+        // unconfigured mock returns null (Result<T> is a class), which NREs on .Value.
+        _redisMock.Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+
         _sut = new MeetingChatService(_unitOfWorkMock.Object, _notifierMock.Object, _redisMock.Object);
     }
 
@@ -78,7 +83,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_RoomNotFound_ReturnsFailure()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((MeetingRoom?)null);
 
         var request = new SendMeetingChatMessageRequest { OriginalText = "hello", OriginalLanguage = "en" };
@@ -91,7 +96,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_NotActiveParticipant_ReturnsFailure()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
@@ -108,7 +113,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_HostCanSendMessage_Success()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom(_hostId));
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
@@ -128,7 +133,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_ActiveParticipantCanSendMessage_Success()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
@@ -148,7 +153,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_WithWarpbotMention_PublishesAssistantEvent()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
@@ -177,7 +182,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task SendMessageAsync_WithTranslation_PublishesTranslationEvent()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
@@ -204,7 +209,7 @@ public class MeetingChatServiceTests
     [Fact]
     public async Task ModerateMessageAsync_NonHost_ReturnsFailure()
     {
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         var result = await _sut.ModerateMessageAsync(_roomId, Guid.NewGuid(), _userId,
@@ -231,7 +236,7 @@ public class MeetingChatServiceTests
             CreatedAt = DateTime.UtcNow
         };
 
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom(_hostId));
 
         _chatMessageRepoMock.Setup(r => r.GetByIdAsync(messageId, It.IsAny<CancellationToken>()))
@@ -265,7 +270,7 @@ public class MeetingChatServiceTests
             CreatedAt = DateTime.UtcNow
         };
 
-        _roomRepoMock.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(CreateRoom());
 
         _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(

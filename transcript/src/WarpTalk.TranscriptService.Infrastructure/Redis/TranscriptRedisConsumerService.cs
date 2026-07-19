@@ -149,6 +149,18 @@ public class TranscriptRedisConsumerService : BackgroundService
         // shared/schemas.py STTResultMessage.to_redis() serializes this as "1"/"0", default false.
         var isFinal = values.GetValueOrDefault("is_final_chunk") == "1";
 
+        // stt_worker publishes early per-sentence segments as they're ready, then ONE trailing
+        // empty marker (text="", is_final_chunk=true) once the whole audio chunk finishes — it
+        // carries no transcript content, just a "this chunk is done" signal. Without this guard
+        // every audio chunk in a meeting permanently inserts a blank TranscriptSegment row (no
+        // existing dedup catches it: segment_id is a fresh UUID per publish, so the "idempotent"
+        // GetByIdAsync check below never matches), silently accumulating stray empty rows over a
+        // long conversation. Mirrors the same guard ProcessTranslateMessageAsync already has.
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
         try
         {
             using var scope = _serviceProvider.CreateScope();

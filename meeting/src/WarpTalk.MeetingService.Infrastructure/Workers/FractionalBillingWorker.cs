@@ -5,7 +5,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
-using System.Collections.Concurrent;
 
 namespace WarpTalk.MeetingService.Infrastructure.Workers;
 
@@ -18,10 +17,10 @@ public class FractionalBillingWorker : BackgroundService
     private const string ConsumerGroupName = "meeting-billing-consumers";
     private readonly string _consumerName = $"billing-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
 
-    // Track accumulated speech duration per Workspace
-    // Key: WorkspaceId
-    // Value: Accumulated seconds
-    private readonly ConcurrentDictionary<string, double> _accumulatedSeconds = new();
+    // Accumulated speech duration per workspace lives in Redis (not process memory) so a
+    // worker crash/restart between "stream entry acked" and "10s flush" can't silently lose
+    // already-consumed seconds — the next instance picks up the same hash and keeps billing it.
+    private const string AccumulatedSecondsHashKey = "billing:fractional:accumulated_seconds";
 
     public FractionalBillingWorker(
         IConnectionMultiplexer redis,
@@ -86,11 +85,10 @@ public class FractionalBillingWorker : BackgroundService
                     if (!string.IsNullOrEmpty(workspaceId) && endMs > startMs)
                     {
                         double durationSeconds = (endMs - startMs) / 1000.0;
-                        
-                        _accumulatedSeconds.AddOrUpdate(
-                            workspaceId, 
-                            durationSeconds, 
-                            (_, existing) => existing + durationSeconds);
+
+                        // Durably persist the accumulation before acking — if this throws, skip
+                        // the ack so the entry gets redelivered instead of billed time vanishing.
+                        await db.HashIncrementAsync(AccumulatedSecondsHashKey, workspaceId, durationSeconds);
                     }
 
                     await db.StreamAcknowledgeAsync(StreamKey, ConsumerGroupName, entry.Id);
@@ -115,39 +113,55 @@ public class FractionalBillingWorker : BackgroundService
 
     private async Task FlushAccumulatedCreditsAsync(CancellationToken ct)
     {
+        var db = _redis.GetDatabase();
+
         // Flush every 10 seconds
         while (!ct.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
 
-            foreach (var kvp in _accumulatedSeconds)
+            HashEntry[] accumulated;
+            try
             {
-                if (kvp.Value >= 1.0)
+                accumulated = await db.HashGetAllAsync(AccumulatedSecondsHashKey);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to read accumulated billing seconds from Redis.");
+                continue;
+            }
+
+            foreach (var entry in accumulated)
+            {
+                string workspaceId = entry.Name.ToString();
+                if (!double.TryParse(entry.Value.ToString(), out var accumulatedValue) || accumulatedValue < 1.0)
+                    continue;
+
+                int secondsToBill = (int)Math.Floor(accumulatedValue);
+
+                try
                 {
-                    // Deduct whole seconds
-                    int secondsToBill = (int)Math.Floor(kvp.Value);
-                    
-                    if (_accumulatedSeconds.TryUpdate(kvp.Key, kvp.Value - secondsToBill, kvp.Value))
+                    // Atomically claim these seconds first, so a concurrent increment from the
+                    // read loop during billing isn't clobbered by an overwrite. Must use the
+                    // double overload (HINCRBYFLOAT) — the field was written as a float by
+                    // HashIncrementAsync, and Redis's integer HINCRBY rejects a non-integer value.
+                    await db.HashDecrementAsync(AccumulatedSecondsHashKey, workspaceId, (double)secondsToBill);
+
+                    await _billingClient.ConsumeCreditsAsync(new ConsumeCreditsRequest
                     {
-                        try
-                        {
-                            await _billingClient.ConsumeCreditsAsync(new ConsumeCreditsRequest
-                            {
-                                WorkspaceId = kvp.Key,
-                                Amount = secondsToBill,
-                                ReferenceType = "AI_SPEECH_TRANSLATION",
-                                ReferenceId = "stt-stream"
-                            }, cancellationToken: ct);
-                            
-                            _logger.LogInformation("Billed {Seconds} seconds for Workspace {WorkspaceId}", secondsToBill, kvp.Key);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Failed to publish ConsumeCreditsEvent.");
-                            // Revert deduction on failure
-                            _accumulatedSeconds.AddOrUpdate(kvp.Key, secondsToBill, (_, existing) => existing + secondsToBill);
-                        }
-                    }
+                        WorkspaceId = workspaceId,
+                        Amount = secondsToBill,
+                        ReferenceType = "AI_SPEECH_TRANSLATION",
+                        ReferenceId = "stt-stream"
+                    }, cancellationToken: ct);
+
+                    _logger.LogInformation("Billed {Seconds} seconds for Workspace {WorkspaceId}", secondsToBill, workspaceId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to publish ConsumeCreditsEvent.");
+                    // Revert the claim on failure so the seconds get retried on the next flush.
+                    await db.HashIncrementAsync(AccumulatedSecondsHashKey, workspaceId, (double)secondsToBill);
                 }
             }
         }
