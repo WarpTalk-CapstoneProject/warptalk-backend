@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -16,5 +18,12 @@ public class RefreshTokenRepository : GenericRepository<RefreshToken>, IRefreshT
     public async Task<RefreshToken?> GetByTokenHashAsync(string tokenHash, CancellationToken ct = default)
     {
         return await _dbSet.FirstOrDefaultAsync(t => t.TokenHash == tokenHash, ct);
+    }
+
+    public async Task RevokeFamilyAsync(Guid familyId, CancellationToken ct = default)
+    {
+        await _dbSet
+            .Where(t => t.FamilyId == familyId && t.RevokedAt == null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(t => t.RevokedAt, DateTime.UtcNow), ct);
     }
 }

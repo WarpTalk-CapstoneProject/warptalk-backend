@@ -65,9 +65,13 @@ public class AuthService : IAuthService
             var user = UserMapper.ToUser(request, passwordHash);
 
             await _userRepository.AddAsync(user, ct);
+
+            // Every user needs a user_settings row — RegisterInvitedAsync already does
+            // this; self-registration was silently skipping it.
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
-
-
 
             var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
             return Result.Success(response);

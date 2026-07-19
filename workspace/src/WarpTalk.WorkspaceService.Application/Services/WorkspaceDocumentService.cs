@@ -97,8 +97,18 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 await _storage.SaveDocumentContentAsync(document, stream, ct);
             }
 
-            await _unitOfWork.WorkspaceDocumentRepository.AddAsync(document, ct);
-            await _unitOfWork.SaveChangesAsync(ct);
+            try
+            {
+                await _unitOfWork.WorkspaceDocumentRepository.AddAsync(document, ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+            catch
+            {
+                // The blob is already on disk but has no DB row to reference it — clean it up
+                // rather than leaving an orphaned encrypted file behind.
+                await _storage.DeleteDocumentContentAsync(document, ct);
+                throw;
+            }
 
             if (isOwnerOrAdmin)
             {

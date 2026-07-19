@@ -123,10 +123,23 @@ public class MeetingRoomService : IMeetingRoomService
                         return Result.Failure<JoinMeetingResponse>("Your invitation has been revoked.", ErrorCodes.Forbidden);
                     }
 
+                    if (explicitInvite.Status == "DECLINED")
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("You have declined this invitation.", ErrorCodes.Forbidden);
+                    }
+
                     if (explicitInvite.ExpiresAt.HasValue && explicitInvite.ExpiresAt.Value < DateTime.UtcNow)
                     {
                         await _unitOfWork.RollbackTransactionAsync();
                         return Result.Failure<JoinMeetingResponse>("Your invitation has expired.", ErrorCodes.Forbidden);
+                    }
+
+                    // A PENDING invite is implicitly accepted by the act of joining.
+                    if (explicitInvite.Status == "PENDING")
+                    {
+                        explicitInvite.Status = "ACCEPTED";
+                        invitationRepo.Update(explicitInvite);
                     }
 
                     isAuthorized = true;

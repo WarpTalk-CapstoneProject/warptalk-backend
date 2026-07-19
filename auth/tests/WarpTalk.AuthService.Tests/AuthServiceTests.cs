@@ -23,6 +23,7 @@ public class AuthServiceTests
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserRepository _userRepository;
+    private readonly IUserSettingRepository _userSettingRepository;
     private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IJwtTokenGenerator _jwtGenerator;
@@ -36,6 +37,7 @@ public class AuthServiceTests
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _userRepository = Substitute.For<IUserRepository>();
+        _userSettingRepository = Substitute.For<IUserSettingRepository>();
         _refreshTokenRepository = Substitute.For<IRefreshTokenRepository>();
         _passwordHasher = Substitute.For<IPasswordHasher>();
         _jwtGenerator = Substitute.For<IJwtTokenGenerator>();
@@ -45,6 +47,7 @@ public class AuthServiceTests
 
         _unitOfWork.UserRepository.Returns(_userRepository);
         _unitOfWork.RefreshTokenRepository.Returns(_refreshTokenRepository);
+        _unitOfWork.UserSettingRepository.Returns(_userSettingRepository);
 
         var settings = new AuthSettings
         {
@@ -69,6 +72,28 @@ public class AuthServiceTests
     {
         var bytes = value == null ? null : Encoding.UTF8.GetBytes(value);
         _cache.GetAsync(key, Arg.Any<CancellationToken>()).Returns(Task.FromResult(bytes));
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ShouldCreateDefaultUserSettings_ForNewSelfRegisteredUser()
+    {
+        // Arrange — RegisterInvitedAsync already creates a default user_settings row for
+        // invited users; self-registration was silently skipping it (regression guard).
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        var request = new RegisterRequest("new-user@warptalk.vn", "Password123!", "New User");
+
+        // Act
+        var result = await _authService.RegisterAsync(request);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        await _userSettingRepository.Received(1).AddAsync(
+            Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
+            Arg.Any<CancellationToken>()
+        );
     }
 
     [Fact]

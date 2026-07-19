@@ -37,7 +37,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var participants = await response.Content.ReadFromJsonAsync<List<TranslationRoomParticipantDto>>();
         participants.Should().NotBeNull();
-        participants!.Count.Should().Be(1); // Member only, Host hasn't joined
+        participants!.Count.Should().Be(2); // Host (auto-added on create, WT-82) + Member
     }
 
     [Fact]

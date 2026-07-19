@@ -116,6 +116,39 @@ public class WorkspaceDocumentServiceTests
     }
 
     [Fact]
+    public async Task UploadDocumentAsync_ShouldDeleteStorageBlob_WhenDbSaveFails()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, IsActive = true };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(memberRoleId, "Member");
+
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns("file.pdf");
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
+
+        // The blob write to storage succeeds, but the DB save that should follow it fails —
+        // simulating a connection drop after the encrypted file already landed on disk.
+        _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>()).Returns<Task<int>>(_ => throw new InvalidOperationException("DB unavailable"));
+
+        // Act
+        var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        await _storage.Received(1).SaveDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
+        await _storage.Received(1).DeleteDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task UploadDocumentAsync_ShouldSetActiveAndPublishEvent_WhenUserIsAdmin()
     {
         // Arrange

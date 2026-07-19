@@ -44,28 +44,39 @@ public class TokenService : ITokenService
             var tokenHash = TokenHasher.Hash(request.RefreshToken);
             var storedToken = await _refreshTokenRepository.GetByTokenHashAsync(tokenHash, ct);
 
-            if (storedToken is null || storedToken.RevokedAt is not null || storedToken.ExpiresAt < DateTime.UtcNow)
+            if (storedToken is null)
                 return Result.Failure<AuthResponse>(AuthConstants.ErrorInvalidToken, ErrorCodes.InvalidToken);
 
-            // Revoke old token
-            storedToken.RevokedAt = DateTime.UtcNow;
-            _refreshTokenRepository.Update(storedToken);
+            if (storedToken.RevokedAt is not null)
+            {
+                // This token was already rotated out once before — presenting it again means
+                // either a replay/race, or someone else has a copy of a stolen token. Either
+                // way, the whole rotation family (every descendant of the original login) gets
+                // revoked so a stolen token can't be used to keep the session alive.
+                await _refreshTokenRepository.RevokeFamilyAsync(storedToken.FamilyId, ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+                _logger.LogWarning("Refresh token reuse detected for family {FamilyId}; family revoked.", storedToken.FamilyId);
+                return Result.Failure<AuthResponse>(AuthConstants.ErrorInvalidToken, ErrorCodes.InvalidToken);
+            }
+
+            if (storedToken.ExpiresAt < DateTime.UtcNow)
+                return Result.Failure<AuthResponse>(AuthConstants.ErrorInvalidToken, ErrorCodes.InvalidToken);
 
             var user = await _userRepository.GetByIdWithRolesAsync(storedToken.UserId, ct);
             if (user is null || user.DeletedAt is not null)
-            {
-                await _unitOfWork.SaveChangesAsync(ct);
                 return Result.Failure<AuthResponse>(AuthConstants.ErrorInvalidCredentials, ErrorCodes.InvalidCredentials);
-            }
 
             var statusResult = UserStatusHelper.CheckUserStatus<AuthResponse>(user);
             if (statusResult is not null)
-            {
-                await _unitOfWork.SaveChangesAsync(ct);
                 return statusResult;
-            }
 
-            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
+            // Only burn the presented token once we know the refresh will actually succeed —
+            // a status/validity failure above must leave it usable so the caller can retry
+            // (e.g. after verifying their email) instead of being locked out by this attempt.
+            storedToken.RevokedAt = DateTime.UtcNow;
+            _refreshTokenRepository.Update(storedToken);
+
+            var response = await AuthResponseHelper.CreateAuthResponseAsync(user, request.IpAddress, request.DeviceInfo, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct, storedToken.FamilyId);
             return Result.Success(response);
         }
         catch (Exception ex)

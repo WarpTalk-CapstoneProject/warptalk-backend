@@ -24,8 +24,9 @@ public static class TokenHelper
         Guid userId,
         string rawToken,
         string? ip,
-        string? device)
+        string? device,
+        Guid? familyId = null)
     {
-        return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device);
+        return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device, familyId);
     }
 }
