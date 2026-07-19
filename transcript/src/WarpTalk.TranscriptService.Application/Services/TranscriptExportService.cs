@@ -80,13 +80,21 @@ public class TranscriptExportService : ITranscriptExportService
 
         var segments = await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId);
 
-        var segmentIds = segments.Select(s => s.Id).ToList();
-        var translations = await _unitOfWork.TranscriptTranslations.FindAsync(t => segmentIds.Contains(t.SegmentId));
 
-        foreach (var segment in segments)
-        {
-            segment.TranscriptTranslations = translations.Where(t => t.SegmentId == segment.Id).ToList();
-        }
+        var segmentIds = segments.Select(s => s.Id).ToList();
+
+        // Only the CURRENT link per (segment, language) — a re-translated segment must export
+        // the latest text, not a superseded one. Replaces the old TranscriptTranslations join.
+        var currentLinks = (await _unitOfWork.SegmentTranslationLinks.FindAsync(
+                l => segmentIds.Contains(l.SegmentId) && l.IsCurrent))
+            .ToList();
+        var contentIds = currentLinks.Select(l => l.TranslationContentId).Distinct().ToList();
+        var contentById = (await _unitOfWork.TranslationContents.FindAsync(tc => contentIds.Contains(tc.Id)))
+            .ToDictionary(tc => tc.Id);
+
+        var translationsBySegment = currentLinks
+            .Where(l => contentById.ContainsKey(l.TranslationContentId))
+            .ToLookup(l => l.SegmentId, l => (Lang: l.TargetLanguage, Text: contentById[l.TranslationContentId].TranslatedText));
 
         var orderedSegments = segments.OrderBy(s => s.SequenceOrder).ToList();
 
@@ -103,12 +111,12 @@ public class TranscriptExportService : ITranscriptExportService
 
         if (export.Format == "csv")
         {
-            fileBytes = GenerateCsv(orderedSegments, includedLangs);
+            fileBytes = GenerateCsv(orderedSegments, includedLangs, translationsBySegment);
             contentType = "text/csv";
         }
         else // default to txt
         {
-            fileBytes = GenerateTxt(orderedSegments, includedLangs);
+            fileBytes = GenerateTxt(orderedSegments, includedLangs, translationsBySegment);
             contentType = "text/plain";
             fileName = $"transcript_{transcriptId}.txt";
         }
@@ -116,7 +124,7 @@ public class TranscriptExportService : ITranscriptExportService
         return (fileBytes, contentType, fileName);
     }
 
-    private byte[] GenerateTxt(List<TranscriptSegment> segments, List<string> includedLangs)
+    private byte[] GenerateTxt(List<TranscriptSegment> segments, List<string> includedLangs, ILookup<Guid, (string Lang, string Text)> translationsBySegment)
     {
         var sb = new StringBuilder();
 
@@ -128,11 +136,11 @@ public class TranscriptExportService : ITranscriptExportService
             // Add translations
             if (includedLangs.Any())
             {
-                foreach (var trans in segment.TranscriptTranslations)
+                foreach (var trans in translationsBySegment[segment.Id])
                 {
-                    if (includedLangs.Contains(trans.TargetLanguage, StringComparer.OrdinalIgnoreCase))
+                    if (includedLangs.Contains(trans.Lang, StringComparer.OrdinalIgnoreCase))
                     {
-                        sb.AppendLine($"  └─ [{trans.TargetLanguage}]: {trans.TranslatedText}");
+                        sb.AppendLine($"  └─ [{trans.Lang}]: {trans.Text}");
                     }
                 }
             }
@@ -142,7 +150,7 @@ public class TranscriptExportService : ITranscriptExportService
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private byte[] GenerateCsv(List<TranscriptSegment> segments, List<string> includedLangs)
+    private byte[] GenerateCsv(List<TranscriptSegment> segments, List<string> includedLangs, ILookup<Guid, (string Lang, string Text)> translationsBySegment)
     {
         var sb = new StringBuilder();
 
@@ -162,10 +170,11 @@ public class TranscriptExportService : ITranscriptExportService
                 EscapeCsv(segment.OriginalText)
             };
 
+            var segmentTranslations = translationsBySegment[segment.Id];
             foreach (var lang in includedLangs)
             {
-                var trans = segment.TranscriptTranslations.FirstOrDefault(t => t.TargetLanguage.Equals(lang, StringComparison.OrdinalIgnoreCase));
-                row.Add(trans != null ? EscapeCsv(trans.TranslatedText) : string.Empty);
+                var trans = segmentTranslations.FirstOrDefault(t => t.Lang.Equals(lang, StringComparison.OrdinalIgnoreCase));
+                row.Add(trans.Text != null ? EscapeCsv(trans.Text) : string.Empty);
             }
 
             sb.AppendLine(string.Join(",", row));

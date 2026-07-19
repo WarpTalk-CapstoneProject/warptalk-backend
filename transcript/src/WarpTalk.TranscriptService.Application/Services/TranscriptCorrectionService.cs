@@ -60,12 +60,37 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
                 return Result.Failure("You do not have access to this transcript.", "UNAUTHORIZED");
 
             var correction = dto.ToEntity(segmentId);
+            var isMtCorrection = dto.CorrectionType?.Equals("MT", StringComparison.OrdinalIgnoreCase) == true;
 
-            segment.IsCorrected = true;
-            if (dto.CorrectionType?.Equals("STT", StringComparison.OrdinalIgnoreCase) == true)
+            if (isMtCorrection)
+            {
+                if (string.IsNullOrWhiteSpace(dto.TargetLanguage))
+                    return Result.Failure("TargetLanguage is required for MT corrections.", "BAD_REQUEST");
+
+                // Link the correction to the translation_contents row it's actually correcting —
+                // the current SegmentTranslationLink for this segment/language. Re-translation
+                // itself happens asynchronously: the translate:requests message pushed below is
+                // picked up by translate_worker, and the resulting translate:results message is
+                // what actually supersedes this link (TranscriptRedisConsumerService.
+                // ProcessTranslateMessageAsync already flips IsCurrent on re-translation).
+                var currentLink = (await _unitOfWork.SegmentTranslationLinks.FindAsync(
+                        l => l.SegmentId == segmentId && l.TargetLanguage == dto.TargetLanguage && l.IsCurrent,
+                        cancellationToken))
+                    .FirstOrDefault();
+                correction.TranslationContentId = currentLink?.TranslationContentId;
+
+                // ReversalCreditTransactionId is intentionally left null here: reversing the prior
+                // TRANSLATION charge requires a Billing gRPC endpoint that can look up and reverse
+                // subscription.credit_transactions by (segment_id, target_lang) — that endpoint
+                // doesn't exist yet (billing_worker only charges forward, see
+                // warptalk-ai/billing_worker/worker.py). Tracked as a follow-up, not fabricated here.
+            }
+            else if (dto.CorrectionType?.Equals("STT", StringComparison.OrdinalIgnoreCase) == true)
             {
                 segment.OriginalText = dto.CorrectedText;
             }
+
+            segment.IsCorrected = true;
 
             _unitOfWork.TranscriptSegments.Update(segment);
             await _unitOfWork.TranscriptCorrections.AddAsync(correction, cancellationToken);

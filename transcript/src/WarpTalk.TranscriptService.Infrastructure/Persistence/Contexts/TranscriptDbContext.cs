@@ -32,6 +32,11 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<TranscriptTranslation> TranscriptTranslations { get; set; }
 
+    public virtual DbSet<TranslationContent> TranslationContents { get; set; }
+
+    public virtual DbSet<SegmentTranslationLink> SegmentTranslationLinks { get; set; }
+
+    public virtual DbSet<AudioDubbing> AudioDubbings { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -234,6 +239,20 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.WorkspaceId)
                 .HasComment("External AuthService workspace id. No physical FK.")
                 .HasColumnName("workspace_id");
+            entity.Property(e => e.IsCurrent)
+                .HasDefaultValue(true)
+                .HasColumnName("is_current");
+            entity.Property(e => e.PreviousTranscriptId).HasColumnName("previous_transcript_id");
+            entity.Property(e => e.EngineVersion).HasMaxLength(50).HasColumnName("engine_version");
+            entity.Property(e => e.LastSequenceOrder)
+                .HasDefaultValue(0)
+                .HasColumnName("last_sequence_order");
+
+            entity.HasOne<Transcript>()
+                .WithMany()
+                .HasForeignKey(e => e.PreviousTranscriptId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("transcripts_previous_transcript_id_fkey");
         });
 
         modelBuilder.Entity<TranscriptCorrection>(entity =>
@@ -266,11 +285,20 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.UserId)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("user_id");
+            entity.Property(e => e.TranslationContentId).HasColumnName("translation_content_id");
+            entity.Property(e => e.ReversalCreditTransactionId)
+                .HasComment("Soft ref -> subscription.credit_transactions, no physical FK (cross-service).")
+                .HasColumnName("reversal_credit_transaction_id");
 
             entity.HasOne(d => d.Segment).WithMany(p => p.TranscriptCorrections)
                 .HasForeignKey(d => d.SegmentId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("transcript_corrections_segment_id_fkey");
+
+            entity.HasOne(d => d.TranslationContent).WithMany()
+                .HasForeignKey(d => d.TranslationContentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("transcript_corrections_translation_content_id_fkey");
         });
 
         modelBuilder.Entity<TranscriptExport>(entity =>
@@ -343,11 +371,21 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
+            entity.Property(e => e.IsFinal)
+                .HasDefaultValue(true)
+                .HasColumnName("is_final");
+            entity.Property(e => e.MatchedSegmentId).HasColumnName("matched_segment_id");
 
             entity.HasOne(d => d.Transcript).WithMany(p => p.TranscriptSegments)
                 .HasForeignKey(d => d.TranscriptId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("transcript_segments_transcript_id_fkey");
+
+            entity.HasOne<TranscriptSegment>()
+                .WithMany()
+                .HasForeignKey(e => e.MatchedSegmentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("transcript_segments_matched_segment_id_fkey");
         });
 
         modelBuilder.Entity<TranscriptTranslation>(entity =>
@@ -385,6 +423,102 @@ public partial class TranscriptDbContext : DbContext
                 .HasForeignKey(d => d.SegmentId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("transcript_translations_segment_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationContent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_contents_pkey");
+
+            entity.ToTable("translation_contents", "transcript");
+
+            entity.HasIndex(e => new { e.WorkspaceId, e.TextHash, e.TargetLanguage }, "translation_contents_dedup_idx").IsUnique();
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.TextHash).HasMaxLength(64).HasColumnName("text_hash");
+            entity.Property(e => e.TargetLanguage).HasMaxLength(15).HasColumnName("target_language");
+            entity.Property(e => e.TranslatedText).HasColumnName("translated_text");
+            entity.Property(e => e.TranslatorModel).HasMaxLength(100).HasColumnName("translator_model");
+            entity.Property(e => e.Confidence).HasPrecision(5, 4).HasColumnName("confidence");
+            entity.Property(e => e.IsRetranslated).HasDefaultValue(false).HasColumnName("is_retranslated");
+            entity.Property(e => e.PreviousTranslationContentId).HasColumnName("previous_translation_content_id");
+            entity.Property(e => e.LatencyMs).HasColumnName("latency_ms");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("pending").HasColumnName("status");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+
+            entity.HasOne(d => d.PreviousTranslationContent).WithMany()
+                .HasForeignKey(d => d.PreviousTranslationContentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("translation_contents_previous_content_id_fkey");
+        });
+
+        modelBuilder.Entity<SegmentTranslationLink>(entity =>
+        {
+            entity.HasKey(e => new { e.SegmentId, e.TranslationContentId }).HasName("segment_translation_links_pkey");
+
+            entity.ToTable("segment_translation_links", "transcript");
+
+            entity.HasIndex(e => new { e.SegmentId, e.TargetLanguage })
+                .HasDatabaseName("segment_translation_links_current_unique_idx")
+                .IsUnique()
+                .HasFilter("is_current");
+
+            entity.Property(e => e.SegmentId).HasColumnName("segment_id");
+            entity.Property(e => e.TranslationContentId).HasColumnName("translation_content_id");
+            entity.Property(e => e.TargetLanguage).HasMaxLength(15).HasColumnName("target_language");
+            entity.Property(e => e.IsCurrent).HasDefaultValue(true).HasColumnName("is_current");
+            entity.Property(e => e.DeliveredAt).HasColumnName("delivered_at");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+
+            entity.HasOne(d => d.Segment).WithMany(p => p.SegmentTranslationLinks)
+                .HasForeignKey(d => d.SegmentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("segment_translation_links_segment_id_fkey");
+
+            entity.HasOne(d => d.TranslationContent).WithMany(p => p.SegmentTranslationLinks)
+                .HasForeignKey(d => d.TranslationContentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("segment_translation_links_content_id_fkey");
+        });
+
+        modelBuilder.Entity<AudioDubbing>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("audio_dubbings_pkey");
+
+            entity.ToTable("audio_dubbings", "transcript");
+
+            entity.HasIndex(e => new { e.WorkspaceId, e.TextHash, e.ProviderVoiceId }, "audio_dubbings_dedup_idx").IsUnique();
+
+            entity.HasIndex(e => e.TranslationContentId, "audio_dubbings_translation_idx");
+
+            entity.Property(e => e.Id).HasDefaultValueSql("uuidv7()").HasColumnName("id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.TranslationContentId).HasColumnName("translation_content_id");
+            entity.Property(e => e.TextHash).HasMaxLength(64).HasColumnName("text_hash");
+            entity.Property(e => e.VoiceType).HasMaxLength(20).HasColumnName("voice_type");
+            entity.Property(e => e.Provider).HasMaxLength(50).HasDefaultValue("cartesia").HasColumnName("provider");
+            entity.Property(e => e.ProviderVoiceId).HasMaxLength(255).HasColumnName("provider_voice_id");
+            entity.Property(e => e.PreviousAudioDubbingId).HasColumnName("previous_audio_dubbing_id");
+            entity.Property(e => e.AudioUrl).HasMaxLength(500).HasColumnName("audio_url");
+            entity.Property(e => e.DurationMs).HasColumnName("duration_ms");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("pending").HasColumnName("status");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("now()").HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+
+            entity.HasOne(d => d.TranslationContent).WithMany(p => p.AudioDubbings)
+                .HasForeignKey(d => d.TranslationContentId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("audio_dubbings_translation_content_id_fkey");
+
+            entity.HasOne(d => d.PreviousAudioDubbing).WithMany()
+                .HasForeignKey(d => d.PreviousAudioDubbingId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("audio_dubbings_previous_dubbing_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

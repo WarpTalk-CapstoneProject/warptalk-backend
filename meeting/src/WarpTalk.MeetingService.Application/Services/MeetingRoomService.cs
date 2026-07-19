@@ -299,12 +299,20 @@ public class MeetingRoomService : IMeetingRoomService
 
     public async Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request)
     {
-        await _redisService.PublishEventAsync("meeting.track_published", new
+        var publishResult = await _redisService.PublishEventAsync("meeting.track_published", new
         {
             RoomName = translationRoomId.ToString(),
             ParticipantIdentity = request.ParticipantIdentity,
             TrackId = "audio_track_1"
         });
+
+        if (!publishResult.IsSuccess)
+        {
+            return Result.Failure<bool>(
+                publishResult.Error ?? "Failed to publish AI trigger event",
+                publishResult.ErrorCode ?? ErrorCodes.InternalServerError);
+        }
+
         return Result.Success<bool>(true);
     }
 

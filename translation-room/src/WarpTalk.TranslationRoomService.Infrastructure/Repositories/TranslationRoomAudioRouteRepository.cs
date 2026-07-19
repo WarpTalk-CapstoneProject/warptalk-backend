@@ -19,7 +19,12 @@ public class TranslationRoomAudioRouteRepository : GenericRepository<Translation
 
     public async Task<List<TranslationRoomAudioRoute>> GetRoutesByRoomIdAsync(Guid roomId, CancellationToken ct = default)
     {
+        // Include participants so callers (e.g. AudioRouteCacheService broadcasting to the
+        // AI pipeline) can resolve each route's SourceUserId/TargetUserId — the AI workers
+        // key everything by auth user id, not by translation_room_participants.id.
         return await _dbSet
+            .Include(r => r.SourceParticipant)
+            .Include(r => r.TargetParticipant)
             .Where(r => r.TranslationRoomId == roomId)
             .ToListAsync(ct);
     }

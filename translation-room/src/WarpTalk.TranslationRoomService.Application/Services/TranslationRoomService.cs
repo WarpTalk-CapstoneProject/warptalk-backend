@@ -394,6 +394,14 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
+            // A translation room needs at least one source->target audio route configured before
+            // it can start — otherwise no one's speech would ever be routed anywhere. This was a
+            // known gap: TranslationRoomAudioRouteService.GenerateRoutesAsync rebuilds routes on
+            // demand, but nothing previously stopped Start from succeeding with zero routes.
+            var routes = await _unitOfWork.TranslationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(translationRoomId, ct);
+            if (routes == null || routes.Count == 0)
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorNoAudioRoutesConfigured, ErrorCodes.InvalidState);
+
             translationRoom.Status = "IN_PROGRESS";
             translationRoom.StartedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
