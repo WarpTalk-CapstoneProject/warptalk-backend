@@ -26,6 +26,7 @@ public static class TranslationRoomMapper
             catch { /* malformed JSON in DB — use default */ }
         }
 
+
         return new TranslationRoomDto(
             room.Id,
             room.WorkspaceId,
@@ -87,6 +88,7 @@ public static class TranslationRoomMapper
             }
             catch { /* malformed JSON in DB — use default */ }
         }
+
 
         var artifacts = room.TranslationRoomArtifacts?.Select(a => a.ToDto()).ToList() ?? new List<RoomArtifactDto>();
 

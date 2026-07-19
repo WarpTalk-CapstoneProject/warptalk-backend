@@ -56,7 +56,7 @@ public class WorkspaceConfiguration
 
     // 5. AI Ingestion & Security Guardrails
     public AiUsagePolicyConfiguration? AiUsagePolicy { get; set; }
-    
+
     // 6. Content Filtering
     public bool IsProfanityFilterEnabled { get; set; } = false;
 }

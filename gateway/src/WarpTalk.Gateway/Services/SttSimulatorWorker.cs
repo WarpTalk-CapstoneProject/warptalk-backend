@@ -27,7 +27,7 @@ public class SttSimulatorWorker : BackgroundService
             // For UAT Simulator: we could listen to 'room_start' events or just periodically generate fake transcripts 
             // for active rooms. For now, this is a placeholder.
             // A fully functional simulator would subscribe to Redis to know which rooms are ACTIVE.
-            
+
             await Task.Delay(5000, stoppingToken);
         }
     }

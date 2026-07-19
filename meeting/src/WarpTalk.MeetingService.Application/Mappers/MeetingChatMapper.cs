@@ -27,10 +27,10 @@ public static class MeetingChatMapper
     }
 
     public static MeetingChatMessage ToEntity(
-        this SendMeetingChatMessageRequest request, 
-        Guid roomId, 
-        Guid workspaceId, 
-        Guid userId, 
+        this SendMeetingChatMessageRequest request,
+        Guid roomId,
+        Guid workspaceId,
+        Guid userId,
         MeetingParticipant? participant)
     {
         return new MeetingChatMessage

@@ -11,7 +11,7 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
 
     public GoogleTokenVerifier(IConfiguration configuration)
     {
-        _clientId = configuration["Authentication:Google:ClientId"] 
+        _clientId = configuration["Authentication:Google:ClientId"]
             ?? throw new InvalidOperationException("Google ClientId is not configured.");
     }
 

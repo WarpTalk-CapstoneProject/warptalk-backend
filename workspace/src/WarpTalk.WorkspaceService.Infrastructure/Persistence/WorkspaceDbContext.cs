@@ -33,7 +33,7 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; }
 
-    
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder

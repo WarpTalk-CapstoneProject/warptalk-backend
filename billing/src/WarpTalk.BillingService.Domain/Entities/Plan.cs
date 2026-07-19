@@ -19,7 +19,7 @@ public partial class Plan
 
     public string BillingCycle { get; set; } = "monthly";
 
-    public int CreditsPerMonth { get; set; }
+    public int CreditsPerCycle { get; set; }
 
     public int MaxParticipants { get; set; } = 2;
 

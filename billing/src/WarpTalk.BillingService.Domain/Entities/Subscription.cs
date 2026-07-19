@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -15,18 +13,15 @@ public partial class Subscription
 
     public Guid PlanId { get; set; }
 
-    public SubscriptionStatus Status { get; set; }
+    public string Status { get; set; } = null!;
 
-    /// <summary>Maps to subscription.subscriptions.credits_remaining.</summary>
-    public int CurrentCredits { get; set; }
+    public int CreditsRemaining { get; set; }
 
     public int CreditsUsedThisCycle { get; set; }
 
-    /// <summary>Maps to subscription.subscriptions.current_period_start.</summary>
-    public DateTime StartDate { get; set; }
+    public DateTime CurrentPeriodStart { get; set; }
 
-    /// <summary>Maps to subscription.subscriptions.current_period_end.</summary>
-    public DateTime? EndDate { get; set; }
+    public DateTime CurrentPeriodEnd { get; set; }
 
     public bool AutoRenew { get; set; } = true;
 
@@ -57,5 +52,14 @@ public partial class Subscription
 
     public virtual Plan Plan { get; set; } = null!;
 
-    public virtual ICollection<Transaction> Transactions { get; set; } = new List<Transaction>();
+    public virtual ICollection<CreditTransaction> CreditTransactions { get; set; } = new List<CreditTransaction>();
+
+    public virtual ICollection<CreditBalanceSnapshot> CreditBalanceSnapshots { get; set; } = new List<CreditBalanceSnapshot>();
+
+    public virtual ICollection<UsageRecord> UsageRecords { get; set; } = new List<UsageRecord>();
+
+    public virtual ICollection<Payment> Payments { get; set; } = new List<Payment>();
+
+    // Concurrency Token (mapped to PostgreSQL xmin)
+    public uint Version { get; set; }
 }

@@ -1,5 +1,4 @@
 using System;
-using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -17,7 +16,7 @@ public partial class CreditTransaction
 
     public int Amount { get; set; }
 
-    public CreditTransactionType Type { get; set; }
+    public string Type { get; set; } = null!;
 
     public string? Description { get; set; }
 

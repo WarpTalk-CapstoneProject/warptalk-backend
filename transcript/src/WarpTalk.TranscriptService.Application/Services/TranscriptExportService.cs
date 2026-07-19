@@ -37,7 +37,7 @@ public class TranscriptExportService : ITranscriptExportService
             throw new UnauthorizedAccessException("You do not have access to this transcript.");
 
         var exportId = Guid.NewGuid(); // Alternatively, rely on DB to generate UUID
-        
+
         var includedLanguages = JsonSerializer.Serialize(request.IncludedLanguages ?? new List<string>());
 
         var export = new TranscriptExport
@@ -79,6 +79,7 @@ public class TranscriptExportService : ITranscriptExportService
             throw new UnauthorizedAccessException("You do not have access to this transcript export.");
 
         var segments = await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId);
+
 
         var segmentIds = segments.Select(s => s.Id).ToList();
 

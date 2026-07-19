@@ -16,7 +16,7 @@ public static class QueryableExtensions
         CancellationToken ct = default)
     {
         var totalCount = await query.CountAsync(ct);
-        
+
         var items = await query
             .Skip((page - 1) * pageSize)
             .Take(pageSize)

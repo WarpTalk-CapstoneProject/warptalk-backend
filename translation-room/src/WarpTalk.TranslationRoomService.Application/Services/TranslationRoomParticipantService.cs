@@ -38,7 +38,6 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
-
             // WT-65 loosened this from "must be CONNECTED" to "any participant, any status" —
             // but the whole check was accidentally dropped instead of just the status condition,
             // leaving this endpoint callable by ANY authenticated user for ANY room. Restored with

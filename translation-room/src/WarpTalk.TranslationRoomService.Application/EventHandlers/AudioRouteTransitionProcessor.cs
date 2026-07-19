@@ -31,7 +31,6 @@ public class AudioRouteTransitionProcessor : IAudioRouteTransitionProcessor
             var nextState = result.Value;
             route.Status = nextState.ToString();
             route.UpdatedAt = DateTime.UtcNow;
-            
             if (nextState == AudioRouteStatus.BROADCASTING && currentState == AudioRouteStatus.READY)
             {
                 route.StartedAt = DateTime.UtcNow;

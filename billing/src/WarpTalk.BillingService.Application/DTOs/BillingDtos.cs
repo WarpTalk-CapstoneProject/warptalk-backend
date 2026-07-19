@@ -1,111 +1,116 @@
+using System;
 using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
-// ============================================================================
-// RESPONSE DTOs
-// ============================================================================
+public record PagedResult<T>(
+    int TotalCount,
+    IEnumerable<T> Items
+);
 
-public record PlanDto(
-    Guid Id,
-    string Name,
-    decimal Price,
-    int CreditsPerMonth,
-    bool IsActive = true,
-    DateTime? CreatedAt = null);
+public record BillingReportDto(
+    Guid WorkspaceId,
+    int Month,
+    int Year,
+    int StartingBalance,
+    int EndingBalance,
+    int TotalTopUpCredits,
+    int TotalConsumedCredits,
+    decimal? AverageTranslationCostPerMinute,
+    int? AverageCostPerMeeting,
+    IEnumerable<UsageBreakdownDto> UsageBreakdown
+);
+
+public record UsageSummaryDto(
+    string UsageType,
+    int TotalCreditsConsumed
+);
+
+public record UsageChartDto(
+    int Year,
+    IEnumerable<MonthlyUsageDto> MonthlyData
+);
+
+public record MonthlyUsageDto(
+    int Month,
+    string MonthName,
+    int ConsumedCredits,
+    int TopUpCredits
+);
+
+public record FeatureAdoptionDto(
+    string FeatureName,
+    int UsageCount,
+    int TotalCreditsConsumed
+);
+
 
 public record SubscriptionDto(
     Guid Id,
-    Guid WorkspaceId,
+    Guid UserId,
+    Guid? WorkspaceId,
     Guid PlanId,
+    string PlanName,
+    decimal Price,
     string Status,
-    int CurrentCredits,
-    DateTime StartDate,
-    DateTime? EndDate,
-    DateTime CreatedAt);
+    int CreditsRemaining,
+    int CreditsUsedThisCycle,
+    DateTime CurrentPeriodStart,
+    DateTime CurrentPeriodEnd,
+    bool AutoRenew,
+    bool CancelAtPeriodEnd,
+    DateTime CreatedAt,
+    DateTime? CancelledAt,
+    string? WorkspaceName = null
+);
 
-public record WorkspaceCreditsDto(
+public record SubscriptionRequest(
+    [Required(ErrorMessage = "WorkspaceId is required.")]
     Guid WorkspaceId,
-    int CurrentCredits,
-    DateTime? SubscriptionEndDate,
-    string SubscriptionStatus = "active");
 
-public record CreditTransactionDto(
-    Guid Id,
+    [Required(ErrorMessage = "PlanId is required.")]
+    Guid PlanId,
+
+    Guid? UserId = null
+);
+
+public record RecordUsageRequest(
+    [Required(ErrorMessage = "HostWorkspaceId is required.")]
+    Guid HostWorkspaceId,
+
+    [Required(ErrorMessage = "UserId is required.")]
+    Guid UserId,
+
+    [Required(ErrorMessage = "UsageType is required.")]
+    string UsageType,
+
+    [Required(ErrorMessage = "Unit is required.")]
+    string Unit,
+
+    decimal Quantity,
+    int CreditsConsumed,
+    int? DurationSeconds,
+    Guid? TranslationRoomId,
+    Guid? SegmentId = null,
+    string? Details = null
+);
+
+public record GlobalBillingMetricsDto(
+    int TotalBalance,
+    int ActiveWorkspaces,
+    int MonthlyUsage,
+    int AuditEventsLast30Days
+);
+
+public record TopWorkspaceDto(
     Guid WorkspaceId,
-    int Amount,
-    string Type,
-    Guid? ReferenceId,
-    string? ReferenceType,
-    DateTime CreatedAt);
+    string? WorkspaceName,
+    int TotalCreditsConsumed
+);
 
-public record TransactionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    Guid? SubscriptionId,
-    decimal Amount,
-    string Status,
-    string? ExternalId,
-    DateTime CreatedAt);
+public record UsageBreakdownDto(
+    string UsageType,
+    int TotalCreditsConsumed,
+    decimal TotalQuantity
+);
 
-// ============================================================================
-// REQUEST DTOs (with validation)
-// ============================================================================
-
-public record CreateSubscriptionRequest(
-    [Required(ErrorMessage = "Plan ID is required")]
-    Guid PlanId);
-
-public record TopUpCreditsRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount);
-
-public record ConsumeCreditsRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount,
-    
-    [Required(ErrorMessage = "Reference type is required")]
-    string ReferenceType,
-    
-    Guid? ReferenceId = null);
-
-public record CancelSubscriptionRequest(
-    string? CancellationReason = null);
-
-// ============================================================================
-// PAGINATION
-// ============================================================================
-
-public record PaginationParams(
-    [Range(1, 200, ErrorMessage = "Page size must be between 1 and 200")]
-    int PageSize = 50,
-    
-    [Range(1, int.MaxValue, ErrorMessage = "Page number must be >= 1")]
-    int PageNumber = 1);
-
-public record PaginatedResponse<T>(
-    IReadOnlyList<T> Items,
-    int PageNumber,
-    int PageSize,
-    int TotalCount,
-    int TotalPages)
-{
-    public bool HasNextPage => PageNumber < TotalPages;
-    public bool HasPreviousPage => PageNumber > 1;
-}
-
-// ============================================================================
-// ERROR RESPONSE
-// ============================================================================
-
-public record ErrorDetailDto(
-    string Code,
-    string Message,
-    string? Details = null,
-    DateTime Timestamp = default)
-{
-    public ErrorDetailDto(string code, string message, string? details = null)
-        : this(code, message, details, DateTime.UtcNow) { }
-}

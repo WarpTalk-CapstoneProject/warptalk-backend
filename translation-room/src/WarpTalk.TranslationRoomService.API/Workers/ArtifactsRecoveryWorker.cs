@@ -56,7 +56,7 @@ public class ArtifactsRecoveryWorker : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<ITranslationRoomAudioRouteRepository>();
         var eventProcessor = scope.ServiceProvider.GetRequiredService<IAudioRouteEventProcessor>();
-        
+
         var db = _redis.GetDatabase();
 
         var failedRoutes = await repository.GetRoutesByStatusAsync(AudioRouteStatus.SAVE_FAILED, ct);
@@ -82,14 +82,14 @@ public class ArtifactsRecoveryWorker : BackgroundService
                 if (attempts >= _settings.MaxRecoverySweeps)
                 {
                     _logger.LogWarning("Room {RoomId} exhausted {MaxAttempts} recovery attempts. Emitting finalization_abandoned to conclude lifecycle.", roomId, _settings.MaxRecoverySweeps);
-                    
+
                     await eventProcessor.ProcessEventAsync(
-                        roomId, 
-                        null, 
-                        AudioRoutingEventType.finalization_abandoned.ToString(), 
-                        "{}", 
+                        roomId,
+                        null,
+                        AudioRoutingEventType.finalization_abandoned.ToString(),
+                        "{}",
                         ct);
-                        
+
                     // Cleanup Redis counter
                     await db.KeyDeleteAsync(attemptsKey);
                 }
@@ -97,14 +97,12 @@ public class ArtifactsRecoveryWorker : BackgroundService
                 {
                     attempts++;
                     await db.StringSetAsync(attemptsKey, attempts, TimeSpan.FromDays(7));
-                    
                     _logger.LogInformation("Attempt {Attempt}/{MaxAttempts}: Pushing Room {RoomId} back to SAVING_OUTPUTS queue.", attempts, _settings.MaxRecoverySweeps, roomId);
-                    
                     await eventProcessor.ProcessEventAsync(
-                        roomId, 
-                        null, 
-                        AudioRoutingEventType.flush_runtime.ToString(), 
-                        "{}", 
+                        roomId,
+                        null,
+                        AudioRoutingEventType.flush_runtime.ToString(),
+                        "{}",
                         ct);
                 }
             }

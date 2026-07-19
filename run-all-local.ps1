@@ -37,6 +37,8 @@ $Services = @(
     [PSCustomObject]@{ Name = "transcript";       Cwd = "transcript/src/WarpTalk.TranscriptService.API";       Port = 5103 },
     [PSCustomObject]@{ Name = "notification";     Cwd = "notification/src/WarpTalk.NotificationService.API";     Port = 5104 },
     [PSCustomObject]@{ Name = "meeting";          Cwd = "meeting/src/WarpTalk.MeetingService.API";          Port = 5105 },
+    [PSCustomObject]@{ Name = "billing";          Cwd = "billing/src/WarpTalk.BillingService.API";          Port = 5107 },
+    [PSCustomObject]@{ Name = "payment";          Cwd = "payment/src/WarpTalk.PaymentService.API";          Port = 5047 },
     [PSCustomObject]@{ Name = "gateway";          Cwd = "gateway/src/WarpTalk.Gateway";                  Port = 5200 }
 )
 
@@ -57,9 +59,9 @@ function Show-Banner {
     Write-Host ""
 }
 
-function Kill-Ports {
+function Stop-Ports {
     Write-Host ($YELLOW + "[CLEAN] Cleaning up occupied ports..." + $NC)
-    $ports = @(5101, 5102, 5103, 5104, 5105, 5106, 5200, 50051, 50052, 50053, 50054, 50055, 50056)
+    $ports = @(5101, 5102, 5103, 5104, 5105, 5106, 5107, 5047, 5200, 50051, 50052, 50053, 50054, 50055, 50056, 50057, 50058)
     foreach ($port in $ports) {
         $nets = netstat -ano | Select-String ":$port\s+"
         foreach ($line in $nets) {
@@ -106,7 +108,7 @@ function Start-Postgres {
     # Wait until healthy
     Write-Host -NoNewline "   Waiting for PostgreSQL to be ready"
     for ($i = 1; $i -le 30; $i++) {
-        $ready = docker exec $PGContainer pg_isready -U postgres 2>$null
+        $null = docker exec $PGContainer pg_isready -U postgres 2>$null
         if ($LASTEXITCODE -eq 0) {
             Write-Host ($GREEN + " [OK]" + $NC)
             return
@@ -140,7 +142,7 @@ function Start-Redis {
     Write-Host -NoNewline "   Waiting for Redis to be ready"
     for ($i = 1; $i -le 30; $i++) {
         $ping = docker exec $RedisContainer redis-cli ping 2>$null
-        if ($ping -match "PONG") {
+        if ($ping -match "PONG" -or $ping -match "NOAUTH") {
             Write-Host ($GREEN + " [OK]" + $NC)
             return
         }
@@ -151,7 +153,7 @@ function Start-Redis {
     exit 1
 }
 
-function Run-Migrations {
+function Invoke-Migrations {
     Write-Host ($CYAN + "[DB] Running PostgreSQL migrations..." + $NC)
     $MigrationsDir = Join-Path $ScriptDir "..\warptalk-infrastructure\scripts\migrations"
     if (Test-Path $MigrationsDir) {
@@ -187,7 +189,7 @@ function Stop-Services {
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
     }
 
-    Kill-Ports
+    Stop-Ports
     Write-Host ($GREEN + "[OK] All .NET services stopped." + $NC)
     Write-Host ($YELLOW + "   Note: PostgreSQL and Redis containers left running." + $NC)
 }
@@ -245,7 +247,7 @@ function Wait-And-Test {
     Start-Sleep -Seconds 8
 
     Write-Host ($CYAN + "[CHECK] Service health check:" + $NC)
-    $allOk = $true
+
 
     if (Test-Path $PidFile) {
         $pids = Get-Content $PidFile -Raw | ConvertFrom-Json
@@ -260,7 +262,7 @@ function Wait-And-Test {
                     Write-Host ("   " + $GREEN + "[OK] $name (PID: $pidVal, port: $port)" + $NC)
                 } else {
                     Write-Host ("   " + $RED + "[FAIL] $name - process died! Check: logs/$name.err" + $NC)
-                    $allOk = $false
+                    # Process failed
                 }
             }
         }
@@ -317,10 +319,10 @@ if ($Status) {
 }
 
 Show-Banner
-Kill-Ports
+Stop-Ports
 
 Start-Postgres
-Run-Migrations
+Invoke-Migrations
 Start-Redis
 
 # Rebuild Solution

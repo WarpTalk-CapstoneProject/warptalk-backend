@@ -2,14 +2,18 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
+using Microsoft.AspNetCore.SignalR;
 using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Hubs.Filters;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
 using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddMemoryCache();
 
 // 1. Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -99,7 +103,7 @@ builder.Services.AddRateLimiter(options =>
                 PermitLimit = 100,
                 Window = TimeSpan.FromMinutes(1)
             }));
-    
+
     // Specific policy for login
     options.AddFixedWindowLimiter("LoginPolicy", opt =>
     {
@@ -127,6 +131,7 @@ var signalRBuilder = builder.Services.AddSignalR(options =>
     options.KeepAliveInterval = TimeSpan.FromSeconds(15);
     options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
     options.MaximumReceiveMessageSize = 128 * 1024; // 128 KB — voice-cloned audio chunks
+    options.AddFilter<AntiAbuseHubFilter>();
 });
 
 // Optional: Use Redis backplane for horizontal scaling
@@ -170,8 +175,8 @@ builder.Services.AddHealthChecks();
 builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"] 
-                  ?? builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"] 
+    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"]
+                  ?? builder.Configuration["ReverseProxy:Clusters:notification-cluster:Destinations:notification-service:Address"]
                   ?? "http://localhost:50054";
     o.Address = new Uri(address);
 })
@@ -197,8 +202,8 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"] 
-                  ?? builder.Configuration["ReverseProxy:Clusters:workspace-cluster:Destinations:workspace-service:Address"] 
+    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
+                  ?? builder.Configuration["ReverseProxy:Clusters:workspace-cluster:Destinations:workspace-service:Address"]
                   ?? "http://localhost:5103";
     o.Address = new Uri(address);
 })
@@ -218,9 +223,9 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
     // [Security] Zero-Trust Inter-service Authentication: Inject internal secret to gRPC requests.
     var config = serviceProvider.GetRequiredService<IConfiguration>();
     var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    
+
     var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
+    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) ||
                              rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                              rawGrpcSecret.Length < 32;
 
@@ -229,18 +234,18 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.Workspace
         throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
     }
 
-    var secret = isDefaultOrInvalid 
-        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
+    var secret = isDefaultOrInvalid
+        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!"
         : rawGrpcSecret!;
-        
+
     metadata.Add("x-internal-token", secret);
     return Task.CompletedTask;
 });
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"] 
-                  ?? builder.Configuration["ReverseProxy:Clusters:translation-room-cluster:Destinations:translation-room-service:Address"] 
+    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]
+                  ?? builder.Configuration["ReverseProxy:Clusters:translation-room-cluster:Destinations:translation-room-service:Address"]
                   ?? "http://localhost:50052";
     o.Address = new Uri(address);
 })
@@ -272,7 +277,8 @@ app.UseCors();
 
 // Security Headers Middleware
 // [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
-app.Use(async (context, next) => {
+app.Use(async (context, next) =>
+{
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";

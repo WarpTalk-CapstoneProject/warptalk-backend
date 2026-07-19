@@ -18,7 +18,7 @@ public static class ServiceCollectionExtensions
                     .SelectMany(x => x.Value!.Errors)
                     .Select(x => x.ErrorMessage)
                     .ToList();
-                
+
                 return new BadRequestObjectResult(new ApiErrorResponse(string.Join(" ", errors), ErrorCodes.ValidationError));
             };
         });

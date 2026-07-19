@@ -1,31 +1,76 @@
+using System;
+using System.Data.Common;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class UnitOfWork : IUnitOfWork
 {
-    private readonly BillingDbContext _db;
+    private readonly BillingDbContext _context;
 
-    public UnitOfWork(BillingDbContext db)
+    private IGenericRepository<Plan>? _plans;
+    private IGenericRepository<Subscription>? _subscriptions;
+    private IGenericRepository<CreditTransaction>? _creditTransactions;
+    private IGenericRepository<CreditBalanceSnapshot>? _creditBalanceSnapshots;
+    private IGenericRepository<UsageRecord>? _usageRecords;
+    private IGenericRepository<Payment>? _payments;
+    private IGenericRepository<Invoice>? _invoices;
+    private IGenericRepository<Refund>? _refunds;
+
+    private IGenericRepository<SchemaMigration>? _schemaMigrations;
+
+    public UnitOfWork(BillingDbContext context)
     {
-        _db = db;
-        Plans = new GenericRepository<Plan>(db);
-        Subscriptions = new GenericRepository<Subscription>(db);
-        Transactions = new GenericRepository<Transaction>(db);
-        CreditTransactions = new GenericRepository<CreditTransaction>(db);
-        IdempotencyRecords = new IdempotencyRepository(db);
+        _context = context;
     }
 
-    public IGenericRepository<Plan> Plans { get; }
-    public IGenericRepository<Subscription> Subscriptions { get; }
-    public IGenericRepository<Transaction> Transactions { get; }
-    public IGenericRepository<CreditTransaction> CreditTransactions { get; }
-    public IIdempotencyRepository IdempotencyRecords { get; }
+    public IGenericRepository<Plan> PlanRepository =>
+        _plans ??= new GenericRepository<Plan>(_context);
 
-    public async Task<int> SaveChangesAsync(CancellationToken ct = default)
-        => await _db.SaveChangesAsync(ct);
+    public IGenericRepository<Subscription> SubscriptionRepository =>
+        _subscriptions ??= new GenericRepository<Subscription>(_context);
 
-    public void Dispose() => _db.Dispose();
+    public IGenericRepository<CreditTransaction> CreditTransactionRepository =>
+        _creditTransactions ??= new GenericRepository<CreditTransaction>(_context);
+
+    public IGenericRepository<CreditBalanceSnapshot> CreditBalanceSnapshotRepository =>
+        _creditBalanceSnapshots ??= new GenericRepository<CreditBalanceSnapshot>(_context);
+
+    public IGenericRepository<UsageRecord> UsageRecordRepository =>
+        _usageRecords ??= new GenericRepository<UsageRecord>(_context);
+
+    public IGenericRepository<Payment> PaymentRepository =>
+        _payments ??= new GenericRepository<Payment>(_context);
+
+    public IGenericRepository<Invoice> InvoiceRepository =>
+        _invoices ??= new GenericRepository<Invoice>(_context);
+
+    public IGenericRepository<Refund> RefundRepository =>
+        _refunds ??= new GenericRepository<Refund>(_context);
+
+    public IGenericRepository<SchemaMigration> SchemaMigrationRepository =>
+        _schemaMigrations ??= new GenericRepository<SchemaMigration>(_context);
+
+    public System.Data.Common.DbConnection GetDbConnection()
+        => _context.Database.GetDbConnection();
+
+    public void ClearTracking()
+    {
+        _context.ChangeTracker.Clear();
+    }
+
+    public async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        return await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        _context.Dispose();
+    }
 }

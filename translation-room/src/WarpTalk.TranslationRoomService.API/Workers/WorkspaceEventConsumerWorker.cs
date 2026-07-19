@@ -49,7 +49,7 @@ public class WorkspaceEventConsumerWorker : BackgroundService
             try
             {
                 var messages = await _redisStreamRepository.ReadGroupAsync(StreamName, GroupName, ConsumerName, count: 10);
-                
+
                 foreach (var message in messages)
                 {
                     if (message.Values.TryGetValue("event_type", out var eventType))

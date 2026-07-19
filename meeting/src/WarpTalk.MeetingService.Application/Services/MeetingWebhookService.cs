@@ -31,7 +31,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             var handler = new JwtSecurityTokenHandler();
             var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_apiSecret));
-            
+
             handler.ValidateToken(token, new TokenValidationParameters
             {
                 ValidateIssuerSigningKey = true,
@@ -173,7 +173,7 @@ public class MeetingWebhookService : IMeetingWebhookService
         {
             track.UnpublishedAt = null;
         }
-        
+
         // Publish to Redis Pub/Sub for Transcript Worker to start
         if (kind == "audio")
         {
@@ -192,7 +192,7 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         var trackId = root.GetProperty("track").GetProperty("sid").GetString();
         var track = await _unitOfWork.MeetingTrackRepository.FirstOrDefaultAsync(t => t.ProviderTrackId == trackId);
-        
+
         if (track != null)
         {
             track.UnpublishedAt = DateTime.UtcNow;
@@ -203,7 +203,7 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         var trackId = root.GetProperty("track").GetProperty("sid").GetString();
         var track = await _unitOfWork.MeetingTrackRepository.FirstOrDefaultAsync(t => t.ProviderTrackId == trackId);
-        
+
         if (track != null)
         {
             track.IsMuted = isMuted;
@@ -214,7 +214,7 @@ public class MeetingWebhookService : IMeetingWebhookService
     {
         var roomName = root.GetProperty("room").GetProperty("name").GetString();
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
-        
+
         if (room != null)
         {
             room.Status = MeetingStatus.Finished.ToString();

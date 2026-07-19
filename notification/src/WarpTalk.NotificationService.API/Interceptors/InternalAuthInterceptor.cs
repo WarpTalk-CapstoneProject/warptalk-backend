@@ -15,7 +15,7 @@ public class InternalAuthInterceptor : Interceptor
     public InternalAuthInterceptor(IConfiguration configuration, ILogger<InternalAuthInterceptor> logger, IWebHostEnvironment env)
     {
         var rawGrpcSecret = configuration["Grpc:InternalSecret"];
-        var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
+        var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) ||
                                  rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
                                  rawGrpcSecret.Length < 32;
 
@@ -24,16 +24,16 @@ public class InternalAuthInterceptor : Interceptor
             throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
         }
 
-        _internalSecret = isDefaultOrInvalid 
-            ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
+        _internalSecret = isDefaultOrInvalid
+            ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!"
             : rawGrpcSecret!;
 
         _logger = logger;
     }
 
     public override Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
-        TRequest request, 
-        ServerCallContext context, 
+        TRequest request,
+        ServerCallContext context,
         UnaryServerMethod<TRequest, TResponse> continuation)
     {
         var token = context.RequestHeaders.GetValue("x-internal-token");
