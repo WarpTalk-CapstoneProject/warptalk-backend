@@ -19,7 +19,8 @@ public record PlanDto(
     bool GlossaryEnabled,
     bool DedicatedGpu,
     string Features,       // JSON blob
-    int SortOrder
+    int SortOrder,
+    bool IsActive
 );
 
 public record PlanRequest(

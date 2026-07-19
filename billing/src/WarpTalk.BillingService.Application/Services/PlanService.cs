@@ -30,14 +30,14 @@ public class PlanService : IPlanService
         try
         {
             var plans = await _unitOfWork.PlanRepository.FindAsync(
-                p => p.IsActive && p.DeletedAt == null,
+                p => p.DeletedAt == null,
                 cancellationToken);
 
             return Result.Success(plans.Select(p => p.ToDto()));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting active plans");
+            _logger.LogError(ex, "Error getting plans");
             return Result.Failure<IEnumerable<PlanDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
@@ -88,22 +88,86 @@ public class PlanService : IPlanService
         }
     }
 
+    private Result<PlanDto> ValidatePlanRequest(PlanRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            return Result.Failure<PlanDto>("Plan name is required.", "INVALID_REQUEST");
+        if (request.Name.Length > 100)
+            return Result.Failure<PlanDto>("Plan name must not exceed 100 characters.", "INVALID_REQUEST");
+
+        if (string.IsNullOrWhiteSpace(request.Slug))
+            return Result.Failure<PlanDto>("Slug is required.", "INVALID_REQUEST");
+        if (request.Slug.Length > 50)
+            return Result.Failure<PlanDto>("Slug must not exceed 50 characters.", "INVALID_REQUEST");
+        if (!System.Text.RegularExpressions.Regex.IsMatch(request.Slug, "^[a-z0-9]+(?:-[a-z0-9]+)*$"))
+            return Result.Failure<PlanDto>("Slug must be lowercase alphanumeric characters and hyphens only (e.g., 'gold-tier').", "INVALID_REQUEST");
+
+        if (string.IsNullOrWhiteSpace(request.Tier))
+            return Result.Failure<PlanDto>("Tier is required.", "INVALID_REQUEST");
+        if (request.Tier.Length > 20)
+            return Result.Failure<PlanDto>("Tier must not exceed 20 characters.", "INVALID_REQUEST");
+
+        if (string.IsNullOrWhiteSpace(request.Currency))
+            return Result.Failure<PlanDto>("Currency is required.", "INVALID_REQUEST");
+        var currency = request.Currency.ToUpperInvariant().Trim();
+        if (currency.Length != 3)
+            return Result.Failure<PlanDto>("Currency must be a 3-character ISO code.", "INVALID_REQUEST");
+
+        if (string.IsNullOrWhiteSpace(request.BillingCycle))
+            return Result.Failure<PlanDto>("Billing cycle is required.", "INVALID_REQUEST");
+        var billingCycle = request.BillingCycle.ToLowerInvariant().Trim();
+        if (billingCycle != "monthly" && billingCycle != "semiannual" && billingCycle != "yearly")
+            return Result.Failure<PlanDto>("Billing cycle must be 'monthly', 'semiannual', or 'yearly'.", "INVALID_REQUEST");
+
+        // Stripe Minimum Charge Limits Validation
+        decimal minPrice = currency switch
+        {
+            "USD" => 0.50m,
+            "EUR" => 0.50m,
+            "GBP" => 0.30m,
+            "SGD" => 0.50m,
+            "CAD" => 0.50m,
+            "AUD" => 0.50m,
+            "VND" => 15000m,
+            "JPY" => 50m,
+            _ => 0.50m // Default minimum
+        };
+
+        if (request.Price < minPrice)
+            return Result.Failure<PlanDto>($"Price for {currency} must be at least {minPrice} due to Stripe payment constraints.", "INVALID_REQUEST");
+
+        if (request.CreditsPerCycle < 0)
+            return Result.Failure<PlanDto>("Credits per cycle must be non-negative.", "INVALID_REQUEST");
+
+        if (request.MaxParticipants < 2)
+            return Result.Failure<PlanDto>("Max participants must be at least 2.", "INVALID_REQUEST");
+
+        if (request.MaxLanguages < 1)
+            return Result.Failure<PlanDto>("Max languages must be at least 1.", "INVALID_REQUEST");
+
+        if (request.SortOrder < 0)
+            return Result.Failure<PlanDto>("Sort order must be non-negative.", "INVALID_REQUEST");
+
+        if (!string.IsNullOrWhiteSpace(request.Features))
+        {
+            var trimmedFeatures = request.Features.Trim();
+            if (!((trimmedFeatures.StartsWith("{") && trimmedFeatures.EndsWith("}")) || (trimmedFeatures.StartsWith("[") && trimmedFeatures.EndsWith("]"))))
+            {
+                return Result.Failure<PlanDto>("Features must be a valid JSON string.", "INVALID_REQUEST");
+            }
+        }
+
+        return Result.Success<PlanDto>(null!);
+    }
+
     public async Task<Result<PlanDto>> CreatePlanAsync(
         PlanRequest request, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(request.Name))
-                return Result.Failure<PlanDto>("Plan name is required.", "INVALID_REQUEST");
-
-            if (string.IsNullOrWhiteSpace(request.Slug))
-                return Result.Failure<PlanDto>("Slug is required.", "INVALID_REQUEST");
-
-            if (request.Price < 0)
-                return Result.Failure<PlanDto>("Price must be non-negative.", "INVALID_REQUEST");
-
-            if (request.CreditsPerCycle < 0)
-                return Result.Failure<PlanDto>("Credits per cycle must be non-negative.", "INVALID_REQUEST");
+            var validationResult = ValidatePlanRequest(request);
+            if (!validationResult.IsSuccess)
+                return validationResult;
 
             var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
             var existing = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
@@ -140,11 +204,9 @@ public class PlanService : IPlanService
             if (plan is null)
                 return Result.Failure<PlanDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
 
-            if (string.IsNullOrWhiteSpace(request.Name))
-                return Result.Failure<PlanDto>("Plan name is required.", "INVALID_REQUEST");
-
-            if (request.Price < 0)
-                return Result.Failure<PlanDto>("Price must be non-negative.", "INVALID_REQUEST");
+            var validationResult = ValidatePlanRequest(request);
+            if (!validationResult.IsSuccess)
+                return validationResult;
 
             var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
             if (plan.Slug != normalizedSlug)

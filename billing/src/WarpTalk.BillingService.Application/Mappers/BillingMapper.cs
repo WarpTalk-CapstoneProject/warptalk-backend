@@ -22,7 +22,8 @@ public static class BillingMapper
         plan.GlossaryEnabled,
         plan.DedicatedGpu,
         plan.Features,
-        plan.SortOrder
+        plan.SortOrder,
+        plan.IsActive
     );
 
     public static Plan ToEntity(this PlanRequest request) => new()

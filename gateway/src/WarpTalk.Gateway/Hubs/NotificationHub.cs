@@ -37,7 +37,11 @@ public class NotificationHub : Hub
         await Groups.AddToGroupAsync(Context.ConnectionId, UserGroupName(userId));
 
         // Automatically subscribe admins to the admin:billing group for real-time monitoring
-        if (Context.User != null && Context.User.IsInRole("Admin"))
+        var isSystemAdmin = (Context.User != null && Context.User.IsInRole("Admin")) || 
+                            Context.User?.FindFirst("role")?.Value == "Admin" ||
+                            Context.User?.FindFirst(ClaimTypes.Role)?.Value == "Admin";
+
+        if (isSystemAdmin)
         {
             await Groups.AddToGroupAsync(Context.ConnectionId, "admin:billing");
             _logger.LogInformation("NotificationHub: Admin user {UserId} connected and joined admin:billing group", userId);

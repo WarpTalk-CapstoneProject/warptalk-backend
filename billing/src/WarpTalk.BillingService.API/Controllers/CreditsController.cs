@@ -177,11 +177,9 @@ public class CreditsController : ControllerBase
         [FromServices] IUnitOfWork unitOfWork,
         CancellationToken cancellationToken)
     {
-        var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                    ?? User.FindFirst("email")?.Value;
-        var isSystemAdmin = email == "admin@warptalk.com" || 
-                            User.IsInRole("Admin") || 
-                            User.FindFirst("role")?.Value == "Admin";
+        var isSystemAdmin = User.IsInRole("Admin") || 
+                            User.FindFirst("role")?.Value == "Admin" ||
+                            User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value == "Admin";
 
         if (!isSystemAdmin)
         {

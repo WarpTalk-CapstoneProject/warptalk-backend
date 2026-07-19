@@ -85,7 +85,7 @@ public class InvoiceService : IInvoiceService
                 i => true, // All invoices
                 skip, size,
                 q => q.OrderByDescending(i => i.CreatedAt),
-                includes: new System.Linq.Expressions.Expression<Func<Invoice, object>>[] { i => i.Payment },
+                includes: new System.Linq.Expressions.Expression<Func<Invoice, object>>[] { i => i.Payment, i => i.Payment.Subscription },
                 cancellationToken: cancellationToken);
 
             var total = await _unitOfWork.InvoiceRepository.CountAsync(

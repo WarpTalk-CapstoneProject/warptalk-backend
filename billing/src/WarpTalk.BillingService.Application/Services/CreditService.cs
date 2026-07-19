@@ -254,20 +254,21 @@ public class CreditService : ICreditService
     {
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
                 s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
                 cancellationToken);
 
-            if (sub is null)
+            var subIds = subs.Select(s => s.Id).ToList();
+            if (!subIds.Any())
                 return Result.Failure<PagedResult<CreditTransactionDto>>(
-                    "No subscription found for this workspace.",
+                    "No subscriptions found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
             var size = pageSize > 0 ? pageSize : 20;
             var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
 
             System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t =>
-                t.SubscriptionId == sub.Id &&
+                subIds.Contains(t.SubscriptionId) &&
                 (string.IsNullOrEmpty(type) || t.Type == type) &&
                 (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
                 (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&

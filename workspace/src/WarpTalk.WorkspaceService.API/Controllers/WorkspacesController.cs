@@ -59,11 +59,9 @@ public class WorkspacesController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                    ?? User.FindFirst("email")?.Value;
-        var isSystemAdmin = email == "admin@warptalk.com" || 
-                            User.IsInRole("Admin") || 
-                            User.FindFirst("role")?.Value == "Admin";
+        var isSystemAdmin = User.IsInRole("Admin") || 
+                            User.FindFirst("role")?.Value == "Admin" ||
+                            User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value == "Admin";
 
         var result = await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, isSystemAdmin, ct);
         if (!result.IsSuccess)

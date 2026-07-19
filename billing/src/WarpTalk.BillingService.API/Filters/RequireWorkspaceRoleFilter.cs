@@ -38,11 +38,9 @@ public class RequireWorkspaceRoleFilter : IAsyncActionFilter
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         // System Admin bypasses all workspace-specific role checks
-        var email = context.HttpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                    ?? context.HttpContext.User.FindFirst("email")?.Value;
-        var isSystemAdmin = email == "admin@warptalk.com" || 
-                            context.HttpContext.User.IsInRole("Admin") || 
-                            context.HttpContext.User.FindFirst("role")?.Value == "Admin";
+        var isSystemAdmin = context.HttpContext.User.IsInRole("Admin") || 
+                            context.HttpContext.User.FindFirst("role")?.Value == "Admin" ||
+                            context.HttpContext.User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value == "Admin";
 
         if (isSystemAdmin)
         {
