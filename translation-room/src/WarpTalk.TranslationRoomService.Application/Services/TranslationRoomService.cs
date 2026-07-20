@@ -29,15 +29,17 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomParticipantRepository _participantRepository;
     private readonly ILanguagePolicy _languagePolicy;
     private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
+    private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, WarpTalk.Shared.Interfaces.IEmailService emailService, ILogger<TranslationRoomService> logger, IOptions<AppSettings>? appSettings = null)
+    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, ITranslationRoomAudioRouteService audioRouteService, WarpTalk.Shared.Interfaces.IEmailService emailService, ILogger<TranslationRoomService> logger, IOptions<AppSettings>? appSettings = null)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
         _audioRouteEventProcessor = audioRouteEventProcessor;
+        _audioRouteService = audioRouteService;
         _emailService = emailService;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
@@ -395,13 +397,15 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
-            // A translation room needs at least one source->target audio route configured before
-            // it can start — otherwise no one's speech would ever be routed anywhere. This was a
-            // known gap: TranslationRoomAudioRouteService.GenerateRoutesAsync rebuilds routes on
-            // demand, but nothing previously stopped Start from succeeding with zero routes.
-            var routes = await _unitOfWork.TranslationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(translationRoomId, ct);
-            if (routes == null || routes.Count == 0)
-                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorNoAudioRoutesConfigured, ErrorCodes.InvalidState);
+            // (Re)generate audio routes for the participants currently in the room so speech is
+            // routed correctly once translation starts. Routes form a full mesh between
+            // participants whose languages differ, so a room with only the host — or where
+            // everyone shares a language — legitimately has zero routes and that must NOT block
+            // Start (additional routes are generated as more participants join). Route generation
+            // is best-effort: a failure here should not prevent the host from opening the room.
+            var routeResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
+            if (!routeResult.IsSuccess)
+                _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
 
             translationRoom.Status = "IN_PROGRESS";
             translationRoom.StartedAt ??= DateTime.UtcNow;
