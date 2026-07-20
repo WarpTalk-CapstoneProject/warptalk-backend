@@ -80,7 +80,7 @@ Parallel audio routing: each participant hears a dedicated, voice-cloned stream 
 
 ---
 
-## Subscription Plans (Host-pays Model via PayOS)
+## Subscription Plans (Host-pays Model via Stripe)
 
 | Tier | Price | Credits | Key Features |
 |------|-------|---------|-------------|

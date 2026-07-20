@@ -21,7 +21,7 @@ public class WorkspaceCacheService : IWorkspaceCacheService
         var cacheKey = $"{ActiveWorkspaceKeyPrefix}{userId}";
         var roleKey = $"{ActiveWorkspaceKeyPrefix}{userId}:role";
         var membershipTypeKey = $"{ActiveWorkspaceKeyPrefix}{userId}:membership_type";
-
+        
         var options = new DistributedCacheEntryOptions
         {
             AbsoluteExpirationRelativeToNow = TimeSpan.FromDays(7)
@@ -35,7 +35,7 @@ public class WorkspaceCacheService : IWorkspaceCacheService
     {
         var cacheKey = $"{ActiveWorkspaceKeyPrefix}{userId}";
         var cachedValue = await _cache.GetStringAsync(cacheKey, ct);
-
+        
         if (!string.IsNullOrEmpty(cachedValue) && Guid.TryParse(cachedValue, out var workspaceId))
         {
             return workspaceId;

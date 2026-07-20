@@ -37,17 +37,4 @@ public static class TranscriptMapper
         );
     }
 
-    public static TranscriptTranslationDto ToDto(this TranscriptTranslation entity)
-    {
-        return new TranscriptTranslationDto(
-            entity.Id,
-            entity.SegmentId,
-            entity.TargetLanguage,
-            entity.TranslatedText,
-            entity.TranslatorModel,
-            entity.Confidence,
-            entity.IsRetranslated,
-            entity.LatencyMs
-        );
-    }
 }

@@ -30,8 +30,8 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
-        IUnitOfWork unitOfWork,
-        IWorkspaceCacheService workspaceCache,
+        IUnitOfWork unitOfWork, 
+        IWorkspaceCacheService workspaceCache, 
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher)
@@ -181,24 +181,19 @@ public class WorkspaceService : IWorkspaceService
         }
     }
 
-    public async Task<Result<WorkspaceDto>> GetWorkspaceByIdAsync(Guid workspaceId, Guid userId, bool bypassMemberCheck = false, CancellationToken ct = default)
+    public async Task<Result<WorkspaceDto>> GetWorkspaceByIdAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try
         {
-            string roleName = "Member";
-            if (!bypassMemberCheck)
-            {
-                var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                    m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null,
-                    "",
-                    ct
-                );
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null,
+                "",
+                ct
+            );
 
-                if (member == null)
-                {
-                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
-                }
-                roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            if (member == null)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
@@ -207,6 +202,7 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             return Result.Success(workspace.ToDto(roleName));
         }
         catch (Exception ex)
@@ -363,7 +359,7 @@ public class WorkspaceService : IWorkspaceService
 
             workspace.DeletedAt = DateTime.UtcNow;
             workspace.UpdatedBy = userId;
-
+            
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _unitOfWork.SaveChangesAsync(ct);
 

@@ -34,7 +34,7 @@ public class TranscriptCorrectionsController : ControllerBase
             return Unauthorized();
 
         var result = await _correctionService.SubmitCorrectionAsync(transcriptId, segmentId, userId, request, cancellationToken);
-
+        
         if (!result.IsSuccess)
         {
             return result.ErrorCode switch
@@ -60,7 +60,7 @@ public class TranscriptCorrectionsController : ControllerBase
             return Unauthorized();
 
         var result = await _correctionService.GetCorrectionsBySegmentIdAsync(transcriptId, segmentId, userId, cancellationToken);
-
+        
         if (!result.IsSuccess)
         {
             return result.ErrorCode switch

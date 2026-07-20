@@ -29,7 +29,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
 
     public TranslationRoomAudioRouteService(
-        IUnitOfWork unitOfWork,
+        IUnitOfWork unitOfWork, 
         IAudioRouteCacheService audioRouteCacheService,
         IAudioRouteEventProcessor eventProcessor,
         ILanguagePolicy languagePolicy,
@@ -86,8 +86,8 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
                     if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue; // Direct audio routing handles same languages bypasses MT
 
-                    var existingRoute = existingRoutes.FirstOrDefault(r =>
-                        r.SourceParticipantId == speaker.Id &&
+                    var existingRoute = existingRoutes.FirstOrDefault(r => 
+                        r.SourceParticipantId == speaker.Id && 
                         r.TargetParticipantId == listener.Id);
 
                     if (existingRoute != null)

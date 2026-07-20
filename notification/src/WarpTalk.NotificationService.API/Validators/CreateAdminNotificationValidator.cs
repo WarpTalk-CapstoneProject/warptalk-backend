@@ -9,7 +9,7 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
 {
     public CreateAdminNotificationValidator()
     {
-
+       
         RuleFor(x => x.Title)
             .NotEmpty()
             .MaximumLength(255);
@@ -20,20 +20,20 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
             .WithErrorCode(NotificationConstants.ErrorHtmlNotAllowed)
             .WithMessage("HTML tags are not allowed in notification content.");
 
-
+        
         RuleFor(x => x.Type)
             .NotEmpty()
-            .Must(type => type == NotificationConstants.TypePromotion ||
-                          type == NotificationConstants.TypeSystem ||
-                          type == NotificationConstants.TypeAnnouncement ||
+            .Must(type => type == NotificationConstants.TypePromotion || 
+                          type == NotificationConstants.TypeSystem || 
+                          type == NotificationConstants.TypeAnnouncement || 
                           type == NotificationConstants.TypeMaintenance)
             .WithMessage("Invalid notification type.");
 
-
+        
         RuleFor(x => x.TargetAudienceMode)
             .NotEmpty()
-            .Must(mode => mode == NotificationConstants.TargetModeBroadcast ||
-                          mode == NotificationConstants.TargetModeSegment ||
+            .Must(mode => mode == NotificationConstants.TargetModeBroadcast || 
+                          mode == NotificationConstants.TargetModeSegment || 
                           mode == NotificationConstants.TargetModeSpecificUsers)
             .WithMessage("Invalid target audience mode.");
 
@@ -65,7 +65,7 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
         {
             RuleFor(x => x.DowntimeStart)
                 .NotNull().WithMessage("DowntimeStart is required for maintenance notifications.");
-
+            
             RuleFor(x => x.DowntimeEnd)
                 .NotNull().WithMessage("DowntimeEnd is required for maintenance notifications.");
 

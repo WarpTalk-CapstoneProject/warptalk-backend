@@ -40,7 +40,7 @@ public class NotificationStreamConsumerService : BackgroundService
     {
         var db = _redis.GetDatabase();
 
-
+       
         try
         {
             await db.StreamCreateConsumerGroupAsync(StreamName, ConsumerGroupName, "0-0", createStream: true);
@@ -59,10 +59,10 @@ public class NotificationStreamConsumerService : BackgroundService
             {
                 // 2. Read new messages for the consumer group. ">" means read undelivered messages.
                 var messages = await db.StreamReadGroupAsync(
-                    StreamName,
-                    ConsumerGroupName,
-                    ConsumerName,
-                    position: ">",
+                    StreamName, 
+                    ConsumerGroupName, 
+                    ConsumerName, 
+                    position: ">", 
                     count: 1); // Process 1 chunk at a time
 
                 if (messages.Length == 0)
@@ -139,7 +139,7 @@ public class NotificationStreamConsumerService : BackgroundService
         // 4. Bulk Insert
         await unitOfWork.NotificationMessageRepository.AddRangeAsync(messagesToInsert);
         await unitOfWork.SaveChangesAsync();
-
+        
         _logger.LogInformation("Saved {Count} notification messages to inbox for Notification {AdminNotifId}.", messagesToInsert.Count, adminNotif.Id);
 
         // 5. Fan-out via Redis Pub/Sub for Realtime Delivery
@@ -149,7 +149,7 @@ public class NotificationStreamConsumerService : BackgroundService
 
             await db.PublishAsync(RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel), JsonSerializer.Serialize(realtimeMsg));
         }
-
+        
         _logger.LogInformation("Published {Count} realtime messages to Gateway.", messagesToInsert.Count);
     }
 }

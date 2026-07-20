@@ -156,7 +156,7 @@ public class AuthService : IAuthService
             // 1. Check rate limit window (Max 5 requests per 15 minutes)
             var windowKey = $"resend:window:{userId}";
             var attemptsString = await _cache.GetStringAsync(windowKey, ct);
-
+            
             int attemptsCount = 0;
             DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
 

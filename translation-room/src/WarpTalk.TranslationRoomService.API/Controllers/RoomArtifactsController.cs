@@ -29,7 +29,7 @@ public class RoomArtifactsController : ControllerBase
         if (userId == null) return Unauthorized();
 
         var result = await _artifactService.GetArtifactDownloadUrlAsync(id, userId.Value, ct);
-
+        
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));

@@ -19,19 +19,19 @@ public class UnitOfWork : IUnitOfWork
         _repositories = new Dictionary<Type, object>();
     }
 
-    public INotificationMessageRepository NotificationMessageRepository =>
+    public INotificationMessageRepository NotificationMessageRepository => 
         _notificationMessageRepository ??= new NotificationMessageRepository(_context);
 
-    public INotificationPreferenceRepository NotificationPreferenceRepository =>
+    public INotificationPreferenceRepository NotificationPreferenceRepository => 
         _notificationPreferenceRepository ??= new NotificationPreferenceRepository(_context);
 
-    public INotificationTemplateRepository NotificationTemplateRepository =>
+    public INotificationTemplateRepository NotificationTemplateRepository => 
         _notificationTemplateRepository ??= new NotificationTemplateRepository(_context);
 
-    public IPushSubscriptionRepository PushSubscriptionRepository =>
+    public IPushSubscriptionRepository PushSubscriptionRepository => 
         _pushSubscriptionRepository ??= new PushSubscriptionRepository(_context);
 
-    public IAdminNotificationRepository AdminNotificationRepository =>
+    public IAdminNotificationRepository AdminNotificationRepository => 
         _adminNotificationRepository ??= new AdminNotificationRepository(_context);
 
     public IGenericRepository<T> Repository<T>() where T : class

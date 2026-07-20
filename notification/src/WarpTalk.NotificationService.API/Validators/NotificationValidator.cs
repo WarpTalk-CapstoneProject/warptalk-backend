@@ -9,7 +9,7 @@ public static class NotificationValidator
 {
     // Matches specific known HTML tags to distinguish from normal text (e.g., '1 < 2')
     private static readonly Regex HtmlRegex = new Regex(
-        @"<\/?\s*(?:script|iframe|object|embed|svg|img|base|a|div|span|p|b|i|strong|em|h[1-6]|ul|ol|li|table|tr|td|th|tbody|thead|tfoot|style|link|meta|head|title|body|html|br|hr)(?:\s+[^>]*)?>",
+        @"<\/?\s*(?:script|iframe|object|embed|svg|img|base|a|div|span|p|b|i|strong|em|h[1-6]|ul|ol|li|table|tr|td|th|tbody|thead|tfoot|style|link|meta|head|title|body|html|br|hr)(?:\s+[^>]*)?>", 
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private class PayloadSchema
@@ -98,11 +98,11 @@ public static class NotificationValidator
                 {
                     if (valueKind != expectedKindRequired && valueKind != JsonValueKind.Null)
                         return Result.Failure(NotificationConstants.ErrorInvalidFieldType, ErrorCodes.ValidationError);
-
+                        
                     // Check for HTML in string values
                     if (valueKind == JsonValueKind.String && HasHtml(prop.Value.GetString()!))
                         return Result.Failure(NotificationConstants.ErrorHtmlNotAllowed, ErrorCodes.ValidationError);
-
+                        
                     foundRequired.Add(key);
                 }
                 // Check against Optional

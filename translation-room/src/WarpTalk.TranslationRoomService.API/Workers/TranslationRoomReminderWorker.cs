@@ -26,7 +26,7 @@ public class TranslationRoomReminderWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Translation Room Reminder Worker started.");
-
+        
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -38,12 +38,12 @@ public class TranslationRoomReminderWorker : BackgroundService
                 // Find rooms scheduled in the next 15 minutes
                 var now = DateTime.UtcNow;
                 var threshold = now.AddMinutes(15);
-
+                
                 var upcomingRooms = await unitOfWork.TranslationRoomRepository.FindAsync(
-                    r => r.Status == "SCHEDULED" &&
-                         r.ScheduledAt.HasValue &&
-                         r.ScheduledAt.Value > now &&
-                         r.ScheduledAt.Value <= threshold,
+                    r => r.Status == "SCHEDULED" && 
+                         r.ScheduledAt.HasValue && 
+                         r.ScheduledAt.Value > now && 
+                         r.ScheduledAt.Value <= threshold, 
                     ct: stoppingToken);
 
                 foreach (var room in upcomingRooms)
@@ -55,10 +55,10 @@ public class TranslationRoomReminderWorker : BackgroundService
                     {
                         // Fetch participants
                         var participants = await unitOfWork.TranslationRoomParticipantRepository.FindAsync(
-                            p => p.TranslationRoomId == room.Id,
+                            p => p.TranslationRoomId == room.Id, 
                             ct: stoppingToken);
 
-                        var meetingLink = $"http://localhost:3000/room/{room.TranslationRoomCode}";
+                        var meetingLink = $"http://localhost:3000/room/{room.TranslationRoomCode}"; 
 
                         // For UAT, we send it to participants. In a real system, we might have InvitedEmails saved.
                         foreach (var participant in participants)

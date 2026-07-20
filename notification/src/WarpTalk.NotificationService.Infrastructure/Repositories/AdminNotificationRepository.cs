@@ -29,7 +29,7 @@ public class AdminNotificationRepository : IAdminNotificationRepository
     }
 
     public async Task<(IEnumerable<AdminNotification> Items, int TotalCount)> GetPaginatedAsync(
-        AdminNotificationFilter filter,
+        AdminNotificationFilter filter, 
         CancellationToken ct = default)
     {
         var query = _context.AdminNotifications.AsQueryable();
@@ -67,7 +67,7 @@ public class AdminNotificationRepository : IAdminNotificationRepository
                 System.Linq.Queryable.Skip(
                     System.Linq.Queryable.OrderByDescending(query, n => n.CreatedAt),
                     (filter.Page - 1) * filter.PageSize
-                ),
+                ), 
                 filter.PageSize
             ), ct);
 

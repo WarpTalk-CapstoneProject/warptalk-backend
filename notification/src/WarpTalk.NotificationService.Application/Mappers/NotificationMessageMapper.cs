@@ -58,14 +58,14 @@ public static class NotificationMessageMapper
     public static NotificationMessageDto ToDto(NotificationMessage n)
     {
         return new NotificationMessageDto(
-            n.Id,
-            n.Type,
-            n.Title,
-            n.Content,
-            n.ActionUrl,
-            n.PayloadJson,
-            n.IsRead,
-            n.ReadAt,
+            n.Id, 
+            n.Type, 
+            n.Title, 
+            n.Content, 
+            n.ActionUrl, 
+            n.PayloadJson, 
+            n.IsRead, 
+            n.ReadAt, 
             n.CreatedAt
         );
     }

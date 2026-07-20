@@ -130,7 +130,7 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         // Since we are only modifying the Workspace module, we simulate the active rooms check.
         // Once TranslationRoomService has an active rooms count endpoint, we would call it.
         // For now, we allow the request to pass.
-
+        
         return new ValidateMeetingCreationResponse
         {
             IsAllowed = true,

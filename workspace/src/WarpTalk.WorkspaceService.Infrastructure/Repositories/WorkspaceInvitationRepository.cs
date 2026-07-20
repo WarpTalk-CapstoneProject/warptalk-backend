@@ -29,11 +29,11 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
     public async Task<WorkspaceInvitation?> GetPendingByEmailAsync(Guid workspaceId, string email, CancellationToken ct = default)
     {
         return await _dbSet
-            .FirstOrDefaultAsync(i =>
-                i.WorkspaceId == workspaceId &&
-                i.Email == email &&
-                i.Status == InvitationStatus.PENDING.ToString() &&
-                i.ExpiresAt > DateTime.UtcNow,
+            .FirstOrDefaultAsync(i => 
+                i.WorkspaceId == workspaceId && 
+                i.Email == email && 
+                i.Status == InvitationStatus.PENDING.ToString() && 
+                i.ExpiresAt > DateTime.UtcNow, 
                 ct);
     }
 

@@ -33,7 +33,7 @@ public static class WorkspaceConstants
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
-
+        
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";
         public const string CannotTransferToExternal = "Cannot transfer ownership to an external member.";

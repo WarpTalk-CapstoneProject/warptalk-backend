@@ -56,36 +56,28 @@ public class FractionalBillingWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to initialize Redis Stream consumer group for FractionalBillingWorker.");
+            _logger.LogWarning(ex, "Failed to initialize Redis Stream group for billing.");
         }
 
-        // Start background flushing loop
-        _ = Task.Run(() => FlushAccumulatedCreditsAsync(stoppingToken), stoppingToken);
+        // Start a periodic flush task
+        _ = Task.Run(() => FlushAccumulatedCreditsAsync(stoppingToken));
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 var entries = await db.StreamReadGroupAsync(
-                    StreamKey,
-                    ConsumerGroupName,
-                    _consumerName,
-                    count: 20,
-                    noAck: false);
+                    StreamKey, ConsumerGroupName, _consumerName, ">", count: 50);
 
                 foreach (var entry in entries)
                 {
                     string workspaceId = string.Empty;
-                    string roomId = string.Empty;
-                    string userId = string.Empty;
                     int startMs = 0;
                     int endMs = 0;
 
                     foreach (var value in entry.Values)
                     {
                         if (value.Name == "workspace_id") workspaceId = value.Value.ToString();
-                        if (value.Name == "room_id") roomId = value.Value.ToString();
-                        if (value.Name == "user_id") userId = value.Value.ToString();
                         if (value.Name == "start_ms") int.TryParse(value.Value.ToString(), out startMs);
                         if (value.Name == "end_ms") int.TryParse(value.Value.ToString(), out endMs);
                     }

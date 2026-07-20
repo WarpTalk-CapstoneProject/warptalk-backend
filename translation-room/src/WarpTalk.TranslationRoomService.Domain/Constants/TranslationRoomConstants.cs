@@ -3,11 +3,11 @@ namespace WarpTalk.TranslationRoomService.Domain.Constants;
 public static class TranslationRoomConstants
 {
     // Terminal Statuses
-    public static readonly string[] TerminalStatuses = new[]
-    {
-        "ENDED",
-        "CANCELLED",
-        "EXPIRED"
+    public static readonly string[] TerminalStatuses = new[] 
+    { 
+        "ENDED", 
+        "CANCELLED", 
+        "EXPIRED" 
     };
 
 
@@ -17,7 +17,7 @@ public static class TranslationRoomConstants
     public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
     public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
-
+    
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";
     public const string ErrorInvalidTransitionToInProgress = "Room must be WAITING or PAUSED to start or resume.";
@@ -27,6 +27,7 @@ public static class TranslationRoomConstants
     public const string ErrorInvalidTransitionToCancelled = "Room must be SCHEDULED or WAITING to cancel.";
     public const string ErrorInvalidTransitionToExpired = "Room must be SCHEDULED or WAITING to expire.";
     public const string ErrorNoAudioRoutesConfigured = "The room needs at least one source/target audio route configured before it can start.";
+        
     public const string ErrorFailedToCreateRoomTitle = "Failed to create room";
     public const string ErrorFailedToJoinRoomTitle = "Failed to join translation room";
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";

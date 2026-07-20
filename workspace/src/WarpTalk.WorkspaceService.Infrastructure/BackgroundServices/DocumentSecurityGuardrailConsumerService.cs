@@ -168,7 +168,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}",
+            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}", 
                 documentId, document.IsSensitive, document.AiEligible);
         }
         catch (Exception ex)

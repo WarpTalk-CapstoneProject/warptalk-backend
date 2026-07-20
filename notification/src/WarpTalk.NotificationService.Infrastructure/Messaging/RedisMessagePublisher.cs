@@ -19,7 +19,7 @@ public class RedisMessagePublisher : IMessagePublisher
     {
         var db = _redis.GetDatabase();
         var messageJson = JsonSerializer.Serialize(message);
-
+        
         // We use StreamAddAsync for Fan-out pattern with Redis Streams
         await db.StreamAddAsync(topic, "payload", messageJson);
     }

@@ -287,7 +287,7 @@ public class TranslationRoomsController : ControllerBase
 
         return CreatedAtAction(nameof(GetMyFeedback), new { id }, result.Value!);
     }
-    //Chua co enpoint PATCH nen tach rieng settings
+//Chua co enpoint PATCH nen tach rieng settings
     [HttpPut("{id}/settings")]
     public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)
     {

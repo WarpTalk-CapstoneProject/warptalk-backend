@@ -4,7 +4,7 @@ public static class NotificationConstants
 {
     // General
     public const string DefaultNotificationType = TypeSystem;
-
+    
     // Notification Types
     public const string TypeSystemAlert = "SYSTEM_ALERT";
     public const string TypeMeetingInvite = "MEETING_INVITE";

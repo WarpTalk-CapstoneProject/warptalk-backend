@@ -20,9 +20,9 @@ public class TranslationRoomGrpcService : ITranslationRoomGrpcService
     {
         try
         {
-            var response = await _client.GetTranslationRoomByIdAsync(new GetTranslationRoomRequest
-            {
-                Id = translationRoomId.ToString()
+            var response = await _client.GetTranslationRoomByIdAsync(new GetTranslationRoomRequest 
+            { 
+                Id = translationRoomId.ToString() 
             });
             return Result.Success(response);
         }

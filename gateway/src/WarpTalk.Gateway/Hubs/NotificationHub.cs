@@ -17,7 +17,7 @@ public class NotificationHub : Hub
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
 
     public NotificationHub(
-        IConnectionManager connectionManager,
+        IConnectionManager connectionManager, 
         ILogger<NotificationHub> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
     {
@@ -36,31 +36,11 @@ public class NotificationHub : Hub
         // Automatically subscribe to the user's personal notification group
         await Groups.AddToGroupAsync(Context.ConnectionId, UserGroupName(userId));
 
-        // Automatically subscribe admins to the admin:billing group for real-time monitoring
-        var isSystemAdmin = (Context.User != null && Context.User.IsInRole("Admin")) || 
-                            Context.User?.FindFirst("role")?.Value == "Admin" ||
-                            Context.User?.FindFirst(ClaimTypes.Role)?.Value == "Admin";
-
-        if (isSystemAdmin)
-        {
-            await Groups.AddToGroupAsync(Context.ConnectionId, "admin:billing");
-            _logger.LogInformation("NotificationHub: Admin user {UserId} connected and joined admin:billing group", userId);
-        }
-
         _logger.LogInformation(
             "NotificationHub: User {UserId} connected (ConnectionId: {ConnectionId})",
             userId, Context.ConnectionId);
 
         await base.OnConnectedAsync();
-    }
-
-    public async Task JoinWorkspace(string workspaceId)
-    {
-        if (!string.IsNullOrEmpty(workspaceId))
-        {
-            await Groups.AddToGroupAsync(Context.ConnectionId, $"workspace:{workspaceId}");
-            _logger.LogInformation("NotificationHub: Connection {ConnectionId} joined workspace group workspace:{WorkspaceId}", Context.ConnectionId, workspaceId);
-        }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
@@ -79,7 +59,7 @@ public class NotificationHub : Hub
 
     // ── Server Methods (Client → Server) ──────────────────
 
-
+    
     public async Task MarkAsRead(Guid notificationId)
     {
         var userId = GetUserId();
@@ -118,7 +98,7 @@ public class NotificationHub : Hub
         }
     }
 
-
+    
     public async Task MarkAllAsRead()
     {
         var userId = GetUserId();

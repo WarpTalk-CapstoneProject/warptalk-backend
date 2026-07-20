@@ -80,7 +80,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                 foreach (var stream in streamKeys)
                 {
                     var messages = await db.StreamReadGroupAsync(stream, ConsumerGroup, _consumerName, count: 10);
-
+                    
                     if (messages.Length > 0)
                     {
                         foreach (var message in messages)
@@ -102,7 +102,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                             {
                                 success = true; // Unknown stream, acknowledge to ignore
                             }
-
+                            
                             if (success)
                             {
                                 await db.StreamAcknowledgeAsync(stream, ConsumerGroup, message.Id);
@@ -133,7 +133,7 @@ public class TranscriptRedisConsumerService : BackgroundService
         }
 
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
-
+        
         if (!Guid.TryParse(values.GetValueOrDefault("segment_id"), out var segmentId) ||
             !Guid.TryParse(values.GetValueOrDefault("speaker_id"), out var speakerId))
         {

@@ -77,11 +77,11 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
             var isDomainVerified = await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-                vd => vd.WorkspaceId == workspaceId
-                      && vd.Domain.ToLower() == domain.ToLower()
-                      && vd.Status == "verified"
-                      && vd.VerifiedAt != null
-                      && vd.RevokedAt == null,
+                vd => vd.WorkspaceId == workspaceId 
+                      && vd.Domain.ToLower() == domain.ToLower() 
+                      && vd.Status == "verified" 
+                      && vd.VerifiedAt != null 
+                      && vd.RevokedAt == null, 
                 ct);
 
             if (membershipTypeEnum == MembershipType.Internal)
@@ -127,7 +127,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             await _unitOfWork.SaveChangesAsync(ct);
             string emailLanguage = WorkspaceConstants.DefaultWorkspaceLanguage;
             var existingUser = await _authIdentity.GetUserByEmailAsync(request.Email, ct);
-
+            
             if (existingUser != null && !string.IsNullOrWhiteSpace(existingUser.PreferredLanguage))
             {
                 emailLanguage = existingUser.PreferredLanguage;
@@ -155,7 +155,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         {
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
-
+            
             var isOwnerOrAdmin = false;
             if (member != null)
             {
@@ -169,7 +169,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var (items, totalCount) = await _unitOfWork.WorkspaceInvitationRepository.GetInvitationsByWorkspaceAsync(workspaceId, query.Page, query.PageSize, ct);
-
+            
             var dtos = new List<WorkspaceInvitationDto>();
             foreach (var invite in items)
             {
@@ -194,7 +194,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         {
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
-
+            
             var isOwnerOrAdmin = false;
             if (member != null)
             {
@@ -347,13 +347,13 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             var userDomain = emailAddress.Domain;
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
             var isDomainVerified = await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-                vd => vd.WorkspaceId == invitation.WorkspaceId
-                      && vd.Domain.ToLower() == userDomain.ToLower()
-                      && vd.Status == "verified"
-                      && vd.VerifiedAt != null
-                      && vd.RevokedAt == null,
+                vd => vd.WorkspaceId == invitation.WorkspaceId 
+                      && vd.Domain.ToLower() == userDomain.ToLower() 
+                      && vd.Status == "verified" 
+                      && vd.VerifiedAt != null 
+                      && vd.RevokedAt == null, 
                 ct);
-
+            
             if (string.Equals(invitation.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
             {
                 if (config.RequireVerifiedDomainForInternal && !isDomainVerified)
@@ -375,7 +375,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
-
+            
             if (existingMember != null)
             {
                 return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);

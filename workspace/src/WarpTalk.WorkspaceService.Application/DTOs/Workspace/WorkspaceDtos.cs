@@ -12,22 +12,16 @@ public record CreateWorkspaceRequest(
 
 public record GetWorkspacesQuery
 {
-    private readonly int _page = 1;
-    private readonly int _pageSize = 10;
-
-    public int Page 
-    { 
-        get => _page; 
-        init => _page = value <= 0 ? 1 : value; 
-    }
-    
-    public int PageSize 
-    { 
-        get => _pageSize; 
-        init => _pageSize = value <= 0 ? 10 : value; 
-    }
-    
+    public int Page { get; init; }
+    public int PageSize { get; init; }
     public string? Search { get; init; }
+
+    public GetWorkspacesQuery(int Page = 1, int PageSize = 10, string? Search = null)
+    {
+        this.Page = Page <= 0 ? 1 : Page;
+        this.PageSize = PageSize <= 0 ? 10 : PageSize;
+        this.Search = Search;
+    }
 }
 
 public record WorkspaceDto(

@@ -8,4 +8,5 @@
   <Folder Name="/tests/">
     <Project Path="tests/WarpTalk.BillingService.Tests/WarpTalk.BillingService.Tests.csproj" />
   </Folder>
+  <Project Path="../shared/WarpTalk.Shared/WarpTalk.Shared.csproj" />
 </Solution>

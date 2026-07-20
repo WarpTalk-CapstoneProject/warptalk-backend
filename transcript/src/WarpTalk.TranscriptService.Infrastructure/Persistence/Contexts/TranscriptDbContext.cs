@@ -30,8 +30,6 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<TranscriptSegment> TranscriptSegments { get; set; }
 
-    public virtual DbSet<TranscriptTranslation> TranscriptTranslations { get; set; }
-
     public virtual DbSet<TranslationContent> TranslationContents { get; set; }
 
     public virtual DbSet<SegmentTranslationLink> SegmentTranslationLinks { get; set; }
@@ -386,43 +384,6 @@ public partial class TranscriptDbContext : DbContext
                 .HasForeignKey(e => e.MatchedSegmentId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("transcript_segments_matched_segment_id_fkey");
-        });
-
-        modelBuilder.Entity<TranscriptTranslation>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("transcript_translations_pkey");
-
-            entity.ToTable("transcript_translations", "transcript");
-
-            entity.HasIndex(e => new { e.SegmentId, e.TargetLanguage }, "transcript_translations_segment_id_target_language_idx").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.Confidence)
-                .HasPrecision(5, 4)
-                .HasColumnName("confidence");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.IsRetranslated).HasColumnName("is_retranslated");
-            entity.Property(e => e.LatencyMs).HasColumnName("latency_ms");
-            entity.Property(e => e.SegmentId).HasColumnName("segment_id");
-            entity.Property(e => e.TargetLanguage)
-                .HasMaxLength(15)
-                .HasColumnName("target_language");
-            entity.Property(e => e.TranslatedText).HasColumnName("translated_text");
-            entity.Property(e => e.TranslatorModel)
-                .HasMaxLength(100)
-                .HasColumnName("translator_model");
-            entity.Property(e => e.UpdatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("updated_at");
-
-            entity.HasOne(d => d.Segment).WithMany(p => p.TranscriptTranslations)
-                .HasForeignKey(d => d.SegmentId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("transcript_translations_segment_id_fkey");
         });
 
         modelBuilder.Entity<TranslationContent>(entity =>

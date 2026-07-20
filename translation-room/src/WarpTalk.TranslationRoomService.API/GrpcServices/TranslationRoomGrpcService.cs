@@ -51,7 +51,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         var participants = await _participantRepository.FindAsync(p => p.TranslationRoomId == parsedRoomId, "", context.CancellationToken);
 
         var response = new GetParticipantsByRoomIdResponse();
-
+        
         foreach (var p in participants)
         {
             response.Participants.Add(new Shared.Protos.Participant

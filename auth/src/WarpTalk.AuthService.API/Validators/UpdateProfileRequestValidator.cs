@@ -21,7 +21,7 @@ public class UpdateProfileRequestValidator : AbstractValidator<UpdateProfileRequ
             .Must(timezone =>
             {
                 if (timezone == null) return true;
-
+                
                 // UTC is a valid standard ID
                 if (timezone.Equals("UTC", System.StringComparison.OrdinalIgnoreCase)) return true;
 

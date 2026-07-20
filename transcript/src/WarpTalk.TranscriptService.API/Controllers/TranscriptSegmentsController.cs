@@ -24,8 +24,8 @@ public class TranscriptSegmentsController : ControllerBase
 
     [HttpGet]
     public async Task<ActionResult<PagedResult<TranscriptSegmentDto>>> GetSegments(
-        Guid transcriptId,
-        [FromQuery] int skip = 0,
+        Guid transcriptId, 
+        [FromQuery] int skip = 0, 
         [FromQuery] int take = 50,
         CancellationToken cancellationToken = default)
     {
@@ -34,7 +34,7 @@ public class TranscriptSegmentsController : ControllerBase
             return Unauthorized();
 
         var result = await _transcriptQueryService.GetSegmentsAsync(transcriptId, userId, skip, take, cancellationToken);
-
+        
         if (!result.IsSuccess)
         {
             return result.ErrorCode switch

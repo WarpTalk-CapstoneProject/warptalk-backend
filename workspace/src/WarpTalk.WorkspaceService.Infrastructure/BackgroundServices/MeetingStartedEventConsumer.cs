@@ -116,7 +116,7 @@ public class MeetingStartedEventConsumer : BackgroundService
         var db = _redis.GetDatabase();
         var cacheKey = $"meeting:{roomId}:context_snapshot";
         await db.StringSetAsync(cacheKey, snapshotTextBuilder.ToString(), TimeSpan.FromHours(24));
-
+        
         _logger.LogInformation("Generated AI Context Snapshot for room {RoomId}. Length: {Length}", roomId, snapshotTextBuilder.Length);
     }
 }

@@ -91,4 +91,6 @@ public partial class TranslationRoom
     public virtual ICollection<TranslationRoomParticipant> TranslationRoomParticipants { get; set; } = new List<TranslationRoomParticipant>();
 
     public virtual ICollection<TranslationRoomInvitation> TranslationRoomInvitations { get; set; } = new List<TranslationRoomInvitation>();
+
+    public virtual ICollection<TranslationRoomSession> TranslationRoomSessions { get; set; } = new List<TranslationRoomSession>();
 }

@@ -44,7 +44,5 @@ public partial class TranscriptSegment
 
     public virtual ICollection<TranscriptCorrection> TranscriptCorrections { get; set; } = new List<TranscriptCorrection>();
 
-    public virtual ICollection<TranscriptTranslation> TranscriptTranslations { get; set; } = new List<TranscriptTranslation>();
-
     public virtual ICollection<SegmentTranslationLink> SegmentTranslationLinks { get; set; } = new List<SegmentTranslationLink>();
 }

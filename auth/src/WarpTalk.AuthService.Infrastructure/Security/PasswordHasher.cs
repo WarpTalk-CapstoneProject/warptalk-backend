@@ -39,7 +39,7 @@ public class PasswordHasher : IPasswordHasher
         var algorithm = ParseAlgorithm(_settings.Algorithm);
         var salt = RandomNumberGenerator.GetBytes(_settings.SaltSize);
         var hash = Rfc2898DeriveBytes.Pbkdf2(password, salt, _settings.Iterations, algorithm, _settings.HashSize);
-
+        
         // Format: versionPrefix$algorithm$iterations$saltSize$saltBase64$hashBase64
         return $"{_settings.VersionPrefix}${_settings.Algorithm}${_settings.Iterations}${_settings.SaltSize}${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
     }
@@ -52,7 +52,7 @@ public class PasswordHasher : IPasswordHasher
         if (passwordHash.StartsWith(_settings.VersionPrefix + "$") || passwordHash.StartsWith("v2$") || passwordHash.StartsWith("custom-v3$"))
         {
             var parts = passwordHash.Split('$');
-
+            
             try
             {
                 int iterations;
@@ -104,7 +104,7 @@ public class PasswordHasher : IPasswordHasher
             {
                 var salt = Convert.FromBase64String(oldParts[0]);
                 var hash = Convert.FromBase64String(oldParts[1]);
-
+                
                 // Old default parameters: 100k iterations, SHA512, 32-byte hash
                 var inputHash = Rfc2898DeriveBytes.Pbkdf2(password, salt, 100_000, HashAlgorithmName.SHA512, 32);
                 return CryptographicOperations.FixedTimeEquals(inputHash, hash);

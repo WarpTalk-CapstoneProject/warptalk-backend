@@ -23,7 +23,7 @@ public class TranslationRoomHub : Hub
 
     // Track which connection belongs to which room
     private static readonly ConcurrentDictionary<string, string> _connectionToRoom = new();
-
+    
     // Track user active connection in a room: (RoomId_UserId) -> ConnectionId
     private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
 
@@ -71,7 +71,7 @@ public class TranslationRoomHub : Hub
 
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
-
+            
             await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
                 .SendAsync("ParticipantLeft", userId);
         }
@@ -102,10 +102,10 @@ public class TranslationRoomHub : Hub
             if (existingConnectionId != Context.ConnectionId)
             {
                 _logger.LogWarning("TranslationRoomHub: User {UserId} joined from a new device. Kicking old connection {OldConnectionId}.", userId, existingConnectionId);
-
+                
                 // Notify old connection
                 await Clients.Client(existingConnectionId).SendAsync("ForceDisconnected", "You have joined from another device.");
-
+                
                 // Remove old connection from group
                 await Groups.RemoveFromGroupAsync(existingConnectionId, groupName);
                 _connectionToRoom.TryRemove(existingConnectionId, out _);

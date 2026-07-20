@@ -8,8 +8,8 @@ public static class WorkspaceDocumentHelper
     // Helper method to get confidentiality level based on sensitivity
     public static string GetConfidentialityLevel(bool isSensitive)
     {
-        return isSensitive
-            ? WorkspaceDocumentConstants.SensitiveConfidentialityLevel
+        return isSensitive 
+            ? WorkspaceDocumentConstants.SensitiveConfidentialityLevel 
             : WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
     }
 

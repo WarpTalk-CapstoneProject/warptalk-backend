@@ -72,7 +72,7 @@ public class WorkspaceInvitationsController : ControllerBase
     [HttpGet("invitations/preview")]
     public async Task<IActionResult> PreviewInvitation([FromQuery] string token, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(token))
+        if (string.IsNullOrWhiteSpace(token)) 
             return BadRequest(new ApiErrorResponse("Token is required.", ErrorCodes.ValidationError));
 
         var result = await _workspaceInvitationService.PreviewInvitationAsync(token, ct);

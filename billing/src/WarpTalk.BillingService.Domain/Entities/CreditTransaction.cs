@@ -1,4 +1,5 @@
 using System;
+using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -16,7 +17,7 @@ public partial class CreditTransaction
 
     public int Amount { get; set; }
 
-    public string Type { get; set; } = null!;
+    public CreditTransactionType Type { get; set; }
 
     public string? Description { get; set; }
 
@@ -48,6 +49,14 @@ public partial class CreditTransaction
     public string? IdempotencyKey { get; set; }
 
     public Guid? TriggeredByParticipantId { get; set; }
+
+    /// <summary>
+    /// External TranscriptService transcript_segments.id, cross-service, no physical FK.
+    /// Populated by billing_worker (Python) for every charge_type — unlike ReferenceId/
+    /// ReferenceType (which store "translation_content"/"audio_dubbing" for non-STT charges),
+    /// this stays populated with the real segment id regardless of charge_type.
+    /// </summary>
+    public Guid? TranscriptSegmentId { get; set; }
 
     public DateTime CreatedAt { get; set; }
 

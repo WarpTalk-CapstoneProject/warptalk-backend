@@ -16,21 +16,21 @@ public enum AudioRoutingEventType
     outputs_linked,
     finalization_failed,
     finalization_abandoned,
-
+    
     stt_latency_high,
     stt_recovered,
     translation_latency_high,
     translation_recovered,
     tts_latency_high,
     tts_recovered,
-
+    
     voice_clone_unavailable,
     voice_clone_recovered,
-
+    
     // Billing integration events
     token_exhausted,
     token_recovered,
-
+    
     tts_unavailable,
     audio_unavailable,
     audio_recovered,

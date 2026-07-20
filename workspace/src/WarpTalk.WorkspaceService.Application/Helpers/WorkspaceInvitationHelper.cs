@@ -11,7 +11,7 @@ public static class WorkspaceInvitationHelper
 {
     public static async Task<bool> CheckAndHandleExpirationAsync(this WorkspaceInvitation invitation, IUnitOfWork unitOfWork, CancellationToken ct)
     {
-        if (string.Equals(invitation.Status, InvitationStatus.PENDING.ToString(), StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(invitation.Status, InvitationStatus.PENDING.ToString(), StringComparison.OrdinalIgnoreCase) 
             && invitation.ExpiresAt < DateTime.UtcNow)
         {
             invitation.Status = InvitationStatus.EXPIRED.ToString();
