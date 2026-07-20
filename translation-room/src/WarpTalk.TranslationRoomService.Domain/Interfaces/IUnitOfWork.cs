@@ -8,6 +8,7 @@ public interface IUnitOfWork : IDisposable
     ILanguageRepository LanguageRepository { get; }
     IUserSettingsRepository UserSettingsRepository { get; }
     ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
+    ITranslationRoomSessionRepository TranslationRoomSessionRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);

@@ -19,11 +19,11 @@ public partial class Transaction
 
     public decimal TotalAmount { get; set; }
 
-    public string Currency { get; set; } = "VND";
+    public string Currency { get; set; } = "USD";
 
     public string PaymentMethod { get; set; } = "unknown";
 
-    public string Provider { get; set; } = "payos";
+    public string Provider { get; set; } = "stripe";
 
     public string? ProviderTransactionId { get; set; }
 

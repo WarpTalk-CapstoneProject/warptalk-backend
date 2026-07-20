@@ -26,6 +26,8 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomAudioRoute> TranslationRoomAudioRoutes { get; set; }
 
+    public virtual DbSet<TranslationRoomSession> TranslationRoomSessions { get; set; }
+
     public virtual DbSet<TranslationRoomFeedback> TranslationRoomFeedbacks { get; set; }
 
     public virtual DbSet<TranslationRoomParticipant> TranslationRoomParticipants { get; set; }
@@ -288,6 +290,43 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("translation_room_audio_routes_translation_room_id_fkey");
+        });
+
+        modelBuilder.Entity<TranslationRoomSession>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_sessions_pkey");
+
+            entity.ToTable("translation_room_sessions", "translation_room");
+
+            entity.HasIndex(e => new { e.TranslationRoomId, e.Status }, "translation_room_sessions_translation_room_id_status_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
+            entity.Property(e => e.MainLanguage)
+                .HasMaxLength(15)
+                .HasColumnName("main_language");
+            entity.Property(e => e.AudioUrl)
+                .HasMaxLength(500)
+                .HasColumnName("audio_url");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'ACTIVE'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.EndedAt).HasColumnName("ended_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.TranslationRoom).WithMany(p => p.TranslationRoomSessions)
+                .HasForeignKey(d => d.TranslationRoomId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("translation_room_sessions_translation_room_id_fkey");
         });
 
         modelBuilder.Entity<TranslationRoomFeedback>(entity =>

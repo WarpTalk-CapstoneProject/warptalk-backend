@@ -214,6 +214,7 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.Currency).HasMaxLength(3).HasColumnName("currency");
             entity.Property(e => e.IdempotencyKey).HasMaxLength(255).HasColumnName("idempotency_key");
             entity.Property(e => e.TriggeredByParticipantId).HasColumnName("triggered_by_participant_id");
+            entity.Property(e => e.TranscriptSegmentId).HasColumnName("transcript_segment_id");
             entity.Ignore(e => e.WorkspaceId);
 
             entity.HasOne(d => d.Subscription)

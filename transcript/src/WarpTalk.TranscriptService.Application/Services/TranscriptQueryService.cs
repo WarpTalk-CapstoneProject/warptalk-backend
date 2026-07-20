@@ -122,18 +122,43 @@ public class TranscriptQueryService : ITranscriptQueryService
             if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
                 return Result.Failure<PagedResult<TranscriptTranslationDto>>("You do not have access to this transcript.", "FORBIDDEN");
 
-            var totalCount = await _unitOfWork.TranscriptTranslations.CountAsync(t => t.Segment.TranscriptId == transcriptId, cancellationToken);
-            var translations = await _unitOfWork.TranscriptTranslations.GetPagedAsync(
-                t => t.Segment.TranscriptId == transcriptId,
-                skip,
-                take,
-                q => q.OrderBy(t => t.Segment.SequenceOrder),
-                cancellationToken);
+            // TranscriptTranslation (the old 1:1 table) was dropped — translations now live in
+            // TranslationContent (deduplicated by workspace/text-hash/target-language), joined to
+            // a segment via the current SegmentTranslationLink. Same join TranscriptExportService.
+            // DownloadExportAsync already uses for the same reason.
+            var segments = (await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId, cancellationToken)).ToList();
+            var sequenceBySegmentId = segments.ToDictionary(s => s.Id, s => s.SequenceOrder);
+            var segmentIds = segments.Select(s => s.Id).ToList();
 
-            var result = new PagedResult<TranscriptTranslationDto>(
-                totalCount,
-                translations.Select(t => t.ToDto())
-            );
+            var currentLinks = (await _unitOfWork.SegmentTranslationLinks.FindAsync(
+                    l => segmentIds.Contains(l.SegmentId) && l.IsCurrent, cancellationToken))
+                .OrderBy(l => sequenceBySegmentId.GetValueOrDefault(l.SegmentId))
+                .ToList();
+
+            var contentIds = currentLinks.Select(l => l.TranslationContentId).Distinct().ToList();
+            var contentById = (await _unitOfWork.TranslationContents.FindAsync(c => contentIds.Contains(c.Id), cancellationToken))
+                .ToDictionary(c => c.Id);
+
+            var totalCount = currentLinks.Count;
+            var items = currentLinks
+                .Skip(skip)
+                .Take(take)
+                .Where(l => contentById.ContainsKey(l.TranslationContentId))
+                .Select(l =>
+                {
+                    var content = contentById[l.TranslationContentId];
+                    return new TranscriptTranslationDto(
+                        content.Id,
+                        l.SegmentId,
+                        l.TargetLanguage,
+                        content.TranslatedText,
+                        content.TranslatorModel,
+                        content.Confidence,
+                        content.IsRetranslated,
+                        content.LatencyMs);
+                });
+
+            var result = new PagedResult<TranscriptTranslationDto>(totalCount, items);
 
             return Result.Success(result);
         }

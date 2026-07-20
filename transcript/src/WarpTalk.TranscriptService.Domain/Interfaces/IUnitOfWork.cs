@@ -9,7 +9,6 @@ public interface IUnitOfWork : IDisposable
 {
     IGenericRepository<Transcript> Transcripts { get; }
     IGenericRepository<TranscriptSegment> TranscriptSegments { get; }
-    IGenericRepository<TranscriptTranslation> TranscriptTranslations { get; }
     IGenericRepository<TranscriptCorrection> TranscriptCorrections { get; }
     IGenericRepository<Glossary> Glossaries { get; }
     IGenericRepository<GlossaryTerm> GlossaryTerms { get; }

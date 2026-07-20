@@ -64,10 +64,12 @@ builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
+builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
+builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
 builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
 builder.Services.AddScoped<IAudioRouteTransitionProcessor, AudioRouteTransitionProcessor>();
