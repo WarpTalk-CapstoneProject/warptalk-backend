@@ -71,7 +71,8 @@ public class TranslationRoomHub : Hub
 
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
-            
+            await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
+
             await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
                 .SendAsync("ParticipantLeft", userId);
         }
@@ -137,10 +138,24 @@ public class TranslationRoomHub : Hub
             userId,
             listenLanguage);
 
+        // Every participant is simultaneously a translation source (when speaking) and a
+        // target (their own listen language) — the AI pipeline previously had no visibility
+        // into a speaker's own chosen language at all (only listen-language was persisted),
+        // forcing STT to guess from text. Persist it (normalized to a bare "vi"/"en" — the
+        // client may send locale-tagged values like "vi-VN") so livekit_ingress_worker can
+        // pass a real per-speaker hint into STT instead of detecting from garbled output.
+        await db.HashSetAsync(
+            $"translationRoom:{translationRoomId}:speak_languages",
+            userId,
+            NormalizeLanguageCode(speakLanguage));
+
         _logger.LogInformation(
-            "TranslationRoomHub: User {UserId} joined translationRoom {TranslationRoomId} (listen={ListenLanguage})",
-            userId, translationRoomId, listenLanguage);
+            "TranslationRoomHub: User {UserId} joined translationRoom {TranslationRoomId} (speak={SpeakLanguage}, listen={ListenLanguage})",
+            userId, translationRoomId, speakLanguage, listenLanguage);
     }
+
+    private static string NormalizeLanguageCode(string language) =>
+        string.IsNullOrWhiteSpace(language) ? language : language.Split('-')[0].ToLowerInvariant();
 
     /// <summary>
     /// Leave a translationRoom room. Removes connection from the translationRoom group
@@ -166,6 +181,7 @@ public class TranslationRoomHub : Hub
         // Clean up language preference
         var db = _redis.GetDatabase();
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:languages", userId);
+        await db.HashDeleteAsync($"translationRoom:{translationRoomId}:speak_languages", userId);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} left translationRoom {TranslationRoomId}",
