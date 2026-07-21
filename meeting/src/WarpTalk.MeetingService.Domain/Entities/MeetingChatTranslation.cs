@@ -19,6 +19,8 @@ public partial class MeetingChatTranslation
 
     public string? ModelUsed { get; set; }
 
+    public int PromptVersion { get; set; }
+
     public decimal? Confidence { get; set; }
 
     public DateTime CreatedAt { get; set; }

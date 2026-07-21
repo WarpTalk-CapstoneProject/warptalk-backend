@@ -159,6 +159,9 @@ public partial class MeetingDbContext : DbContext
             entity.Property(e => e.ModelUsed)
                 .HasMaxLength(100)
                 .HasColumnName("model_used");
+            entity.Property(e => e.PromptVersion)
+                .HasDefaultValue(1)
+                .HasColumnName("prompt_version");
             entity.Property(e => e.SourceLanguage)
                 .HasMaxLength(50)
                 .HasColumnName("source_language");

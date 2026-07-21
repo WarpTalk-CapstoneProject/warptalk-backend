@@ -61,8 +61,8 @@ public class MeetingChatController : ControllerBase
             if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
         }
-            
-        return Accepted();
+
+        return Ok(result.Value);
     }
 
     [HttpPost("{messageId:guid}/moderate")]

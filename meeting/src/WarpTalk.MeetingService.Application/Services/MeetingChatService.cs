@@ -17,12 +17,14 @@ public class MeetingChatService : IMeetingChatService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IMeetingChatNotifier _chatNotifier;
     private readonly IRedisService _redisService;
+    private readonly IChatTranslator _chatTranslator;
 
-    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService)
+    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService, IChatTranslator chatTranslator)
     {
         _unitOfWork = unitOfWork;
         _chatNotifier = chatNotifier;
         _redisService = redisService;
+        _chatTranslator = chatTranslator;
     }
 
     public async Task<Result<IEnumerable<MeetingChatMessageDto>>> GetRoomMessagesAsync(Guid roomId, Guid userId, CancellationToken ct = default)
@@ -102,48 +104,88 @@ public class MeetingChatService : IMeetingChatService
                 AgentIds = agentMentions.Select(m => m.Id).ToArray()
             });
         }
-        else if (request.TranslationEnabled)
-        {
-            // Auto-translate could be handled here if requested
-            await _redisService.PublishEventAsync("meeting.chat.translation_requested", new
-            {
-                MessageId = message.Id,
-                RoomId = room.Id,
-                Text = message.OriginalText,
-                SourceLanguage = message.OriginalLanguage,
-                TargetLanguage = "auto" // or specific default
-            });
-        }
-        
+
         return Result.Success<MeetingChatMessageDto>(dto);
     }
 
-    public async Task<Result<bool>> RequestTranslationAsync(Guid roomId, Guid messageId, Guid userId, TranslateMeetingChatMessageRequest request, CancellationToken ct = default)
+    public async Task<Result<MeetingChatTranslationDto>> RequestTranslationAsync(Guid roomId, Guid messageId, Guid userId, TranslateMeetingChatMessageRequest request, CancellationToken ct = default)
     {
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
-            return Result.Failure<bool>("Room not found.", "NOT_FOUND");
+            return Result.Failure<MeetingChatTranslationDto>("Room not found.", "NOT_FOUND");
 
         var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
         bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
 
         if (room.CreatedBy != userId && !isActiveParticipant)
-            return Result.Failure<bool>("Not an active participant.", "FORBIDDEN");
+            return Result.Failure<MeetingChatTranslationDto>("Not an active participant.", "FORBIDDEN");
 
         var message = await _unitOfWork.MeetingChatMessageRepository.GetByIdAsync(messageId, ct);
         if (message == null || message.MeetingRoomId != room.Id)
-            return Result.Failure<bool>("Message not found.", "NOT_FOUND");
+            return Result.Failure<MeetingChatTranslationDto>("Message not found.", "NOT_FOUND");
 
-        await _redisService.PublishEventAsync("meeting.chat.translation_requested", new
+        // Same language — nothing to translate, echo the original back.
+        if (string.Equals(message.OriginalLanguage, request.TargetLanguage, StringComparison.OrdinalIgnoreCase))
         {
-            MessageId = message.Id,
-            RoomId = room.Id,
-            Text = message.OriginalText,
+            return Result.Success(new MeetingChatTranslationDto
+            {
+                MessageId = messageId,
+                TargetLanguage = request.TargetLanguage,
+                TranslatedText = message.OriginalText,
+                Cached = false,
+            });
+        }
+
+        // Cache check — a message translated into a given target language once never
+        // needs to hit the LLM again for any other viewer requesting the same pair.
+        // Keyed on PromptVersion too: bumping it (after a prompt/model change) makes
+        // every previously cached row a miss instead of silently serving stale output.
+        var existing = await _unitOfWork.MeetingChatTranslationRepository.FirstOrDefaultAsync(
+            t => t.MessageId == messageId
+                && t.TargetLanguage == request.TargetLanguage
+                && t.PromptVersion == _chatTranslator.PromptVersion,
+            ct: ct);
+
+        if (existing != null)
+        {
+            return Result.Success(new MeetingChatTranslationDto
+            {
+                MessageId = messageId,
+                TargetLanguage = request.TargetLanguage,
+                TranslatedText = existing.TranslatedText,
+                Cached = true,
+            });
+        }
+
+        var translationResult = await _chatTranslator.TranslateAsync(
+            message.OriginalText, message.OriginalLanguage, request.TargetLanguage, ct);
+
+        if (!translationResult.IsSuccess)
+            return Result.Failure<MeetingChatTranslationDto>(translationResult.Error, translationResult.ErrorCode);
+
+        var translation = new MeetingChatTranslation
+        {
+            Id = Guid.NewGuid(),
+            MessageId = messageId,
+            MeetingRoomId = room.Id,
             SourceLanguage = message.OriginalLanguage,
-            TargetLanguage = request.TargetLanguage
+            TargetLanguage = request.TargetLanguage,
+            TranslatedText = translationResult.Value!,
+            ModelUsed = _chatTranslator.ModelName,
+            PromptVersion = _chatTranslator.PromptVersion,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        await _unitOfWork.MeetingChatTranslationRepository.AddAsync(translation, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result.Success(new MeetingChatTranslationDto
+        {
+            MessageId = messageId,
+            TargetLanguage = request.TargetLanguage,
+            TranslatedText = translation.TranslatedText,
+            Cached = false,
         });
-        
-        return Result.Success<bool>(true);
     }
 
     public async Task<Result<bool>> ModerateMessageAsync(Guid roomId, Guid messageId, Guid userId, ModerateMeetingChatMessageRequest request, CancellationToken ct = default)

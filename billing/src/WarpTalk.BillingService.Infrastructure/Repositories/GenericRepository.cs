@@ -1,7 +1,7 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
@@ -45,6 +45,21 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
 
     public async Task<bool> AnyAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
         => await _set.AnyAsync(predicate, ct);
+
+    public async Task<int> CountAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
+        => await _set.CountAsync(predicate, ct);
+
+    public async Task<IReadOnlyList<T>> GetPagedAsync(
+        Expression<Func<T, bool>> predicate,
+        int skip,
+        int take,
+        Func<IQueryable<T>, IQueryable<T>> orderBy,
+        CancellationToken ct = default)
+    {
+        IQueryable<T> query = _set.Where(predicate);
+        query = orderBy(query);
+        return await query.Skip(skip).Take(take).ToListAsync(ct);
+    }
 
     public async Task AddAsync(T entity, CancellationToken ct = default)
         => await _set.AddAsync(entity, ct);

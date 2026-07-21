@@ -6,14 +6,6 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // RESPONSE DTOs
 // ============================================================================
 
-public record PlanDto(
-    Guid Id,
-    string Name,
-    decimal Price,
-    int CreditsPerMonth,
-    bool IsActive = true,
-    DateTime? CreatedAt = null);
-
 public record SubscriptionDto(
     Guid Id,
     Guid WorkspaceId,
@@ -29,15 +21,6 @@ public record WorkspaceCreditsDto(
     int CurrentCredits,
     DateTime? SubscriptionEndDate,
     string SubscriptionStatus = "active");
-
-public record CreditTransactionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    int Amount,
-    string Type,
-    Guid? ReferenceId,
-    string? ReferenceType,
-    DateTime CreatedAt);
 
 public record TransactionDto(
     Guid Id,
@@ -60,16 +43,6 @@ public record TopUpCreditsRequest(
     [Required(ErrorMessage = "Amount is required")]
     [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
     int Amount);
-
-public record ConsumeCreditsRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount,
-    
-    [Required(ErrorMessage = "Reference type is required")]
-    string ReferenceType,
-    
-    Guid? ReferenceId = null);
 
 public record CancelSubscriptionRequest(
     string? CancellationReason = null);
