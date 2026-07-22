@@ -161,6 +161,25 @@ public class WorkspaceDocumentsController : ControllerBase
     }
 
     [Authorize]
+    [HttpPut("{documentId:guid}/extracted-text")]
+    public async Task<IActionResult> UpdateExtractedText(
+        Guid workspaceId,
+        Guid documentId,
+        [FromBody] UpdateExtractedTextRequest request,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _documentService.UpdateExtractedTextAsync(workspaceId, documentId, request.Text, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [Authorize]
     [HttpDelete("{documentId:guid}")]
     public async Task<IActionResult> DeleteDocument(
         Guid workspaceId,

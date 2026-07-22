@@ -741,17 +741,25 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
             }
 
-            var extractedText = await _storage.GetExtractedTextAsync(document, ct);
-            if (string.IsNullOrEmpty(extractedText))
+            string extractedText = string.Empty;
+            try
             {
-                ExtractedDocumentContent content;
-                using (var decryptedStream = await _storage.GetDecryptedStreamAsync(document, ct))
+                extractedText = await _storage.GetExtractedTextAsync(document, ct);
+                if (string.IsNullOrEmpty(extractedText))
                 {
-                    content = await _textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                    ExtractedDocumentContent content;
+                    using (var decryptedStream = await _storage.GetDecryptedStreamAsync(document, ct))
+                    {
+                        content = await _textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                    }
+                    extractedText = JsonSerializer.Serialize(content);
+                    await _storage.SaveExtractedTextAsync(document, extractedText, ct);
                 }
-                // Save it so that next time we don't have to extract it on-the-fly (serialized as JSON)
-                extractedText = JsonSerializer.Serialize(content);
-                await _storage.SaveExtractedTextAsync(document, extractedText, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not extract or load storage file for DocumentId: {DocumentId}", documentId);
+                extractedText = string.Empty;
             }
 
             ExtractedTextDto textDto;
@@ -781,6 +789,41 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while retrieving extracted text. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<ExtractedTextDto>> UpdateExtractedTextAsync(Guid workspaceId, Guid documentId, string text, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            if (!accessResult.IsSuccess)
+            {
+                return Result.Failure<ExtractedTextDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.DeletedAt != null)
+            {
+                return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
+            }
+
+            var content = new ExtractedDocumentContent { FullText = text };
+            var jsonContent = JsonSerializer.Serialize(content);
+            await _storage.SaveExtractedTextAsync(document, jsonContent, ct);
+
+            if (document.IsAiAllowed)
+            {
+                await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+            }
+
+            var textDto = new ExtractedTextDto(text, new(), new());
+            return Result.Success(textDto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while updating extracted text. DocumentId: {DocumentId}", documentId);
             return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
