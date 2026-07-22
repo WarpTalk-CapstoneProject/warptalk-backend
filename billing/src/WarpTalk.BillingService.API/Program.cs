@@ -60,6 +60,13 @@ try
     builder.Services.AddScoped<IRefundService, RefundService>();
     builder.Services.AddScoped<IUsageService, UsageService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
+    
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>(o =>
+    {
+        var url = builder.Configuration["PaymentServiceGrpcUrl"] ?? "http://localhost:50058";
+        o.Address = new Uri(url);
+    });
+
     builder.Services.AddGrpc();
     builder.Services.AddGrpcReflection();
 
