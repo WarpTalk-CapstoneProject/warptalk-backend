@@ -10,7 +10,7 @@ using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.API.Swagger;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 
 Log.Logger = new LoggerConfiguration()
@@ -30,10 +30,10 @@ try
     builder.WebHost.ConfigureKestrel(options =>
     {
         // HTTP 1.1 for Swagger/REST
-        options.ListenAnyIP(5201, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        options.ListenAnyIP(5107, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
 
         // HTTP/2 for gRPC
-        options.ListenAnyIP(50056, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
+        options.ListenAnyIP(50057, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
     builder.Services.AddDbContext<BillingDbContext>(options =>
@@ -272,7 +272,7 @@ try
         Log.Information("Database connection verified");
     }
 
-    Log.Information("WarpTalk Billing Service started successfully on http://localhost:5201");
+    Log.Information("WarpTalk Billing Service started successfully on http://localhost:5107");
     await app.RunAsync();
 }
 catch (Exception ex)

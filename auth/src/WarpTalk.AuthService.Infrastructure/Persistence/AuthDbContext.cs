@@ -27,6 +27,10 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<UserSetting> UserSettings { get; set; }
 
+    public virtual DbSet<VoiceProfile> VoiceProfiles { get; set; }
+
+    public virtual DbSet<VoiceSample> VoiceSamples { get; set; }
+
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -407,6 +411,100 @@ public partial class AuthDbContext : DbContext
                 .HasForeignKey<UserSetting>(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("user_settings_user_id_fkey");
+        });
+
+        modelBuilder.Entity<VoiceProfile>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_profiles_pkey");
+
+            entity.ToTable("voice_profiles", "voice");
+
+            entity.HasIndex(e => new { e.UserId, e.Status }, "voice_profiles_user_id_status_idx");
+
+            entity.HasIndex(e => e.WorkspaceId, "voice_profiles_workspace_id_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.DisplayName)
+                .HasMaxLength(100)
+                .HasColumnName("display_name");
+            entity.Property(e => e.Language)
+                .HasMaxLength(15)
+                .HasColumnName("language");
+            entity.Property(e => e.Provider)
+                .HasMaxLength(50)
+                .HasColumnName("provider");
+            entity.Property(e => e.EmbeddingRef)
+                .HasMaxLength(500)
+                .HasComment("Reference to voice embedding/model storage, not raw audio.")
+                .HasColumnName("embedding_ref");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'active'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("created_by");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("updated_by");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("deleted_by");
+        });
+
+        modelBuilder.Entity<VoiceSample>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_samples_pkey");
+
+            entity.ToTable("voice_samples", "voice");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.SampleType)
+                .HasMaxLength(30)
+                .HasColumnName("sample_type");
+            entity.Property(e => e.FileUrl)
+                .HasMaxLength(500)
+                .HasColumnName("file_url");
+            entity.Property(e => e.DurationSeconds).HasColumnName("duration_seconds");
+            entity.Property(e => e.Language)
+                .HasMaxLength(15)
+                .HasColumnName("language");
+            entity.Property(e => e.ContainsRawAudio)
+                .HasDefaultValue(true)
+                .HasColumnName("contains_raw_audio");
+            entity.Property(e => e.RetentionUntil).HasColumnName("retention_until");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("deleted_by");
+
+            entity.HasOne(d => d.VoiceProfile).WithMany(p => p.VoiceSamples)
+                .HasForeignKey(d => d.VoiceProfileId)
+                .HasConstraintName("voice_samples_voice_profile_id_fkey");
         });
 
         OnModelCreatingPartial(modelBuilder);

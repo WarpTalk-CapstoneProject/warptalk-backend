@@ -45,6 +45,7 @@ builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
 builder.Services.AddScoped<IUserRoleRepository, UserRoleRepository>();
 builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // --- Application Services ---
@@ -55,11 +56,13 @@ builder.Services.AddScoped<ITokenService, WarpTalk.AuthService.Application.Servi
 builder.Services.AddScoped<IProfileService, WarpTalk.AuthService.Application.Services.ProfileService>();
 builder.Services.AddScoped<IUserSettingsService, WarpTalk.AuthService.Application.Services.UserSettingsService>();
 builder.Services.AddScoped<IGoogleAuthService, WarpTalk.AuthService.Application.Services.GoogleAuthService>();
+builder.Services.AddScoped<IVoiceProfileService, WarpTalk.AuthService.Application.Services.VoiceProfileService>();
 
 // --- Infrastructure Services ---
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
+builder.Services.AddSingleton<WarpTalk.AuthService.Application.Interfaces.IVoiceSampleStorage, WarpTalk.AuthService.Infrastructure.Storage.LocalVoiceSampleStorage>();
 
 // --- JWT Authentication ---
 var jwtSecret = builder.Configuration["Jwt:Secret"]
