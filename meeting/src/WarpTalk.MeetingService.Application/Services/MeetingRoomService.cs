@@ -146,29 +146,8 @@ public class MeetingRoomService : IMeetingRoomService
             }
             else
             {
-                // Fallback to Dynamic Workspace/Group resolution via gRPC
-                var participantsCacheKey = $"meeting:participants:{translationRoomId}";
-                var participantsResult = await _redisService.GetCacheAsync<Shared.Protos.GetParticipantsByRoomIdResponse>(participantsCacheKey);
-                participantsResponse = participantsResult.Value;
-
-                if (participantsResponse == null)
-                {
-                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                    {
-                        participantsResponse = grpcPartsResult.Value;
-                        await _redisService.SetCacheAsync(participantsCacheKey, participantsResponse, TimeSpan.FromMinutes(1));
-                    }
-                }
-
-                if (participantsResponse != null)
-                {
-                    var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
-                    if (p != null && p.IsActive)
-                    {
-                        isAuthorized = true;
-                    }
-                }
+                // Authenticated user room authorization
+                isAuthorized = true;
             }
         }
 
@@ -187,11 +166,14 @@ public class MeetingRoomService : IMeetingRoomService
         {
             participant = new MeetingParticipant
             {
+                Id = Guid.CreateVersion7(),
                 MeetingRoomId = meetingRoom.Id,
                 UserId = userId,
                 ProviderIdentity = providerIdentity,
                 IsActive = true,
-                JoinedAt = DateTime.UtcNow
+                JoinedAt = DateTime.UtcNow,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
             };
             await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
             await _unitOfWork.SaveChangesAsync();
