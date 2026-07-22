@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WarpTalk.WorkspaceService.Application.Interfaces;
 
@@ -7,7 +9,7 @@ namespace WarpTalk.WorkspaceService.Application.Interfaces;
 /// </summary>
 public interface IDocumentSecurityScanner
 {
-    DocumentSecurityScanResult Scan(string content, bool piiEnabled, bool dlpEnabled, List<string>? keywordsBlacklist);
+    Task<DocumentSecurityScanResult> ScanAsync(string content, bool piiEnabled, bool dlpEnabled, List<string>? keywordsBlacklist, CancellationToken ct = default);
 }
 
 /// <summary>

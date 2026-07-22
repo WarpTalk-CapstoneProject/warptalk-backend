@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
@@ -13,6 +14,7 @@ public static class WorkspaceMapper
 {
     public static WorkspaceDto ToDto(this Workspace workspace, string role, string membershipType = "Internal")
     {
+        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
         return new WorkspaceDto(
             workspace.Id,
             workspace.Name,
@@ -20,7 +22,8 @@ public static class WorkspaceMapper
             workspace.LogoUrl,
             role,
             workspace.CreatedAt,
-            membershipType
+            membershipType,
+            config.DefaultLanguage
         );
     }
 

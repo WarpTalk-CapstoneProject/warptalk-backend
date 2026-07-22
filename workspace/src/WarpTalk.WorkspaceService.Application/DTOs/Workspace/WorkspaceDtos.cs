@@ -31,7 +31,8 @@ public record WorkspaceDto(
     string? LogoUrl,
     string Role,
     DateTime CreatedAt,
-    string MembershipType = "Internal"
+    string MembershipType = "Internal",
+    string DefaultLanguage = "en"
 );
 
 public record PagedResult<T>(
@@ -44,5 +45,6 @@ public record PagedResult<T>(
 public record SelectWorkspaceResponse(
     Guid SelectedWorkspaceId,
     string Name,
-    string Slug
+    string Slug,
+    string DefaultLanguage = "en"
 );

@@ -239,7 +239,8 @@ public class WorkspaceService : IWorkspaceService
 
             await _workspaceCache.SetActiveWorkspaceDetailsAsync(userId, workspaceId, role, membershipType, ct);
 
-            var response = new SelectWorkspaceResponse(workspaceId, workspace.Name, workspace.Slug);
+            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            var response = new SelectWorkspaceResponse(workspaceId, workspace.Name, workspace.Slug, config.DefaultLanguage);
             return Result.Success(response);
         }
         catch (Exception ex)

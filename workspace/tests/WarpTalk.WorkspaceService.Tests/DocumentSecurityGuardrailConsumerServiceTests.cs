@@ -96,7 +96,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Contact info: myemail@test.com and phone: 0912345678";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, true, false, null).Returns(new DocumentSecurityScanResult(true, true, false));
+        _securityScanner.ScanAsync(rawText, true, false, null, Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, true, false)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
@@ -139,7 +139,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Báo cáo doanh thu quý 2 năm 2026.";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(true, false, true));
+        _securityScanner.ScanAsync(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, false, true)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
@@ -193,7 +193,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Nội dung báo cáo có chứa doanh thu";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(true, false, true));
+        _securityScanner.ScanAsync(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, false, true)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
@@ -235,7 +235,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "This is clean content with no PII and no forbidden keywords.";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, true, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(false, false, false));
+        _securityScanner.ScanAsync(rawText, true, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(false, false, false)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);

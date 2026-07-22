@@ -148,7 +148,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             await storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
             // 3. Scan for Guardrail Violations
-            var scanResult = securityScanner.Scan(content.FullText, piiEnabled, dlpEnabled, keywordsBlacklist);
+            var scanResult = await securityScanner.ScanAsync(content.FullText, piiEnabled, dlpEnabled, keywordsBlacklist, ct);
             if (scanResult.PiiDetected)
             {
                 _logger.LogInformation("PII violation detected in document {DocumentId}", documentId);
