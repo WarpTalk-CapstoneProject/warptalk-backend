@@ -53,7 +53,20 @@ public record CreditTransactionDto(
     string? WorkspaceName = null,
     Guid? UserId = null,
     string? UserName = null
-);
+)
+{
+    public CreditTransactionDto(
+        Guid id,
+        Guid workspaceId,
+        int amount,
+        string type,
+        Guid? referenceId,
+        string? referenceType,
+        DateTime createdAt)
+        : this(id, amount, type, null, referenceType, referenceId, 0, createdAt, workspaceId)
+    {
+    }
+}
 
 public record AdjustCreditsRequest(
     [Required]

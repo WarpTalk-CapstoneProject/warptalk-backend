@@ -92,7 +92,7 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
 
             return Result.Success(new PagedResult<PaymentTransactionDto>(
                 total,
-                items.Select(p => p.ToDto())));
+                items.Select(p => p.ToDto()).ToList()));
         }
         catch (Exception ex)
         {

@@ -64,7 +64,7 @@ public class InvoiceService : IInvoiceService
                 WorkspaceId = workspaceId.ToString()
             });
 
-            return Result.Success(new PagedResult<InvoiceDto>(total, dtos));
+            return Result.Success(new PagedResult<InvoiceDto>(total, dtos.ToList()));
         }
         catch (Exception ex)
         {

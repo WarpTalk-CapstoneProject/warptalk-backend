@@ -18,7 +18,7 @@ PIDS=()
 
 kill_ports() {
     echo -e "${YELLOW}🧹 Cleaning up occupied ports...${NC}"
-    for port in 5001 5242 5214 5209 5201 5105 5200 50051 50052 50053 50054 50055 50056; do
+    for port in 5001 5242 5214 5209 5201 5105 5108 5200 50051 50052 50053 50054 50055 50056; do
         local pids
         pids=$(lsof -ti :"$port" 2>/dev/null || true)
         if [[ -n "$pids" ]]; then
@@ -63,6 +63,7 @@ declare -a SERVICES=(
     "notification/src/WarpTalk.NotificationService.API|Notification|5209"
     "billing/src/WarpTalk.BillingService.API|Billing|5201"
     "meeting/src/WarpTalk.MeetingService.API|Meeting|5105"
+    "assistant/src/WarpTalk.AssistantService.API|Assistant|5108"
     "gateway/src/WarpTalk.Gateway|Gateway|5200"
 )
 

@@ -164,7 +164,7 @@ public static class BillingMapper
         sub.CreditsRemaining,
         sub.CreditsUsedThisCycle,
         sub.CreditsRemaining + sub.CreditsUsedThisCycle,
-        sub.Status,
+        sub.Status.ToString(),
         sub.CurrentPeriodStart,
         sub.CurrentPeriodEnd
     );
@@ -172,7 +172,7 @@ public static class BillingMapper
     public static CreditTransactionDto ToDto(this CreditTransaction tx) => new(
         tx.Id,
         tx.Amount,
-        tx.Type,
+        tx.Type.ToString(),
         tx.Description,
         tx.ReferenceType,
         tx.ReferenceId,
@@ -195,7 +195,7 @@ public static class BillingMapper
         SubscriptionId = sub.Id,
         UserId = sub.UserId,
         Amount = -request.Amount,
-        Type = "consumption",
+        Type = "consume",
         ReferenceType = request.ReferenceType,
         ReferenceId = request.ReferenceId,
         BalanceAfter = sub.CreditsRemaining,
@@ -258,7 +258,7 @@ public static class BillingMapper
         SubscriptionId = sub.Id,
         UserId = request.UserId,
         Amount = -request.CreditsConsumed, // Negative for consumption
-        Type = "consumption",
+        Type = "consume",
         Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
         ReferenceType = "usage_record",
         ReferenceId = request.TranslationRoomId,

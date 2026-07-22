@@ -92,7 +92,7 @@ public class BillingService : IBillingService
                 UserId = userId ?? Guid.Empty,
                 WorkspaceId = workspaceId,
                 PlanId = planId,
-                Status = SubscriptionStatus.Active,
+                Status = SubscriptionStatus.Active.ToString(),
                 IsActive = true,
                 CurrentCredits = plan.CreditsPerMonth,
                 StartDate = DateTime.UtcNow,
@@ -218,7 +218,7 @@ public class BillingService : IBillingService
                 return Result.Failure<WorkspaceCreditsDto>("No active subscription found", BillingErrorCodes.SUBSCRIPTION_NOT_FOUND);
             }
 
-            subscription.Status = SubscriptionStatus.Cancelled;
+            subscription.Status = SubscriptionStatus.Cancelled.ToString();
             subscription.IsActive = false;
             subscription.CancellationReason = reason;
             subscription.CancelledAt = DateTime.UtcNow;
@@ -282,7 +282,7 @@ public class BillingService : IBillingService
                 SubscriptionId = subscription.Id,
                 UserId = userId ?? Guid.Empty,
                 Amount = amount,
-                Type = CreditTransactionType.TopUp,
+                Type = CreditTransactionType.TopUp.ToString(),
                 ReferenceId = referenceId,
                 ReferenceType = referenceType,
                 BalanceAfter = subscription.CurrentCredits,
@@ -361,7 +361,7 @@ public class BillingService : IBillingService
                 SubscriptionId = subscription.Id,
                 UserId = userId ?? Guid.Empty,
                 Amount = -amount,
-                Type = CreditTransactionType.Consume,
+                Type = CreditTransactionType.Consume.ToString(),
                 ReferenceId = referenceId,
                 ReferenceType = referenceType,
                 BalanceAfter = subscription.CurrentCredits,
@@ -480,7 +480,7 @@ public class BillingService : IBillingService
                 "Fetching transaction history for workspace {WorkspaceId}: page {PageNumber}, size {PageSize}",
                 workspaceId, pageNumber, pageSize);
 
-            var query = _uow.Transactions
+            var query = _uow.PaymentRepository
                 .Query()
                 .Where(t => t.Subscription!.WorkspaceId == workspaceId)
                 .OrderByDescending(t => t.CreatedAt);
@@ -493,7 +493,14 @@ public class BillingService : IBillingService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var items = transactions.Select(tx => MapToDto(tx, workspaceId)).ToList();
+            var items = transactions.Select(tx => new TransactionDto(
+                tx.Id,
+                workspaceId,
+                tx.SubscriptionId,
+                tx.Amount,
+                tx.Status,
+                tx.ProviderTransactionId,
+                tx.CreatedAt)).ToList();
 
             var response = new PaginatedResponse<TransactionDto>(
                 items,

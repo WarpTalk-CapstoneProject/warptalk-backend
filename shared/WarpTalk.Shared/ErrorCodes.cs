@@ -14,6 +14,12 @@ public static class ErrorCodes
     public const string InvalidState = "INVALID_STATE";
     public const string ValidationError = "VALIDATION_ERROR";
 
+    // ── Billing ───────────────────────────────────────────
+    public const string BillingSubscriptionNotFound = "BILLING_SUBSCRIPTION_NOT_FOUND";
+    public const string BillingSubscriptionAlreadyActive = "BILLING_SUBSCRIPTION_ALREADY_ACTIVE";
+    public const string BillingPlanNotFound = "BILLING_PLAN_NOT_FOUND";
+    public const string BillingInsufficientCredits = "BILLING_INSUFFICIENT_CREDITS";
+
     // ── Auth ──────────────────────────────────────────────
     public const string EmailExists = "EMAIL_EXISTS";
     public const string InvalidCredentials = "INVALID_CREDENTIALS";

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -19,7 +20,14 @@ public partial class Plan
 
     public string BillingCycle { get; set; } = "monthly";
 
-    public int CreditsPerMonth { get; set; }
+    public int CreditsPerCycle { get; set; }
+
+    [NotMapped]
+    public int CreditsPerMonth
+    {
+        get => CreditsPerCycle;
+        set => CreditsPerCycle = value;
+    }
 
     public int MaxParticipants { get; set; } = 2;
 

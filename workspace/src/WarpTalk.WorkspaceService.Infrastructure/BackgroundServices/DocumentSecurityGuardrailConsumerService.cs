@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -68,9 +69,6 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             _logger.LogError(ex, "Failed to initialize Redis Stream Consumer Group for stream: {StreamKey}", StreamKey);
         }
 
-        // Launch Phase 3 AI Result Consumer Loop in background
-        _ = ConsumeEmbeddingIndexResultsLoopAsync(stoppingToken);
-
         // Step 2: Enter stream consumption loop
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -120,7 +118,6 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         var storage = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentStorage>();
         var textExtractor = scope.ServiceProvider.GetRequiredService<IDocumentTextExtractor>();
         var securityScanner = scope.ServiceProvider.GetRequiredService<IDocumentSecurityScanner>();
-        var eventPublisher = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentEventPublisher>();
 
         WorkspaceDocument? document = null;
         try
@@ -132,23 +129,13 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 return;
             }
 
-            if (!document.IsAiAllowed)
-            {
-                _logger.LogInformation("Document {DocumentId} is marked as Administrative Document (IsAiAllowed = false). Skipping AI Ingestion.", documentId);
-                document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
-                document.AiEligible = false;
-                unitOfWork.WorkspaceDocumentRepository.Update(document);
-                await unitOfWork.SaveChangesAsync(ct);
-                return;
-            }
-
             // Set ingestion status to processing
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
             // 1. Resolve Effective AI Usage Policy (Inheritance & Fallback)
-            var (piiEnabled, dlpEnabled, keywordsBlacklist) = await ResolvePolicySettingsAsync(unitOfWork, document, ct);
+            var (piiEnabled, dlpEnabled, keywordsBlacklist, allowExternalLlm) = await ResolvePolicySettingsAsync(unitOfWork, document, ct);
 
             // 2. Read Document Content (Physical storage read + decryption)
             ExtractedDocumentContent content;
@@ -162,7 +149,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             await storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
             // 3. Scan for Guardrail Violations
-            var scanResult = await securityScanner.ScanAsync(content.FullText, piiEnabled, dlpEnabled, keywordsBlacklist, ct);
+            var scanResult = securityScanner.Scan(content.FullText, piiEnabled, dlpEnabled, keywordsBlacklist);
             if (scanResult.PiiDetected)
             {
                 _logger.LogInformation("PII violation detected in document {DocumentId}", documentId);
@@ -176,32 +163,29 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
 
             document.IsSensitive = document.IsSensitive || violationFound;
             document.ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(document.IsSensitive);
+            document.AiEligible = !document.IsSensitive; // Exclude from AI search context if sensitive
 
-            if (violationFound)
+            document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
+            unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await unitOfWork.SaveChangesAsync(ct);
+
+            // 4. Wire into the RAG pipeline — only for content actually eligible for AI use.
+            // A publish failure here must not undo the guardrail decision above, so it's isolated
+            // in its own try/catch rather than sharing this method's outer one.
+            if (document.AiEligible)
             {
-                document.AiEligible = false;
-                document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
-                unitOfWork.WorkspaceDocumentRepository.Update(document);
-                await unitOfWork.SaveChangesAsync(ct);
-
-                _logger.LogInformation("Security guardrail violation found in document {DocumentId}. Mark failed and non-eligible.", documentId);
+                try
+                {
+                    await PublishEmbeddingIndexRequestAsync(document, content.FullText, allowExternalLlm, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to publish embedding index request for document {DocumentId}", documentId);
+                }
             }
-            else
-            {
-                // Clean document: Publish EmbeddingIndexRequest to Redis Stream embedding:index_requests
-                document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
-                unitOfWork.WorkspaceDocumentRepository.Update(document);
-                await unitOfWork.SaveChangesAsync(ct);
 
-                await eventPublisher.PublishEmbeddingIndexRequestAsync(
-                    document.Id,
-                    document.WorkspaceId,
-                    content.FullText,
-                    piiEnabled,
-                    ct);
-
-                _logger.LogInformation("Security guardrails clean for document {DocumentId}. Published EmbeddingIndexRequest to AI worker stream.", documentId);
-            }
+            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}",
+                documentId, document.IsSensitive, document.AiEligible);
         }
         catch (Exception ex)
         {
@@ -228,11 +212,13 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         }
     }
 
-    private async Task<(bool PiiEnabled, bool DlpEnabled, List<string>? Keywords)> ResolvePolicySettingsAsync(IUnitOfWork unitOfWork, WorkspaceDocument document, CancellationToken ct)
+    private async Task<(bool PiiEnabled, bool DlpEnabled, List<string>? Keywords, bool AllowExternalLlm)> ResolvePolicySettingsAsync(IUnitOfWork unitOfWork, WorkspaceDocument document, CancellationToken ct)
     {
         bool piiEnabled = false;
         bool dlpEnabled = false;
         List<string>? keywordsBlacklist = null;
+        // Opt-out semantics (nullable bool): unset at both document and workspace level ⇒ allowed.
+        bool allowExternalLlm = true;
 
         // A. Parse Document-level AI Usage Policy if present
         AiUsagePolicyConfiguration? docPolicy = null;
@@ -277,88 +263,73 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             keywordsBlacklist = wsConfig.AiUsagePolicy.Dlp.KeywordsBlacklist;
         }
 
-        return (piiEnabled, dlpEnabled, keywordsBlacklist);
+        if (docPolicy?.AllowExternalLlm.HasValue == true)
+        {
+            allowExternalLlm = docPolicy.AllowExternalLlm.Value;
+        }
+        else if (wsConfig?.AiUsagePolicy?.AllowExternalLlm.HasValue == true)
+        {
+            allowExternalLlm = wsConfig.AiUsagePolicy.AllowExternalLlm.Value;
+        }
+
+        return (piiEnabled, dlpEnabled, keywordsBlacklist, allowExternalLlm);
     }
 
-    private async Task ConsumeEmbeddingIndexResultsLoopAsync(CancellationToken ct)
+    private const int EmbeddingChunkCharLimit = 2000;
+
+    /// <summary>
+    /// Wires an approved, AI-eligible document's extracted text into the RAG pipeline by
+    /// publishing to the "embedding:index_requests" Redis Stream that warptalk-ai's
+    /// EmbeddingWorker consumes. Field names must match EmbeddingIndexRequest.from_redis() in
+    /// warptalk-ai/embedding_worker/schemas.py exactly; chunk keys (id/text/metadata) must match
+    /// EmbeddingChunk. collection_id follows the "workspace_{id}" convention chat_tools.py's
+    /// semantic_search already assumes.
+    /// </summary>
+    private async Task PublishEmbeddingIndexRequestAsync(
+        WorkspaceDocument document, string fullText, bool externalLlmAllowed, CancellationToken ct)
     {
-        const string resultStreamKey = "embedding:index_results";
-        const string resultGroup = "workspace-ingestion-results";
+        if (string.IsNullOrWhiteSpace(fullText)) return;
+
+        var chunks = ChunkText(fullText, EmbeddingChunkCharLimit)
+            .Select((text, index) => new
+            {
+                id = $"{document.Id}_{index}",
+                text,
+                metadata = new
+                {
+                    document_id = document.Id.ToString(),
+                    document_name = document.Name,
+                    chunk_index = index,
+                },
+            })
+            .ToList();
+        if (chunks.Count == 0) return;
+
+        var entries = new NameValueEntry[]
+        {
+            new("job_id", Guid.NewGuid().ToString()),
+            new("workspace_id", document.WorkspaceId.ToString()),
+            new("collection_id", $"workspace_{document.WorkspaceId}"),
+            new("source_type", "document"),
+            new("source_id", document.Id.ToString()),
+            new("chunks_json", JsonSerializer.Serialize(chunks)),
+            new("external_llm_allowed", externalLlmAllowed ? "true" : "false"),
+            new("ai_retrieval_allowed", document.AiEligible ? "true" : "false"),
+            new("retention_state", document.RetentionState),
+            new("deletion_state", document.DeletedAt == null ? "active" : "deleted"),
+            new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+        };
 
         var db = _redis.GetDatabase();
+        await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+    }
 
-        try
+    private static IEnumerable<string> ChunkText(string text, int chunkSize)
+    {
+        for (var i = 0; i < text.Length; i += chunkSize)
         {
-            await db.StreamCreateConsumerGroupAsync(resultStreamKey, resultGroup, "0-0", true);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
-        {
-            // Group already exists
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not initialize Consumer Group for stream: {StreamKey}", resultStreamKey);
-        }
-
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                var messages = await db.StreamReadGroupAsync(resultStreamKey, resultGroup, _consumerName, count: 5);
-                if (messages.Length == 0)
-                {
-                    await Task.Delay(2000, ct);
-                    continue;
-                }
-
-                foreach (var message in messages)
-                {
-                    var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
-                    var sourceType = values.GetValueOrDefault("source_type");
-                    var sourceIdStr = values.GetValueOrDefault("source_id");
-                    var status = values.GetValueOrDefault("status");
-
-                    if (string.Equals(sourceType, "workspace_document", StringComparison.OrdinalIgnoreCase) &&
-                        Guid.TryParse(sourceIdStr, out var documentId))
-                    {
-                        using (var scope = _serviceProvider.CreateScope())
-                        {
-                            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                            var document = await unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
-                            if (document != null && document.DeletedAt == null)
-                            {
-                                if (string.Equals(status, "indexed", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
-                                    document.AiEligible = true;
-                                }
-                                else
-                                {
-                                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
-                                    document.AiEligible = false;
-                                }
-
-                                unitOfWork.WorkspaceDocumentRepository.Update(document);
-                                await unitOfWork.SaveChangesAsync(ct);
-
-                                _logger.LogInformation("Phase 3 Result Processed for document {DocumentId}. Status: {Status}, AiEligible: {AiEligible}",
-                                    documentId, document.IngestionStatus, document.AiEligible);
-                            }
-                        }
-                    }
-
-                    await db.StreamAcknowledgeAsync(resultStreamKey, resultGroup, message.Id);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in ConsumeEmbeddingIndexResultsLoopAsync.");
-                await Task.Delay(5000, ct);
-            }
+            var chunk = text.Substring(i, Math.Min(chunkSize, text.Length - i)).Trim();
+            if (chunk.Length > 0) yield return chunk;
         }
     }
 }

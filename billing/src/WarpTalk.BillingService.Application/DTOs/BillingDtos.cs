@@ -6,15 +6,76 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // RESPONSE DTOs
 // ============================================================================
 
-public record SubscriptionDto(
-    Guid Id,
-    Guid WorkspaceId,
-    Guid PlanId,
-    string Status,
-    int CurrentCredits,
-    DateTime StartDate,
-    DateTime? EndDate,
-    DateTime CreatedAt);
+public record SubscriptionDto
+{
+    public SubscriptionDto(
+        Guid id,
+        Guid? userId,
+        Guid? workspaceId,
+        Guid planId,
+        string planName,
+        decimal price,
+        string status,
+        int creditsRemaining,
+        int creditsUsedThisCycle,
+        DateTime currentPeriodStart,
+        DateTime currentPeriodEnd,
+        bool autoRenew,
+        bool cancelAtPeriodEnd,
+        DateTime createdAt,
+        DateTime? cancelledAt)
+    {
+        Id = id;
+        UserId = userId;
+        WorkspaceId = workspaceId;
+        PlanId = planId;
+        PlanName = planName;
+        Price = price;
+        Status = status;
+        CreditsRemaining = creditsRemaining;
+        CreditsUsedThisCycle = creditsUsedThisCycle;
+        CurrentPeriodStart = currentPeriodStart;
+        CurrentPeriodEnd = currentPeriodEnd;
+        AutoRenew = autoRenew;
+        CancelAtPeriodEnd = cancelAtPeriodEnd;
+        CreatedAt = createdAt;
+        CancelledAt = cancelledAt;
+    }
+
+    public SubscriptionDto(
+        Guid id,
+        Guid workspaceId,
+        Guid planId,
+        string status,
+        int currentCredits,
+        DateTime startDate,
+        DateTime? endDate,
+        DateTime createdAt)
+        : this(id, null, workspaceId, planId, string.Empty, 0m, status, currentCredits, 0, startDate, endDate ?? startDate, true, false, createdAt, null)
+    {
+    }
+
+    public Guid Id { get; init; }
+    public Guid? UserId { get; init; }
+    public Guid? WorkspaceId { get; init; }
+    public Guid PlanId { get; init; }
+    public string PlanName { get; init; }
+    public decimal Price { get; init; }
+    public string Status { get; init; }
+    public int CreditsRemaining { get; init; }
+    public int CreditsUsedThisCycle { get; init; }
+    public DateTime CurrentPeriodStart { get; init; }
+    public DateTime CurrentPeriodEnd { get; init; }
+    public bool AutoRenew { get; init; }
+    public bool CancelAtPeriodEnd { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public DateTime? CancelledAt { get; init; }
+    public string? WorkspaceName { get; init; }
+
+    public int CurrentCredits => CreditsRemaining;
+    public DateTime StartDate => CurrentPeriodStart;
+    public DateTime? EndDate => CurrentPeriodEnd;
+}
 
 public record WorkspaceCreditsDto(
     Guid WorkspaceId,

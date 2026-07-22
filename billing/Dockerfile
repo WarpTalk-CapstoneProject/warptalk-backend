@@ -17,6 +17,7 @@ RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
-EXPOSE 5201
+EXPOSE 5107
+EXPOSE 50057
 COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "WarpTalk.BillingService.API.dll"]

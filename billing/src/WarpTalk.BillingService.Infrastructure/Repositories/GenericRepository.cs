@@ -53,11 +53,12 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
         Expression<Func<T, bool>> predicate,
         int skip,
         int take,
-        Func<IQueryable<T>, IQueryable<T>> orderBy,
+        Func<IQueryable<T>, IQueryable<T>>? orderBy,
         CancellationToken ct = default)
     {
         IQueryable<T> query = _set.Where(predicate);
-        query = orderBy(query);
+        if (orderBy is not null)
+            query = orderBy(query);
         return await query.Skip(skip).Take(take).ToListAsync(ct);
     }
 

@@ -301,7 +301,7 @@ public class CreditService : ICreditService
                     null,
                     t.UserId,
                     null
-                ))));
+                )).ToList()));
         }
         catch (Exception ex)
         {
@@ -608,8 +608,8 @@ public class CreditService : ICreditService
                 predicate,
                 skip, size,
                 q => q.OrderByDescending(t => t.CreatedAt),
-                cancellationToken,
-                new System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, object>>[] { t => t.Subscription });
+                includes: new System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, object>>[] { t => t.Subscription },
+                cancellationToken: cancellationToken);
 
             var total = await _unitOfWork.CreditTransactionRepository.CountAsync(
                 predicate,

@@ -36,6 +36,8 @@ public class UnitOfWork : IUnitOfWork
 
     public DbConnection GetDbConnection() => _db.Database.GetDbConnection();
 
+    public void ClearTracking() => _db.ChangeTracker.Clear();
+
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _db.SaveChangesAsync(ct);
 
