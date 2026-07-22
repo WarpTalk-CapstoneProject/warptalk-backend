@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -134,7 +135,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             await unitOfWork.SaveChangesAsync(ct);
 
             // 1. Resolve Effective AI Usage Policy (Inheritance & Fallback)
-            var (piiEnabled, dlpEnabled, keywordsBlacklist) = await ResolvePolicySettingsAsync(unitOfWork, document, ct);
+            var (piiEnabled, dlpEnabled, keywordsBlacklist, allowExternalLlm) = await ResolvePolicySettingsAsync(unitOfWork, document, ct);
 
             // 2. Read Document Content (Physical storage read + decryption)
             ExtractedDocumentContent content;
@@ -168,7 +169,22 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}", 
+            // 4. Wire into the RAG pipeline — only for content actually eligible for AI use.
+            // A publish failure here must not undo the guardrail decision above, so it's isolated
+            // in its own try/catch rather than sharing this method's outer one.
+            if (document.AiEligible)
+            {
+                try
+                {
+                    await PublishEmbeddingIndexRequestAsync(document, content.FullText, allowExternalLlm, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to publish embedding index request for document {DocumentId}", documentId);
+                }
+            }
+
+            _logger.LogInformation("Successfully completed security guardrails and AI ingestion for document {DocumentId}. IsSensitive: {IsSensitive}, AiEligible: {AiEligible}",
                 documentId, document.IsSensitive, document.AiEligible);
         }
         catch (Exception ex)
@@ -196,11 +212,13 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         }
     }
 
-    private async Task<(bool PiiEnabled, bool DlpEnabled, List<string>? Keywords)> ResolvePolicySettingsAsync(IUnitOfWork unitOfWork, WorkspaceDocument document, CancellationToken ct)
+    private async Task<(bool PiiEnabled, bool DlpEnabled, List<string>? Keywords, bool AllowExternalLlm)> ResolvePolicySettingsAsync(IUnitOfWork unitOfWork, WorkspaceDocument document, CancellationToken ct)
     {
         bool piiEnabled = false;
         bool dlpEnabled = false;
         List<string>? keywordsBlacklist = null;
+        // Opt-out semantics (nullable bool): unset at both document and workspace level ⇒ allowed.
+        bool allowExternalLlm = true;
 
         // A. Parse Document-level AI Usage Policy if present
         AiUsagePolicyConfiguration? docPolicy = null;
@@ -245,6 +263,73 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             keywordsBlacklist = wsConfig.AiUsagePolicy.Dlp.KeywordsBlacklist;
         }
 
-        return (piiEnabled, dlpEnabled, keywordsBlacklist);
+        if (docPolicy?.AllowExternalLlm.HasValue == true)
+        {
+            allowExternalLlm = docPolicy.AllowExternalLlm.Value;
+        }
+        else if (wsConfig?.AiUsagePolicy?.AllowExternalLlm.HasValue == true)
+        {
+            allowExternalLlm = wsConfig.AiUsagePolicy.AllowExternalLlm.Value;
+        }
+
+        return (piiEnabled, dlpEnabled, keywordsBlacklist, allowExternalLlm);
+    }
+
+    private const int EmbeddingChunkCharLimit = 2000;
+
+    /// <summary>
+    /// Wires an approved, AI-eligible document's extracted text into the RAG pipeline by
+    /// publishing to the "embedding:index_requests" Redis Stream that warptalk-ai's
+    /// EmbeddingWorker consumes. Field names must match EmbeddingIndexRequest.from_redis() in
+    /// warptalk-ai/embedding_worker/schemas.py exactly; chunk keys (id/text/metadata) must match
+    /// EmbeddingChunk. collection_id follows the "workspace_{id}" convention chat_tools.py's
+    /// semantic_search already assumes.
+    /// </summary>
+    private async Task PublishEmbeddingIndexRequestAsync(
+        WorkspaceDocument document, string fullText, bool externalLlmAllowed, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(fullText)) return;
+
+        var chunks = ChunkText(fullText, EmbeddingChunkCharLimit)
+            .Select((text, index) => new
+            {
+                id = $"{document.Id}_{index}",
+                text,
+                metadata = new
+                {
+                    document_id = document.Id.ToString(),
+                    document_name = document.Name,
+                    chunk_index = index,
+                },
+            })
+            .ToList();
+        if (chunks.Count == 0) return;
+
+        var entries = new NameValueEntry[]
+        {
+            new("job_id", Guid.NewGuid().ToString()),
+            new("workspace_id", document.WorkspaceId.ToString()),
+            new("collection_id", $"workspace_{document.WorkspaceId}"),
+            new("source_type", "document"),
+            new("source_id", document.Id.ToString()),
+            new("chunks_json", JsonSerializer.Serialize(chunks)),
+            new("external_llm_allowed", externalLlmAllowed ? "true" : "false"),
+            new("ai_retrieval_allowed", document.AiEligible ? "true" : "false"),
+            new("retention_state", document.RetentionState),
+            new("deletion_state", document.DeletedAt == null ? "active" : "deleted"),
+            new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+        };
+
+        var db = _redis.GetDatabase();
+        await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+    }
+
+    private static IEnumerable<string> ChunkText(string text, int chunkSize)
+    {
+        for (var i = 0; i < text.Length; i += chunkSize)
+        {
+            var chunk = text.Substring(i, Math.Min(chunkSize, text.Length - i)).Trim();
+            if (chunk.Length > 0) yield return chunk;
+        }
     }
 }

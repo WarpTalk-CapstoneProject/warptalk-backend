@@ -45,10 +45,16 @@ try
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     builder.Services.AddScoped<IAssistantConversationService, AssistantConversationService>();
     builder.Services.AddScoped<IAssistantNotifier, AssistantNotifier>();
-    builder.Services.AddScoped<AssistantAgentLoop>();
-    builder.Services.AddSingleton<IAssistantAgentJobQueue, AssistantAgentJobQueue>();
-    builder.Services.AddHttpClient<IAssistantAgent, OpenAIAssistantAgent>();
-    builder.Services.AddHostedService<AssistantAgentBackgroundWorker>();
+    builder.Services.AddScoped<IAssistantChatRequestPublisher, RedisAssistantChatRequestPublisher>();
+
+    // The OpenAI tool-calling loop runs in ai_assistant_worker (Python) — this service only
+    // publishes the chat request (see IAssistantChatRequestPublisher) and consumes the result
+    // stream (see AssistantChatResultConsumerService) to update the DB and relay to SignalR.
+    var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
+        ?? throw new InvalidOperationException("Redis:ConnectionString is not configured.");
+    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
+        StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
+    builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
     var jwtSettings = builder.Configuration.GetSection("Jwt");
     var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];

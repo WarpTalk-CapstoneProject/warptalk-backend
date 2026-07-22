@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/assistant/" />
+  <Folder Name="/assistant/src/">
+    <Project Path="assistant/src/WarpTalk.AssistantService.API/WarpTalk.AssistantService.API.csproj" />
+    <Project Path="assistant/src/WarpTalk.AssistantService.Application/WarpTalk.AssistantService.Application.csproj" />
+    <Project Path="assistant/src/WarpTalk.AssistantService.Domain/WarpTalk.AssistantService.Domain.csproj" />
+    <Project Path="assistant/src/WarpTalk.AssistantService.Infrastructure/WarpTalk.AssistantService.Infrastructure.csproj" />
+  </Folder>
   <Folder Name="/auth/" />
   <Folder Name="/auth/src/">
     <Project Path="auth/src/WarpTalk.AuthService.API/WarpTalk.AuthService.API.csproj" />

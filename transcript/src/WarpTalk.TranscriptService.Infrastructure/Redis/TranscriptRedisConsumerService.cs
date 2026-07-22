@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -254,6 +256,20 @@ public class TranscriptRedisConsumerService : BackgroundService
 
                 _logger.LogInformation("Persisted segment {SegmentId} (final={IsFinal}) for room {RoomId}", segmentId, isFinal, roomId);
 
+                // Wire into the RAG pipeline incrementally, per segment, as it's transcribed —
+                // there is no real "transcript finalized" event in this codebase to wait for
+                // instead (transcriptService.finalize() has no backing endpoint). A publish
+                // failure here must not fail segment persistence, so it's isolated in its own
+                // try/catch rather than returning false (which would redeliver the whole message).
+                try
+                {
+                    await PublishEmbeddingIndexRequestAsync(transcript, segment, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to publish embedding index request for segment {SegmentId}", segmentId);
+                }
+
                 // Billing for STT usage is metered by billing_worker (warptalk-ai/billing_worker),
                 // which consumes this same stt:results event independently and writes to
                 // subscription.usage_records/credit_transactions. A second charge from here would
@@ -501,6 +517,50 @@ public class TranscriptRedisConsumerService : BackgroundService
             _logger.LogError(ex, "Error persisting audio_dubbing for segment {SegmentId} to database", segmentId);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Publishes one transcribed segment as a single chunk to the "embedding:index_requests"
+    /// Redis Stream that warptalk-ai's EmbeddingWorker consumes. Field names must match
+    /// EmbeddingIndexRequest.from_redis() in warptalk-ai/embedding_worker/schemas.py exactly;
+    /// chunk keys (id/text/metadata) must match EmbeddingChunk. collection_id follows the
+    /// "workspace_{id}" convention chat_tools.py's semantic_search already assumes.
+    /// </summary>
+    private async Task PublishEmbeddingIndexRequestAsync(Transcript transcript, TranscriptSegment segment, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(segment.OriginalText)) return;
+
+        var chunk = new
+        {
+            id = segment.Id.ToString(),
+            text = $"[{segment.SpeakerName}] {segment.OriginalText}".Trim(),
+            metadata = new
+            {
+                transcript_id = transcript.Id.ToString(),
+                translation_room_id = transcript.TranslationRoomId.ToString(),
+                segment_id = segment.Id.ToString(),
+                speaker_name = segment.SpeakerName,
+                start_ms = segment.StartTimeMs,
+            },
+        };
+
+        var entries = new NameValueEntry[]
+        {
+            new("job_id", Guid.NewGuid().ToString()),
+            new("workspace_id", transcript.WorkspaceId.ToString()),
+            new("collection_id", $"workspace_{transcript.WorkspaceId}"),
+            new("source_type", "transcript"),
+            new("source_id", transcript.Id.ToString()),
+            new("chunks_json", JsonSerializer.Serialize(new[] { chunk })),
+            new("external_llm_allowed", "true"),
+            new("ai_retrieval_allowed", "true"),
+            new("retention_state", "active"),
+            new("deletion_state", "active"),
+            new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+        };
+
+        var db = _redis.GetDatabase();
+        await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
     }
 
     /// <summary>
