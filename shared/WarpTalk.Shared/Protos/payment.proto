@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package payment;
+
+service PaymentService {
+  rpc CreateCheckoutSession (CreateCheckoutSessionRequest) returns (CreateCheckoutSessionResponse);
+  rpc CancelStripeSubscription (CancelStripeSubscriptionRequest) returns (CancelStripeSubscriptionResponse);
+  rpc UpdateStripeSubscription (UpdateStripeSubscriptionRequest) returns (UpdateStripeSubscriptionResponse);
+  rpc GetPaymentStatus (GetPaymentStatusRequest) returns (GetPaymentStatusResponse);
+  rpc RefundPayment (RefundPaymentRequest) returns (RefundPaymentResponse);
+}
+
+message CreateCheckoutSessionRequest {
+  string user_id = 1;
+  string workspace_id = 2;
+  double amount = 3;
+  string currency = 4;
+  string payment_type = 5;
+  string success_url = 6;
+  string cancel_url = 7;
+}
+
+message CreateCheckoutSessionResponse {
+  string url = 1;
+}
+
+message CancelStripeSubscriptionRequest {
+  string workspace_id = 1;
+}
+
+message CancelStripeSubscriptionResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message UpdateStripeSubscriptionRequest {
+  string workspace_id = 1;
+  double new_amount = 2;
+  string currency = 3;
+  string new_plan_name = 4;
+}
+
+message UpdateStripeSubscriptionResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message GetPaymentStatusRequest {
+  string provider_transaction_id = 1; // sessionId or paymentIntentId
+}
+
+message GetPaymentStatusResponse {
+  string status = 1;
+  string failure_reason = 2;
+}
+
+message RefundPaymentRequest {
+  string provider_transaction_id = 1; // paymentIntentId or chargeId
+}
+
+message RefundPaymentResponse {
+  bool success = 1;
+  string error_message = 2;
+}

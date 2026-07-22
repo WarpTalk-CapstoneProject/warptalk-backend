@@ -16,6 +16,6 @@ public static class ArtifactAccessHelper
         var settings = !string.IsNullOrEmpty(room.Settings) ? JsonSerializer.Deserialize<TranslationRoomSettings>(room.Settings) : null;
         var isParticipant = room.TranslationRoomParticipants.Any(p => p.UserId == userId);
         
-        return isParticipant && (settings?.ArtifactAccess == "PARTICIPANTS" || settings?.ArtifactAccess == "WORKSPACE");
+        return isParticipant && (settings?.ArtifactAccess == nameof(ArtifactAccessLevel.Participants) || settings?.ArtifactAccess == nameof(ArtifactAccessLevel.Workspace));
     }
 }

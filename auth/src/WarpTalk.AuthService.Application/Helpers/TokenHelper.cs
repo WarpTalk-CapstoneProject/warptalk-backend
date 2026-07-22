@@ -20,12 +20,13 @@ public static class TokenHelper
     }
 
     public static RefreshToken CreateRefreshTokenEntity(
-        this IJwtTokenGenerator jwtGenerator, 
-        Guid userId, 
-        string rawToken, 
-        string? ip, 
-        string? device)
+        this IJwtTokenGenerator jwtGenerator,
+        Guid userId,
+        string rawToken,
+        string? ip,
+        string? device,
+        Guid? familyId = null)
     {
-        return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device);
+        return TokenMapper.ToRefreshToken(userId, rawToken, jwtGenerator.RefreshTokenExpiryDays, ip, device, familyId);
     }
 }

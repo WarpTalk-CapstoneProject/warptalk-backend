@@ -14,6 +14,7 @@ public class UnitOfWork : IUnitOfWork
     public ILanguageRepository LanguageRepository { get; }
     public IUserSettingsRepository UserSettingsRepository { get; }
     public ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
+    public ITranslationRoomSessionRepository TranslationRoomSessionRepository { get; }
 
     public UnitOfWork(
         TranslationRoomDbContext context,
@@ -22,7 +23,8 @@ public class UnitOfWork : IUnitOfWork
         ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
         ILanguageRepository languageRepository,
         IUserSettingsRepository userSettingsRepository,
-        ITranslationRoomArtifactRepository translationRoomArtifactRepository)
+        ITranslationRoomArtifactRepository translationRoomArtifactRepository,
+        ITranslationRoomSessionRepository translationRoomSessionRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
@@ -31,6 +33,7 @@ public class UnitOfWork : IUnitOfWork
         LanguageRepository = languageRepository;
         UserSettingsRepository = userSettingsRepository;
         TranslationRoomArtifactRepository = translationRoomArtifactRepository;
+        TranslationRoomSessionRepository = translationRoomSessionRepository;
     }
 
     public IGenericRepository<T> Repository<T>() where T : class

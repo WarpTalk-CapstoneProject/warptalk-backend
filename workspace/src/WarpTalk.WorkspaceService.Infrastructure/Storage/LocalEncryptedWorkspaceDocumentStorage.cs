@@ -202,6 +202,31 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
         }
     }
 
+    public Task DeleteDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(document.StorageKey))
+        {
+            return Task.CompletedTask;
+        }
+
+        var fullPath = GetFullPath(document.StorageKey);
+
+        try
+        {
+            if (File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Best-effort cleanup — log but don't let this mask the caller's original failure.
+            _logger.LogError(ex, "Failed to delete orphaned document blob at {Path} for document {DocumentId}.", fullPath, document.Id);
+        }
+
+        return Task.CompletedTask;
+    }
+
     private (byte[] AesKey, byte[] HmacKey) DeriveKeys(Guid workspaceId)
     {
         var masterKeyStr = _configuration["Storage:MasterKey"] ?? "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";

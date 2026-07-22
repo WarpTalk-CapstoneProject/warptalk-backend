@@ -38,12 +38,17 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             var requester = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
-            
-            // WT-65: Loosen permissions to allow invited users to view participants
-            // if (room.HostId != requestedByUserId && (requester == null || requester.Status != "CONNECTED"))
-            // {
-            //     return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
-            // }
+
+            // WT-65 loosened this from "must be CONNECTED" to "any participant, any status" —
+            // but the whole check was accidentally dropped instead of just the status condition,
+            // leaving this endpoint callable by ANY authenticated user for ANY room. Restored with
+            // the WT-65 intent kept: host or any participant (regardless of Status) may list
+            // participants. ErrorCodes.Forbidden matches this method's own pinned unit test
+            // (GetParticipantsAsync_ShouldReturnForbidden_WhenRequesterIsNotInRoom).
+            if (room.HostId != requestedByUserId && requester == null)
+            {
+                return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
+            }
 
             var participants = await _participantRepository.FindAsync(p => p.TranslationRoomId == translationRoomId, "", ct);
             var query = participants.AsEnumerable();

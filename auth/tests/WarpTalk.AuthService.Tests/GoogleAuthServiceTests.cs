@@ -22,6 +22,7 @@ public class GoogleAuthServiceTests
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserRepository _userRepository;
+    private readonly IUserSettingRepository _userSettingRepository;
     private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly IJwtTokenGenerator _jwtGenerator;
     private readonly IGoogleTokenVerifier _googleTokenVerifier;
@@ -33,12 +34,14 @@ public class GoogleAuthServiceTests
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _userRepository = Substitute.For<IUserRepository>();
+        _userSettingRepository = Substitute.For<IUserSettingRepository>();
         _refreshTokenRepository = Substitute.For<IRefreshTokenRepository>();
         _jwtGenerator = Substitute.For<IJwtTokenGenerator>();
         _googleTokenVerifier = Substitute.For<IGoogleTokenVerifier>();
         _cache = Substitute.For<IDistributedCache>();
 
         _unitOfWork.UserRepository.Returns(_userRepository);
+        _unitOfWork.UserSettingRepository.Returns(_userSettingRepository);
         _unitOfWork.RefreshTokenRepository.Returns(_refreshTokenRepository);
 
         var settings = new AuthSettings
@@ -186,6 +189,35 @@ public class GoogleAuthServiceTests
         // Verify that distributed cache is accessed to handle verification email resend tracking (cooldown/window checks)
         await _cache.Received(1).GetStringAsync(Arg.Is<string>(k => k == $"resend:window:{user.Id}"), Arg.Any<CancellationToken>());
         await _cache.Received(1).GetStringAsync(Arg.Is<string>(k => k == $"resend:cooldown:{user.Id}"), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GoogleLoginAsync_ShouldCreateDefaultUserSettings_ForNewGoogleUser()
+    {
+        // Arrange
+        var request = new GoogleLoginRequest("google_id_token", "127.0.0.1", "Chrome");
+        var payload = new GoogleAuthPayload("sub123", "new-google-user@warptalk.vn", "New Google User", "pic.jpg", true);
+
+        _googleTokenVerifier.VerifyGoogleTokenAsync(request.IdToken, Arg.Any<CancellationToken>()).Returns(payload);
+        _userRepository.GetByEmailWithRolesAsync(payload.Email, Arg.Any<CancellationToken>()).Returns((User?)null);
+
+        User? capturedUser = null;
+        UserSetting? capturedSettings = null;
+        _userSettingRepository.When(r => r.Add(Arg.Any<UserSetting>()))
+            .Do(ci => capturedSettings = ci.Arg<UserSetting>());
+        _userRepository.When(r => r.AddAsync(Arg.Any<User>(), Arg.Any<CancellationToken>()))
+            .Do(ci => capturedUser = ci.Arg<User>());
+
+        // Act
+        var result = await _googleAuthService.GoogleLoginAsync(request);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(capturedUser);
+        Assert.NotEqual(Guid.Empty, capturedUser!.Id);
+        Assert.NotNull(capturedSettings);
+        Assert.Equal(capturedUser.Id, capturedSettings!.UserId);
+        _userSettingRepository.Received(1).Add(Arg.Any<UserSetting>());
     }
 
     [Fact]

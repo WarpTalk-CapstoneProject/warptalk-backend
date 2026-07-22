@@ -10,7 +10,7 @@ public class JoinTranslationRoomRequestValidator : AbstractValidator<JoinTransla
     {
         RuleFor(x => x.TranslationRoomCode)
             .NotEmpty().WithMessage(TranslationRoomConstants.ValidationTranslationRoomCodeRequired)
-            .Matches(@"^[A-Za-z0-9\-]+$").WithMessage(TranslationRoomConstants.ValidationTranslationRoomCodeFormat);
+            .Matches(@"^[A-Za-z\-]+$").WithMessage(TranslationRoomConstants.ValidationTranslationRoomCodeFormat);
 
         RuleFor(x => x.DisplayName)
             .NotEmpty().WithMessage(TranslationRoomConstants.ValidationDisplayNameRequired)

@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 

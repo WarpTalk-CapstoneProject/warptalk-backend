@@ -34,6 +34,10 @@ public static class UserMapper
     {
         return new User
         {
+            // Client-generated, matching RegisterInvitedAsync's pattern — the id column
+            // defaults to uuidv7() DB-side, but RegisterAsync needs the real id BEFORE
+            // insert to build the linked UserSetting row in the same SaveChanges batch.
+            Id = Guid.NewGuid(),
             Email = request.Email.ToLowerInvariant().Trim(),
             PasswordHash = passwordHash,
             FullName = request.FullName.Trim(),
@@ -47,6 +51,9 @@ public static class UserMapper
     {
         return new User
         {
+            // See ToUser(RegisterRequest, string) — GoogleLoginAsync creates a linked
+            // UserSetting in the same SaveChanges batch and needs the real id upfront.
+            Id = Guid.NewGuid(),
             Email = payload.Email.ToLowerInvariant().Trim(),
             PasswordHash = "", 
             FullName = payload.Name ?? "Google User",

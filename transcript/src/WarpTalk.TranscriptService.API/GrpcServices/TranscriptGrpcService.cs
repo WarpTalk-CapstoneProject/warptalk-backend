@@ -123,33 +123,49 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
         var skip = request.Skip > 0 ? request.Skip : 0;
         var take = request.Take > 0 ? request.Take : 50;
 
-        // Since Translations are children of Segments, we query translations that belong to segments of the transcript
-        var totalCount = await _unitOfWork.TranscriptTranslations.CountAsync(
-            t => t.Segment.TranscriptId == transcriptId, context.CancellationToken);
+        // TranscriptTranslation (the old 1:1 table) was dropped — translations now live in
+        // TranslationContent (deduplicated by workspace/text-hash/target-language), joined to
+        // a segment via the current SegmentTranslationLink. Same join TranscriptExportService.
+        // DownloadExportAsync and TranscriptQueryService.GetTranslationsAsync already use.
+        var segments = (await _unitOfWork.TranscriptSegments.FindAsync(s => s.TranscriptId == transcriptId, context.CancellationToken)).ToList();
+        var sequenceBySegmentId = segments.ToDictionary(s => s.Id, s => s.SequenceOrder);
+        var segmentIds = segments.Select(s => s.Id).ToList();
 
-        var translations = await _unitOfWork.TranscriptTranslations.GetPagedAsync(
-            t => t.Segment.TranscriptId == transcriptId,
-            skip,
-            take,
-            q => q.OrderBy(t => t.Segment.SequenceOrder),
-            context.CancellationToken);
+        var currentLinks = (await _unitOfWork.SegmentTranslationLinks.FindAsync(
+                l => segmentIds.Contains(l.SegmentId) && l.IsCurrent, context.CancellationToken))
+            .OrderBy(l => sequenceBySegmentId.GetValueOrDefault(l.SegmentId))
+            .ToList();
+
+        var contentIds = currentLinks.Select(l => l.TranslationContentId).Distinct().ToList();
+        var contentById = (await _unitOfWork.TranslationContents.FindAsync(c => contentIds.Contains(c.Id), context.CancellationToken))
+            .ToDictionary(c => c.Id);
+
+        var totalCount = currentLinks.Count;
 
         var response = new GetTranscriptTranslationsResponse
         {
             TotalCount = totalCount
         };
 
-        response.Translations.AddRange(translations.Select(t => new TranscriptTranslationDto
-        {
-            Id = t.Id.ToString(),
-            SegmentId = t.SegmentId.ToString(),
-            TargetLanguage = t.TargetLanguage ?? "unknown",
-            TranslatedText = t.TranslatedText ?? "",
-            TranslatorModel = t.TranslatorModel ?? "",
-            Confidence = (double)(t.Confidence ?? 1.0m),
-            IsRetranslated = t.IsRetranslated,
-            LatencyMs = t.LatencyMs ?? 0
-        }));
+        response.Translations.AddRange(currentLinks
+            .Skip(skip)
+            .Take(take)
+            .Where(l => contentById.ContainsKey(l.TranslationContentId))
+            .Select(l =>
+            {
+                var content = contentById[l.TranslationContentId];
+                return new TranscriptTranslationDto
+                {
+                    Id = content.Id.ToString(),
+                    SegmentId = l.SegmentId.ToString(),
+                    TargetLanguage = l.TargetLanguage ?? "unknown",
+                    TranslatedText = content.TranslatedText ?? "",
+                    TranslatorModel = content.TranslatorModel ?? "",
+                    Confidence = (double)(content.Confidence ?? 1.0m),
+                    IsRetranslated = content.IsRetranslated,
+                    LatencyMs = content.LatencyMs ?? 0
+                };
+            }));
 
         return response;
     }

@@ -107,6 +107,7 @@ builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAs
 builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
+builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 
 // History service
 builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();

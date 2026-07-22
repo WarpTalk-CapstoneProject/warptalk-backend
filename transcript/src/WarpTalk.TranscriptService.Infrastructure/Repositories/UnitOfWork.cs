@@ -16,7 +16,6 @@ public class UnitOfWork : IUnitOfWork
     
     private IGenericRepository<Transcript>? _transcripts;
     private IGenericRepository<TranscriptSegment>? _transcriptSegments;
-    private IGenericRepository<TranscriptTranslation>? _transcriptTranslations;
     private IGenericRepository<TranscriptCorrection>? _transcriptCorrections;
     private IGenericRepository<Glossary>? _glossaries;
     private IGenericRepository<GlossaryTerm>? _glossaryTerms;
@@ -36,10 +35,7 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<TranscriptSegment> TranscriptSegments => 
         _transcriptSegments ??= new GenericRepository<TranscriptSegment>(_context);
 
-    public IGenericRepository<TranscriptTranslation> TranscriptTranslations => 
-        _transcriptTranslations ??= new GenericRepository<TranscriptTranslation>(_context);
-
-    public IGenericRepository<TranscriptCorrection> TranscriptCorrections => 
+    public IGenericRepository<TranscriptCorrection> TranscriptCorrections =>
         _transcriptCorrections ??= new GenericRepository<TranscriptCorrection>(_context);
 
     public IGenericRepository<Glossary> Glossaries => 

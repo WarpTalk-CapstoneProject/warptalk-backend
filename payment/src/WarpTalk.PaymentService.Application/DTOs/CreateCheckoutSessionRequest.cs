@@ -1,0 +1,14 @@
+using System;
+
+namespace WarpTalk.PaymentService.Application.DTOs;
+
+public record CreateCheckoutSessionRequest
+{
+    public Guid UserId { get; init; }
+    public Guid WorkspaceId { get; init; }
+    public decimal Amount { get; init; }
+    public string Currency { get; init; } = "usd";
+    public string PaymentType { get; init; } = string.Empty; // e.g. "CreditTopUp", "Subscription"
+    public string PlanSlug { get; init; } = string.Empty;
+    public string BillingCycle { get; init; } = string.Empty;
+}

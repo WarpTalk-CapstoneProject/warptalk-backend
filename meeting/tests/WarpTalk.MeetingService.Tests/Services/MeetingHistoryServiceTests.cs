@@ -94,9 +94,9 @@ public class MeetingHistoryServiceTests
                 It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<MeetingParticipant>());
 
-        // Mock Query() for chat count
-        var emptyQueryable = new List<MeetingChatMessage>().AsQueryable();
-        _chatMessageRepoMock.Setup(r => r.Query()).Returns(emptyQueryable);
+        _chatMessageRepoMock.Setup(r => r.FindAsync(
+                It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MeetingChatMessage>());
 
         var result = await _sut.GetMeetingRoomDetailAsync(_roomId, _userId);
 
@@ -127,8 +127,9 @@ public class MeetingHistoryServiceTests
                 It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(participants);
 
-        var emptyQueryable = new List<MeetingChatMessage>().AsQueryable();
-        _chatMessageRepoMock.Setup(r => r.Query()).Returns(emptyQueryable);
+        _chatMessageRepoMock.Setup(r => r.FindAsync(
+                It.IsAny<Expression<Func<MeetingChatMessage, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MeetingChatMessage>());
 
         var result = await _sut.GetMeetingRoomDetailAsync(_roomId, _userId);
 

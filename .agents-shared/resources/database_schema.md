@@ -521,9 +521,9 @@ CREATE TABLE subscription.payments (
     amount                  DECIMAL(12, 2) NOT NULL CHECK (amount >= 0),
     tax_amount              DECIMAL(12, 2) NOT NULL DEFAULT 0 CHECK (tax_amount >= 0),
     total_amount            DECIMAL(12, 2) NOT NULL CHECK (total_amount >= 0),
-    currency                CHAR(3) NOT NULL DEFAULT 'VND',
+    currency                CHAR(3) NOT NULL DEFAULT 'USD',
     payment_method          VARCHAR(30) NOT NULL,
-    provider                VARCHAR(30) NOT NULL DEFAULT 'payos',
+    provider                VARCHAR(30) NOT NULL DEFAULT 'stripe',
     provider_transaction_id VARCHAR(255) UNIQUE,
     provider_order_id       VARCHAR(255),
     status                  VARCHAR(20) NOT NULL DEFAULT 'pending'
@@ -717,6 +717,6 @@ notification.notifications.user_id → gRPC → auth.users.id
 | `auth` | **9** | 13 | `audit_logs` | RBAC, user_settings, soft delete, UUID v7 |
 | `translation_room` | **6** | 11 | — | Audio routing, feedback, CHECK |
 | `transcript` | **7** | 13+2 FTS | `transcript_segments` | FTS, glossary, corrections |
-| `subscription` | **6** | 14 | `credit_transactions` | DECIMAL money, PayOS, usage tracking |
+| `subscription` | **6** | 14 | `credit_transactions` | DECIMAL money, Stripe, usage tracking |
 | `notification` | **5** | 7 | `notifications`, `email_logs` | Multi-channel, partial indexes |
 | **Total** | **33** | **60+** | **4 tables** | Production-grade |

@@ -39,6 +39,14 @@ public class TranslateMeetingChatMessageRequest
     public string TargetLanguage { get; set; } = null!;
 }
 
+public class MeetingChatTranslationDto
+{
+    public Guid MessageId { get; set; }
+    public string TargetLanguage { get; set; } = null!;
+    public string TranslatedText { get; set; } = null!;
+    public bool Cached { get; set; }
+}
+
 public class ModerateMeetingChatMessageRequest
 {
     public string Reason { get; set; } = null!;

@@ -64,10 +64,12 @@ builder.Services.AddScoped<ITranslationRoomRepository, TranslationRoomRepository
 builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoomParticipantRepository>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
+builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
+builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
 builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
 builder.Services.AddScoped<IAudioRouteTransitionProcessor, AudioRouteTransitionProcessor>();
@@ -82,9 +84,13 @@ builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalization
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
+// IdleRoomMonitoringWorker supersedes MeetingLifecycleWorker (removed): both scanned
+// on the same 1-min/5-min cadence for the same ghost/idle rooms, but MeetingLifecycleWorker
+// ended rooms via a raw entity update that skipped participant disconnection and the
+// WT-67 audio-routing session_ends event — this worker ends rooms via the proper
+// EndTranslationRoomAsync service method, which does both correctly.
 builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
-builder.Services.AddHostedService<WarpTalk.TranslationRoomService.Infrastructure.Workers.MeetingLifecycleWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();

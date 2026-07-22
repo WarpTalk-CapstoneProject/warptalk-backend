@@ -21,6 +21,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomAudioRouteRepository> _mockAudioRouteRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
+    private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
@@ -33,6 +34,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteRepo = new Mock<ITranslationRoomAudioRouteRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
+        _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
@@ -43,15 +45,17 @@ public class TranslationRoomServiceTests
         _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<TranslationRoomParticipant>());
 
-        // Default: a room has at least one route configured. Tests that specifically cover the
-        // "no routes" rejection path override this.
         _mockAudioRouteRepo.Setup(r => r.GetRoutesByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<TranslationRoomAudioRoute> { new TranslationRoomAudioRoute() });
+
+        // Start (re)generates audio routes for the current roster; default to success.
+        _mockAudioRouteService.Setup(s => s.GenerateRoutesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new List<TranslationRoomAudioRouteDto>()));
 
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockEmailService.Object, _mockLogger.Object);
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockAudioRouteService.Object, _mockEmailService.Object, _mockLogger.Object);
     }
 
     [Fact]
@@ -222,8 +226,12 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_NoAudioRoutes_ReturnsError()
+    public async Task StartTranslationRoomAsync_NoPreexistingRoutes_GeneratesRoutesAndStarts()
     {
+        // A host must be able to start the room before other participants join. Routes form a
+        // full mesh between participants whose languages differ, so a host-only room has zero
+        // routes — Start must (re)generate routes for the current roster and still transition to
+        // IN_PROGRESS instead of failing with a 409.
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var room = new TranslationRoom
@@ -248,10 +256,10 @@ public class TranslationRoomServiceTests
 
         var result = await _service.StartTranslationRoomAsync(roomId, hostId);
 
-        result.IsSuccess.Should().BeFalse();
-        result.Error.Should().Be(TranslationRoomConstants.ErrorNoAudioRoutesConfigured);
-        room.Status.Should().Be("WAITING");
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default), Times.Never);
+        result.IsSuccess.Should().BeTrue(result.Error);
+        room.Status.Should().Be("IN_PROGRESS");
+        _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
+        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]
