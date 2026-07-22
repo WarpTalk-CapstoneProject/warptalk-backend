@@ -34,6 +34,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly IDocumentSecurityScanner _securityScanner;
+    private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly DocumentSecurityGuardrailConsumerService _service;
 
     public DocumentSecurityGuardrailConsumerServiceTests()
@@ -48,6 +49,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
         _textExtractor = Substitute.For<IDocumentTextExtractor>();
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();
+        _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
 
         _serviceProvider.GetService(typeof(IServiceScopeFactory)).Returns(serviceScopeFactory);
         serviceScopeFactory.CreateScope().Returns(_serviceScope);
@@ -56,6 +58,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _serviceProvider.GetService(typeof(IWorkspaceDocumentStorage)).Returns(_storage);
         _serviceProvider.GetService(typeof(IDocumentTextExtractor)).Returns(_textExtractor);
         _serviceProvider.GetService(typeof(IDocumentSecurityScanner)).Returns(_securityScanner);
+        _serviceProvider.GetService(typeof(IWorkspaceDocumentEventPublisher)).Returns(_eventPublisher);
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceDocumentRepository.Returns(_workspaceDocumentRepository);
 
@@ -105,7 +108,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.failed.ToString(), document.IngestionStatus);
         _workspaceDocumentRepository.Received().Update(document);
     }
 
@@ -148,7 +151,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.failed.ToString(), document.IngestionStatus);
     }
 
     [Fact]
@@ -202,7 +205,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.failed.ToString(), document.IngestionStatus);
     }
 
     [Fact]
@@ -242,8 +245,8 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         // Assert
         Assert.False(document.IsSensitive);
-        Assert.True(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.processing.ToString(), document.IngestionStatus);
+        await _eventPublisher.Received().PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, rawText, true, Arg.Any<CancellationToken>());
         _workspaceDocumentRepository.Received().Update(document);
     }
 

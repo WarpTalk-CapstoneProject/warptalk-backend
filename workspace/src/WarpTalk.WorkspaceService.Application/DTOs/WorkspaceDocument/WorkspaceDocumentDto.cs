@@ -15,6 +15,8 @@ public record WorkspaceDocumentDto(
     string SourceType,
     Guid? SourceId,
     string IngestionStatus,
+    bool AiEligible,
+    bool IsAiAllowed,
     bool IsSensitive,
     string ConfidentialityLevel,
     string RetentionState,

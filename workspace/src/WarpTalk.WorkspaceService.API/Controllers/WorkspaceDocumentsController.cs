@@ -133,11 +133,13 @@ public class WorkspaceDocumentsController : ControllerBase
         if (userId == null) return Unauthorized();
 
         var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
+        if (!result.IsSuccess || result.Value == null)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
         }
-        return Ok(result.Value);
+
+        var dto = result.Value;
+        return File(dto.Stream, dto.ContentType, dto.FileName);
     }
 
     [Authorize]

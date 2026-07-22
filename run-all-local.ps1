@@ -259,7 +259,7 @@ function Start-RabbitMQ {
             continue
         }
 
-        $ping = docker exec $RabbitContainer rabbitmq-diagnostics -q ping 2>$null
+        docker exec $RabbitContainer rabbitmq-diagnostics -q ping 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host ($GREEN + " [OK]" + $NC)
             return
@@ -344,7 +344,7 @@ function Invoke-Migrations {
             if (Test-Path $filePath) {
                 # Check if already applied
                 $isApplied = docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -tAc "SELECT 1 FROM public.schema_migrations WHERE version='$f';" 2>$null
-                if ($isApplied -eq $null -or $isApplied.Trim() -ne "1") {
+                if ($null -eq $isApplied -or $isApplied.Trim() -ne "1") {
                     Write-Host "   Executing $f..."
                     Get-Content $filePath -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB | Out-Null
                     docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -c "INSERT INTO public.schema_migrations(version) VALUES ('$f');" | Out-Null
@@ -367,7 +367,7 @@ function Invoke-Seeds {
     
     if (Test-Path $SeedDemo) {
         $userCount = docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -tAc "SELECT COUNT(*) FROM auth.users;" 2>$null
-        if ($userCount -eq $null -or $userCount.Trim() -eq "0") {
+        if ($null -eq $userCount -or $userCount.Trim() -eq "0") {
             Write-Host "   Applying seed-demo.sql..."
             Get-Content $SeedDemo -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB | Out-Null
 
@@ -600,94 +600,100 @@ foreach ($service in $Services) {
     $cwd = $service.Cwd
     $port = $service.Port
     $fullPath = Join-Path $ScriptDir $cwd
+}
+if (-not (Test-Path $fullPath)) {
+    Write-Host ($YELLOW + "   [WARN] Skip $name - folder not found" + $NC)
+    continue
+}
 
-    if (-not (Test-Path $fullPath)) {
-        Write-Host ($YELLOW + "   [WARN] Skip $name - folder not found" + $NC)
-        continue
-    }
+Write-Host ("[START] Starting " + $CYAN + $name + $NC + "...")
 
-    Write-Host ("[START] Starting " + $CYAN + $name + $NC + "...")
+$stdoutFile = Join-Path $LogDir "$name.log"
+$stderrFile = Join-Path $LogDir "$name.err"
 
-    $stdoutFile = Join-Path $LogDir "$name.log"
-    $stderrFile = Join-Path $LogDir "$name.err"
+# Temporarily set environmental variables for child processes to inherit
+$env:ASPNETCORE_ENVIRONMENT = "Development"
+$env:ConnectionStrings__AuthDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
+$env:ConnectionStrings__MeetingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=meeting,public"
+$env:ConnectionStrings__TranslationRoomDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=translation_room,public"
+$env:ConnectionStrings__TranscriptDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=transcript,public"
+$env:ConnectionStrings__WorkspaceDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
+$env:ConnectionStrings__BillingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=subscription,public"
+$env:ConnectionStrings__NotificationDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=platform,public"
 
-    # Temporarily set environmental variables for child processes to inherit
-    $env:ASPNETCORE_ENVIRONMENT = "Development"
-    $env:ConnectionStrings__AuthDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
-    $env:ConnectionStrings__MeetingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=meeting,public"
-    $env:ConnectionStrings__TranslationRoomDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=translation_room,public"
-    $env:ConnectionStrings__TranscriptDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=transcript,public"
-    $env:ConnectionStrings__WorkspaceDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
-    $env:ConnectionStrings__BillingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=subscription,public"
-    $env:ConnectionStrings__NotificationDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=platform,public"
+if ($name -eq "meeting") {
+    $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__MeetingDb
+}
+elseif ($name -eq "notification") {
+    $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__NotificationDb
+}
 
-    if ($name -eq "meeting") {
-        $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__MeetingDb
-    }
-    elseif ($name -eq "notification") {
-        $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__NotificationDb
-    }
+# Shared infra connection variables
+$env:Redis__ConnectionString = "localhost:6379,password=$env:REDIS_PASSWORD"
+$env:RabbitMQ__Host = "localhost"
+$env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
+$env:RabbitMQ__Password = if ($env:RABBITMQ_PASSWORD) { $env:RABBITMQ_PASSWORD } else { "warptalk-dev-rabbitmq" }
+$env:RabbitMQ__VirtualHost = if ($env:RABBITMQ_VHOST) { $env:RABBITMQ_VHOST } else { "/" }
+$env:Jwt__Secret = $env:JWT_SECRET
+$env:Jwt__Issuer = if ($env:JWT_ISSUER) { $env:JWT_ISSUER } else { "WarpTalk.AuthService" }
+$env:Jwt__Audience = if ($env:JWT_AUDIENCE) { $env:JWT_AUDIENCE } else { "WarpTalk" }
+$env:LiveKit__ApiKey = $env:LIVEKIT_API_KEY
+$env:LiveKit__ApiSecret = $env:LIVEKIT_API_SECRET
 
-    # Shared infra connection variables
-    $env:Redis__ConnectionString = "localhost:6379,password=$env:REDIS_PASSWORD"
-    $env:RabbitMQ__Host = "localhost"
-    $env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
-    $env:RabbitMQ__Password = if ($env:RABBITMQ_PASSWORD) { $env:RABBITMQ_PASSWORD } else { "warptalk-dev-rabbitmq" }
-    $env:RabbitMQ__VirtualHost = if ($env:RABBITMQ_VHOST) { $env:RABBITMQ_VHOST } else { "/" }
-    $env:Jwt__Secret = $env:JWT_SECRET
-    $env:Jwt__Issuer = if ($env:JWT_ISSUER) { $env:JWT_ISSUER } else { "WarpTalk.AuthService" }
-    $env:Jwt__Audience = if ($env:JWT_AUDIENCE) { $env:JWT_AUDIENCE } else { "WarpTalk" }
-    $env:LiveKit__ApiKey = $env:LIVEKIT_API_KEY
-    $env:LiveKit__ApiSecret = $env:LIVEKIT_API_SECRET
+if ($name -eq "gateway") {
+    $env:ASPNETCORE_URLS = "http://localhost:5200"
+}
 
-    if ($name -eq "gateway") {
-        $env:ASPNETCORE_URLS = "http://localhost:5200"
-    }
+$startParams = @{
+    FilePath               = "dotnet"
+    ArgumentList           = "run --no-build --no-launch-profile"
+    WorkingDirectory       = $fullPath
+    NoNewWindow            = $true
+    RedirectStandardOutput = $stdoutFile
+    RedirectStandardError  = $stderrFile
+    PassThru               = $true
+}
+$proc = Start-Process @startParams
 
-    $proc = Start-Process `
-        -FilePath "dotnet" `
-        -ArgumentList "run --no-build --no-launch-profile" `
-        -WorkingDirectory $fullPath `
-        -NoNewWindow `
-        -RedirectStandardOutput $stdoutFile `
-        -RedirectStandardError $stderrFile `
-        -PassThru
+# Restore variables
+Remove-Item env:ASPNETCORE_ENVIRONMENT
+Remove-Item env:ConnectionStrings__AuthDb
+Remove-Item env:ConnectionStrings__MeetingDb
+Remove-Item env:ConnectionStrings__TranslationRoomDb
+Remove-Item env:ConnectionStrings__TranscriptDb
+Remove-Item env:ConnectionStrings__WorkspaceDb
+Remove-Item env:ConnectionStrings__BillingDb
+Remove-Item env:ConnectionStrings__NotificationDb
+Remove-Item env:ConnectionStrings__DefaultConnection -ErrorAction SilentlyContinue
+Remove-Item env:Redis__ConnectionString
+Remove-Item env:RabbitMQ__Host
+Remove-Item env:RabbitMQ__Username
+Remove-Item env:RabbitMQ__Password
+Remove-Item env:RabbitMQ__VirtualHost
+Remove-Item env:Jwt__Secret
+Remove-Item env:Jwt__Issuer
+Remove-Item env:Jwt__Audience
+Remove-Item env:LiveKit__ApiKey
+Remove-Item env:LiveKit__ApiSecret
+if ($name -eq "gateway") {
+    Remove-Item env:ASPNETCORE_URLS
+}
 
-    # Restore variables
-    Remove-Item env:ASPNETCORE_ENVIRONMENT
-    Remove-Item env:ConnectionStrings__AuthDb
-    Remove-Item env:ConnectionStrings__MeetingDb
-    Remove-Item env:ConnectionStrings__TranslationRoomDb
-    Remove-Item env:ConnectionStrings__TranscriptDb
-    Remove-Item env:ConnectionStrings__WorkspaceDb
-    Remove-Item env:ConnectionStrings__BillingDb
-    Remove-Item env:ConnectionStrings__NotificationDb
-    Remove-Item env:ConnectionStrings__DefaultConnection -ErrorAction SilentlyContinue
-    Remove-Item env:Redis__ConnectionString
-    Remove-Item env:RabbitMQ__Host
-    Remove-Item env:RabbitMQ__Username
-    Remove-Item env:RabbitMQ__Password
-    Remove-Item env:RabbitMQ__VirtualHost
-    Remove-Item env:Jwt__Secret
-    Remove-Item env:Jwt__Issuer
-    Remove-Item env:Jwt__Audience
-    Remove-Item env:LiveKit__ApiKey
-    Remove-Item env:LiveKit__ApiSecret
-    if ($name -eq "gateway") {
-        Remove-Item env:ASPNETCORE_URLS
-    }
+$PidStore[$name] = $proc.Id
+Write-Host ("   " + $GREEN + "PID: " + $proc.Id + " -> logs in logs/$name.log" + $NC)
 
-    $PidStore[$name] = $proc.Id
-    Write-Host ("   " + $GREEN + "PID: " + $proc.Id + " -> logs in logs/$name.log" + $NC)
-
-    Remove-Item env:GrpcUrls__TranslationRoomService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__BillingService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__AuthService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__WorkspaceService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__TranscriptService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__NotificationService -ErrorAction SilentlyContinue
-    Remove-Item env:GrpcUrls__MeetingService -ErrorAction SilentlyContinue
-    # Delay for startup order sequence
+Remove-Item env:GrpcUrls__TranslationRoomService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__BillingService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__AuthService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__WorkspaceService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__TranscriptService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__NotificationService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__MeetingService -ErrorAction SilentlyContinue
+# Delay for startup order sequence
+if ($name -eq "auth") {
+    Start-Sleep -Seconds 3
+}
+else {
     if ($name -eq "auth") {
         Start-Sleep -Seconds 3
     }

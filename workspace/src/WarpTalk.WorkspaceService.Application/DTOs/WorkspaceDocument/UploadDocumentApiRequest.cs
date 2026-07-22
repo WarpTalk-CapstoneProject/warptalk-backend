@@ -11,5 +11,6 @@ public record UploadDocumentApiRequest(
     string SourceType,
     Guid? SourceId,
     bool IsSensitive,
-    IFormFile File
+    IFormFile File,
+    bool IsAiAllowed = true
 );

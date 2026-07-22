@@ -115,6 +115,9 @@ public partial class WorkspaceDbContext : DbContext
             entity.Property(e => e.AiEligible)
                 .HasDefaultValue(true)
                 .HasColumnName("ai_eligible");
+            entity.Property(e => e.IsAiAllowed)
+                .HasDefaultValue(true)
+                .HasColumnName("is_ai_allowed");
             entity.Property(e => e.AiUsagePolicy)
                 .HasColumnType("jsonb")
                 .HasColumnName("ai_usage_policy");

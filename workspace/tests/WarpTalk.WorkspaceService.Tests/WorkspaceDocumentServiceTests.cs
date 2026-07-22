@@ -286,13 +286,14 @@ public class WorkspaceDocumentServiceTests
 
         _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, Arg.Any<CancellationToken>()).Returns(Result.Success());
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(new System.IO.MemoryStream());
 
         // Act
         var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId);
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal(documentId, result.Value.Id);
+        Assert.Equal("file.pdf", result.Value.FileName);
         await _workspaceDocumentAuditRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocumentAudit>(), Arg.Any<CancellationToken>());
     }
 

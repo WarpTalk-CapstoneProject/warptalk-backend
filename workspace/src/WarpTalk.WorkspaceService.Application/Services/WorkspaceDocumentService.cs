@@ -83,13 +83,30 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 ? WorkspaceDocumentStatus.active 
                 : WorkspaceDocumentStatus.pending_approval;
 
-            var ingestionStatus = isOwnerOrAdmin 
-                ? WorkspaceDocumentIngestionStatus.pending 
-                : WorkspaceDocumentIngestionStatus.awaiting_approval;
+            var isImage = extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                          extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                          extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                          extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
+                          extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase);
 
-            var aiEligible = isOwnerOrAdmin;
+            var effectiveIsAiAllowed = request.IsAiAllowed && !isImage;
+
+            WorkspaceDocumentIngestionStatus ingestionStatus;
+            if (!effectiveIsAiAllowed)
+            {
+                ingestionStatus = WorkspaceDocumentIngestionStatus.skipped;
+            }
+            else
+            {
+                ingestionStatus = isOwnerOrAdmin 
+                    ? WorkspaceDocumentIngestionStatus.pending 
+                    : WorkspaceDocumentIngestionStatus.awaiting_approval;
+            }
+
+            var aiEligible = false; // Initial state: false until ingestion completes or if IsAiAllowed == false
 
             var document = request.ToEntity(docId, workspaceId, userId, storageKey, status, ingestionStatus, aiEligible);
+            document.IsAiAllowed = effectiveIsAiAllowed;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
             using (var stream = request.File.OpenReadStream())
@@ -110,7 +127,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 throw;
             }
 
-            if (isOwnerOrAdmin)
+            if (isOwnerOrAdmin && request.IsAiAllowed)
             {
                 // Publish upload event to trigger Pre-Ingestion security scan and eventual Qdrant sync
                 await _eventPublisher.PublishDocumentUploadedAsync(
@@ -309,6 +326,39 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(request.IsSensitive.Value);
             }
 
+            if (request.IsAiAllowed.HasValue && request.IsAiAllowed.Value != document.IsAiAllowed)
+            {
+                var wasAllowed = document.IsAiAllowed;
+                document.IsAiAllowed = request.IsAiAllowed.Value;
+
+                if (!document.IsAiAllowed)
+                {
+                    // Toggled to Administrative Document (IsAiAllowed = false)
+                    document.AiEligible = false;
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+                    
+                    // Invalidate and delete existing vectors in Qdrant Vector DB
+                    await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+                }
+                else
+                {
+                    // Toggled back to AI Context Document (IsAiAllowed = true)
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
+                    if (string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        await _eventPublisher.PublishDocumentUploadedAsync(
+                            document.Id,
+                            workspaceId,
+                            document.StorageKey,
+                            document.FileName,
+                            document.FileExtension,
+                            userId,
+                            document.IsSensitive,
+                            ct);
+                    }
+                }
+            }
+
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -492,31 +542,32 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         }
     }
 
-    public async Task<Result<WorkspaceDocumentDto>> DownloadDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
     {
         try
         {
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
             if (!accessResult.IsSuccess)
             {
-                return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null)
             {
-                return Result.Failure<WorkspaceDocumentDto>("Document not found.", ErrorCodes.NotFound);
+                return Result.Failure<DocumentDownloadStreamDto>("Document not found.", ErrorCodes.NotFound);
             }
+
+            var stream = await _storage.GetDecryptedStreamAsync(document, ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadDocument, logger: _logger, ct: ct);
 
-            var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
-            return Result.Success(document.ToDto(downloadUrl));
+            return Result.Success(new DocumentDownloadStreamDto(stream, document.MimeType, document.FileName));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while downloading document. DocumentId: {DocumentId}", documentId);
-            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -44,6 +44,8 @@ public partial class WorkspaceDocument
     public string? Keywords { get; set; }
 
     public bool AiEligible { get; set; }
+
+    public bool IsAiAllowed { get; set; } = true;
 
     public string? AiUsagePolicy { get; set; }
 
