@@ -1,36 +1,38 @@
 using Grpc.Core;
 using WarpTalk.Shared.Protos;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Enums;
+using Dtos = WarpTalk.BillingService.Application.DTOs;
 
 namespace WarpTalk.BillingService.API.GrpcServices;
 
 public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingServiceBase
 {
-    private readonly IBillingService _billingService;
+    private readonly ICreditService _creditService;
+    private readonly ISubscriptionService _subscriptionService;
+    private readonly IPaymentAndLedgerService _paymentService;
     private readonly ILogger<BillingServiceGrpc> _logger;
-    private const string DefaultTestWorkspaceId = "550e8400-e29b-41d4-a716-446655440005";
 
-    public BillingServiceGrpc(IBillingService billingService, ILogger<BillingServiceGrpc> logger)
+    public BillingServiceGrpc(
+        ICreditService creditService, 
+        ISubscriptionService subscriptionService,
+        IPaymentAndLedgerService paymentService,
+        ILogger<BillingServiceGrpc> logger)
     {
-        _billingService = billingService;
+        _creditService = creditService;
+        _subscriptionService = subscriptionService;
+        _paymentService = paymentService;
         _logger = logger;
     }
 
     public override async Task<GetCreditsResponse> GetWorkspaceCredits(GetCreditsRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        
-        // Auto-fallback for testing if ID is missing or invalid
-        if (string.IsNullOrEmpty(rawId) || rawId == "string")
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
         {
-            _logger.LogInformation("No valid WorkspaceId provided, falling back to test ID: {TestId}", DefaultTestWorkspaceId);
-            rawId = DefaultTestWorkspaceId;
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
         }
 
-        if (!Guid.TryParse(rawId, out var workspaceId))
-            throw new RpcException(new Status(StatusCode.InvalidArgument, $"Invalid Workspace ID format: '{rawId}'. Must be a GUID."));
-
-        var result = await _billingService.GetWorkspaceCreditsAsync(workspaceId, context.CancellationToken);
+        var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, context.CancellationToken);
         
         if (!result.IsSuccess)
             throw new RpcException(new Status(StatusCode.NotFound, result.Error ?? "Workspace not found"));
@@ -39,17 +41,16 @@ public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingS
         {
             WorkspaceId = result.Value.WorkspaceId.ToString(),
             CurrentCredits = result.Value.CurrentCredits,
-            Status = result.Value.SubscriptionStatus
+            Status = result.Value.Status
         };
     }
 
     public override async Task<ConsumeCreditsResponse> ConsumeCredits(ConsumeCreditsRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
         Guid? referenceId = null;
         if (!string.IsNullOrEmpty(request.ReferenceId) && Guid.TryParse(request.ReferenceId, out var parsedRefId))
@@ -57,34 +58,46 @@ public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingS
             referenceId = parsedRefId;
         }
 
-        var result = await _billingService.ConsumeCreditsAsync(
+        CreditReferenceType referenceType = CreditReferenceType.Unknown;
+        if (Enum.TryParse<CreditReferenceType>(request.ReferenceType, true, out var parsedRefType))
+        {
+            referenceType = parsedRefType;
+        }
+
+        var result = await _creditService.ConsumeCreditsAsync(
             workspaceId, 
-            request.Amount, 
-            request.ReferenceType, 
-            referenceId, 
+            new Dtos.ConsumeCreditsRequest(workspaceId, request.Amount, referenceType, referenceId), 
             context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Failed to consume credits"));
+        }
 
         return new ConsumeCreditsResponse
         {
-            Success = result.IsSuccess,
-            NewBalance = result.IsSuccess ? result.Value.CurrentCredits : 0,
-            ErrorMessage = result.Error ?? string.Empty
+            Success = true,
+            NewBalance = result.Value.BalanceAfter,
+            ErrorMessage = string.Empty
         };
     }
 
     public override async Task<GetCreditsResponse> TopUpCredits(TopUpRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
-        var result = await _billingService.TopUpCreditsAsync(
+        CreditReferenceType referenceType = CreditReferenceType.Unknown;
+        if (Enum.TryParse<CreditReferenceType>(request.ReferenceType, true, out var parsedRefType))
+        {
+            referenceType = parsedRefType;
+        }
+
+        var result = await _creditService.TopUpCreditsAsync(
             workspaceId, 
-            request.Amount, 
-            request.ReferenceType, 
-            null, 
+            new Dtos.TopUpRequest(workspaceId, request.Amount, referenceType, null), 
             context.CancellationToken);
 
         if (!result.IsSuccess)
@@ -94,40 +107,43 @@ public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingS
         {
             WorkspaceId = result.Value.WorkspaceId.ToString(),
             CurrentCredits = result.Value.CurrentCredits,
-            Status = result.Value.SubscriptionStatus
+            Status = result.Value.Status
         };
     }
 
     public override async Task<SubscriptionResponse> CreateSubscription(CreateSubscriptionRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
         if (!Guid.TryParse(request.PlanId, out var planId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Plan ID"));
 
-        var result = await _billingService.CreateSubscriptionAsync(workspaceId, planId, context.CancellationToken);
+        var result = await _subscriptionService.CreateSubscriptionAsync(new Dtos.SubscriptionRequest(workspaceId, planId, Guid.Empty), context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Failed to create subscription"));
+        }
 
         return new SubscriptionResponse
         {
-            SubscriptionId = result.IsSuccess ? result.Value.Id.ToString() : string.Empty,
-            Status = result.IsSuccess ? result.Value.Status : "Failed",
-            ErrorMessage = result.Error ?? string.Empty
+            SubscriptionId = result.Value.Id.ToString(),
+            Status = result.Value.Status,
+            ErrorMessage = string.Empty
         };
     }
 
-    public override async Task<SubscriptionResponse> GetActiveSubscription(GetCreditsRequest request, ServerCallContext context)
+    public override async Task<SubscriptionResponse> GetActiveSubscription(GetActiveSubscriptionRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
-        var result = await _billingService.GetActiveSubscriptionAsync(workspaceId, context.CancellationToken);
+        var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, context.CancellationToken);
         
         if (!result.IsSuccess)
         {
@@ -148,33 +164,39 @@ public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingS
 
     public override async Task<SubscriptionResponse> CancelSubscription(CancelSubscriptionRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
-        var result = await _billingService.CancelSubscriptionAsync(workspaceId, request.Reason, context.CancellationToken);
+        var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, request.Reason, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? "Failed to cancel subscription"));
+        }
 
         return new SubscriptionResponse
         {
-            Status = result.IsSuccess ? "Cancelled" : "Failed",
-            ErrorMessage = result.Error ?? string.Empty
+            Status = "Cancelled",
+            ErrorMessage = string.Empty
         };
     }
 
     public override async Task<CreditHistoryResponse> GetCreditHistory(GetHistoryRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
-        var result = await _billingService.GetCreditHistoryAsync(
-            workspaceId, 
-            request.PageNumber > 0 ? request.PageNumber : 1, 
-            request.PageSize > 0 ? request.PageSize : 50, 
+        var result = await _creditService.GetCreditHistoryAsync(
+            workspaceId,
+            new Dtos.CreditHistoryQuery() with
+            {
+                PageNumber = request.PageNumber > 0 ? request.PageNumber : 1,
+                PageSize = request.PageSize > 0 ? request.PageSize : 50
+            }, 
             context.CancellationToken);
 
         if (!result.IsSuccess)
@@ -196,16 +218,17 @@ public class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.BillingS
 
     public override async Task<TransactionHistoryResponse> GetTransactionHistory(GetHistoryRequest request, ServerCallContext context)
     {
-        var rawId = request.WorkspaceId?.Trim();
-        if (string.IsNullOrEmpty(rawId) || rawId == "string") rawId = DefaultTestWorkspaceId;
-
-        if (!Guid.TryParse(rawId, out var workspaceId))
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid Workspace ID"));
+        }
 
-        var result = await _billingService.GetTransactionHistoryAsync(
+        var result = await _paymentService.GetPaymentHistoryAsync(
             workspaceId, 
-            request.PageNumber > 0 ? request.PageNumber : 1, 
-            request.PageSize > 0 ? request.PageSize : 50, 
+            new Dtos.PaginationQuery(
+                request.PageNumber > 0 ? request.PageNumber : 1, 
+                request.PageSize > 0 ? request.PageSize : 50
+            ), 
             context.CancellationToken);
 
         if (!result.IsSuccess)

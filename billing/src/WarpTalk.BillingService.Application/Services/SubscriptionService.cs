@@ -57,13 +57,13 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
-    public async Task<Result<PagedResult<SubscriptionDto>>> GetGlobalSubscriptionsAsync(
-        int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<Result<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptionsAsync(
+        PaginationQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
-            var size = pageSize > 0 ? pageSize : 20;
-            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+            var size = query.PageSize > 0 ? query.PageSize : 20;
+            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
 
             var subs = await _unitOfWork.SubscriptionRepository.GetPagedAsync(
                 s => s.DeletedAt == null,
@@ -122,12 +122,12 @@ public class SubscriptionService : ISubscriptionService
                 _logger.LogWarning(wsEx, "Failed to resolve workspace names for global subscriptions history");
             }
 
-            return Result.Success(new PagedResult<SubscriptionDto>(total, items));
+            return Result.Success(PaginatedResponse<SubscriptionDto>.Create(items, total, query.PageNumber, query.PageSize));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error fetching global subscriptions");
-            return Result.Failure<PagedResult<SubscriptionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<PaginatedResponse<SubscriptionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

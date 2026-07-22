@@ -1,11 +1,5 @@
 namespace WarpTalk.BillingService.Application.DTOs;
 
-/// <summary>
-/// DTOs for simulating Stripe payment provider integration.
-/// Shaped after Stripe's real Event / Checkout Session objects (simplified to the fields
-/// this simulation actually needs), replacing the earlier PayOS-based simulation.
-/// </summary>
-
 public record StripeWebhookEvent(
     string id,
     string type,

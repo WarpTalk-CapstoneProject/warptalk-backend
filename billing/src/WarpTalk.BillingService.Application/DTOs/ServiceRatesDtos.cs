@@ -1,8 +1,5 @@
 namespace WarpTalk.BillingService.Application.DTOs;
 
-/// <summary>
-/// Current AI service credit rates returned to the client.
-/// </summary>
 public record ServiceRatesDto(
     double SttPerMinute,
     double TranslationPerMinute,
@@ -12,9 +9,7 @@ public record ServiceRatesDto(
     double AiChatPerRequest
 );
 
-/// <summary>
-/// Request body for updating AI service rates (admin only).
-/// </summary>
+
 public record UpdateServiceRatesRequest(
     double SttPerMinute,
     double TranslationPerMinute,

@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Enums;
 using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
@@ -21,9 +22,9 @@ public class CreditServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IBillingMessagePublisher> _mockMessagePublisher;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
-    private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
+    private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IRedisBillingStore> _mockRedisStore;
     private readonly CreditService _creditService;
@@ -32,9 +33,9 @@ public class CreditServiceTests
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockMessagePublisher = new Mock<IBillingMessagePublisher>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
-        _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
+        _mockTxRepo = new Mock<ICreditTransactionRepository>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
         _mockRedisStore = new Mock<IRedisBillingStore>();
 
@@ -85,7 +86,7 @@ public class CreditServiceTests
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
 
-        var request = new ConsumeCreditsRequest(100, "testing", null);
+        var request = new ConsumeCreditsRequest(workspaceId, 100, CreditReferenceType.Manual, null);
         var result = await _creditService.ConsumeCreditsAsync(workspaceId, request);
 
         result.IsSuccess.Should().BeFalse();

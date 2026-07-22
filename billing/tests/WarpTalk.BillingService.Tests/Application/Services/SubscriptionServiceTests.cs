@@ -14,28 +14,35 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
 
+using WarpTalk.BillingService.Domain.Enums;
+
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class SubscriptionServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient> _mockPaymentClient;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockPaymentClient = new Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>();
+
+        var mockPaymentRepo = new Mock<IPaymentRepository>();
+        var mockInvoiceRepo = new Mock<IInvoiceRepository>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
+        _mockUnitOfWork.Setup(u => u.PaymentRepository).Returns(mockPaymentRepo.Object);
+        _mockUnitOfWork.Setup(u => u.InvoiceRepository).Returns(mockInvoiceRepo.Object);
 
         _subscriptionService = new SubscriptionService(
             _mockUnitOfWork.Object,
@@ -132,7 +139,7 @@ public class SubscriptionServiceTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task ChangeSubscriptionAsync_Should_CancelOld_And_CreateNewPending()
+    public async Task ChangeSubscriptionAsync_Should_CancelOld_And_CreateNewActive()
     {
         var workspaceId = Guid.NewGuid();
         var oldPlanId = Guid.NewGuid();
@@ -145,7 +152,7 @@ public class SubscriptionServiceTests
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(newPlan);
 
         var mockCall = new Grpc.Core.AsyncUnaryCall<WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse>(
-            Task.FromResult(new WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse { Success = false }),
+            Task.FromResult(new WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse { Success = true }),
             Task.FromResult(new Grpc.Core.Metadata()),
             () => Grpc.Core.Status.DefaultSuccess,
             () => new Grpc.Core.Metadata(),
@@ -160,9 +167,14 @@ public class SubscriptionServiceTests
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, newPlanId));
 
+        if (!result.IsSuccess)
+        {
+            Assert.Fail($"Test failed with error: {result.Error} (Code: {result.ErrorCode})");
+        }
+
         result.IsSuccess.Should().BeTrue();
         oldSub.Status.Should().Be("cancelled");
-        result.Value!.Status.Should().Be("pending");
+        result.Value!.Status.Should().Be("active");
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
 

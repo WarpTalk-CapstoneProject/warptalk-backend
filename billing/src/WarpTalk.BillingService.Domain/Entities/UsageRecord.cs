@@ -26,9 +26,6 @@ public partial class UsageRecord
 
     public int? DurationSeconds { get; set; }
 
-    /// <summary>
-    /// JSONB column for arbitrary usage details.
-    /// </summary>
     public string? Details { get; set; }
 
     public DateTime RecordedAt { get; set; }

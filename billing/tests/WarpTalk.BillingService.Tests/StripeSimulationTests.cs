@@ -4,6 +4,7 @@ using Moq;
 using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Enums;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -11,19 +12,19 @@ namespace WarpTalk.BillingService.Tests;
 
 public class StripeSimulationTests
 {
-    private readonly Mock<IBillingService> _billingServiceMock;
+    private readonly Mock<ICreditService> _creditServiceMock;
     private readonly Mock<ILogger<StripeSimulationController>> _loggerMock;
     private readonly StripeSimulationController _controller;
 
     public StripeSimulationTests()
     {
-        _billingServiceMock = new Mock<IBillingService>();
+        _creditServiceMock = new Mock<ICreditService>();
         _loggerMock = new Mock<ILogger<StripeSimulationController>>();
-        _controller = new StripeSimulationController(_billingServiceMock.Object, _loggerMock.Object);
+        _controller = new StripeSimulationController(_creditServiceMock.Object, _loggerMock.Object);
     }
 
     [Fact]
-    public async Task SimulateStripeWebhook_WithPaidCheckoutSession_ShouldTopUpCredits()
+    public async Task SimulateStripeWebhook_WithValidPaidSession_ShouldTopUpCredits()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
@@ -33,27 +34,21 @@ public class StripeSimulationTests
         var session = new StripeCheckoutSession("cs_test_123", amountTotal, "usd", "paid", "pi_123", workspaceId.ToString());
         var request = new StripeWebhookEvent("evt_123", "checkout.session.completed", new StripeEventData(session));
 
-        _billingServiceMock.Setup(x => x.TopUpCreditsAsync(
+        _creditServiceMock.Setup(x => x.TopUpCreditsAsync(
             workspaceId,
-            expectedCredits,
-            "Transaction",
-            It.IsAny<Guid>(),
-            It.IsAny<CancellationToken>(),
-            null))
-            .ReturnsAsync(Result.Success(new WorkspaceCreditsDto(workspaceId, 500, null, "Active")));
+            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == CreditReferenceType.Transaction),
+            It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new CreditBalanceDto(workspaceId, 500, 0, 500, "Active", DateTime.UtcNow, DateTime.UtcNow.AddMonths(1))));
 
         // Act
-        var result = await _controller.SimulateStripeWebhook(request, CancellationToken.None);
+        var result = await _controller.HandleSimulatedWebhook(request, CancellationToken.None);
 
         // Assert
         Assert.IsType<OkObjectResult>(result);
-        _billingServiceMock.Verify(x => x.TopUpCreditsAsync(
+        _creditServiceMock.Verify(x => x.TopUpCreditsAsync(
             workspaceId,
-            expectedCredits,
-            "Transaction",
-            It.IsAny<Guid>(),
-            It.IsAny<CancellationToken>(),
-            null), Times.Once);
+            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == CreditReferenceType.Transaction),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -65,17 +60,14 @@ public class StripeSimulationTests
         var request = new StripeWebhookEvent("evt_123", "checkout.session.completed", new StripeEventData(session));
 
         // Act
-        var result = await _controller.SimulateStripeWebhook(request, CancellationToken.None);
+        var result = await _controller.HandleSimulatedWebhook(request, CancellationToken.None);
 
         // Assert
         Assert.IsType<BadRequestObjectResult>(result);
-        _billingServiceMock.Verify(x => x.TopUpCreditsAsync(
+        _creditServiceMock.Verify(x => x.TopUpCreditsAsync(
             It.IsAny<Guid>(),
-            It.IsAny<int>(),
-            It.IsAny<string>(),
-            It.IsAny<Guid?>(),
-            It.IsAny<CancellationToken>(),
-            It.IsAny<Guid?>()), Times.Never);
+            It.IsAny<TopUpRequest>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -86,7 +78,7 @@ public class StripeSimulationTests
         var request = new StripeWebhookEvent("evt_123", "checkout.session.completed", new StripeEventData(session));
 
         // Act
-        var result = await _controller.SimulateStripeWebhook(request, CancellationToken.None);
+        var result = await _controller.HandleSimulatedWebhook(request, CancellationToken.None);
 
         // Assert
         Assert.IsType<BadRequestObjectResult>(result);

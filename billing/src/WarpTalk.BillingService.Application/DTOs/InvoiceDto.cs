@@ -5,14 +5,6 @@ namespace WarpTalk.BillingService.Application.DTOs;
 public class InvoiceDto
 {
     public string Id { get; set; } = string.Empty;
-    
-    // Kept for backward compatibility
-    public string StripeInvoiceId { get; set; } = string.Empty; 
-    public decimal Amount { get; set; }
-    public string? InvoicePdfUrl { get; set; }
-    public string? HostedInvoiceUrl { get; set; }
-
-    // New aligned fields
     public string InvoiceNumber { get; set; } = string.Empty;
     public decimal Subtotal { get; set; }
     public decimal Tax { get; set; }

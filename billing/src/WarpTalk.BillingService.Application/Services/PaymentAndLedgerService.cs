@@ -1,3 +1,7 @@
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -63,8 +67,8 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
 
     // --- Payment Methods ---
 
-    public async Task<Result<PagedResult<PaymentTransactionDto>>> GetPaymentHistoryAsync(
-        Guid workspaceId, int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<Result<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistoryAsync(
+        Guid workspaceId, PaginationQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -73,12 +77,12 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
                 cancellationToken);
 
             if (sub is null)
-                return Result.Failure<PagedResult<PaymentTransactionDto>>(
+                return Result.Failure<PaginatedResponse<PaymentTransactionDto>>(
                     "No active subscription found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var size = pageSize > 0 ? pageSize : 20;
-            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+            var size = query.PageSize > 0 ? query.PageSize : 20;
+            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
 
             var items = await _unitOfWork.PaymentRepository.GetPagedAsync(
                 p => p.SubscriptionId == sub.Id,
@@ -90,14 +94,13 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
                 p => p.SubscriptionId == sub.Id,
                 cancellationToken);
 
-            return Result.Success(new PagedResult<PaymentTransactionDto>(
-                total,
-                items.Select(p => p.ToDto()).ToList()));
+            return Result.Success(PaginatedResponse<PaymentTransactionDto>.Create(
+                items.Select(p => p.ToDto()).ToList(), total, query.PageNumber, query.PageSize));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting payment history for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<PagedResult<PaymentTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<PaginatedResponse<PaymentTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 
@@ -142,7 +145,7 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
     }
 
     public async Task<Result<PaymentTransactionDto>> UpdatePaymentStatusAsync(
-        Guid paymentId, string status, string? providerTransactionId, string? failureReason,
+        Guid paymentId, UpdatePaymentStatusRequest request,
         CancellationToken cancellationToken = default)
     {
         try
@@ -153,12 +156,12 @@ public class PaymentAndLedgerService : IPaymentAndLedgerService
                     $"Payment '{paymentId}' not found.",
                     ErrorCodes.NotFound);
 
-            payment.Status = status;
-            payment.ProviderTransactionId = providerTransactionId ?? payment.ProviderTransactionId;
-            payment.FailureReason = failureReason;
+            payment.Status = request.Status;
+            payment.ProviderTransactionId = request.ProviderTransactionId ?? payment.ProviderTransactionId;
+            payment.FailureReason = request.FailureReason;
             payment.UpdatedAt = DateTime.UtcNow;
 
-            if (status == "paid")
+            if (request.Status == "paid")
                 payment.PaidAt = DateTime.UtcNow;
 
             _unitOfWork.PaymentRepository.Update(payment);

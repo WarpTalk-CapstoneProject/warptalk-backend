@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
@@ -22,7 +23,7 @@ public class RefundService : IRefundService
     }
 
     public async Task<Result<RefundDto>> RefundPaymentAsync(
-        Guid paymentId, decimal amount, string reason, CancellationToken cancellationToken = default)
+        Guid paymentId, RefundPaymentRequest request, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -33,7 +34,7 @@ public class RefundService : IRefundService
             if (payment.Status != "paid")
                 return Result.Failure<RefundDto>("Only paid transactions can be refunded.", "INVALID_REQUEST");
 
-            if (amount <= 0 || amount > payment.Amount)
+            if (request.Amount <= 0 || request.Amount > payment.Amount)
                 return Result.Failure<RefundDto>("Refund amount must be positive and cannot exceed original payment amount.", "INVALID_REQUEST");
 
             var refund = new Refund
@@ -41,33 +42,21 @@ public class RefundService : IRefundService
                 Id = Guid.NewGuid(),
                 PaymentId = paymentId,
                 UserId = payment.UserId,
-                Amount = amount,
-                Reason = reason,
+                Amount = request.Amount,
+                Reason = request.Reason,
                 Status = "completed",
                 CreatedAt = DateTime.UtcNow,
                 CompletedAt = DateTime.UtcNow
             };
 
             await _unitOfWork.RefundRepository.AddAsync(refund, cancellationToken);
-            
-            // Mark payment as refunded (fully or partially)
+
             payment.RefundedAt = DateTime.UtcNow;
             _unitOfWork.PaymentRepository.Update(payment);
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            var dto = new RefundDto
-            {
-                Id = refund.Id.ToString(),
-                PaymentId = refund.PaymentId.ToString(),
-                Amount = refund.Amount,
-                Reason = refund.Reason ?? string.Empty,
-                Status = refund.Status,
-                CreatedAt = refund.CreatedAt,
-                CompletedAt = refund.CompletedAt
-            };
-
-            return Result.Success(dto);
+            return Result.Success(refund.ToDto());
         }
         catch (Exception ex)
         {

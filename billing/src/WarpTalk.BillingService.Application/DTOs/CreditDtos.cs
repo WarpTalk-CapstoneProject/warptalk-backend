@@ -1,5 +1,7 @@
+using WarpTalk.Shared;
 using System;
 using System.ComponentModel.DataAnnotations;
+using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -15,28 +17,41 @@ public record CreditBalanceDto(
 );
 
 
+
+
 public record ConsumeCreditsRequest(
     [Required]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be at least 1.")]
+    Guid WorkspaceId,
+
+    [Required]
+    [Range(1, int.MaxValue, ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.AmountGreaterThanZero)]
     int Amount,
 
-    [Required(ErrorMessage = "ReferenceType is required.")]
-    [MaxLength(100)]
-    string ReferenceType,
+    [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
+    CreditReferenceType ReferenceType,
 
     Guid? ReferenceId
 );
 
 public record TopUpRequest(
     [Required]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be at least 1.")]
+    Guid WorkspaceId,
+
+    [Required]
+    [Range(1, int.MaxValue, ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.AmountGreaterThanZero)]
     int Amount,
 
-    [Required(ErrorMessage = "ReferenceType is required.")]
-    [MaxLength(100)]
-    string ReferenceType,
+    [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
+    CreditReferenceType ReferenceType,
 
     Guid? ReferenceId
+);
+
+public record SimulatePaymentRequest(
+    [Required]
+    Guid WorkspaceId,
+    decimal Amount = 190000m,
+    string Currency = "vnd"
 );
 
 
@@ -70,9 +85,16 @@ public record CreditTransactionDto(
 
 public record AdjustCreditsRequest(
     [Required]
-    int Amount,
+    Guid WorkspaceId,
+
     [Required]
-    string Reason
+    int Amount,
+
+    [Required]
+    string Reason,
+
+    [Required]
+    string AdminUserId
 );
 
 public record UsageAlertDto(

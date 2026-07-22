@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Enums;
 using WarpTalk.Shared;
 using NotificationClient = WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient;
 
@@ -123,15 +124,17 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
 
             // Also create a corresponding UsageRecord for analytics dashboard population (Feature Adoption, Cost Breakdown)
-            var usageType = "voice_translation";
-            if (!string.IsNullOrEmpty(request.ReferenceType))
+            var usageType = request.ReferenceType switch
             {
-                var refLower = request.ReferenceType.ToLower();
-                if (refLower.Contains("summary")) usageType = "summary";
-                else if (refLower.Contains("clone")) usageType = "voice_cloning";
-                else if (refLower.Contains("chat")) usageType = "chat";
-                else if (refLower.Contains("tts") || refLower.Contains("speech")) usageType = "text_to_speech";
-            }
+                CreditReferenceType.Summary => "summary",
+                CreditReferenceType.VoiceCloning => "voice_cloning",
+                CreditReferenceType.Chat => "chat",
+                CreditReferenceType.TTS => "text_to_speech",
+                CreditReferenceType.STT => "speech_to_text",
+                CreditReferenceType.AiSpeechTranslation => "voice_translation",
+                CreditReferenceType.Translation => "voice_translation",
+                _ => "voice_translation"
+            };
 
             var usage = new WarpTalk.BillingService.Domain.Entities.UsageRecord
             {
@@ -241,16 +244,97 @@ public class CreditService : ICreditService
         }, cancellationToken);
     }
 
-    public async Task<Result<PagedResult<CreditTransactionDto>>> GetCreditHistoryAsync(
+    public async Task<Result<object>> SimulatePaymentAsync(
         Guid workspaceId,
-        int pageNumber,
-        int pageSize,
-        CancellationToken cancellationToken = default,
-        string? type = null,
-        DateTime? fromDate = null,
-        DateTime? toDate = null,
-        int? minAmount = null,
-        int? maxAmount = null)
+        decimal amount,
+        string currency,
+        CancellationToken cancellationToken = default)
+    {
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        Guid subId;
+        if (sub == null)
+        {
+            var plans = await _unitOfWork.PlanRepository.FindAsync(p => p.IsActive, cancellationToken);
+            var plan = plans.FirstOrDefault();
+            if (plan == null) return Result.Failure<object>("No active plans found.", "PLAN_NOT_FOUND");
+            
+            sub = new Subscription
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                PlanId = plan.Id,
+                UserId = Guid.Empty,
+                Status = "active",
+                CreditsRemaining = 0,
+                CreditsUsedThisCycle = 0,
+                CurrentPeriodStart = DateTime.UtcNow,
+                CurrentPeriodEnd = DateTime.UtcNow.AddMonths(1),
+                AutoRenew = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.SubscriptionRepository.AddAsync(sub, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            subId = sub.Id;
+        }
+        else
+        {
+            subId = sub.Id;
+        }
+
+        var paymentId = Guid.NewGuid();
+        var stripeInvoiceId = "in_test_" + Guid.NewGuid().ToString().Substring(0, 8);
+        var payment = new WarpTalk.BillingService.Domain.Entities.Payment
+        {
+            Id = paymentId,
+            SubscriptionId = subId,
+            UserId = Guid.Empty,
+            Amount = amount,
+            TaxAmount = 0m,
+            TotalAmount = amount,
+            Currency = currency,
+            PaymentMethod = "card",
+            Provider = "stripe",
+            ProviderTransactionId = stripeInvoiceId,
+            Status = "paid",
+            PaidAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
+
+        await TopUpCreditsAsync(workspaceId, new TopUpRequest(workspaceId, (int)(amount / 10m), CreditReferenceType.TopUp, null), cancellationToken);
+
+        await _unitOfWork.PaymentRepository.AddAsync(payment, cancellationToken);
+
+        var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
+        {
+            Id = Guid.NewGuid(),
+            UserId = Guid.Empty,
+            PaymentId = paymentId,
+            InvoiceNumber = stripeInvoiceId,
+            Subtotal = amount,
+            Tax = 0,
+            Total = amount,
+            Currency = currency,
+            Status = "paid",
+            PdfUrl = "https://stripe.com/files/payments/pdf/invoice_sample.pdf",
+            LineItems = "[]",
+            IssuedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+        await _unitOfWork.InvoiceRepository.AddAsync(invoice, cancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success<object>(new { message = "Payment simulated successfully.", invoiceId = invoice.Id, stripeInvoiceId = stripeInvoiceId });
+    }
+
+    public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(
+        Guid workspaceId,
+        CreditHistoryQuery query,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -260,20 +344,20 @@ public class CreditService : ICreditService
 
             var subIds = subs.Select(s => s.Id).ToList();
             if (!subIds.Any())
-                return Result.Failure<PagedResult<CreditTransactionDto>>(
+                return Result.Failure<PaginatedResponse<CreditTransactionDto>>(
                     "No subscriptions found for this workspace.",
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var size = pageSize > 0 ? pageSize : 20;
-            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+            var size = query.PageSize > 0 ? query.PageSize : 20;
+            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
 
             System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t =>
                 subIds.Contains(t.SubscriptionId) &&
-                (string.IsNullOrEmpty(type) || t.Type == type) &&
-                (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
-                (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&
-                (!minAmount.HasValue || Math.Abs(t.Amount) >= minAmount.Value) &&
-                (!maxAmount.HasValue || Math.Abs(t.Amount) <= maxAmount.Value);
+                (string.IsNullOrEmpty(query.Type) || t.Type == query.Type) &&
+                (!query.FromDate.HasValue || t.CreatedAt >= query.FromDate.Value) &&
+                (!query.ToDate.HasValue || t.CreatedAt <= query.ToDate.Value) &&
+                (!query.MinAmount.HasValue || Math.Abs(t.Amount) >= query.MinAmount.Value) &&
+                (!query.MaxAmount.HasValue || Math.Abs(t.Amount) <= query.MaxAmount.Value);
 
             var items = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
                 predicate,
@@ -286,8 +370,7 @@ public class CreditService : ICreditService
                 predicate,
                 cancellationToken);
 
-            return Result.Success(new PagedResult<CreditTransactionDto>(
-                total,
+            return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(
                 items.Select(t => new CreditTransactionDto(
                     t.Id,
                     t.Amount,
@@ -301,12 +384,12 @@ public class CreditService : ICreditService
                     null,
                     t.UserId,
                     null
-                )).ToList()));
+                )).ToList(), total, query.PageNumber, query.PageSize));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting credit history for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<PagedResult<CreditTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<PaginatedResponse<CreditTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 
@@ -519,25 +602,25 @@ public class CreditService : ICreditService
     }
 
     public async Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
-        Guid subscriptionId,
-        int amount,
-        string reason,
-        string adminUserId,
+        Guid workspaceId,
+        AdjustCreditsRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (amount == 0)
+        if (request.Amount == 0)
             return Result.Failure<CreditTransactionDto>("Adjustment amount cannot be zero.", "INVALID_REQUEST");
-        if (string.IsNullOrWhiteSpace(adminUserId))
+        if (string.IsNullOrWhiteSpace(request.AdminUserId))
             return Result.Failure<CreditTransactionDto>("AdminUserId is required for audit trail.", "INVALID_REQUEST");
         try
         {
-            var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(subscriptionId, cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
             if (sub == null)
             {
-                return Result.Failure<CreditTransactionDto>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<CreditTransactionDto>("No active subscription found for workspace.", ErrorCodes.BillingSubscriptionNotFound);
             }
 
-            sub.CreditsRemaining += amount;
+            sub.CreditsRemaining += request.Amount;
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
 
@@ -545,9 +628,9 @@ public class CreditService : ICreditService
             {
                 SubscriptionId = sub.Id,
                 UserId = sub.UserId,
-                Amount = amount,
+                Amount = request.Amount,
                 Type = "adjustment",
-                Description = string.IsNullOrEmpty(reason) ? "Manual credit adjustment" : reason,
+                Description = string.IsNullOrEmpty(request.Reason) ? "Manual credit adjustment" : request.Reason,
                 ReferenceType = "manual_adjustment",
                 ReferenceId = null,
                 BalanceAfter = sub.CreditsRemaining,
@@ -557,52 +640,45 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(sub.WorkspaceId, sub.CreditsRemaining, 
-                amount > 0 ? "Credits Added" : "Credits Deducted", 
-                $"Admin adjusted credit balance by {(amount > 0 ? "+" : "")}{amount} credits. Reason: {reason}", 
+            await PublishCreditUpdateAsync(sub.WorkspaceId, sub.CreditsRemaining,
+                request.Amount > 0 ? "Credits Added" : "Credits Deducted",
+                $"Admin adjusted credit balance by {(request.Amount > 0 ? "+" : "")}{request.Amount} credits. Reason: {request.Reason}",
                 cancellationToken);
 
             return Result.Success(adjustmentTx.ToDto());
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error manually adjusting credits for SubscriptionId {SubscriptionId}", subscriptionId);
+            _logger.LogError(ex, "Error manually adjusting credits for WorkspaceId {WorkspaceId}", workspaceId);
             return Result.Failure<CreditTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 
-    public async Task<Result<PagedResult<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
-        int pageNumber,
-        int pageSize,
-        CancellationToken cancellationToken = default,
-        Guid? workspaceId = null,
-        string? type = null,
-        DateTime? fromDate = null,
-        DateTime? toDate = null,
-        int? minAmount = null,
-        int? maxAmount = null)
+    public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
+        CreditHistoryQuery query,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            var size = pageSize > 0 ? pageSize : 20;
-            var skip = ((pageNumber > 0 ? pageNumber : 1) - 1) * size;
+            var size = query.PageSize > 0 ? query.PageSize : 20;
+            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
 
             Guid? targetSubId = null;
-            if (workspaceId.HasValue)
+            if (query.WorkspaceId.HasValue)
             {
                 var targetSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                    s => s.WorkspaceId == workspaceId.Value && s.DeletedAt == null,
+                    s => s.WorkspaceId == query.WorkspaceId.Value && s.DeletedAt == null,
                     cancellationToken);
                 if (targetSub != null) targetSubId = targetSub.Id;
             }
 
             System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = t =>
-                (!workspaceId.HasValue || t.SubscriptionId == targetSubId) &&
-                (string.IsNullOrEmpty(type) || t.Type == type) &&
-                (!fromDate.HasValue || t.CreatedAt >= fromDate.Value) &&
-                (!toDate.HasValue || t.CreatedAt <= toDate.Value) &&
-                (!minAmount.HasValue || Math.Abs(t.Amount) >= minAmount.Value) &&
-                (!maxAmount.HasValue || Math.Abs(t.Amount) <= maxAmount.Value);
+                (!query.WorkspaceId.HasValue || t.SubscriptionId == targetSubId) &&
+                (string.IsNullOrEmpty(query.Type) || t.Type == query.Type) &&
+                (!query.FromDate.HasValue || t.CreatedAt >= query.FromDate.Value) &&
+                (!query.ToDate.HasValue || t.CreatedAt <= query.ToDate.Value) &&
+                (!query.MinAmount.HasValue || Math.Abs(t.Amount) >= query.MinAmount.Value) &&
+                (!query.MaxAmount.HasValue || Math.Abs(t.Amount) <= query.MaxAmount.Value);
 
             var items = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
                 predicate,
@@ -670,12 +746,12 @@ public class CreditService : ICreditService
                 _logger.LogWarning(wsEx, "Failed to resolve workspace names for global credit history");
             }
 
-            return Result.Success(new PagedResult<CreditTransactionDto>(total, dtos));
+            return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, total, query.PageNumber, query.PageSize));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting global credit history");
-            return Result.Failure<PagedResult<CreditTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<PaginatedResponse<CreditTransactionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

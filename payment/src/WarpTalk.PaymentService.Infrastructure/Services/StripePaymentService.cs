@@ -1,11 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Stripe;
 using Stripe.Checkout;
 using WarpTalk.PaymentService.Application.Interfaces;
-
-using Microsoft.Extensions.Configuration;
 
 namespace WarpTalk.PaymentService.Infrastructure.Services;
 

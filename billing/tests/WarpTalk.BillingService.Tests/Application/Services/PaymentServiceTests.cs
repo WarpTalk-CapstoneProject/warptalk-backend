@@ -13,24 +13,26 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
 
+using WarpTalk.BillingService.Domain.Enums;
+
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class PaymentAndLedgerServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Payment>> _mockPaymentRepo;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IGenericRepository<CreditTransaction>> _mockCreditTxRepo;
+    private readonly Mock<IPaymentRepository> _mockPaymentRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<ICreditTransactionRepository> _mockCreditTxRepo;
     private readonly PaymentAndLedgerService _paymentService;
 
     public PaymentAndLedgerServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockPaymentRepo = new Mock<IGenericRepository<Payment>>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockCreditTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
+        _mockPaymentRepo = new Mock<IPaymentRepository>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockCreditTxRepo = new Mock<ICreditTransactionRepository>();
 
         _mockUnitOfWork.Setup(u => u.PaymentRepository).Returns(_mockPaymentRepo.Object);
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
@@ -234,7 +236,7 @@ public class PaymentAndLedgerServiceTests
     {
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
 
-        var result = await _paymentService.GetPaymentHistoryAsync(Guid.NewGuid(), 1, 20);
+        var result = await _paymentService.GetPaymentHistoryAsync(Guid.NewGuid(), new WarpTalk.BillingService.Application.DTOs.PaginationQuery(1, 20));
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionNotFound);

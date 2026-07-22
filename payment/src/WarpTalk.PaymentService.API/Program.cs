@@ -43,6 +43,8 @@ StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"] ?? "sk_te
 
 // Add Infrastructure Services
 builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
+builder.Services.AddScoped<IStripeWebhookService, StripeWebhookService>();
+builder.Services.AddScoped<Stripe.SubscriptionService>();
 
 // Add Application Services
 builder.Services.AddScoped<IPaymentAppService, PaymentAppService>();

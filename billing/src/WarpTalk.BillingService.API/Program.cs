@@ -2,15 +2,14 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
-using WarpTalk.BillingService.API.Services;
-using WarpTalk.BillingService.API.Swagger;
+
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 
 Log.Logger = new LoggerConfiguration()
@@ -46,9 +45,21 @@ try
             }));
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
-    builder.Services.AddScoped<IBillingService, WarpTalk.BillingService.Application.Services.BillingService>();
+    var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
+    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(sp => 
+        StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
+
+    builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
+    builder.Services.AddScoped<IBillingMessagePublisher, WarpTalk.BillingService.Infrastructure.Messaging.RedisBillingMessagePublisher>();
+
+    builder.Services.AddScoped<ICreditService, CreditService>();
+    builder.Services.AddScoped<IPlanService, PlanService>();
+    builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+    builder.Services.AddScoped<IPaymentAndLedgerService, PaymentAndLedgerService>();
+    builder.Services.AddScoped<IInvoiceService, InvoiceService>();
+    builder.Services.AddScoped<IRefundService, RefundService>();
+    builder.Services.AddScoped<IUsageService, UsageService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
-    builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationService>();
     builder.Services.AddGrpc();
     builder.Services.AddGrpcReflection();
 
@@ -132,59 +143,16 @@ try
             name: "Billing DB",
             tags: new[] { "db", "ready" });
 
-    builder.Services.AddControllers();
-    builder.Services.AddEndpointsApiExplorer();
-    builder.Services.AddSwaggerGen(options =>
-    {
-        options.SwaggerDoc("v1", new OpenApiInfo
+    builder.Services.AddControllers()
+        .AddJsonOptions(options =>
         {
-            Title = "WarpTalk Billing API",
-            Version = "v1"
+            options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
-
-        options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-        {
-            Name = "Authorization",
-            Type = SecuritySchemeType.Http,
-            Scheme = "bearer",
-            BearerFormat = "JWT",
-            In = ParameterLocation.Header,
-            Description = "Input: Bearer {your JWT token}"
-        });
-
-        options.AddSecurityRequirement(new OpenApiSecurityRequirement
-        {
-            {
-                new OpenApiSecurityScheme
-                {
-                    Reference = new OpenApiReference
-                    {
-                        Type = ReferenceType.SecurityScheme,
-                        Id = "Bearer"
-                    }
-                },
-                Array.Empty<string>()
-            }
-        });
-
-        // Include XML documentation for Swagger
-        var xmlFile = $"{typeof(Program).Assembly.GetName().Name}.xml";
-        var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
-        if (File.Exists(xmlPath))
-            options.IncludeXmlComments(xmlPath);
-
-        // Include custom operation filter for ProducesResponseType attributes
-        options.OperationFilter<ProducesResponseTypeOperationFilter>();
-    });
+    builder.Services.AddOpenApi();
 
     var app = builder.Build();
 
-    app.UseSwagger();
-    app.UseSwaggerUI(options =>
-    {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "WarpTalk Billing API v1");
-        options.RoutePrefix = "swagger";
-    });
+    
 
     if (!app.Environment.IsDevelopment())
     {
@@ -263,6 +231,7 @@ try
     
     if (app.Environment.IsDevelopment())
     {
+        app.MapOpenApi();
         app.MapGrpcReflectionService();
     }
 

@@ -45,8 +45,16 @@ public class RefundDto
 }
 
 public record RefundPaymentRequest(
+    Guid PaymentId,
     decimal Amount,
     string Reason
 );
+
+public record UpdatePaymentStatusRequest(
+    string Status,
+    string? ProviderTransactionId,
+    string? FailureReason
+);
+
 
 

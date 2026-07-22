@@ -1,27 +1,32 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class GenericRepository<T> : IGenericRepository<T> where T : class
 {
-    private readonly BillingDbContext _db;
-    private readonly DbSet<T> _set;
+    protected readonly BillingDbContext _context;
+    protected readonly DbSet<T> _dbSet;
 
-    public GenericRepository(BillingDbContext db)
+    public GenericRepository(BillingDbContext context)
     {
-        _db = db;
-        _set = db.Set<T>();
+        _context = context;
+        _dbSet = context.Set<T>();
     }
 
     public async Task<T?> GetByIdAsync(Guid id, CancellationToken ct = default)
-        => await _set.FindAsync([id], ct);
+        => await _dbSet.FindAsync(new object[] { id }, ct);
 
     public async Task<IReadOnlyList<T>> GetAllAsync(string includeProperties = "", CancellationToken ct = default)
     {
-        IQueryable<T> query = _set;
+        IQueryable<T> query = _dbSet;
         foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
             query = query.Include(includeProperty.Trim());
         return await query.ToListAsync(ct);
@@ -29,7 +34,7 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
 
     public async Task<IReadOnlyList<T>> FindAsync(Expression<Func<T, bool>> predicate, string includeProperties = "", CancellationToken ct = default)
     {
-        IQueryable<T> query = _set;
+        IQueryable<T> query = _dbSet;
         foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
             query = query.Include(includeProperty.Trim());
         return await query.Where(predicate).ToListAsync(ct);
@@ -37,17 +42,17 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
 
     public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, string includeProperties = "", CancellationToken ct = default)
     {
-        IQueryable<T> query = _set;
+        IQueryable<T> query = _dbSet;
         foreach (var includeProperty in includeProperties.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
             query = query.Include(includeProperty.Trim());
         return await query.FirstOrDefaultAsync(predicate, ct);
     }
 
     public async Task<bool> AnyAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
-        => await _set.AnyAsync(predicate, ct);
+        => await _dbSet.AnyAsync(predicate, ct);
 
     public async Task<int> CountAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
-        => await _set.CountAsync(predicate, ct);
+        => await _dbSet.CountAsync(predicate, ct);
 
     public async Task<IReadOnlyList<T>> GetPagedAsync(
         Expression<Func<T, bool>> predicate,
@@ -56,18 +61,18 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
         Func<IQueryable<T>, IQueryable<T>>? orderBy,
         CancellationToken ct = default)
     {
-        IQueryable<T> query = _set.Where(predicate);
+        IQueryable<T> query = _dbSet.Where(predicate);
         if (orderBy is not null)
             query = orderBy(query);
         return await query.Skip(skip).Take(take).ToListAsync(ct);
     }
 
     public async Task AddAsync(T entity, CancellationToken ct = default)
-        => await _set.AddAsync(entity, ct);
+        => await _dbSet.AddAsync(entity, ct);
 
-    public void Update(T entity) => _set.Update(entity);
+    public void Update(T entity) => _dbSet.Update(entity);
 
-    public void Remove(T entity) => _set.Remove(entity);
+    public void Remove(T entity) => _dbSet.Remove(entity);
 
-    public IQueryable<T> Query() => _set.AsQueryable();
+    public IQueryable<T> Query() => _dbSet.AsQueryable();
 }

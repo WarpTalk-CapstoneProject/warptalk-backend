@@ -7,11 +7,6 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // REQUEST DTOs
 // ============================================================================
 
-public record SubscriptionRequest(
-    Guid WorkspaceId,
-    Guid PlanId,
-    Guid? UserId = null);
-
 public record RecordUsageRequest(
     Guid HostWorkspaceId,
     Guid UserId,
@@ -75,10 +70,3 @@ public record TopWorkspaceDto(
     string? WorkspaceName,
     int TotalCreditsConsumed);
 
-// ============================================================================
-// PAGINATION
-// ============================================================================
-
-public record PagedResult<T>(
-    int TotalCount,
-    IReadOnlyList<T> Items);

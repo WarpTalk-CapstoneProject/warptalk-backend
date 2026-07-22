@@ -13,20 +13,22 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
 
+using WarpTalk.BillingService.Domain.Enums;
+
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class PlanServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly PlanService _planService;
 
     public PlanServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
 
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);

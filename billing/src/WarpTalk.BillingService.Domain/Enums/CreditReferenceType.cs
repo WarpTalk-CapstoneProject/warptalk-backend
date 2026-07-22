@@ -10,5 +10,10 @@ public enum CreditReferenceType
     Meeting = 5,
     STT = 6,
     TTS = 7,
-    Translation = 8
+    Translation = 8,
+    VoiceCloning = 9,
+    Summary = 10,
+    Chat = 11,
+    AiSpeechTranslation = 12,
+    Unknown = 99
 }

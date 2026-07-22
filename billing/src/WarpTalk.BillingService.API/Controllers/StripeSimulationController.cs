@@ -1,38 +1,32 @@
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Enums;
+
+#if DEBUG
 
 namespace WarpTalk.BillingService.API.Controllers;
 
-/// <summary>
-/// Controller for simulating Stripe payment provider interactions.
-/// This is isolated from the main BillingController to ensure safety.
-/// </summary>
 [ApiController]
 [Route("api/v1/[controller]")]
 public class StripeSimulationController : ControllerBase
 {
-    private readonly IBillingService _billingService;
+    private readonly ICreditService _creditService;
     private readonly ILogger<StripeSimulationController> _logger;
 
-    public StripeSimulationController(IBillingService billingService, ILogger<StripeSimulationController> logger)
+    public StripeSimulationController(ICreditService creditService, ILogger<StripeSimulationController> logger)
     {
-        _billingService = billingService;
+        _creditService = creditService;
         _logger = logger;
     }
 
-    /// <summary>
-    /// Simulates a "checkout.session.completed" webhook event from Stripe.
-    /// This will trigger a credit top-up for the workspace named in client_reference_id.
-    /// </summary>
-    [HttpPost("webhook/simulate-success")]
-    public async Task<IActionResult> SimulateStripeWebhook([FromBody] StripeWebhookEvent request, CancellationToken ct)
+    [HttpPost("webhook")]
+    public async Task<IActionResult> HandleSimulatedWebhook([FromBody] StripeWebhookEvent request, CancellationToken ct)
     {
         var session = request.data.@object;
-
-        if (!Guid.TryParse(session.client_reference_id, out var workspaceId))
+        if (session == null || !Guid.TryParse(session.client_reference_id, out var workspaceId))
         {
-            return BadRequest(new { message = "client_reference_id must be a valid workspace id." });
+            return BadRequest(new { message = "Invalid or missing client_reference_id" });
         }
 
         _logger.LogInformation("Received simulated Stripe webhook for Workspace {WorkspaceId}. Session: {SessionId}, Status: {Status}",
@@ -46,11 +40,9 @@ public class StripeSimulationController : ControllerBase
         // Stripe amounts are in the smallest currency unit (cents for USD) — 1 cent = 1 credit.
         int creditsToTopUp = (int)session.amount_total;
 
-        var result = await _billingService.TopUpCreditsAsync(
+        var result = await _creditService.TopUpCreditsAsync(
             workspaceId,
-            creditsToTopUp,
-            "Transaction",
-            Guid.NewGuid(), // Simulated Transaction Reference ID
+            new TopUpRequest(workspaceId, creditsToTopUp, CreditReferenceType.Transaction, Guid.NewGuid()),
             ct);
 
         if (!result.IsSuccess)
@@ -67,9 +59,6 @@ public class StripeSimulationController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// Helper to generate a valid-looking Stripe checkout.session.completed webhook payload for testing.
-    /// </summary>
     [HttpGet("generate-test-payload")]
     public IActionResult GenerateTestPayload([FromQuery] long amountTotal = 5000, [FromQuery] Guid? workspaceId = null)
     {
@@ -91,3 +80,4 @@ public class StripeSimulationController : ControllerBase
         return Ok(payload);
     }
 }
+#endif

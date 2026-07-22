@@ -15,25 +15,27 @@ using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
+using WarpTalk.BillingService.Domain.Enums;
+
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class UsageServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
-    private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
+    private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly UsageService _usageService;
 
     public UsageServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
-        _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
+        _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
 
         _mockConfig.Setup(c => c["BillingRates:SttPerMinute"]).Returns("15.0");

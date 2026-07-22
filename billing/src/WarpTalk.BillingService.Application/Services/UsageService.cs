@@ -156,8 +156,7 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<BillingReportDto>> GetBillingReportAsync(
-        Guid workspaceId, int year, int month, CancellationToken cancellationToken = default)
+    public async Task<Result<BillingReportDto>> GetBillingReportAsync(Guid workspaceId, BillingReportQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -168,7 +167,7 @@ public class UsageService : IUsageService
             if (sub is null)
                 return Result.Failure<BillingReportDto>("No active subscription found for this workspace.", ErrorCodes.BillingSubscriptionNotFound);
 
-            var startDate = new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc);
+            var startDate = new DateTime(query.Year, query.Month, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddMonths(1);
 
             var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
@@ -226,7 +225,7 @@ public class UsageService : IUsageService
                 : null;
 
             var report = new BillingReportDto(
-                workspaceId, month, year, startingBalance, endingBalance,
+                workspaceId, query.Month, query.Year, startingBalance, endingBalance,
                 totalTopUps, totalConsumed, averageTranslationCost, averageCostPerMeeting, breakdown
             );
 
@@ -239,7 +238,7 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<UsageChartDto>> GetWorkspaceUsageChartAsync(Guid workspaceId, int year, CancellationToken cancellationToken = default)
+    public async Task<Result<UsageChartDto>> GetWorkspaceUsageChartAsync(Guid workspaceId, UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -251,7 +250,7 @@ public class UsageService : IUsageService
             if (!subIds.Any())
                 return Result.Failure<UsageChartDto>("No subscription found for this workspace.", ErrorCodes.BillingSubscriptionNotFound);
 
-            var startDate = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var startDate = new DateTime(query.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddYears(1);
 
             var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
@@ -266,13 +265,13 @@ public class UsageService : IUsageService
 
                 return new MonthlyUsageDto(
                     month,
-                    new DateTime(year, month, 1).ToString("MMM"),
+                    new DateTime(query.Year, month, 1).ToString("MMM"),
                     consumed,
                     topUp
                 );
             }).ToList();
 
-            return Result.Success(new UsageChartDto(year, monthlyData));
+            return Result.Success(new UsageChartDto(query.Year, monthlyData));
         }
         catch (Exception ex)
         {
@@ -281,11 +280,11 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoptionAsync(Guid workspaceId, int days, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoptionAsync(Guid workspaceId, UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
-            var startDate = DateTime.UtcNow.AddDays(-days);
+            var startDate = DateTime.UtcNow.AddDays(-query.Days);
 
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
                 u => u.WorkspaceId == workspaceId && u.RecordedAt >= startDate,
@@ -333,11 +332,11 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<UsageChartDto>> GetGlobalUsageChartAsync(int year, CancellationToken cancellationToken = default)
+    public async Task<Result<UsageChartDto>> GetGlobalUsageChartAsync(UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
-            var startDate = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var startDate = new DateTime(query.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddYears(1);
 
             var txs = await _unitOfWork.CreditTransactionRepository.FindAsync(
@@ -351,10 +350,10 @@ public class UsageService : IUsageService
                 var consumed = monthTxs.Where(t => t.Type == "consumption").Sum(t => Math.Abs(t.Amount));
                 var topUp = monthTxs.Where(t => t.Type == "top_up" && t.Amount > 0).Sum(t => t.Amount);
 
-                monthlyData.Add(new MonthlyUsageDto(i, new DateTime(year, i, 1).ToString("MMM"), consumed, topUp));
+                monthlyData.Add(new MonthlyUsageDto(i, new DateTime(query.Year, i, 1).ToString("MMM"), consumed, topUp));
             }
 
-            return Result.Success(new UsageChartDto(year, monthlyData));
+            return Result.Success(new UsageChartDto(query.Year, monthlyData));
         }
         catch (Exception ex)
         {
@@ -363,11 +362,11 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdownAsync(int days, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdownAsync(UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
-            var startDate = DateTime.UtcNow.AddDays(-days);
+            var startDate = DateTime.UtcNow.AddDays(-query.Days);
 
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
                 u => u.RecordedAt >= startDate,
@@ -390,11 +389,11 @@ public class UsageService : IUsageService
         }
     }
 
-    public async Task<Result<IEnumerable<TopWorkspaceDto>>> GetTopWorkspacesAsync(int days, int limit, CancellationToken cancellationToken = default)
+    public async Task<Result<IEnumerable<TopWorkspaceDto>>> GetTopWorkspacesAsync(UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         try
         {
-            var startDate = DateTime.UtcNow.AddDays(-days);
+            var startDate = DateTime.UtcNow.AddDays(-query.Days);
             
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
                 u => u.RecordedAt >= startDate,
@@ -407,7 +406,7 @@ public class UsageService : IUsageService
                     g.Sum(x => x.CreditsConsumed)
                 ))
                 .OrderByDescending(x => x.TotalCreditsConsumed)
-                .Take(limit)
+                .Take(query.Limit)
                 .ToList();
 
             if (topWorkspaces.Any())
