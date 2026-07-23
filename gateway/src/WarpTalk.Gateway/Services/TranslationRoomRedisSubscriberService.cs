@@ -77,6 +77,46 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("HostChanged", payload.NewHostUserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted HostChanged({NewHostUserId}) to room {RoomId}", payload.NewHostUserId, payload.RoomId);
                 }
+                // Polls + Q&A: MeetingService.PollsService/QuestionsService publish these on the
+                // same channel via the same REST+relay pattern as RoomLockChanged/HostChanged
+                // above — Poll/Question/FinalResult/Tally are pre-serialized (camelCase) JSON
+                // payloads forwarded to clients as-is.
+                else if (payload.Command == "PollCreated" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("PollCreated", payload.Poll, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted PollCreated to room {RoomId}", payload.RoomId);
+                }
+                else if (payload.Command == "PollVoted" && !string.IsNullOrEmpty(payload.RoomId) && !string.IsNullOrEmpty(payload.PollId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("PollVoted", payload.PollId, payload.Tally, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted PollVoted({PollId}) to room {RoomId}", payload.PollId, payload.RoomId);
+                }
+                else if (payload.Command == "PollClosed" && !string.IsNullOrEmpty(payload.RoomId) && !string.IsNullOrEmpty(payload.PollId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("PollClosed", payload.PollId, payload.FinalResult, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted PollClosed({PollId}) to room {RoomId}", payload.PollId, payload.RoomId);
+                }
+                else if (payload.Command == "QuestionAsked" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("QuestionAsked", payload.Question, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted QuestionAsked to room {RoomId}", payload.RoomId);
+                }
+                else if (payload.Command == "QuestionUpvoted" && !string.IsNullOrEmpty(payload.RoomId) && !string.IsNullOrEmpty(payload.QuestionId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("QuestionUpvoted", payload.QuestionId, payload.UpvoteCount ?? 0, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted QuestionUpvoted({QuestionId}) to room {RoomId}", payload.QuestionId, payload.RoomId);
+                }
+                else if (payload.Command == "QuestionAnswered" && !string.IsNullOrEmpty(payload.RoomId) && !string.IsNullOrEmpty(payload.QuestionId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("QuestionAnswered", payload.QuestionId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted QuestionAnswered({QuestionId}) to room {RoomId}", payload.QuestionId, payload.RoomId);
+                }
             }
             catch (Exception ex)
             {
@@ -102,4 +142,16 @@ public class TranslationRoomCommandMessage
 
     // WT-08
     public string? NewHostUserId { get; set; }
+
+    // Polls + Q&A — Poll/Question/FinalResult are already-serialized (camelCase) JSON
+    // element payloads produced by PollsService/QuestionsService; Tally is an
+    // optionId(string) → count(int) map. Deserialized here as raw JsonElement and
+    // forwarded to clients untouched (see ExecuteAsync above).
+    public JsonElement? Poll { get; set; }
+    public string? PollId { get; set; }
+    public JsonElement? Tally { get; set; }
+    public JsonElement? FinalResult { get; set; }
+    public JsonElement? Question { get; set; }
+    public string? QuestionId { get; set; }
+    public int? UpvoteCount { get; set; }
 }

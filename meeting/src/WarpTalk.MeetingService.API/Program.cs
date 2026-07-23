@@ -105,6 +105,10 @@ builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcServi
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
 
+// Polls + Q&A
+builder.Services.AddScoped<IPollsService, PollsService>();
+builder.Services.AddScoped<IQuestionsService, QuestionsService>();
+
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
 // authoritative election path).
