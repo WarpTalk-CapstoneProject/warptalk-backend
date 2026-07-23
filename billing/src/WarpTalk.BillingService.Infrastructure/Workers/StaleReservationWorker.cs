@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
@@ -66,9 +67,9 @@ public class StaleReservationWorker : BackgroundService
                 SubscriptionId = reserve.SubscriptionId,
                 UserId = sub?.UserId ?? Guid.Empty,
                 Amount = reserve.Amount,
-                Type = "refund",
+                Type = BillingConstants.TransactionTypes.Refund,
                 Description = "Auto-refund for stale reservation",
-                ReferenceType = "CreditReservation",
+                ReferenceType = BillingConstants.ReferenceTypes.CreditReservation,
                 BalanceAfter = sub?.CreditsRemaining ?? 0,
                 CreatedAt = DateTime.UtcNow
             };

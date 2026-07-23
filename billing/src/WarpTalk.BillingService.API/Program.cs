@@ -5,12 +5,14 @@ using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
-
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
+using WarpTalk.BillingService.Infrastructure.Services;
+using WarpTalk.BillingService.Infrastructure.Workers;
+using WarpTalk.BillingService.API.Extensions;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -35,6 +37,7 @@ try
         options.ListenAnyIP(50057, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
+    // --- DbContext ---
     builder.Services.AddDbContext<BillingDbContext>(options =>
         options.UseNpgsql(
             builder.Configuration.GetConnectionString("BillingDb"),
@@ -44,6 +47,7 @@ try
                 npgsqlOptions.CommandTimeout(30);
             }));
 
+    // --- Repositories ---
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
     var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(sp => 
@@ -52,24 +56,47 @@ try
     builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
     builder.Services.AddScoped<IBillingMessagePublisher, WarpTalk.BillingService.Infrastructure.Messaging.RedisBillingMessagePublisher>();
 
+    // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
+    builder.Services.AddScoped<IRealtimeSessionBillingService, RealtimeSessionBillingService>();
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
-    builder.Services.AddScoped<IPaymentAndLedgerService, PaymentAndLedgerService>();
+    builder.Services.AddScoped<IPaymentService, PaymentService>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
     builder.Services.AddScoped<IRefundService, RefundService>();
     builder.Services.AddScoped<IUsageService, UsageService>();
+    builder.Services.AddScoped<IBillingAnalyticsService, BillingAnalyticsService>();
+    builder.Services.AddScoped<IWorkspaceAuthorizationService, WorkspaceAuthorizationService>();
+    builder.Services.AddScoped<IBillingRateService, BillingRateService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
-    
-    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>(o =>
+    builder.Services.AddScoped<IPaymentAppService, PaymentAppService>();
+
+    // --- Infrastructure Services ---
+    builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
+    builder.Services.AddScoped<IStripeWebhookService, StripeWebhookService>();
+    builder.Services.AddTransient<Stripe.SubscriptionService>();
+    builder.Services.AddScoped<INotificationClient, WarpTalk.BillingService.Infrastructure.Clients.NotificationClient>();
+    builder.Services.AddScoped<IWorkspaceClient, WarpTalk.BillingService.Infrastructure.Clients.WorkspaceClient>();
+
+    Stripe.StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"] ?? "sk_test_placeholder";
+
+    // --- Grpc Clients ---
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
-        var url = builder.Configuration["PaymentServiceGrpcUrl"] ?? "http://localhost:50058";
+        var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50053";
+        o.Address = new Uri(url);
+    });
+
+    builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+    {
+        var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056";
         o.Address = new Uri(url);
     });
 
     builder.Services.AddGrpc();
     builder.Services.AddGrpcReflection();
 
+    // --- JWT Authentication ---
     var jwtSettings = builder.Configuration.GetSection("Jwt");
     var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
     if (string.IsNullOrWhiteSpace(secretKey))
@@ -130,6 +157,7 @@ try
         options.AddPolicy("BillingAdmin", policy => policy.RequireRole("billing_admin"));
     });
 
+    // --- Cors ---
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>
     {
@@ -146,20 +174,22 @@ try
 
     builder.Services.AddHealthChecks()
         .AddNpgSql(
-            builder.Configuration.GetConnectionString("BillingDb"),
+            builder.Configuration.GetConnectionString("BillingDb") ?? "",
             name: "Billing DB",
             tags: new[] { "db", "ready" });
 
-    builder.Services.AddControllers()
-        .AddJsonOptions(options =>
-        {
-            options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
-        });
+    // --- Background Workers ---
+    builder.Services.AddHostedService<SubscriptionExpirationWorker>();
+    builder.Services.AddHostedService<StaleReservationWorker>();
+    builder.Services.AddHostedService<SessionMonitorWorker>();
+    builder.Services.AddHostedService<SubscriptionRenewalWorker>();
+    builder.Services.AddHostedService<DailyAuditAggregationWorker>();
+
+    builder.Services.AddCustomApiBehavior();
+    
     builder.Services.AddOpenApi();
 
     var app = builder.Build();
-
-    
 
     if (!app.Environment.IsDevelopment())
     {

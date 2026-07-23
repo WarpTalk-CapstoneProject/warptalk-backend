@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
@@ -14,8 +15,6 @@ using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
 
-using WarpTalk.BillingService.Domain.Enums;
-
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class SubscriptionServiceTests
@@ -24,7 +23,7 @@ public class SubscriptionServiceTests
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
-    private readonly Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient> _mockPaymentClient;
+    private readonly Mock<IStripePaymentService> _mockStripePaymentService;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
@@ -33,7 +32,7 @@ public class SubscriptionServiceTests
         _mockSubRepo = new Mock<ISubscriptionRepository>();
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
-        _mockPaymentClient = new Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>();
+        _mockStripePaymentService = new Mock<IStripePaymentService>();
 
         var mockPaymentRepo = new Mock<IPaymentRepository>();
         var mockInvoiceRepo = new Mock<IInvoiceRepository>();
@@ -48,12 +47,8 @@ public class SubscriptionServiceTests
             _mockUnitOfWork.Object,
             new Mock<ILogger<SubscriptionService>>().Object,
             new Mock<IBillingMessagePublisher>().Object,
-            _mockPaymentClient.Object);
+            _mockStripePaymentService.Object);
     }
-
-    // ─────────────────────────────────────────────
-    //  CreateSubscriptionAsync
-    // ─────────────────────────────────────────────
 
     [Fact]
     public async Task CreateSubscriptionAsync_Should_Create_Pending_Subscription()
@@ -68,7 +63,7 @@ public class SubscriptionServiceTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.Status.Should().Be("pending");
-        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s => s.Status == "pending" && !s.IsActive && s.CreditsRemaining == 0), default), Times.Once);
+        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s => s.Status == BillingConstants.SubscriptionStatuses.Pending && !s.IsActive && s.CreditsRemaining == 0), default), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
 
@@ -100,15 +95,11 @@ public class SubscriptionServiceTests
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionAlreadyActive);
     }
 
-    // ─────────────────────────────────────────────
-    //  CancelSubscriptionAsync
-    // ─────────────────────────────────────────────
-
     [Fact]
     public async Task CancelSubscriptionAsync_Should_MarkAsCancelled_ButNotDeactivateImmediately()
     {
         var workspaceId = Guid.NewGuid();
-        var subscription = new Subscription { Id = Guid.NewGuid(), Status = "active", IsActive = true };
+        var subscription = new Subscription { Id = Guid.NewGuid(), Status = BillingConstants.SubscriptionStatuses.Active, IsActive = true };
         var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
@@ -117,7 +108,7 @@ public class SubscriptionServiceTests
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, "No longer needed");
 
         result.IsSuccess.Should().BeTrue();
-        subscription.Status.Should().Be("cancelled");
+        subscription.Status.Should().Be(BillingConstants.SubscriptionStatuses.Cancelled);
         subscription.IsActive.Should().BeTrue(); // Still has access until period_end
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
     }
@@ -134,10 +125,6 @@ public class SubscriptionServiceTests
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Never);
     }
 
-    // ─────────────────────────────────────────────
-    //  ChangeSubscriptionAsync
-    // ─────────────────────────────────────────────
-
     [Fact]
     public async Task ChangeSubscriptionAsync_Should_CancelOld_And_CreateNewActive()
     {
@@ -145,25 +132,14 @@ public class SubscriptionServiceTests
         var oldPlanId = Guid.NewGuid();
         var newPlanId = Guid.NewGuid();
 
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = oldPlanId, IsActive = true, Status = "active", UserId = Guid.NewGuid() };
-        var newPlan = new Plan { Id = newPlanId, Name = "Premium", CreditsPerCycle = 5000, BillingCycle = "monthly", Currency = "usd" };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = oldPlanId, IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active, UserId = Guid.NewGuid() };
+        // Slug is required for UpdateSubscriptionAsync mock to match
+        var newPlan = new Plan { Id = newPlanId, Name = "Premium", Slug = "premium", CreditsPerCycle = 5000, BillingCycle = "monthly", Currency = "usd" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(newPlan);
-
-        var mockCall = new Grpc.Core.AsyncUnaryCall<WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse>(
-            Task.FromResult(new WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse { Success = true }),
-            Task.FromResult(new Grpc.Core.Metadata()),
-            () => Grpc.Core.Status.DefaultSuccess,
-            () => new Grpc.Core.Metadata(),
-            () => { });
-
-        _mockPaymentClient.Setup(x => x.UpdateStripeSubscriptionAsync(
-            It.IsAny<WarpTalk.Shared.Protos.UpdateStripeSubscriptionRequest>(),
-            null,
-            null,
-            It.IsAny<CancellationToken>()))
-            .Returns(mockCall);
+        // SubscriptionService.ChangeSubscriptionAsync calls UpdateSubscriptionAsync with newPlan.Slug (not Name)
+        _mockStripePaymentService.Setup(x => x.UpdateSubscriptionAsync(workspaceId, newPlan.Price, newPlan.Currency, newPlan.Slug)).ReturnsAsync(true);
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, newPlanId));
 
@@ -173,9 +149,8 @@ public class SubscriptionServiceTests
         }
 
         result.IsSuccess.Should().BeTrue();
-        oldSub.Status.Should().Be("cancelled");
-        result.Value!.Status.Should().Be("active");
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
+        // Service uses webhook-based arch: returns Pending DTO, does NOT save synchronously
+        result.Value!.Status.Should().Be(BillingConstants.SubscriptionStatuses.Pending);
     }
 
     [Fact]
@@ -183,7 +158,7 @@ public class SubscriptionServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var planId = Guid.NewGuid();
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = planId, IsActive = true, Status = "active" };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = planId, IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
 
@@ -197,7 +172,7 @@ public class SubscriptionServiceTests
     public async Task ChangeSubscriptionAsync_NewPlanNotFound_ShouldReturnFailure()
     {
         var workspaceId = Guid.NewGuid();
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = Guid.NewGuid(), IsActive = true, Status = "active" };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = Guid.NewGuid(), IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);

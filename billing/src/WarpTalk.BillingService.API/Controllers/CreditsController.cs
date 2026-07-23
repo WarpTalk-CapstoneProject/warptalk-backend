@@ -8,6 +8,10 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.BillingService.API.Filters;
+using System.Security.Claims;
+
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -24,7 +28,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
@@ -33,10 +37,10 @@ public class CreditsController : ControllerBase
         return Ok(result.Value);
     }
 
-    [HttpPost("consume")]
-    public async Task<ActionResult<CreditTransactionDto>> ConsumeCredits([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
+    [HttpPost("consume-direct")]
+    public async Task<ActionResult<CreditTransactionDto>> ConsumeCreditsDirectly([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
     {
-        var result = await _creditService.ConsumeCreditsAsync(request.WorkspaceId, request, cancellationToken);
+        var result = await _creditService.ConsumeCreditsDirectlyAsync(request.WorkspaceId, request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
 
         return Ok(result.Value);
@@ -52,7 +56,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
@@ -70,16 +74,14 @@ public class CreditsController : ControllerBase
         return Ok(result.Value);
     }
 
-    [HttpPost("adjust")]
+    [HttpPost("manual-adjust")]
     [Authorize(Roles = "Admin")]
-    public async Task<ActionResult<CreditTransactionDto>> AdjustCredits([FromBody] AdjustCreditsRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<CreditTransactionDto>> ManualAdjustCredits([FromBody] ManualAdjustCreditsRequest request, CancellationToken cancellationToken)
     {
-        var adminUserId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
-            ?? User.FindFirst("sub")?.Value
-            ?? Guid.Empty.ToString();
+        var adminUserId = User.GetUserId()?.ToString() ?? Guid.Empty.ToString();
 
         var adjustRequest = request with { AdminUserId = adminUserId };
-        var result = await _creditService.AdjustCreditsAsync(adjustRequest.WorkspaceId, adjustRequest, cancellationToken);
+        var result = await _creditService.ManualAdjustCreditsAsync(adjustRequest.WorkspaceId, adjustRequest, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
 
         return Ok(result.Value);
@@ -97,10 +99,10 @@ public class CreditsController : ControllerBase
     private ActionResult HandleFailure(string? errorCode, string? error) =>
         errorCode switch
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = error }),
-            ErrorCodes.BillingInsufficientCredits => UnprocessableEntity(new { message = error }),
-            "FEATURE_NOT_AVAILABLE" => StatusCode(403, new { message = error }),
-            "INVALID_REQUEST" => BadRequest(new { message = error }),
-            _ => StatusCode(500, new { message = error })
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? "Subscription not found", errorCode)),
+            ErrorCodes.BillingInsufficientCredits => UnprocessableEntity(new ApiErrorResponse(error ?? "Insufficient credits", errorCode)),
+            "FEATURE_NOT_AVAILABLE" => StatusCode(403, new ApiErrorResponse(error ?? "Feature not available", errorCode)),
+            "INVALID_REQUEST" => BadRequest(new ApiErrorResponse(error ?? "Invalid request", errorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
         };
 }

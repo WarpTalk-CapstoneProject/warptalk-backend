@@ -5,10 +5,8 @@ namespace WarpTalk.BillingService.Application.DTOs;
 public record ReserveCreditsRequest(
     Guid HostWorkspaceId,
     string IdempotencyKey,
-    int AudioSeconds,
-    int TokenCount,
-    int GpuInferenceMs,
-    bool IsVoiceClone
+    int ParticipantCount = 2,
+    string MediaStreamType = "video_sd"
 );
 
 public record CreditReservationDto(

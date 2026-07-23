@@ -1,7 +1,9 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using FluentAssertions;
 using WarpTalk.BillingService.Domain.Entities;
 using Xunit;
+
 
 namespace WarpTalk.BillingService.Tests.Domain.Entities;
 
@@ -14,7 +16,7 @@ public class SubscriptionTests
         var id = Guid.NewGuid();
         var userId = Guid.NewGuid();
         var planId = Guid.NewGuid();
-        var status = "Active";
+        var status = BillingConstants.SubscriptionStatuses.Active;
         
         // Act
         var subscription = new Subscription

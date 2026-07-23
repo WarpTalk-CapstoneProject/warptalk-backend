@@ -22,7 +22,12 @@ public static class ErrorCodes
     public const string BillingSubscriptionExpired = "BILLING_SUBSCRIPTION_EXPIRED";
     public const string BillingPlanNotFound = "BILLING_PLAN_NOT_FOUND";
     public const string BillingPlanInactive = "BILLING_PLAN_INACTIVE";
+    public const string BillingPaymentInvalidStatus = "BILLING_PAYMENT_INVALID_STATUS";
+    public const string BillingSimulationInvalidRequest = "BILLING_SIMULATION_INVALID_REQUEST";
+    public const string BillingSimulationFailed = "BILLING_SIMULATION_FAILED";
+
     public const string BillingPlanInvalid = "BILLING_PLAN_INVALID";
+    public const string BillingDuplicatePlanSlug = "BILLING_DUPLICATE_PLAN_SLUG";
     public const string BillingInsufficientCredits = "BILLING_INSUFFICIENT_CREDITS";
     public const string BillingCreditsOperationFailed = "BILLING_CREDITS_OPERATION_FAILED";
     public const string BillingWorkspaceNotFound = "BILLING_WORKSPACE_NOT_FOUND";

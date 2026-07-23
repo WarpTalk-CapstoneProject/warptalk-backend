@@ -1,5 +1,5 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
-using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -12,8 +12,6 @@ using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
-
-using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
@@ -41,13 +39,18 @@ public class PlanServiceTests
 
     // ─────────────────────────────────────────────
     //  Plan CRUD Tests
+    //  NOTE: PlanRequest validation requires:
+    //    - Currency == "USD" (uppercase, enforced by ValidatePlanRequest)
+    //    - Slug matches ^[a-z0-9]+(?:-[a-z0-9]+)*$ (lowercase)
+    //    - Price >= 0.50
     // ─────────────────────────────────────────────
 
     [Fact]
     public async Task CreatePlanAsync_ShouldCreatePlan_WhenValidRequest()
     {
-        var request = new PlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, 5, true, true, true, false, "{}", 0);
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);
+        var request = new PlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, "{}", 0);
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default))
+            .ReturnsAsync((Plan?)null);
 
         var result = await _planService.CreatePlanAsync(request);
 
@@ -61,14 +64,16 @@ public class PlanServiceTests
     [Fact]
     public async Task CreatePlanAsync_ShouldReturnFailure_WhenDuplicateSlug()
     {
-        var request = new PlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, 5, true, true, true, false, "{}", 0);
+        var request = new PlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "monthly", 1000, 10, "{}", 0);
         var existing = new Plan { Id = Guid.NewGuid(), Name = "Gold Plan", Slug = "gold-tier" };
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(existing);
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default))
+            .ReturnsAsync(existing);
 
         var result = await _planService.CreatePlanAsync(request);
 
         result.IsSuccess.Should().BeFalse();
-        result.ErrorCode.Should().Be("DUPLICATE_SLUG");
+        result.ErrorCode.Should().Be(ErrorCodes.BillingDuplicatePlanSlug); // "BILLING_DUPLICATE_PLAN_SLUG"
     }
 
     [Fact]
@@ -76,7 +81,8 @@ public class PlanServiceTests
     {
         var planId = Guid.NewGuid();
         var plan = new Plan { Id = planId, Name = "Premium", Slug = "premium", IsActive = true };
-        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default))
+            .ReturnsAsync(plan);
 
         var result = await _planService.DeactivatePlanAsync(planId);
 

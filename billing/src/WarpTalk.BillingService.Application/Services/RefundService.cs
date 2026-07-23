@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -29,13 +31,13 @@ public class RefundService : IRefundService
         {
             var payment = await _unitOfWork.PaymentRepository.GetByIdAsync(paymentId, cancellationToken);
             if (payment == null)
-                return Result.Failure<RefundDto>("Payment transaction not found.", "NOT_FOUND");
+                return Result.Failure<RefundDto>("Payment transaction not found.", ErrorCodes.NotFound);
 
-            if (payment.Status != "paid")
-                return Result.Failure<RefundDto>("Only paid transactions can be refunded.", "INVALID_REQUEST");
+            if (payment.Status != BillingConstants.PaymentStatuses.Paid)
+                return Result.Failure<RefundDto>("Only paid transactions can be refunded.", ErrorCodes.ValidationError);
 
             if (request.Amount <= 0 || request.Amount > payment.Amount)
-                return Result.Failure<RefundDto>("Refund amount must be positive and cannot exceed original payment amount.", "INVALID_REQUEST");
+                return Result.Failure<RefundDto>("Refund amount must be positive and cannot exceed original payment amount.", ErrorCodes.ValidationError);
 
             var refund = new Refund
             {
@@ -44,7 +46,7 @@ public class RefundService : IRefundService
                 UserId = payment.UserId,
                 Amount = request.Amount,
                 Reason = request.Reason,
-                Status = "completed",
+                Status = BillingConstants.RefundStatuses.Succeeded,
                 CreatedAt = DateTime.UtcNow,
                 CompletedAt = DateTime.UtcNow
             };
@@ -61,7 +63,7 @@ public class RefundService : IRefundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing refund for PaymentId {PaymentId}", paymentId);
-            return Result.Failure<RefundDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+            return Result.Failure<RefundDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
     }
 }

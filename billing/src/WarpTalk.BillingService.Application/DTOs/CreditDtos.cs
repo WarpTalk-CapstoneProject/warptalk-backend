@@ -1,7 +1,7 @@
 using WarpTalk.Shared;
 using System;
 using System.ComponentModel.DataAnnotations;
-using WarpTalk.BillingService.Domain.Enums;
+
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -16,9 +16,6 @@ public record CreditBalanceDto(
     DateTime CurrentPeriodEnd
 );
 
-
-
-
 public record ConsumeCreditsRequest(
     [Required]
     Guid WorkspaceId,
@@ -28,7 +25,7 @@ public record ConsumeCreditsRequest(
     int Amount,
 
     [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
-    CreditReferenceType ReferenceType,
+    string ReferenceType,
 
     Guid? ReferenceId
 );
@@ -42,7 +39,7 @@ public record TopUpRequest(
     int Amount,
 
     [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
-    CreditReferenceType ReferenceType,
+    string ReferenceType,
 
     Guid? ReferenceId
 );
@@ -58,7 +55,7 @@ public record SimulatePaymentRequest(
 public record CreditTransactionDto(
     Guid Id,
     int Amount,        // negative = consumption, positive = top-up
-    string Type,          // "consumption" | "top_up"
+    string Type,          // "consume" | "top_up" | "adjustment" | "refund"
     string? Description,
     string? ReferenceType,
     Guid? ReferenceId,
@@ -83,7 +80,7 @@ public record CreditTransactionDto(
     }
 }
 
-public record AdjustCreditsRequest(
+public record ManualAdjustCreditsRequest(
     [Required]
     Guid WorkspaceId,
 

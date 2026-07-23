@@ -15,11 +15,6 @@ public static class PlanMapper
         plan.BillingCycle,
         plan.CreditsPerCycle,
         plan.MaxParticipants,
-        plan.MaxLanguages,
-        plan.VoiceCloneEnabled,
-        plan.AiAssistantEnabled,
-        plan.GlossaryEnabled,
-        plan.DedicatedGpu,
         plan.Features,
         plan.SortOrder,
         plan.IsActive
@@ -36,11 +31,6 @@ public static class PlanMapper
         BillingCycle = request.BillingCycle,
         CreditsPerCycle = request.CreditsPerCycle,
         MaxParticipants = request.MaxParticipants,
-        MaxLanguages = request.MaxLanguages,
-        VoiceCloneEnabled = request.VoiceCloneEnabled,
-        AiAssistantEnabled = request.AiAssistantEnabled,
-        GlossaryEnabled = request.GlossaryEnabled,
-        DedicatedGpu = request.DedicatedGpu,
         Features = request.Features,
         SortOrder = request.SortOrder,
         IsActive = request.IsActive,
@@ -58,11 +48,6 @@ public static class PlanMapper
         plan.BillingCycle = request.BillingCycle;
         plan.CreditsPerCycle = request.CreditsPerCycle;
         plan.MaxParticipants = request.MaxParticipants;
-        plan.MaxLanguages = request.MaxLanguages;
-        plan.VoiceCloneEnabled = request.VoiceCloneEnabled;
-        plan.AiAssistantEnabled = request.AiAssistantEnabled;
-        plan.GlossaryEnabled = request.GlossaryEnabled;
-        plan.DedicatedGpu = request.DedicatedGpu;
         plan.Features = request.Features;
         plan.SortOrder = request.SortOrder;
         plan.IsActive = request.IsActive;

@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.BillingService.API.Filters;
+
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -29,7 +31,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
@@ -51,7 +53,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
@@ -61,11 +63,11 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPut("workspace/{workspaceId}/change-plan")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(Guid workspaceId, [FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)
-            return BadRequest(new { Message = "Workspace ID in URL does not match request body." });
+            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ValidationMessages.WorkspaceIdMismatch, ErrorCodes.ValidationError));
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
@@ -76,9 +78,9 @@ public class SubscriptionsController : ControllerBase
     private ActionResult HandleFailure(string? errorCode, string? error) =>
         errorCode switch
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { Message = error }),
-            ErrorCodes.BillingSubscriptionAlreadyActive => Conflict(new { Message = error }),
-            ErrorCodes.BillingPlanNotFound => BadRequest(new { Message = error }),
-            _ => StatusCode(500, new { Message = error })
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, errorCode)),
+            ErrorCodes.BillingSubscriptionAlreadyActive => Conflict(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive, errorCode)),
+            ErrorCodes.BillingPlanNotFound => BadRequest(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingPlanNotFound, errorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, errorCode ?? ErrorCodes.InternalServerError))
         };
 }

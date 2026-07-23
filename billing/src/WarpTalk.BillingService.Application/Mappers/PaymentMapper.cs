@@ -1,5 +1,8 @@
+using WarpTalk.BillingService.Domain.Constants;
+using System;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
+
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -16,7 +19,7 @@ public static class PaymentMapper
         payment.Provider,
         payment.ProviderTransactionId,
         payment.ProviderOrderId,
-        payment.Status,
+        payment.Status.ToLower(),
         payment.FailureReason,
         payment.PaidAt,
         payment.CreatedAt
@@ -36,9 +39,45 @@ public static class PaymentMapper
             Currency = currency,
             PaymentMethod = request.PaymentMethod,
             Provider = request.Provider,
-            Status = "pending",
+            Status = BillingConstants.PaymentStatuses.Pending,
             CreatedAt = now,
             UpdatedAt = now
         };
     }
+
+    public static Payment ToEntity(this TopUpRequest request, Subscription sub, Guid paymentId, decimal amount, string currency) => new()
+    {
+        Id = paymentId,
+        SubscriptionId = sub.Id,
+        UserId = sub.UserId,
+        Amount = amount,
+        TaxAmount = 0m,
+        TotalAmount = amount,
+        Currency = currency,
+        PaymentMethod = Domain.Constants.BillingConstants.Providers.TopUpSimulation,
+        Provider = Domain.Constants.BillingConstants.Providers.Stripe,
+        ProviderTransactionId = request.ReferenceId?.ToString() ?? Guid.NewGuid().ToString(),
+        Status = BillingConstants.PaymentStatuses.Paid,
+        PaidAt = DateTime.UtcNow,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow
+    };
+
+    public static Payment ToSimulatedEntity(this Subscription sub, Guid paymentId, string stripeInvoiceId, decimal amount, string currency) => new()
+    {
+        Id = paymentId,
+        SubscriptionId = sub.Id,
+        UserId = sub.UserId,
+        Amount = amount,
+        TaxAmount = 0m,
+        TotalAmount = amount,
+        Currency = currency.ToLowerInvariant(),
+        PaymentMethod = Domain.Constants.BillingConstants.Providers.StripeSimulation,
+        Provider = Domain.Constants.BillingConstants.Providers.Stripe,
+        ProviderTransactionId = stripeInvoiceId,
+        Status = BillingConstants.PaymentStatuses.Paid,
+        PaidAt = DateTime.UtcNow,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow
+    };
 }

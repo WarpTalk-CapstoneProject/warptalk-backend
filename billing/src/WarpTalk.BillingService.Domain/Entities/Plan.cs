@@ -22,12 +22,7 @@ public partial class Plan
 
     public int CreditsPerCycle { get; set; }
 
-    [NotMapped]
-    public int CreditsPerMonth
-    {
-        get => CreditsPerCycle;
-        set => CreditsPerCycle = value;
-    }
+
 
     public int MaxParticipants { get; set; } = 2;
 

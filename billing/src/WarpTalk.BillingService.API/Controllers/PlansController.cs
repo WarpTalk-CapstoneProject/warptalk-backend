@@ -46,7 +46,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
@@ -78,9 +78,9 @@ public class PlansController : ControllerBase
     private ActionResult HandleFailure(string? errorCode, string? error) =>
         errorCode switch
         {
-            ErrorCodes.BillingPlanNotFound => NotFound(new { Message = error }),
-            "DUPLICATE_SLUG" => BadRequest(new { Message = error }),
-            "INVALID_REQUEST" => BadRequest(new { Message = error }),
-            _ => StatusCode(500, new { Message = error })
+            ErrorCodes.BillingPlanNotFound => NotFound(new ApiErrorResponse(error ?? "Plan not found", errorCode)),
+            "DUPLICATE_SLUG" => BadRequest(new ApiErrorResponse(error ?? "Duplicate slug", errorCode)),
+            "INVALID_REQUEST" => BadRequest(new ApiErrorResponse(error ?? "Invalid request", errorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
         };
 }

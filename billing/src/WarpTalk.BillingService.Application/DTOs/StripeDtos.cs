@@ -10,6 +10,13 @@ public record StripeEventData(
     StripeCheckoutSession @object
 );
 
+public record SimulatedPaymentResponse(
+    string Message,
+    int AddedCredits,
+    decimal NewBalance,
+    StripeCheckoutSession StripeData
+);
+
 public record StripeCheckoutSession(
     string id,
     long amount_total,
@@ -19,18 +26,4 @@ public record StripeCheckoutSession(
     string? client_reference_id
 );
 
-public record StripeCreateCheckoutSessionRequest(
-    long amountTotal,
-    string currency,
-    string clientReferenceId,
-    string cancelUrl,
-    string successUrl
-);
 
-public record StripeCreateCheckoutSessionResponse(
-    string id,
-    long amountTotal,
-    string currency,
-    string paymentStatus,
-    string checkoutUrl
-);

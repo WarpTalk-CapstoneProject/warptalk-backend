@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
@@ -15,7 +16,6 @@ using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
-using WarpTalk.BillingService.Domain.Enums;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
@@ -38,10 +38,12 @@ public class UsageServiceTests
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
 
-        _mockConfig.Setup(c => c["BillingRates:SttPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:TranslationPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerMinute"]).Returns("40.0");
+        _mockConfig.Setup(c => c["BillingRates:SttPerSecond"]).Returns("1.0");
+        _mockConfig.Setup(c => c["BillingRates:TranslationPer100Chars"]).Returns("1.0");
+        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerSecond"]).Returns("1.0");
+        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerSecond"]).Returns("1.5");
+        _mockConfig.Setup(c => c["BillingRates:AiAssistantInputPer1000Tokens"]).Returns("0.5");
+        _mockConfig.Setup(c => c["BillingRates:AiAssistantOutputPer1000Tokens"]).Returns("2.0");
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
@@ -50,8 +52,7 @@ public class UsageServiceTests
 
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
-            new Mock<ILogger<UsageService>>().Object,
-            _mockConfig.Object);
+            new Mock<ILogger<UsageService>>().Object);
     }
 
     [Fact]
@@ -59,10 +60,10 @@ public class UsageServiceTests
     {
         var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
         
-        // 60s STT + 60s Translation + 60s Standard TTS (15 + 15 + 15 = 45 credits)
+        // 60s STT (60 * 1) + 1000 chars translation (1000/100 * 1 = 10) + 1000ms standard TTS (1s * 1 = 1) = 71 credits
         var cost = _usageService.CalculateCreditCost(60, 1000, 1000, false, plan);
 
-        cost.Should().Be(45);
+        cost.Should().Be(71);
     }
 
     [Fact]
@@ -75,7 +76,7 @@ public class UsageServiceTests
             Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
             PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
-        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, Name = "Pro" };
+        var plan = new Plan { Id = planId, Name = "Pro" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
@@ -102,7 +103,7 @@ public class UsageServiceTests
             Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
             PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
-        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, Name = "Pro" };
+        var plan = new Plan { Id = planId, Name = "Pro" };
         var segmentId = Guid.NewGuid();
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);

@@ -1,5 +1,8 @@
+using WarpTalk.BillingService.Domain.Constants;
+using System;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
+
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -12,7 +15,7 @@ public static class SubscriptionMapper
         sub.PlanId,
         planName,
         price,
-        sub.Status,
+        sub.Status.ToLower(),
         sub.CreditsRemaining,
         sub.CreditsUsedThisCycle,
         sub.CurrentPeriodStart,
@@ -32,7 +35,7 @@ public static class SubscriptionMapper
             UserId = request.UserId ?? Guid.Empty,
             WorkspaceId = request.WorkspaceId,
             PlanId = request.PlanId,
-            Status = "pending",
+            Status = BillingConstants.SubscriptionStatuses.Pending,
             CreditsRemaining = 0,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
@@ -53,7 +56,7 @@ public static class SubscriptionMapper
             UserId = oldSub.UserId,
             WorkspaceId = oldSub.WorkspaceId,
             PlanId = newPlan.Id,
-            Status = "pending",
+            Status = BillingConstants.SubscriptionStatuses.Pending,
             CreditsRemaining = oldSub.CreditsRemaining,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
@@ -70,14 +73,14 @@ public static class SubscriptionMapper
         var now = DateTime.UtcNow;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
-        sub.Status = "cancelled";
+        sub.Status = BillingConstants.SubscriptionStatuses.Cancelled;
         sub.UpdatedAt = now;
     }
 
     public static void CancelImmediately(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
-        sub.Status = "cancelled";
+        sub.Status = BillingConstants.SubscriptionStatuses.Cancelled;
         sub.CancellationReason = reason;
         sub.CancelledAt = now;
         sub.AutoRenew = false;

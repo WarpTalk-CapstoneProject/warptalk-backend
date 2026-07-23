@@ -1,7 +1,8 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations.Schema;
-using WarpTalk.BillingService.Domain.Enums;
+
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -15,7 +16,7 @@ public partial class Subscription
 
     public Guid PlanId { get; set; }
 
-    public string Status { get; set; } = "active";
+    public string Status { get; set; } = BillingConstants.SubscriptionStatuses.Active;
 
     public int CreditsRemaining { get; set; }
 

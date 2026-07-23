@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.BillingService.API.Filters;
+
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -23,7 +25,7 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [WorkspaceAuthorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetWorkspaceInvoices(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -50,7 +52,7 @@ public class InvoicesController : ControllerBase
     private ActionResult HandleFailure(string? errorCode, string? error) =>
         errorCode switch
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = error }),
-            _ => StatusCode(500, new { message = error })
+            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? "Subscription not found", errorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
         };
 }

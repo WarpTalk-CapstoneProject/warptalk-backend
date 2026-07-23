@@ -13,11 +13,6 @@ public record PlanDto(
     string BillingCycle,
     int CreditsPerCycle,
     int MaxParticipants,
-    int MaxLanguages,
-    bool VoiceCloneEnabled,
-    bool AiAssistantEnabled,
-    bool GlossaryEnabled,
-    bool DedicatedGpu,
     string Features,       // JSON blob
     int SortOrder,
     bool IsActive
@@ -34,11 +29,6 @@ public record PlanDto(
             "monthly",
             creditsPerMonth,
             0,
-            0,
-            false,
-            false,
-            false,
-            false,
             features ?? "{}",
             0,
             isActive)
@@ -55,11 +45,6 @@ public record PlanRequest(
     string BillingCycle,
     int CreditsPerCycle,
     int MaxParticipants,
-    int MaxLanguages,
-    bool VoiceCloneEnabled,
-    bool AiAssistantEnabled,
-    bool GlossaryEnabled,
-    bool DedicatedGpu,
     string Features,
     int SortOrder,
     bool IsActive = true

@@ -1,9 +1,11 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using Xunit;
 using FluentAssertions;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
+
 
 namespace WarpTalk.BillingService.Tests.Application.Mappers;
 
@@ -18,7 +20,7 @@ public class BillingMapperTests
 
         var subscription = request.ToEntity(plan);
 
-        subscription.Status.Should().Be("pending");
+        subscription.Status.Should().Be(BillingConstants.SubscriptionStatuses.Pending);
         subscription.IsActive.Should().BeFalse();
         subscription.CreditsRemaining.Should().Be(0); // Credits are only granted upon payment
         subscription.CurrentPeriodStart.Should().BeOnOrAfter(beforeTime);

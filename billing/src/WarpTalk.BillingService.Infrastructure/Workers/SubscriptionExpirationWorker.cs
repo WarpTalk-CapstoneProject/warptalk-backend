@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Linq;
 using System.Threading;
@@ -7,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Infrastructure.Persistence;
+
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -59,7 +61,7 @@ public class SubscriptionExpirationWorker : BackgroundService
             foreach (var sub in expiredSubscriptions)
             {
                 sub.IsActive = false;
-                sub.Status = "expired";
+                sub.Status = BillingConstants.SubscriptionStatuses.Expired;
                 sub.UpdatedAt = now;
             }
 

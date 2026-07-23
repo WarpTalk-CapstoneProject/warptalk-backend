@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
@@ -11,7 +12,6 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Domain.Enums;
 using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
@@ -47,7 +47,6 @@ public class CreditServiceTests
             _mockUnitOfWork.Object,
             new Mock<ILogger<CreditService>>().Object,
             _mockMessagePublisher.Object,
-            _mockRedisStore.Object,
             _mockConfig.Object);
     }
 
@@ -79,15 +78,15 @@ public class CreditServiceTests
     }
 
     [Fact]
-    public async Task ConsumeCreditsAsync_InsufficientCredits_ShouldReturnFailure()
+    public async Task ConsumeCreditsDirectlyAsync_InsufficientCredits_ShouldReturnFailure()
     {
         var workspaceId = Guid.NewGuid();
         var sub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, CreditsRemaining = 50, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5) };
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
 
-        var request = new ConsumeCreditsRequest(workspaceId, 100, CreditReferenceType.Manual, null);
-        var result = await _creditService.ConsumeCreditsAsync(workspaceId, request);
+        var request = new ConsumeCreditsRequest(workspaceId, 100, "Manual", null);
+        var result = await _creditService.ConsumeCreditsDirectlyAsync(workspaceId, request);
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingInsufficientCredits);

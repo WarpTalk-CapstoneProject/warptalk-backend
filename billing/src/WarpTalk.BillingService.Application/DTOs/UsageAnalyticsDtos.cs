@@ -36,7 +36,7 @@ public record BillingReportDto(
     int EndingBalance,
     int TotalTopUpCredits,
     int TotalConsumedCredits,
-    decimal? AverageTranslationCostPerMinute,
+    decimal? AverageTranslationCostPer100Chars,
     int? AverageCostPerMeeting,
     IReadOnlyList<UsageBreakdownDto> UsageBreakdown);
 

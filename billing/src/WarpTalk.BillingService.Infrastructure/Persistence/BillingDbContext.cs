@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Domain.Entities;
 
+
 namespace WarpTalk.BillingService.Infrastructure.Persistence;
 
 public partial class BillingDbContext : DbContext
@@ -89,6 +90,7 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.DedicatedGpu)
                 .HasDefaultValue(false)
                 .HasColumnName("dedicated_gpu");
+
             entity.Property(e => e.Features)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
@@ -139,7 +141,6 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.PlanId).HasColumnName("plan_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
-                .HasDefaultValue("active")
                 .HasColumnName("status");
             entity.Property(e => e.CreditsRemaining)
                 .HasDefaultValue(0)
@@ -337,7 +338,6 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("provider_order_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
-                .HasDefaultValue("pending")
                 .HasColumnName("status");
             entity.Property(e => e.FailureReason)
                 .HasMaxLength(500)
@@ -431,7 +431,6 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("currency");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
-                .HasDefaultValue("issued")
                 .HasColumnName("status");
             entity.Property(e => e.PdfUrl)
                 .HasMaxLength(500)
@@ -473,7 +472,6 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("reason");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
-                .HasDefaultValue("pending")
                 .HasColumnName("status");
             entity.Property(e => e.ProviderRefundId)
                 .HasMaxLength(255)
@@ -527,19 +525,7 @@ public partial class BillingDbContext : DbContext
         modelBuilder.Entity<Subscription>()
             .HasQueryFilter(s => s.DeletedAt == null);
 
-        modelBuilder.Entity<Subscription>(entity =>
-        {
-            entity.Property(e => e.Status)
-                .HasColumnName("status")
-                .HasDefaultValue("active");
-        });
 
-        modelBuilder.Entity<Payment>(entity =>
-        {
-            entity.Property(e => e.Status)
-                .HasColumnName("status")
-                .HasDefaultValue("pending");
-        });
 
         modelBuilder.Entity<CreditTransaction>(entity =>
         {

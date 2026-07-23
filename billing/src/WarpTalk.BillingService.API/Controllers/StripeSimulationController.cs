@@ -1,8 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Enums;
-
+using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.Shared;
 #if DEBUG
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -26,15 +26,12 @@ public class StripeSimulationController : ControllerBase
         var session = request.data.@object;
         if (session == null || !Guid.TryParse(session.client_reference_id, out var workspaceId))
         {
-            return BadRequest(new { message = "Invalid or missing client_reference_id" });
+            return HandleFailure(ErrorCodes.BillingSimulationInvalidRequest, ApiMessageConstants.ErrorMessages.BillingSimulationInvalidClientRef);
         }
 
-        _logger.LogInformation("Received simulated Stripe webhook for Workspace {WorkspaceId}. Session: {SessionId}, Status: {Status}",
-            workspaceId, session.id, session.payment_status);
-
-        if (request.type != "checkout.session.completed" || session.payment_status != "paid")
+        if (request.type != BillingConstants.StripeEvents.CheckoutSessionCompleted || session.payment_status != BillingConstants.Payments.StatusPaid)
         {
-            return BadRequest(new { message = "Simulation only supports a paid checkout.session.completed event for now." });
+            return HandleFailure(ErrorCodes.BillingSimulationInvalidRequest, ApiMessageConstants.ErrorMessages.BillingSimulationInvalidEvent);
         }
 
         // Stripe amounts are in the smallest currency unit (cents for USD) — 1 cent = 1 credit.
@@ -42,42 +39,41 @@ public class StripeSimulationController : ControllerBase
 
         var result = await _creditService.TopUpCreditsAsync(
             workspaceId,
-            new TopUpRequest(workspaceId, creditsToTopUp, CreditReferenceType.Transaction, Guid.NewGuid()),
+            new TopUpRequest(workspaceId, creditsToTopUp, BillingConstants.ReferenceTypes.Payment, Guid.NewGuid()),
             ct);
 
-        if (!result.IsSuccess)
-        {
-            return StatusCode(500, new { message = "Failed to process simulated payment", error = result.Error });
-        }
-
-        return Ok(new
-        {
-            message = "Simulated payment processed successfully",
-            addedCredits = creditsToTopUp,
-            newBalance = result.Value.CurrentCredits,
-            stripeData = session
-        });
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        //TODO : Add the logging for the success case. log the request and response 
+        return Ok(new SimulatedPaymentResponse(
+            BillingConstants.SuccessMessages.SimulatePaymentMessage,
+            creditsToTopUp,
+            result.Value.CurrentCredits,
+            session
+        ));
     }
-
+    //TODO : Add the logging for the success case. log the request and response 
     [HttpGet("generate-test-payload")]
     public IActionResult GenerateTestPayload([FromQuery] long amountTotal = 5000, [FromQuery] Guid? workspaceId = null)
     {
         var session = new StripeCheckoutSession(
-            $"cs_test_{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            $"{BillingConstants.StripeSimulation.SessionPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
             amountTotal,
-            "usd",
-            "paid",
-            $"pi_{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            BillingConstants.Currencies.Usd,
+            BillingConstants.Payments.StatusPaid,
+            $"{BillingConstants.StripeSimulation.PaymentIntentPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
             (workspaceId ?? Guid.NewGuid()).ToString()
         );
 
         var payload = new StripeWebhookEvent(
-            $"evt_{Guid.NewGuid().ToString("N").Substring(0, 20)}",
-            "checkout.session.completed",
+            $"{BillingConstants.StripeSimulation.EventPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            BillingConstants.StripeEvents.CheckoutSessionCompleted,
             new StripeEventData(session)
         );
 
         return Ok(payload);
     }
+
+    private ActionResult HandleFailure(string? errorCode, string? error) =>
+        BadRequest(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, errorCode ?? ErrorCodes.InternalServerError));
 }
 #endif

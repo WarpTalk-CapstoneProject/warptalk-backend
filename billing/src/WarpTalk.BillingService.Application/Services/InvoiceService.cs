@@ -29,8 +29,8 @@ public class InvoiceService : IInvoiceService
     {
         try
         {
-            var size = query.PageSize > 0 ? query.PageSize : 20;
-            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
+            var size = Math.Clamp(query.PageSize, 1, 200);
+            var skip = (Math.Max(1, query.PageNumber) - 1) * size;
 
             var items = await _unitOfWork.InvoiceRepository.GetPagedAsync(
                 i => i.Payment.Subscription.WorkspaceId == workspaceId,
@@ -44,7 +44,7 @@ public class InvoiceService : IInvoiceService
                 cancellationToken);
 
             var dtos = items.Select(i => i.ToDto(workspaceId)).ToList();
-            return Result.Success(PaginatedResponse<InvoiceDto>.Create(dtos, total, query.PageNumber, query.PageSize));
+            return Result.Success(PaginatedResponse<InvoiceDto>.Create(dtos, total, Math.Max(1, query.PageNumber), size));
         }
         catch (Exception ex)
         {
@@ -58,8 +58,8 @@ public class InvoiceService : IInvoiceService
     {
         try
         {
-            var size = query.PageSize > 0 ? query.PageSize : 20;
-            var skip = ((query.PageNumber > 0 ? query.PageNumber : 1) - 1) * size;
+            var size = Math.Clamp(query.PageSize, 1, 200);
+            var skip = (Math.Max(1, query.PageNumber) - 1) * size;
 
             var items = await _unitOfWork.InvoiceRepository.GetPagedAsync(
                 i => true,
@@ -90,10 +90,11 @@ public class InvoiceService : IInvoiceService
                     while (await reader.ReadAsync(cancellationToken))
                         workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
 
-                    foreach (var dto in dtos)
+                    for (int idx = 0; idx < dtos.Count; idx++)
                     {
+                        var dto = dtos[idx];
                         if (Guid.TryParse(dto.WorkspaceId, out var gId) && workspaceNames.TryGetValue(gId, out var realName))
-                            dto.WorkspaceName = realName;
+                            dtos[idx] = dto with { WorkspaceName = realName };
                     }
                 }
             }
@@ -102,7 +103,7 @@ public class InvoiceService : IInvoiceService
                 _logger.LogWarning(ex, "Failed to resolve workspace names for global invoices");
             }
 
-            return Result.Success(PaginatedResponse<InvoiceDto>.Create(dtos, total, query.PageNumber, query.PageSize));
+            return Result.Success(PaginatedResponse<InvoiceDto>.Create(dtos, total, Math.Max(1, query.PageNumber), size));
         }
         catch (Exception ex)
         {

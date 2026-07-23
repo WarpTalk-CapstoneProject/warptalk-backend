@@ -39,8 +39,8 @@ public class RefundsController : ControllerBase
     private ActionResult HandleFailure(string? errorCode, string? error) =>
         errorCode switch
         {
-            "NOT_FOUND" => NotFound(new { message = error }),
-            "INVALID_REQUEST" => BadRequest(new { message = error }),
-            _ => StatusCode(500, new { message = error })
+            "NOT_FOUND" => NotFound(new ApiErrorResponse(error ?? "Not found", errorCode)),
+            "INVALID_REQUEST" => BadRequest(new ApiErrorResponse(error ?? "Invalid request", errorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
         };
 }

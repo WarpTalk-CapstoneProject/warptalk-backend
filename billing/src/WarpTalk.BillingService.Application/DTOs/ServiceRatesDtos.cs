@@ -1,20 +1,20 @@
 namespace WarpTalk.BillingService.Application.DTOs;
 
 public record ServiceRatesDto(
-    double SttPerMinute,
-    double TranslationPerMinute,
-    double StandardTtsPerMinute,
-    double VoiceClonePerMinute,
-    double AiSummaryPerRequest,
-    double AiChatPerRequest
+    double SttPerSecond,
+    double TranslationPer100Chars,
+    double StandardTtsPerSecond,
+    double VoiceClonePerSecond,
+    double AiAssistantInputPer1000Tokens,
+    double AiAssistantOutputPer1000Tokens
 );
 
 
 public record UpdateServiceRatesRequest(
-    double SttPerMinute,
-    double TranslationPerMinute,
-    double StandardTtsPerMinute,
-    double VoiceClonePerMinute,
-    double AiSummaryPerRequest,
-    double AiChatPerRequest
+    double SttPerSecond,
+    double TranslationPer100Chars,
+    double StandardTtsPerSecond,
+    double VoiceClonePerSecond,
+    double AiAssistantInputPer1000Tokens,
+    double AiAssistantOutputPer1000Tokens
 );
