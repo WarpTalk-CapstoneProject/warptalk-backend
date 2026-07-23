@@ -15,19 +15,31 @@ public class MeetingRoomService : IMeetingRoomService
     private readonly ITranslationRoomGrpcService _grpcService;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRedisService _redisService;
+    private readonly ILiveKitEgressService _egressService;
     private readonly ILogger<MeetingRoomService> _logger;
+
+    // Same Redis Pub/Sub channel TranslationRoomService's WorkspaceEventConsumerWorker
+    // already publishes to and the Gateway's TranslationRoomRedisSubscriberService already
+    // consumes into TranslationRoomHub — this is the established cross-process mechanism
+    // for a non-hub service to push into the Gateway hub. MeetingChatNotifier/AssistantNotifier
+    // (IHubContext<THub> injected directly into a service) is a same-process pattern that
+    // does not apply here: MeetingRoomService runs in the Meeting microservice, not the
+    // Gateway process that owns TranslationRoomHub.
+    private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
     public MeetingRoomService(
         ILiveKitTokenService tokenService,
         ITranslationRoomGrpcService grpcService,
         IUnitOfWork unitOfWork,
         IRedisService redisService,
+        ILiveKitEgressService egressService,
         ILogger<MeetingRoomService> logger)
     {
         _tokenService = tokenService;
         _grpcService = grpcService;
         _unitOfWork = unitOfWork;
         _redisService = redisService;
+        _egressService = egressService;
         _logger = logger;
     }
 
@@ -111,6 +123,27 @@ public class MeetingRoomService : IMeetingRoomService
         bool isAuthorized = isHost;
         Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
 
+        // WT-04: a locked room rejects everyone except the host and participants who are
+        // already active in it (e.g. a reconnect after a network blip must not be treated
+        // as a new-joiner lockout) — checked ahead of the authorization gate below so a
+        // locked room reports "Room is locked." rather than a generic authorization error
+        // even to someone who would otherwise have been authorized to join. Only queries
+        // for the caller's existing participant row when the room IS locked, to avoid an
+        // extra DB round-trip on the (common) non-locked path — step 4 below falls back to
+        // its own query when this stays null.
+        MeetingParticipant? existingParticipant = null;
+        if (meetingRoom.IsLocked)
+        {
+            existingParticipant = await _unitOfWork.MeetingParticipantRepository
+                .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
+            bool isExistingActiveParticipant = existingParticipant != null && existingParticipant.IsActive && !existingParticipant.LeftAt.HasValue;
+            if (!isHost && !isExistingActiveParticipant)
+            {
+                await _unitOfWork.RollbackTransactionAsync();
+                return Result.Failure<JoinMeetingResponse>("Room is locked.", ErrorCodes.Forbidden);
+            }
+        }
+
         if (!isHost)
         {
             // Check MeetingInvitation Table first (for explicit invites & external guests)
@@ -182,7 +215,7 @@ public class MeetingRoomService : IMeetingRoomService
 
         // 4. Register or Update Participant
         var providerIdentity = userIdString;
-        var participant = await _unitOfWork.MeetingParticipantRepository
+        var participant = existingParticipant ?? await _unitOfWork.MeetingParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
 
         if (participant == null)
@@ -227,7 +260,8 @@ public class MeetingRoomService : IMeetingRoomService
                     Token = string.Empty,
                     ProviderRoomName = meetingRoom.ProviderRoomName,
                     ParticipantIdentity = providerIdentity,
-                    IsWaitingRoom = true
+                    IsWaitingRoom = true,
+                    MuteOnEntry = meetingRoom.MuteOnEntry
                 });
             }
         }
@@ -301,7 +335,8 @@ public class MeetingRoomService : IMeetingRoomService
             Token = tokenResult.Value!,
             ProviderRoomName = meetingRoom.ProviderRoomName,
             ParticipantIdentity = providerIdentity,
-            IsWaitingRoom = false
+            IsWaitingRoom = false,
+            MuteOnEntry = meetingRoom.MuteOnEntry
         });
         } // end try (BeginTransactionAsync)
         catch (Exception ex)
@@ -612,5 +647,189 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Success(true);
+    }
+
+    // ── WT-04: Host controls ──────────────────────────────
+
+    public async Task<Result<bool>> SetLockAsync(Guid translationRoomId, Guid callerUserId, bool locked)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        if (meetingRoom == null)
+            return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
+
+        if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
+            return Result.Failure<bool>("Only the host can lock or unlock the room.", ErrorCodes.Forbidden);
+
+        meetingRoom.IsLocked = locked;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        await PublishGatewayCommandAsync("RoomLockChanged", translationRoomId, new { Locked = locked });
+
+        return Result.Success(true);
+    }
+
+    public async Task<Result<bool>> SetMuteOnEntryAsync(Guid translationRoomId, Guid callerUserId, bool muteOnEntry)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        if (meetingRoom == null)
+            return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
+
+        if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
+            return Result.Failure<bool>("Only the host can change mute-on-entry.", ErrorCodes.Forbidden);
+
+        meetingRoom.MuteOnEntry = muteOnEntry;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        // Known gap: this only affects the NEXT joiner (read off JoinMeetingResponse.MuteOnEntry
+        // — see JoinMeetingAsync). It is not broadcast live to the room like RoomLockChanged/
+        // RecordingStateChanged, so a host with a second open tab won't see this toggle update
+        // there. A real fix would add a "MuteOnEntryChanged" broadcast the same way as the other
+        // two settings; left out to keep this change minimal, since it doesn't affect anyone
+        // already in the meeting.
+        return Result.Success(true);
+    }
+
+    // ── WT-06: Recording via LiveKit Egress ───────────────
+
+    public async Task<Result<RecordingStateDto>> SetRecordingAsync(Guid translationRoomId, Guid callerUserId, string action)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        if (meetingRoom == null)
+            return Result.Failure<RecordingStateDto>("Meeting room not found.", ErrorCodes.NotFound);
+
+        if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
+            return Result.Failure<RecordingStateDto>("Only the host can control recording.", ErrorCodes.Forbidden);
+
+        var normalizedAction = action?.Trim().ToLowerInvariant();
+
+        if (normalizedAction == "start")
+        {
+            if (!string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
+                return Result.Failure<RecordingStateDto>("Recording is already in progress.", ErrorCodes.InvalidState);
+
+            var startResult = await _egressService.StartRoomCompositeEgressAsync(meetingRoom.ProviderRoomName);
+            if (!startResult.IsSuccess || string.IsNullOrEmpty(startResult.Value))
+                return Result.Failure<RecordingStateDto>(startResult.Error ?? "Failed to start recording.", ErrorCodes.InternalServerError);
+
+            meetingRoom.ActiveEgressId = startResult.Value;
+            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = true });
+
+            return Result.Success(new RecordingStateDto { Recording = true, EgressId = meetingRoom.ActiveEgressId });
+        }
+
+        if (normalizedAction == "stop")
+        {
+            if (string.IsNullOrEmpty(meetingRoom.ActiveEgressId))
+                return Result.Failure<RecordingStateDto>("No recording is currently in progress.", ErrorCodes.InvalidState);
+
+            var stopResult = await _egressService.StopEgressAsync(meetingRoom.ActiveEgressId);
+            if (!stopResult.IsSuccess)
+                return Result.Failure<RecordingStateDto>(stopResult.Error ?? "Failed to stop recording.", ErrorCodes.InternalServerError);
+
+            meetingRoom.ActiveEgressId = null;
+            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+            await _unitOfWork.SaveChangesAsync();
+
+            await PublishGatewayCommandAsync("RecordingStateChanged", translationRoomId, new { Recording = false });
+
+            return Result.Success(new RecordingStateDto { Recording = false, EgressId = null });
+        }
+
+        return Result.Failure<RecordingStateDto>("Action must be 'start' or 'stop'.", ErrorCodes.ValidationError);
+    }
+
+    // ── WT-08: Auto host fallback ──────────────────────────
+
+    /// <summary>
+    /// Authoritative host-fallback election. Triggered ONLY from the Gateway hub's
+    /// OnDisconnectedAsync full-disconnect signal (via HostFallbackConsumerWorker
+    /// subscribing to the same "translationRoom:participant-offline" channel the hub
+    /// already publishes to unconditionally — see TranslationRoomHub.OnDisconnectedAsync).
+    ///
+    /// MeetingWebhookService.HandleParticipantLeft (the OTHER participant-left signal,
+    /// from LiveKit's webhook) intentionally does NOT elect a new host — it only clears
+    /// ActiveHostId when the departing identity matches it, which is safe/idempotent to run
+    /// in either order relative to this method: whichever runs first "wins" the null-out,
+    /// and the equality check there means it never clobbers a host this method has already
+    /// elected. This method is the only place a NON-NULL ActiveHostId is ever assigned as a
+    /// fallback, so there is no double-election race between the two paths. It re-derives
+    /// "should I elect someone" from current DB state rather than trusting the webhook to
+    /// have already run, so it works correctly regardless of which of the two signals
+    /// arrives first.
+    /// </summary>
+    public async Task<Result<bool>> HandleHostOfflineAsync(Guid translationRoomId, Guid departedUserId)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        if (meetingRoom == null)
+            return Result.Success(false);
+
+        bool departedWasHost = meetingRoom.ActiveHostId == departedUserId;
+        // Nothing to do if some other, still-current host is already assigned.
+        if (!departedWasHost && meetingRoom.ActiveHostId != null)
+            return Result.Success(false);
+
+        var activeParticipants = await _unitOfWork.MeetingParticipantRepository
+            .FindAsync(p => p.MeetingRoomId == meetingRoom.Id && p.IsActive && p.UserId != departedUserId);
+
+        var nextHost = activeParticipants.OrderBy(p => p.JoinedAt).FirstOrDefault();
+
+        // No active participants left: fall back to "no host", matching
+        // MeetingWebhookService.HandleParticipantLeft's existing null-out behavior.
+        meetingRoom.ActiveHostId = nextHost?.UserId;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        if (nextHost != null)
+        {
+            await PublishGatewayCommandAsync("HostChanged", translationRoomId, new { NewHostUserId = nextHost.UserId.ToString() });
+        }
+
+        return Result.Success(true);
+    }
+
+    // ── Helpers ────────────────────────────────────────────
+
+    private async Task<bool> IsHostAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
+    {
+        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
+        var roomDetails = roomDetailsResult.Value;
+
+        if (roomDetails == null)
+        {
+            var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!grpcResult.IsSuccess || grpcResult.Value == null)
+                return false;
+            roomDetails = grpcResult.Value;
+        }
+
+        bool isOriginalHost = roomDetails.HostId == callerUserId.ToString();
+        bool isActiveHost = meetingRoom.ActiveHostId == callerUserId;
+        return isOriginalHost || isActiveHost;
+    }
+
+    private Task<Result> PublishGatewayCommandAsync(string command, Guid translationRoomId, object extraFields)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["Command"] = command,
+            ["RoomId"] = translationRoomId.ToString()
+        };
+
+        foreach (var property in extraFields.GetType().GetProperties())
+        {
+            payload[property.Name] = property.GetValue(extraFields);
+        }
+
+        return _redisService.PublishEventAsync(GatewayCommandsChannel, payload);
     }
 }

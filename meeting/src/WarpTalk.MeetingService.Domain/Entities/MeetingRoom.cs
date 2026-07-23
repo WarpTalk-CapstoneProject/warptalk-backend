@@ -31,6 +31,14 @@ public partial class MeetingRoom
 
     public DateTime? EndedAt { get; set; }
 
+    // WT-04: host-only room controls.
+    public bool IsLocked { get; set; }
+
+    public bool MuteOnEntry { get; set; }
+
+    // WT-06: LiveKit Egress id for the in-progress RoomComposite recording, if any.
+    public string? ActiveEgressId { get; set; }
+
     public virtual ICollection<MeetingChatMessage> MeetingChatMessages { get; set; } = new List<MeetingChatMessage>();
 
     public virtual ICollection<MeetingParticipant> MeetingParticipants { get; set; } = new List<MeetingParticipant>();

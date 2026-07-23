@@ -285,6 +285,13 @@ public partial class MeetingDbContext : DbContext
                 .HasMaxLength(255)
                 .HasDefaultValueSql("'CREATED'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.IsLocked)
+                .HasDefaultValue(false)
+                .HasColumnName("is_locked");
+            entity.Property(e => e.MuteOnEntry)
+                .HasDefaultValue(false)
+                .HasColumnName("mute_on_entry");
+            entity.Property(e => e.ActiveEgressId).HasColumnName("active_egress_id");
             entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")

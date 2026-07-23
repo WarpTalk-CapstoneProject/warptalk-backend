@@ -311,6 +311,21 @@ public class TranslationRoomHubTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task MuteAll_ShouldBroadcastForceMuted_ToOthersInGroup_ExcludingCaller()
+    {
+        var (hub, _, clientsMock, clientProxyMock, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-mute-all");
+
+        await hub.MuteAll(roomId);
+
+        clientsMock.Verify(c => c.OthersInGroup($"translationRoom:{roomId}"), Times.Once);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync("ForceMuted", It.IsAny<object[]>(), default),
+            Times.Once);
+    }
+
     private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub()
     {
         var connectionManagerMock = new Mock<IConnectionManager>();

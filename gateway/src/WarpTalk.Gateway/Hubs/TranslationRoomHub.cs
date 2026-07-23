@@ -66,7 +66,14 @@ public class TranslationRoomHub : Hub
             var roomUserKey = $"{roomIdStr}_{userId}";
             _roomUserToConnection.TryRemove(roomUserKey, out _);
 
-            // Publish event to Redis for TranslationRoomService to process participant left
+            // Publish event to Redis for TranslationRoomService to process participant left.
+            // WT-08: MeetingService's HostFallbackConsumerWorker ALSO subscribes to this same
+            // channel — if the departing user held the room's ActiveHostId, it elects a
+            // replacement and broadcasts "HostChanged" back through the Gateway commands
+            // channel (see MeetingRoomService.HandleHostOfflineAsync). Reused rather than
+            // adding a second "translationRoom:host-offline" publish here, since the hub has
+            // no cheap way to know host status itself (same trust-boundary gap as
+            // SpotlightParticipant/MuteAll below) — the consumer re-derives that from the DB.
             var db = _redis.GetDatabase();
             await db.PublishAsync("translationRoom:participant-offline", $"{roomIdStr}:{userId}");
 
@@ -267,6 +274,29 @@ public class TranslationRoomHub : Hub
 
         await Clients.Group(groupName)
             .SendAsync("SpotlightChanged", targetUserId, on);
+    }
+
+    /// <summary>
+    /// Host-only (WT-04): force-mute every OTHER participant's mic. Each person can unmute
+    /// themselves afterwards — this is not a hard/enforced mute, just a one-time nudge.
+    ///
+    /// KNOWN GAP: identical trust-boundary gap to SpotlightParticipant above, for the exact
+    /// same reason — this Gateway hub has no injected repository/gRPC client for
+    /// TranslationRoom/host data, only Redis, the connection registry, and JWT claims. There
+    /// is no cheap way to verify the caller is actually the room host from inside the hub
+    /// today, so this trusts the caller's claimed identity and does not verify host status
+    /// server-side. A real fix needs the same thing SpotlightParticipant's comment describes:
+    /// a gRPC client to TranslationRoomService injected into this hub, or a Redis-cached
+    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// </summary>
+    public async Task MuteAll(Guid translationRoomId)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ForceMuted");
+
+        _logger.LogInformation("TranslationRoomHub: MuteAll invoked for translationRoom {TranslationRoomId}", translationRoomId);
     }
 
     /// <summary>

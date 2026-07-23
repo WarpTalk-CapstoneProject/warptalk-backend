@@ -100,9 +100,15 @@ builder.Services.AddSignalR();
 
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
+builder.Services.AddHttpClient<ILiveKitEgressService, LiveKitEgressService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
+
+// WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
+// fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
+// authoritative election path).
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallbackConsumerWorker>();
 
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
