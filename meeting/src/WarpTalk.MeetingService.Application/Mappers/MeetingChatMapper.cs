@@ -22,7 +22,11 @@ public static class MeetingChatMapper
             OriginalText = entity.OriginalText,
             TranslationEnabled = entity.TranslationEnabled,
             Mentions = string.IsNullOrEmpty(entity.Mentions) ? new List<ChatMentionDto>() : JsonSerializer.Deserialize<List<ChatMentionDto>>(entity.Mentions, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<ChatMentionDto>(),
-            CreatedAt = entity.CreatedAt
+            CreatedAt = entity.CreatedAt,
+            FileUrl = entity.FileUrl,
+            FileName = entity.FileName,
+            FileSizeBytes = entity.FileSizeBytes,
+            ContentType = entity.ContentType
         };
     }
 
@@ -49,6 +53,40 @@ public static class MeetingChatMapper
             Mentions = request.Mentions == null ? "[]" : JsonSerializer.Serialize(request.Mentions, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }),
             IsHidden = false,
             CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    public static MeetingChatMessage ToFileEntity(
+        Guid messageId,
+        Guid roomId,
+        Guid workspaceId,
+        Guid userId,
+        MeetingParticipant? participant,
+        string fileUrl,
+        string fileName,
+        long fileSizeBytes,
+        string contentType)
+    {
+        return new MeetingChatMessage
+        {
+            Id = messageId,
+            MeetingRoomId = roomId,
+            WorkspaceId = workspaceId,
+            SenderUserId = userId,
+            ParticipantId = participant?.Id,
+            SenderDisplayName = participant?.ProviderIdentity ?? "Unknown User",
+            SenderType = "user",
+            MessageType = "file",
+            OriginalLanguage = "en", // not applicable to file messages; original_language is NOT NULL
+            OriginalText = fileName,
+            TranslationEnabled = false,
+            Mentions = "[]",
+            IsHidden = false,
+            CreatedAt = DateTime.UtcNow,
+            FileUrl = fileUrl,
+            FileName = fileName,
+            FileSizeBytes = fileSizeBytes,
+            ContentType = contentType
         };
     }
 }

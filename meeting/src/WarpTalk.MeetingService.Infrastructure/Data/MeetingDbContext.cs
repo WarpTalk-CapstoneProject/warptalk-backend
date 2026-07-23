@@ -79,6 +79,14 @@ public partial class MeetingDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
+            entity.Property(e => e.ContentType)
+                .HasMaxLength(255)
+                .HasColumnName("content_type");
+            entity.Property(e => e.FileName)
+                .HasMaxLength(255)
+                .HasColumnName("file_name");
+            entity.Property(e => e.FileSizeBytes).HasColumnName("file_size_bytes");
+            entity.Property(e => e.FileUrl).HasColumnName("file_url");
             entity.Property(e => e.IsHidden).HasColumnName("is_hidden");
             entity.Property(e => e.MeetingRoomId).HasColumnName("meeting_room_id");
             entity.Property(e => e.Mentions)

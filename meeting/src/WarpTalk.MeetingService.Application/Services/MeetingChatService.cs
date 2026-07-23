@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,17 +15,25 @@ namespace WarpTalk.MeetingService.Application.Services;
 
 public class MeetingChatService : IMeetingChatService
 {
+    private const long MaxFileSizeBytes = 25 * 1024 * 1024; // 25 MB
+    private static readonly HashSet<string> BlockedFileExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".bat", ".cmd", ".sh", ".msi", ".dll", ".scr"
+    };
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IMeetingChatNotifier _chatNotifier;
     private readonly IRedisService _redisService;
     private readonly IChatTranslator _chatTranslator;
+    private readonly IMeetingChatFileStorage _fileStorage;
 
-    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService, IChatTranslator chatTranslator)
+    public MeetingChatService(IUnitOfWork unitOfWork, IMeetingChatNotifier chatNotifier, IRedisService redisService, IChatTranslator chatTranslator, IMeetingChatFileStorage fileStorage)
     {
         _unitOfWork = unitOfWork;
         _chatNotifier = chatNotifier;
         _redisService = redisService;
         _chatTranslator = chatTranslator;
+        _fileStorage = fileStorage;
     }
 
     public async Task<Result<IEnumerable<MeetingChatMessageDto>>> GetRoomMessagesAsync(Guid roomId, Guid userId, CancellationToken ct = default)
@@ -225,5 +234,91 @@ public class MeetingChatService : IMeetingChatService
         await _chatNotifier.BroadcastMessageHiddenAsync(roomId, messageId, ct);
 
         return Result.Success<bool>(true);
+    }
+
+    public async Task<Result<MeetingChatMessageDto>> UploadFileAsync(Guid roomId, Guid userId, UploadMeetingChatFileRequest request, CancellationToken ct = default)
+    {
+        var file = request.File;
+        if (file == null || file.Length <= 0)
+            return Result.Failure<MeetingChatMessageDto>("The file is empty.", "VALIDATION_ERROR");
+
+        if (file.Length > MaxFileSizeBytes)
+            return Result.Failure<MeetingChatMessageDto>("The file exceeds the 25 MB limit.", "VALIDATION_ERROR");
+
+        var extension = Path.GetExtension(file.FileName);
+        if (BlockedFileExtensions.Contains(extension))
+            return Result.Failure<MeetingChatMessageDto>("This file type is not allowed.", "VALIDATION_ERROR");
+
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
+        if (room == null)
+            return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");
+
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        bool isActiveParticipant = participant != null && participant.IsActive && participant.LeftAt == null;
+
+        if (room.CreatedBy != userId && !isActiveParticipant)
+            return Result.Failure<MeetingChatMessageDto>("Not an active participant.", "FORBIDDEN");
+
+        var workspaceId = Guid.Empty;
+        var roomCacheKey = $"meeting:room:{roomId}";
+        var cachedRoom = await _redisService.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
+        if (cachedRoom.Value != null && Guid.TryParse(cachedRoom.Value.WorkspaceId, out var wsId))
+            workspaceId = wsId;
+
+        var messageId = Guid.NewGuid();
+        var storageKey = $"{room.Id}/{messageId}{extension}";
+        var fileUrl = $"/meetings/rooms/{roomId}/chat/files/{messageId}/download";
+
+        using (var stream = file.OpenReadStream())
+        {
+            await _fileStorage.SaveAsync(storageKey, stream, ct);
+        }
+
+        var message = MeetingChatMapper.ToFileEntity(
+            messageId, room.Id, workspaceId, userId, participant,
+            fileUrl, file.FileName, file.Length, file.ContentType);
+
+        try
+        {
+            await _unitOfWork.MeetingChatMessageRepository.AddAsync(message, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            await _fileStorage.DeleteAsync(storageKey, ct);
+            throw;
+        }
+
+        var dto = message.ToDto();
+        await _chatNotifier.BroadcastMessageReceivedAsync(roomId, dto, ct);
+
+        return Result.Success(dto);
+    }
+
+    public async Task<Result<MeetingChatFileDownloadResult>> DownloadFileAsync(Guid roomId, Guid messageId, Guid userId, CancellationToken ct = default)
+    {
+        var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
+        if (room == null)
+            return Result.Failure<MeetingChatFileDownloadResult>("Room not found.", "NOT_FOUND");
+
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId, ct: ct);
+        bool isParticipant = participant != null;
+
+        if (room.CreatedBy != userId && !isParticipant)
+            return Result.Failure<MeetingChatFileDownloadResult>("Not a participant.", "FORBIDDEN");
+
+        var message = await _unitOfWork.MeetingChatMessageRepository.GetByIdAsync(messageId, ct);
+        if (message == null || message.MeetingRoomId != room.Id || message.MessageType != "file" || string.IsNullOrEmpty(message.FileName))
+            return Result.Failure<MeetingChatFileDownloadResult>("File not found.", "NOT_FOUND");
+
+        var storageKey = $"{room.Id}/{message.Id}{Path.GetExtension(message.FileName)}";
+        var stream = await _fileStorage.OpenReadAsync(storageKey, ct);
+
+        return Result.Success(new MeetingChatFileDownloadResult
+        {
+            Stream = stream,
+            ContentType = message.ContentType ?? "application/octet-stream",
+            FileName = message.FileName
+        });
     }
 }
