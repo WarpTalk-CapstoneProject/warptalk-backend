@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
 using System.Security.Claims;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using WarpTalk.Gateway.Services;
 
 namespace WarpTalk.Gateway.Hubs;
@@ -72,6 +73,7 @@ public class TranslationRoomHub : Hub
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
+            await db.HashDeleteAsync($"translationRoom:{roomIdStr}:voice_preferences", userId);
 
             await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
                 .SendAsync("ParticipantLeft", userId);
@@ -96,6 +98,8 @@ public class TranslationRoomHub : Hub
         var groupName = TranslationRoomGroupName(translationRoomId);
         var roomIdStr = translationRoomId.ToString();
         var roomUserKey = $"{roomIdStr}_{userId}";
+        var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
+        var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
 
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
@@ -121,7 +125,7 @@ public class TranslationRoomHub : Hub
             UserId: Guid.Parse(userId),
             DisplayName: displayName,
             SpeakLanguage: speakLanguage,
-            ListenLanguage: listenLanguage,
+            ListenLanguage: normalizedListenLanguage,
             IsMuted: false,
             JoinedAt: DateTime.UtcNow);
 
@@ -136,7 +140,7 @@ public class TranslationRoomHub : Hub
         await db.HashSetAsync(
             $"translationRoom:{translationRoomId}:languages",
             userId,
-            listenLanguage);
+            normalizedListenLanguage);
 
         // Every participant is simultaneously a translation source (when speaking) and a
         // target (their own listen language) — the AI pipeline previously had no visibility
@@ -147,11 +151,11 @@ public class TranslationRoomHub : Hub
         await db.HashSetAsync(
             $"translationRoom:{translationRoomId}:speak_languages",
             userId,
-            NormalizeLanguageCode(speakLanguage));
+            normalizedSpeakLanguage);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} joined translationRoom {TranslationRoomId} (speak={SpeakLanguage}, listen={ListenLanguage})",
-            userId, translationRoomId, speakLanguage, listenLanguage);
+            userId, translationRoomId, normalizedSpeakLanguage, normalizedListenLanguage);
     }
 
     private static string NormalizeLanguageCode(string language) =>
@@ -178,10 +182,11 @@ public class TranslationRoomHub : Hub
         // Unregister from AI pipeline — stops consuming if last participant
         _translationRoomRegistry.UnregisterParticipant(translationRoomId.ToString(), userId);
 
-        // Clean up language preference
+        // Clean up language/voice preference
         var db = _redis.GetDatabase();
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:languages", userId);
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:speak_languages", userId);
+        await db.HashDeleteAsync($"translationRoom:{translationRoomId}:voice_preferences", userId);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} left translationRoom {TranslationRoomId}",
@@ -199,6 +204,137 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantMuteChanged", userId, isMuted);
     }
+
+    /// <summary>
+    /// Change the caller's own listen (output) language mid-meeting — lets a
+    /// participant switch which dubbed track/transcript language they hear without
+    /// leaving and rejoining the room. Previously listenLanguage was only ever set
+    /// once, in JoinTranslationRoom; there was no way to change it without a full
+    /// reconnect.
+    ///
+    /// Just updates the same `translationRoom:{id}:languages` hash translation_worker
+    /// already reads per-utterance (see TranslationWorker._get_target_languages) — the
+    /// AI pipeline picks up the new target language on the very next utterance, no
+    /// pipeline restart needed. The client applies the switch to its own local state
+    /// immediately (optimistic); this broadcast is only for OTHER clients that want to
+    /// reflect a participant's current listen language (e.g. the people panel).
+    /// </summary>
+    public async Task SetListenLanguage(Guid translationRoomId, string listenLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(listenLanguage))
+            throw new HubException("listenLanguage is required.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+        var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync(
+            $"translationRoom:{translationRoomId}:languages",
+            userId,
+            normalizedListenLanguage);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantLanguageChanged", userId, normalizedListenLanguage);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed listen language to {ListenLanguage} in translationRoom {TranslationRoomId}",
+            userId, normalizedListenLanguage, translationRoomId);
+    }
+
+    /// <summary>
+    /// Change the caller's own preferred TTS voice for the language they're currently
+    /// listening in — mid-meeting, like SetListenLanguage. `voiceId` is a real Cartesia
+    /// voice id (from GET /api/v1/translation-rooms/{id}/voices?language={lang}) or an
+    /// empty string to clear the preference and fall back to the automatic per-speaker
+    /// default (tts_worker._hashed_default_voice_id, or the speaker's cloned voice).
+    ///
+    /// Updates `translationRoom:{id}:voice_preferences` (userId -> voiceId), which
+    /// tts_worker cross-references against `:languages` on every utterance (see
+    /// TTSWorker._get_explicit_voice_choices) — the new voice applies from this
+    /// listener's very next utterance heard, no pipeline restart needed. Unlike
+    /// listen-language, a voice preference is scoped to whatever language the caller is
+    /// CURRENTLY listening in; switching languages via SetListenLanguage does not carry
+    /// a voice pick over (voices differ by Cartesia language table), so the client
+    /// should treat a language change as clearing its own locally-remembered voice pick
+    /// too.
+    /// </summary>
+    public async Task SetVoicePreference(Guid translationRoomId, string voiceId)
+    {
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        var db = _redis.GetDatabase();
+        if (string.IsNullOrWhiteSpace(voiceId))
+        {
+            await db.HashDeleteAsync($"translationRoom:{translationRoomId}:voice_preferences", userId);
+        }
+        else
+        {
+            await db.HashSetAsync(
+                $"translationRoom:{translationRoomId}:voice_preferences",
+                userId,
+                voiceId);
+        }
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantVoiceChanged", userId, voiceId);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed voice preference to {VoiceId} in translationRoom {TranslationRoomId}",
+            userId, voiceId, translationRoomId);
+    }
+
+    /// <summary>
+    /// Real Cartesia voices tts_worker can render `language` in — for the control
+    /// bar's voice picker. Reads the SAME Redis-cached catalog tts_worker itself uses
+    /// (see TTSWorker._get_voice_catalog / CartesiaSynthesizer.list_voices), so every
+    /// option returned here is guaranteed synthesizable — never a fabricated id.
+    ///
+    /// Returns an empty list (not an error) if tts_worker hasn't populated the cache
+    /// for this language yet — that only happens once someone's speech has actually
+    /// been translated into it since the cache last expired (voice_catalog_cache_ttl_
+    /// seconds, 6h default). The client should treat an empty result as "no picker
+    /// options available right now" and fall back to whatever the automatic default
+    /// voice already provides, not surface it as a failure.
+    /// </summary>
+    // tts_worker writes voice_catalog:{language} as lowercase-key JSON (Python's
+    // json.dumps of a plain dict — {"id":..., "name":..., "gender":...}).
+    // JsonSerializer.Deserialize is case-SENSITIVE by default, which would silently
+    // leave every VoiceCatalogEntry field null against those lowercase keys instead
+    // of throwing — caught by GetVoiceCatalog_ShouldReturnParsedEntries_WhenCachePresent.
+    private static readonly JsonSerializerOptions VoiceCatalogJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    public async Task<List<VoiceOptionDto>> GetVoiceCatalog(string language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+            return new List<VoiceOptionDto>();
+
+        var db = _redis.GetDatabase();
+        var raw = await db.StringGetAsync($"voice_catalog:{NormalizeLanguageCode(language)}");
+        if (raw.IsNullOrEmpty)
+            return new List<VoiceOptionDto>();
+
+        try
+        {
+            var entries = JsonSerializer.Deserialize<List<VoiceCatalogEntry>>((string)raw!, VoiceCatalogJsonOptions) ?? new();
+            return entries
+                .Select(e => new VoiceOptionDto(e.Id, e.Name, e.Gender ?? ""))
+                .ToList();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "TranslationRoomHub: voice_catalog cache for {Language} was not valid JSON", language);
+            return new List<VoiceOptionDto>();
+        }
+    }
+
+    // Mirrors the dict shape tts_worker.CartesiaSynthesizer.list_voices() caches as
+    // JSON — {"id": ..., "name": ..., "gender": ...} per entry.
+    private sealed record VoiceCatalogEntry(string Id, string Name, string? Gender);
 
     /// <summary>
     /// Broadcast a live transcript segment to all translationRoom participants.

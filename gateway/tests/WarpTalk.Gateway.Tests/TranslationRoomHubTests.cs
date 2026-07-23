@@ -89,4 +89,188 @@ public class TranslationRoomHubTests
         // Verify that the old connection was removed from the SignalR Group
         mockGroups.Verify(g => g.RemoveFromGroupAsync(oldConnectionId, $"translationRoom:{roomId}", default), Times.Once);
     }
+
+    [Fact]
+    public async Task JoinTranslationRoom_ShouldStoreNormalizedListenLanguage_ForAiPipelineRouting()
+    {
+        var (hub, dbMock, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-join");
+
+        await hub.JoinTranslationRoom(roomId, "User1", "en-US", "vi-VN");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:languages",
+                userId,
+                "vi",
+                When.Always,
+                CommandFlags.None),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetListenLanguage_ShouldStoreAndBroadcastNormalizedLanguage_ForImmediateSwitch()
+    {
+        var (hub, dbMock, clientsMock, clientProxyMock, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-switch");
+
+        await hub.SetListenLanguage(roomId, "en-US");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:languages",
+                userId,
+                "en",
+                When.Always,
+                CommandFlags.None),
+            Times.Once);
+        clientsMock.Verify(c => c.OthersInGroup($"translationRoom:{roomId}"), Times.Once);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync(
+                "ParticipantLanguageChanged",
+                It.Is<object[]>(args => (string)args[0] == userId && (string)args[1] == "en"),
+                default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetVoicePreference_ShouldStoreVoiceIdAndBroadcast_WhenNonEmpty()
+    {
+        var (hub, dbMock, clientsMock, clientProxyMock, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-voice");
+
+        await hub.SetVoicePreference(roomId, "voice-abc-123");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:voice_preferences",
+                userId,
+                "voice-abc-123",
+                When.Always,
+                CommandFlags.None),
+            Times.Once);
+        clientsMock.Verify(c => c.OthersInGroup($"translationRoom:{roomId}"), Times.Once);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync(
+                "ParticipantVoiceChanged",
+                It.Is<object[]>(args => (string)args[0] == userId && (string)args[1] == "voice-abc-123"),
+                default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetVoicePreference_ShouldDeleteHashField_WhenClearedWithEmptyString()
+    {
+        var (hub, dbMock, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-voice-clear");
+
+        await hub.SetVoicePreference(roomId, "");
+
+        dbMock.Verify(
+            db => db.HashDeleteAsync(
+                $"translationRoom:{roomId}:voice_preferences",
+                userId,
+                CommandFlags.None),
+            Times.Once);
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<When>(), It.IsAny<CommandFlags>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GetVoiceCatalog_ShouldReturnParsedEntries_WhenCachePresent()
+    {
+        var (hub, dbMock, _, _, _) = CreateHub();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-catalog");
+        const string json = "[{\"id\":\"v1\",\"name\":\"Voice One\",\"gender\":\"female\"}]";
+        dbMock.Setup(db => db.StringGetAsync("voice_catalog:vi", CommandFlags.None))
+            .ReturnsAsync((RedisValue)json);
+
+        var result = await hub.GetVoiceCatalog("vi-VN");
+
+        var voice = Assert.Single(result);
+        Assert.Equal("v1", voice.Id);
+        Assert.Equal("Voice One", voice.Name);
+        Assert.Equal("female", voice.Gender);
+    }
+
+    [Fact]
+    public async Task GetVoiceCatalog_ShouldReturnEmptyList_WhenCacheMissing()
+    {
+        var (hub, dbMock, _, _, _) = CreateHub();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-catalog-empty");
+        dbMock.Setup(db => db.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+            .ReturnsAsync(RedisValue.Null);
+
+        var result = await hub.GetVoiceCatalog("vi");
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetVoiceCatalog_ShouldReturnEmptyList_WhenLanguageBlank()
+    {
+        var (hub, _, _, _, _) = CreateHub();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-catalog-blank");
+
+        var result = await hub.GetVoiceCatalog("   ");
+
+        Assert.Empty(result);
+    }
+
+    private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock) CreateHub()
+    {
+        var connectionManagerMock = new Mock<IConnectionManager>();
+        var redisMock = new Mock<IConnectionMultiplexer>();
+        var dbMock = new Mock<IDatabase>();
+        redisMock.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(dbMock.Object);
+
+        var configMock = new Mock<Microsoft.Extensions.Configuration.IConfiguration>();
+        var configSectionMock = new Mock<Microsoft.Extensions.Configuration.IConfigurationSection>();
+        configSectionMock.Setup(s => s.Value).Returns("10000");
+        configMock.Setup(c => c.GetSection(It.IsAny<string>())).Returns(configSectionMock.Object);
+
+        var streamService = new RedisStreamService(redisMock.Object, new NullLogger<RedisStreamService>(), configMock.Object);
+        var translationRoomRegistry = new ActiveTranslationRoomRegistry();
+
+        var hub = new TranslationRoomHub(
+            connectionManagerMock.Object,
+            streamService,
+            translationRoomRegistry,
+            redisMock.Object,
+            new NullLogger<TranslationRoomHub>());
+
+        var clientsMock = new Mock<IHubCallerClients>();
+        var clientProxyMock = new Mock<IClientProxy>();
+        var singleClientProxyMock = new Mock<ISingleClientProxy>();
+        clientsMock.Setup(c => c.Client(It.IsAny<string>())).Returns(singleClientProxyMock.Object);
+        clientsMock.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(clientProxyMock.Object);
+        hub.Clients = clientsMock.Object;
+
+        var groupsMock = new Mock<IGroupManager>();
+        hub.Groups = groupsMock.Object;
+
+        return (hub, dbMock, clientsMock, clientProxyMock, groupsMock);
+    }
+
+    private static HubCallerContext CreateContext(string userId, string connectionId)
+    {
+        var claims = new[] { new Claim(ClaimTypes.NameIdentifier, userId) };
+        var identity = new ClaimsIdentity(claims, "TestAuthType");
+        var claimsPrincipal = new ClaimsPrincipal(identity);
+
+        var contextMock = new Mock<HubCallerContext>();
+        contextMock.Setup(c => c.User).Returns(claimsPrincipal);
+        contextMock.Setup(c => c.ConnectionId).Returns(connectionId);
+        return contextMock.Object;
+    }
 }

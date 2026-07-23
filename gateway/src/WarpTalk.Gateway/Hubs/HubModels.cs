@@ -77,4 +77,20 @@ public record TranslationTextDto(
     string OriginalText,
     string TranslatedText,
     string SourceLang,
-    string TargetLang);
+    string TargetLang,
+    int StartTimeMs = 0,
+    int EndTimeMs = 0,
+    // Links back to the TranscriptSegmentReceived bubble this translation belongs to —
+    // see TranslationResultMessage.source_segment_id in translation_worker. Without this
+    // the frontend can only guess the link from SegmentId's "-{lang}-c{idx}" suffix, which
+    // silently fails to merge and creates a duplicate, timestamp-less bubble.
+    string SourceSegmentId = "",
+    int ChunkIndex = 0);
+
+/// <summary>
+/// One selectable TTS voice for the control bar's voice picker — see
+/// TranslationRoomHub.GetVoiceCatalog. Id is a real Cartesia voice id (from
+/// tts_worker's cached CartesiaSynthesizer.list_voices() result), safe to round-trip
+/// straight back into SetVoicePreference.
+/// </summary>
+public record VoiceOptionDto(string Id, string Name, string Gender);
