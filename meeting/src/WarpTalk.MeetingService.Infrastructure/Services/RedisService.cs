@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -71,6 +73,21 @@ public class RedisService : IRedisService
         {
             _logger.LogError(ex, "Error publishing event to channel: {Channel}", channel);
             return Result.Failure("Error publishing event", "REDIS_ERROR");
+        }
+    }
+
+    public async Task<Result> PublishStreamMessageAsync(string stream, Dictionary<string, string> fields)
+    {
+        try
+        {
+            var entries = fields.Select(kv => new NameValueEntry(kv.Key, kv.Value)).ToArray();
+            await _db.StreamAddAsync(stream, entries);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error adding message to stream: {Stream}", stream);
+            return Result.Failure("Error adding message to stream", "REDIS_ERROR");
         }
     }
 }

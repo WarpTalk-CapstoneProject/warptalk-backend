@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Linq;
@@ -54,6 +55,29 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
         try
         {
+            // WT-13 (best-effort, non-blocking): publish the room's configured target
+            // language(s) for ai_assistant_worker to read when it builds the structured
+            // summary, so a multi-target-language room gets a bilingual summary instead of
+            // one arbitrarily-chosen language. There's no strict ordering guarantee against
+            // the AI worker's own summary generation (triggered independently from
+            // MeetingService.EndMeetingAsync) — this is a best-effort hint, not a contract.
+            try
+            {
+                var room = await _unitOfWork.Repository<TranslationRoom>().GetByIdAsync(roomId, ct);
+                if (room != null)
+                {
+                    var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+                    await _redisStateRepo.StringSetAsync(
+                        $"meeting:{roomId}:target_languages",
+                        JsonSerializer.Serialize(targetLanguages),
+                        TimeSpan.FromMinutes(10));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to publish target languages for room {RoomId}", roomId);
+            }
+
             // 1. Graceful Flush: Wait for final chunk processed or 30s timeout via repository pub/sub
             string channelName = $"translationRoom:{roomId}:final_processed";
             bool completedGracefully = await _redisStateRepo.WaitForSignalAsync(channelName, TimeSpan.FromSeconds(30), ct);
@@ -262,45 +286,51 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         {
             // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
             string summaryKey = $"meeting:{roomId}:summary";
-            
+
             var summaryContent = await _redisStateRepo.HashGetAsync(summaryKey, "content");
             var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
+            // WT-13: ai_assistant_worker also writes a structured JSON version of the same
+            // summary/decisions/action-items when it can (see MeetingAssistant.generate_structured_summary).
+            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
 
             var summaryText = FormatSummaryText(roomId, summaryContent, actionItems);
             string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.SummaryPathFormat, roomId)}";
             long sizeBytes = Encoding.UTF8.GetByteCount(summaryText);
+            string content = BuildStructuredSummaryContent(structuredJson, summaryContent, actionItems);
 
             // Clean up meeting summary key from Redis
             await _redisStateRepo.KeyDeleteAsync(summaryKey);
 
             return BuildArtifactRequest(
-                roomId, 
-                ArtifactType.SUMMARY_EXPORT, 
-                fileUrl, 
-                "text/markdown", 
-                sizeBytes, 
-                false, 
-                false, 
-                false)
+                roomId,
+                ArtifactType.SUMMARY_EXPORT,
+                fileUrl,
+                "text/markdown",
+                sizeBytes,
+                false,
+                false,
+                false,
+                content: content)
                 .ToEntity();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to retrieve summary from Redis. Falling back to local template.");
-            
+
             string fallbackText = FormatFallbackSummary(roomId);
             long sizeBytes = Encoding.UTF8.GetByteCount(fallbackText);
             string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.SummaryPathFormat, roomId)}";
 
             return BuildArtifactRequest(
-                roomId, 
-                ArtifactType.SUMMARY_EXPORT, 
-                fileUrl, 
-                "text/markdown", 
-                sizeBytes, 
-                false, 
-                false, 
-                false)
+                roomId,
+                ArtifactType.SUMMARY_EXPORT,
+                fileUrl,
+                "text/markdown",
+                sizeBytes,
+                false,
+                false,
+                false,
+                content: BuildStructuredSummaryContent(null, null, null))
                 .ToEntity();
         }
     }
@@ -378,7 +408,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         bool containsRawAudio,
         bool containsRawVideo,
         bool consentRequired,
-        DateTime? retentionUntil = null)
+        DateTime? retentionUntil = null,
+        string? content = null)
     {
         return new CreateArtifactRequest(
             roomId,
@@ -389,7 +420,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             containsRawAudio,
             containsRawVideo,
             consentRequired,
-            retentionUntil
+            retentionUntil,
+            content
         );
     }
 
@@ -416,6 +448,90 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     private static string FormatFallbackSummary(Guid roomId)
     {
         return $"# WarpTalk AI Meeting Summary\nRoom ID: {roomId}\nStatus: Completed\n\n## Key Takeaways\n- The speakers discussed the ongoing audio routing development.\n- Confirmed that Redis state storage solves horizontal scaling split-brain issues.\n";
+    }
+
+    /// <summary>
+    /// Builds the structured JSON stored on TranslationRoomArtifact.Content for a
+    /// SUMMARY_EXPORT artifact: { summary, decisions[], actionItems[{owner, task}], insufficientData }.
+    /// Prefers the AI worker's own structured JSON (ai_assistant_worker/assistant.py
+    /// generate_structured_summary) when present and valid; otherwise falls back to
+    /// best-effort parsing of the plain-text summary/action-items fields; otherwise reports
+    /// insufficientData so the UI can show "not enough data" instead of hanging on a
+    /// perpetual "generating" state (WT-13 requirement).
+    /// </summary>
+    private static string BuildStructuredSummaryContent(string? structuredJson, string? summaryContent, string? actionItemsRaw)
+    {
+        if (!string.IsNullOrWhiteSpace(structuredJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(structuredJson);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("summary", out _))
+                {
+                    // Already in the shape the frontend expects — pass through verbatim.
+                    return structuredJson;
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to the best-effort text-based reconstruction below.
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(summaryContent) && string.IsNullOrWhiteSpace(actionItemsRaw))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                summary = "The AI assistant could not generate a summary for this meeting (no transcript content was available or generation did not complete in time).",
+                decisions = Array.Empty<string>(),
+                actionItems = Array.Empty<object>(),
+                insufficientData = true
+            });
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            summary = summaryContent ?? string.Empty,
+            decisions = Array.Empty<string>(),
+            actionItems = ParseActionItemsMarkdown(actionItemsRaw),
+            insufficientData = false
+        });
+    }
+
+    /// <summary>
+    /// Best-effort parse of MeetingAssistant.extract_action_items's plain-text output
+    /// (format: "[ ] Action item - @assignee") into {owner, task} pairs.
+    /// </summary>
+    private static List<object> ParseActionItemsMarkdown(string? actionItemsRaw)
+    {
+        var result = new List<object>();
+        if (string.IsNullOrWhiteSpace(actionItemsRaw)) return result;
+
+        var lines = actionItemsRaw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.TrimStart('-', '*', ' ');
+            if (line.StartsWith("[ ]") || line.StartsWith("[x]", StringComparison.OrdinalIgnoreCase))
+            {
+                line = line.Substring(3).Trim();
+            }
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            var atIndex = line.LastIndexOf(" - @", StringComparison.Ordinal);
+            if (atIndex >= 0)
+            {
+                var task = line.Substring(0, atIndex).Trim();
+                var owner = line.Substring(atIndex + 4).Trim();
+                result.Add(new { owner, task });
+            }
+            else
+            {
+                result.Add(new { owner = "", task = line });
+            }
+        }
+
+        return result;
     }
 
     #endregion

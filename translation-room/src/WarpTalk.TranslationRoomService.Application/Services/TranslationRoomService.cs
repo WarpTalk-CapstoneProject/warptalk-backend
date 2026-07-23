@@ -958,9 +958,17 @@ public class TranslationRoomService : ITranslationRoomService
 
     private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)
     {
-        var type = artifact.FileFormat?.Equals("debug", StringComparison.OrdinalIgnoreCase) == true
-            ? "DEBUG_LOG"
-            : "TRANSCRIPT_EXPORT";
+        // WT-13: previously this ignored artifact.ArtifactType entirely and derived `type`
+        // only from FileFormat, so every artifact (summary, recording, transcript alike)
+        // came back as "TRANSCRIPT_EXPORT" unless FileFormat happened to be "debug" — which
+        // silently broke any client-side filtering by artifact type (e.g. the AI summaries
+        // page looking for "summary_export"). Use the actual stored ArtifactType, falling
+        // back to the old heuristic only if it's somehow missing.
+        var type = !string.IsNullOrWhiteSpace(artifact.ArtifactType)
+            ? artifact.ArtifactType
+            : artifact.FileFormat?.Equals("debug", StringComparison.OrdinalIgnoreCase) == true
+                ? "DEBUG_LOG"
+                : "TRANSCRIPT_EXPORT";
 
         return new TranslationRoomArtifactDto(
             artifact.Id,
@@ -975,7 +983,8 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.ConsentRequired,
             artifact.RetentionUntil,
             artifact.Status,
-            artifact.CreatedAt
+            artifact.CreatedAt,
+            artifact.Content
         );
     }
 

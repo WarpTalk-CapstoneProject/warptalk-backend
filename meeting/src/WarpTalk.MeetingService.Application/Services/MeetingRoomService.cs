@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
@@ -572,6 +574,42 @@ public class MeetingRoomService : IMeetingRoomService
             TranslationRoomId = translationRoomId.ToString(),
             MeetingRoomId = meetingRoom?.Id.ToString() ?? Guid.Empty.ToString()
         });
+
+        // WT-13: Notify other services (e.g. WorkspaceService, following the same
+        // "meeting.started" pub/sub pattern) that the meeting has ended.
+        await _redisService.PublishEventAsync("meeting.ended", new
+        {
+            TranslationRoomId = translationRoomId.ToString(),
+            WorkspaceId = roomDetails.WorkspaceId
+        });
+
+        // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
+        // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from
+        // stt:results and generates a summary + action items when it sees a sentinel
+        // "__MEETING_END__" text segment (see AIAssistantWorker.process/_generate_summary) —
+        // this mirrors that exact existing async-worker trigger instead of adding a new one.
+        // Best-effort: a failed publish must not fail EndMeetingAsync itself.
+        try
+        {
+            await _redisService.PublishStreamMessageAsync("stt:results", new Dictionary<string, string>
+            {
+                ["segment_id"] = Guid.NewGuid().ToString(),
+                ["meeting_id"] = translationRoomId.ToString(),
+                ["speaker_id"] = "system",
+                ["text"] = "__MEETING_END__",
+                ["language"] = "system",
+                ["confidence"] = "1",
+                ["start_ms"] = "0",
+                ["end_ms"] = "0",
+                ["chunk_index"] = "0",
+                ["is_final_chunk"] = "1",
+                ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to trigger AI summary generation for room {RoomId}", translationRoomId);
+        }
 
         return Result.Success(true);
     }

@@ -75,8 +75,11 @@ public class TranslationRoomHub : Hub
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:voice_preferences", userId);
 
-            await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
-                .SendAsync("ParticipantLeft", userId);
+            var groupName = TranslationRoomGroupName(Guid.Parse(roomIdStr));
+            await Clients.OthersInGroup(groupName).SendAsync("ParticipantLeft", userId);
+            // A hand left raised by a connection that never lowers it (crash, closed tab)
+            // would otherwise stay stuck on everyone else's screen forever.
+            await Clients.OthersInGroup(groupName).SendAsync("HandRaised", userId, false);
         }
 
         _logger.LogInformation(
@@ -179,6 +182,10 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLeft", userId);
 
+        // A hand left raised when someone leaves would otherwise stay stuck for everyone else.
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("HandRaised", userId, false);
+
         // Unregister from AI pipeline — stops consuming if last participant
         _translationRoomRegistry.UnregisterParticipant(translationRoomId.ToString(), userId);
 
@@ -203,6 +210,63 @@ public class TranslationRoomHub : Hub
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantMuteChanged", userId, isMuted);
+    }
+
+    /// <summary>
+    /// Toggle the caller's raised-hand state and broadcast it to the rest of the room.
+    /// Purely ephemeral (no persistence) — LeaveTranslationRoom and the fully-offline
+    /// branch of OnDisconnectedAsync also emit HandRaised(userId, false) so a raised
+    /// hand never stays stuck after someone leaves or disconnects.
+    /// </summary>
+    public async Task RaiseHand(Guid translationRoomId, bool isRaised)
+    {
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("HandRaised", userId, isRaised);
+    }
+
+    // Only these render as flying/fading reaction bubbles on the client — anything else
+    // is rejected rather than silently broadcast.
+    private static readonly HashSet<string> AllowedReactionEmojis = new() { "👍", "❤️", "😂", "🎉", "👏", "😮" };
+
+    /// <summary>
+    /// Broadcast an emoji reaction to EVERYONE in the room, including the caller, so the
+    /// sender also sees their own reaction animate. Ephemeral — no persistence.
+    /// </summary>
+    public async Task SendReaction(Guid translationRoomId, string emoji)
+    {
+        if (string.IsNullOrWhiteSpace(emoji) || !AllowedReactionEmojis.Contains(emoji))
+            throw new HubException("Unsupported reaction emoji.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("ReactionReceived", userId, emoji, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Host-only: force everyone's view to spotlight one participant.
+    ///
+    /// KNOWN GAP: unlike MeetingRoomService.TransferHostAsync (which can check
+    /// room.ActiveHostId/HostId against the caller because it owns a DB/gRPC-backed
+    /// room lookup), this Gateway hub has no injected repository or gRPC client for
+    /// TranslationRoom/host data — only Redis, the connection registry, and the JWT
+    /// claims already on Context.User. There is no cheap way to verify the caller is
+    /// actually the room host from inside the hub today, so — like ToggleMute,
+    /// SetListenLanguage, etc. — this trusts the caller's claimed identity from the JWT
+    /// and does not verify host status server-side. A real fix needs either a gRPC
+    /// client to TranslationRoomService injected into this hub, or a Redis-cached
+    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// </summary>
+    public async Task SpotlightParticipant(Guid translationRoomId, Guid targetUserId, bool on)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("SpotlightChanged", targetUserId, on);
     }
 
     /// <summary>

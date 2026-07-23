@@ -215,6 +215,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.DeletedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("deleted_by");
+            entity.Property(e => e.Content).HasColumnName("content");
             entity.Property(e => e.FileFormat)
                 .HasMaxLength(20)
                 .HasColumnName("file_format");
