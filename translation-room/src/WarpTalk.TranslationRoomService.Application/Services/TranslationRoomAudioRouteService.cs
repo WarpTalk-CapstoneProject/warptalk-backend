@@ -273,4 +273,49 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             return Result.Failure<TranslationRoomAudioRouteDto>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> SetVoiceCloneConsentAsync(Guid roomId, Guid userId, bool enabled, CancellationToken ct = default)
+    {
+        try
+        {
+            var participant = await _translationRoomParticipantRepository.GetByRoomAndUserAsync(roomId, userId, ct);
+            if (participant == null)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+            }
+
+            var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            // Every route where THIS caller is the speaker — a participant consents once
+            // for "my voice may be cloned", not per listener. New listeners joining later
+            // get their own route from GenerateRoutesAsync with VoiceCloneEnabled defaulted
+            // to false (matches the "opt-in per meeting, not silently inherited" policy) —
+            // this method only re-applies consent retroactively if called again.
+            var myOutgoingRoutes = allRoutes
+                .Where(r => r.SourceParticipantId == participant.Id
+                    && r.Status != AudioRouteStatus.COMPLETED.ToString())
+                .ToList();
+
+            var changedRoutes = myOutgoingRoutes.Where(r => r.VoiceCloneEnabled != enabled).ToList();
+            if (changedRoutes.Any())
+            {
+                foreach (var route in changedRoutes)
+                {
+                    route.VoiceCloneEnabled = enabled;
+                    route.UpdatedAt = DateTime.UtcNow;
+                }
+
+                await _translationRoomAudioRouteRepository.UpdateRoutesAsync(changedRoutes, ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
+            }
+
+            var dtos = myOutgoingRoutes.Select(TranslationRoomAudioRouteMapper.ToDto).ToList();
+            return Result.Success(dtos);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while setting voice clone consent for user {UserId} in room {RoomId}", userId, roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
 }
