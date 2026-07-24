@@ -255,6 +255,32 @@ public class TranslationRoomHub : Hub
     }
 
     /// <summary>
+    /// Broadcast collaborative meeting note changes to everyone in the room.
+    /// </summary>
+    public async Task SendCollaborativeNoteDelta(Guid translationRoomId, string noteContent)
+    {
+        var userId = GetUserId();
+        var displayName = GetDisplayName();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("CollaborativeNoteUpdated", userId, displayName, noteContent, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Host-only: admit a waiting participant from the queue into the live room.
+    /// </summary>
+    public async Task AdmitWaitingParticipant(Guid translationRoomId, string targetUserId)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("ParticipantAdmitted", targetUserId);
+
+        _logger.LogInformation("TranslationRoomHub: Participant {TargetUserId} admitted to room {RoomId}", targetUserId, translationRoomId);
+    }
+
+    /// <summary>
     /// Host-only: force everyone's view to spotlight one participant.
     ///
     /// KNOWN GAP: unlike MeetingRoomService.TransferHostAsync (which can check
