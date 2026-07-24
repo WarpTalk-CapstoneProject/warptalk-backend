@@ -138,6 +138,42 @@ public class TranslationRoomHubTests
     }
 
     [Fact]
+    public async Task SetSpeakLanguage_ShouldStoreAndBroadcastNormalizedLanguage_ForImmediateSwitch()
+    {
+        var (hub, dbMock, clientsMock, clientProxyMock, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-speak-switch");
+
+        await hub.SetSpeakLanguage(roomId, "vi-VN");
+
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:speak_languages",
+                userId,
+                "vi",
+                When.Always,
+                CommandFlags.None),
+            Times.Once);
+        clientsMock.Verify(c => c.OthersInGroup($"translationRoom:{roomId}"), Times.Once);
+        clientProxyMock.Verify(
+            p => p.SendCoreAsync(
+                "ParticipantSpeakLanguageChanged",
+                It.Is<object[]>(args => (string)args[0] == userId && (string)args[1] == "vi"),
+                default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetSpeakLanguage_ShouldThrow_WhenLanguageIsMissing()
+    {
+        var (hub, _, _, _, _, _) = CreateHub();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-speak-missing");
+
+        await Assert.ThrowsAsync<HubException>(() => hub.SetSpeakLanguage(Guid.NewGuid(), " "));
+    }
+
+    [Fact]
     public async Task SetVoicePreference_ShouldStoreVoiceIdAndBroadcast_WhenNonEmpty()
     {
         var (hub, dbMock, clientsMock, clientProxyMock, _, _) = CreateHub();

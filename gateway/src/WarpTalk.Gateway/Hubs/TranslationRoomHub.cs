@@ -337,6 +337,40 @@ public class TranslationRoomHub : Hub
     }
 
     /// <summary>
+    /// Change the caller's own SPOKEN (source) language mid-meeting — the counterpart to
+    /// SetListenLanguage above, but for what this participant is speaking rather than what
+    /// they want to hear. livekit_ingress_worker reads this room's
+    /// "translationRoom:{id}:speak_languages" hash fresh on every published speech chunk
+    /// (no caching), so the change takes effect on the very next utterance for the STT
+    /// allow-list and cross-script hallucination guard. The OpenAI Realtime session itself
+    /// (stt_worker's per-(meeting,speaker) session, pinned to the language at creation time)
+    /// re-pins on its own the next time a session is (re)created — see
+    /// OpenAISTT._get_or_create_session's language-change eviction.
+    /// </summary>
+    public async Task SetSpeakLanguage(Guid translationRoomId, string speakLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(speakLanguage))
+            throw new HubException("speakLanguage is required.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+        var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync(
+            $"translationRoom:{translationRoomId}:speak_languages",
+            userId,
+            normalizedSpeakLanguage);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantSpeakLanguageChanged", userId, normalizedSpeakLanguage);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed speak language to {SpeakLanguage} in translationRoom {TranslationRoomId}",
+            userId, normalizedSpeakLanguage, translationRoomId);
+    }
+
+    /// <summary>
     /// Change the caller's own preferred TTS voice for the language they're currently
     /// listening in — mid-meeting, like SetListenLanguage. `voiceId` is a real Cartesia
     /// voice id (from GET /api/v1/translation-rooms/{id}/voices?language={lang}) or an
