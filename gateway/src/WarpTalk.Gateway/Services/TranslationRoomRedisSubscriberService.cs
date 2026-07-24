@@ -117,6 +117,23 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("QuestionAnswered", payload.QuestionId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted QuestionAnswered({QuestionId}) to room {RoomId}", payload.QuestionId, payload.RoomId);
                 }
+                // Breakout rooms (scoped-down): MeetingService.BreakoutsService publishes these
+                // on the same channel via the same REST+relay pattern as Polls/Q&A above.
+                // Assignments carries NO LiveKit tokens (see BreakoutAssignmentRelayDto) — each
+                // client that finds its own userId in the list fetches its own token via
+                // GET .../breakouts/my-assignment.
+                else if (payload.Command == "BreakoutsStarted" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("BreakoutsStarted", payload.Assignments, payload.DurationSeconds, payload.StartedAt, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted BreakoutsStarted to room {RoomId}", payload.RoomId);
+                }
+                else if (payload.Command == "BreakoutsEnded" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("BreakoutsEnded", stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted BreakoutsEnded to room {RoomId}", payload.RoomId);
+                }
             }
             catch (Exception ex)
             {
@@ -154,4 +171,10 @@ public class TranslationRoomCommandMessage
     public JsonElement? Question { get; set; }
     public string? QuestionId { get; set; }
     public int? UpvoteCount { get; set; }
+
+    // Breakout rooms — Assignments is a pre-serialized (camelCase) JSON array of
+    // {userId, sessionId, label}, forwarded to clients untouched (see ExecuteAsync above).
+    public JsonElement? Assignments { get; set; }
+    public int? DurationSeconds { get; set; }
+    public string? StartedAt { get; set; }
 }

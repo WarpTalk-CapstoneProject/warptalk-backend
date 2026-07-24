@@ -8,6 +8,9 @@ public static class NotificationConstants
     // Notification Types
     public const string TypeSystemAlert = "SYSTEM_ALERT";
     public const string TypeMeetingInvite = "MEETING_INVITE";
+    // WT-14: scheduled-meeting reminders (T-10min / T-1min), sent by the translation-room
+    // service's ReminderNotificationWorker via SendNotification.
+    public const string TypeMeetingReminder = "MEETING_REMINDER";
 
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";

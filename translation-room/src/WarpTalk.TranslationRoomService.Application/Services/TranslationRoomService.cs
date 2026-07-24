@@ -877,6 +877,34 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    public async Task<Result<string>> GenerateCalendarIcsAsync(Guid translationRoomId, CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (room == null)
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!room.ScheduledAt.HasValue)
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotScheduled, ErrorCodes.InvalidState);
+
+            var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
+            var ics = IcsCalendarBuilder.Build(
+                uid: $"{room.Id}@warptalk.vn",
+                title: room.Title,
+                description: room.Description,
+                scheduledAtUtc: room.ScheduledAt.Value,
+                joinLink: joinLink);
+
+            return Result.Success(ics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while generating calendar .ics. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure<string>("An unexpected error occurred while generating the calendar invite.", ErrorCodes.InternalServerError);
+        }
+    }
+
     private IQueryable<TranslationRoom> BuildAccessibleRoomsQuery(Guid userId, string? userEmail)
     {
         var query = _unitOfWork.Repository<TranslationRoom>().Query();

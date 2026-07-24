@@ -14,6 +14,7 @@ public static class TranslationRoomConstants
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";
+    public const string ErrorRoomNotScheduled = "This room has no scheduled time to export.";
     public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
     public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";

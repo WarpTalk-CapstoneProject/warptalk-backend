@@ -91,6 +91,8 @@ builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
 // EndTranslationRoomAsync service method, which does both correctly.
 builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
+// WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
+builder.Services.AddHostedService<ReminderNotificationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsRepository, UserSettingsRepository>();
@@ -131,6 +133,24 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"] ?? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"))
         };
+        options.Events = new JwtBearerEvents
+        {
+            // WT-14: /calendar.ics is opened as a plain link (calendar app, new browser tab)
+            // that cannot attach an Authorization header, so fall back to "?access_token=" —
+            // only when no header was already supplied, so normal API calls are unaffected.
+            OnMessageReceived = context =>
+            {
+                if (string.IsNullOrEmpty(context.Token))
+                {
+                    var accessToken = context.Request.Query["access_token"];
+                    if (!string.IsNullOrEmpty(accessToken))
+                    {
+                        context.Token = accessToken;
+                    }
+                }
+                return Task.CompletedTask;
+            }
+        };
     });
 builder.Services.AddAuthorization();
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
@@ -140,6 +160,12 @@ builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.TranscriptServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcSettings:TranscriptServiceUrl"] ?? "http://localhost:50055");
+});
+// WT-14: reused by ReminderNotificationWorker to push reminder notifications through the
+// same NotificationService gRPC path other services use (see NotificationGrpcServiceImpl.SendNotification).
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcSettings:NotificationServiceUrl"] ?? "http://localhost:50054");
 });
 
 builder.Services.AddControllers();

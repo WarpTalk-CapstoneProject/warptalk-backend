@@ -53,6 +53,12 @@ public partial class TranslationRoom
 
     public DateTime? ScheduledAt { get; set; }
 
+    /// <summary>WT-14: set once the T-10min reminder notification has been sent for this room.</summary>
+    public DateTime? Reminder10MinSentAt { get; set; }
+
+    /// <summary>WT-14: set once the T-1min reminder notification has been sent for this room.</summary>
+    public DateTime? Reminder1MinSentAt { get; set; }
+
     public DateTime? StartedAt { get; set; }
 
     public DateTime? EndedAt { get; set; }

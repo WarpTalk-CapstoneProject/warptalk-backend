@@ -149,6 +149,8 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValue(10)
                 .HasColumnName("max_participants");
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at");
+            entity.Property(e => e.Reminder10MinSentAt).HasColumnName("reminder_10min_sent_at");
+            entity.Property(e => e.Reminder1MinSentAt).HasColumnName("reminder_1min_sent_at");
             entity.Property(e => e.Settings)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")

@@ -40,6 +40,10 @@ public partial class MeetingDbContext : DbContext
 
     public virtual DbSet<QuestionVote> QuestionVotes { get; set; }
 
+    public virtual DbSet<BreakoutSession> BreakoutSessions { get; set; }
+
+    public virtual DbSet<BreakoutAssignment> BreakoutAssignments { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -491,6 +495,47 @@ public partial class MeetingDbContext : DbContext
                 .HasColumnName("id");
             entity.Property(e => e.QuestionId).HasColumnName("question_id");
             entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
+        modelBuilder.Entity<BreakoutSession>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("breakout_sessions_pkey");
+
+            entity.ToTable("breakout_sessions", "meeting");
+
+            entity.HasIndex(e => e.ParentMeetingRoomId, "idx_breakout_sessions_parent_meeting_room_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.ParentMeetingRoomId).HasColumnName("parent_meeting_room_id");
+            entity.Property(e => e.ProviderRoomName).HasColumnName("provider_room_name");
+            entity.Property(e => e.Label).HasColumnName("label");
+            entity.Property(e => e.DurationSeconds).HasColumnName("duration_seconds");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.EndedAt).HasColumnName("ended_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+        });
+
+        modelBuilder.Entity<BreakoutAssignment>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("breakout_assignments_pkey");
+
+            entity.ToTable("breakout_assignments", "meeting");
+
+            entity.HasIndex(e => e.BreakoutSessionId, "idx_breakout_assignments_session_id");
+            entity.HasIndex(e => e.UserId, "idx_breakout_assignments_user_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.BreakoutSessionId).HasColumnName("breakout_session_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
         });
 
         OnModelCreatingPartial(modelBuilder);

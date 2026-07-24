@@ -109,6 +109,9 @@ builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
 builder.Services.AddScoped<IPollsService, PollsService>();
 builder.Services.AddScoped<IQuestionsService, QuestionsService>();
 
+// Breakout rooms (scoped-down)
+builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
+
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
 // authoritative election path).
