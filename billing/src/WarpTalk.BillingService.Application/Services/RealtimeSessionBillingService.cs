@@ -43,19 +43,21 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
         var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(workspaceId, cancellationToken: cancellationToken);
 
         if (sub is null)
-            return Result.Failure<Guid>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+            return Result.Failure<Guid>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
 
         var sessionId = Guid.NewGuid();
-        await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
+        var setResult = await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
+        if (!setResult.IsSuccess)
+            _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToPublishRealtimeCreditUpdateForWorkspace, setResult.Error);
 
         return Result.Success(sessionId);
     }
 
     public async Task<Result<bool>> ProcessHeartbeatAsync(Guid sessionId, Guid workspaceId, CancellationToken cancellationToken = default)
     {
-        var isActive = await _redisStore.IsSessionActiveAsync(sessionId, cancellationToken);
-        if (!isActive)
-            return Result.Failure<bool>("Session is inactive or expired.", ErrorCodes.InvalidState);
+        var isActiveResult = await _redisStore.IsSessionActiveAsync(sessionId, cancellationToken);
+        if (!isActiveResult.IsSuccess || !isActiveResult.Value)
+            return Result.Failure<bool>(BillingMessageConstants.ApiErrorMessages.BillingSessionInactive, ErrorCodes.InvalidState);
 
         await _redisStore.SetSessionActiveAsync(sessionId, TimeSpan.FromSeconds(75), cancellationToken);
         return Result.Success(true);
@@ -72,18 +74,18 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 cancellationToken);
 
             if (sub is null)
-                return Result.Failure<CreditReservationDto>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<CreditReservationDto>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
             if (plan == null)
-                return Result.Failure<CreditReservationDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+                return Result.Failure<CreditReservationDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 
-            var sttRateSec = double.Parse(_configuration["BillingRates:SttPerSecond"] ?? "1.0", System.Globalization.CultureInfo.InvariantCulture);
+            var sttRateSec = double.Parse(_configuration[BillingRateConstants.Keys.FullSttPerSecond] ?? "1.0", System.Globalization.CultureInfo.InvariantCulture);
 
             int cost = CreditRatesHelper.CalculateMeetingReservationCost(request.ParticipantCount, request.MediaStreamType, sttRateSec);
 
             if (sub.CreditsRemaining < cost)
-                return Result.Failure<CreditReservationDto>("Insufficient credits.", ErrorCodes.BillingInsufficientCredits);
+                return Result.Failure<CreditReservationDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
 
             var reservation = new RedisCreditReservationDto
             {
@@ -98,20 +100,19 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
 
             // Create Temp Log for Redis instead of directly writing to Postgres
             Guid.TryParse(request.IdempotencyKey, out var refIdVal);
-            var tempLog = UsageMapper.CreateTempUsageLogDto(
-                sub.Id,
-                sub.UserId.ToString(),
-                request.HostWorkspaceId,
-                "RealtimeReservation",
-                TransactionConstants.TransactionTypes.Consume,
-                refIdVal == Guid.Empty ? Guid.NewGuid() : refIdVal,
-                TransactionConstants.ReferenceTypes.CreditReservation,
-                1,
-                "session",
-                cost,
-                request.IdempotencyKey,
-                "AI Real-time session reservation"
-            );
+            var tempLog = UsageMapper.CreateTempUsageLogDto(new CreateTempUsageLogRequest(
+                SubscriptionId: sub.Id,
+                UserId: sub.UserId.ToString(),
+                WorkspaceId: request.HostWorkspaceId,
+                UsageType: BillingMessageConstants.Notifications.Realtime.UsageTypeReservation,
+                ChargeType: TransactionConstants.TransactionTypes.Consume,
+                ReferenceId: refIdVal == Guid.Empty ? Guid.NewGuid() : refIdVal,
+                ReferenceType: TransactionConstants.ReferenceTypes.CreditReservation,
+                Quantity: 1,
+                Unit: BillingMessageConstants.Notifications.Realtime.UnitSession,
+                CreditsConsumed: cost,
+                IdempotencyKey: request.IdempotencyKey,
+                Details: BillingMessageConstants.Notifications.Realtime.ReservationDescription));
 
             await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
 
@@ -120,12 +121,14 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish credit update immediately when reserved
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(
                     request.HostWorkspaceId,
                     sub.CreditsRemaining,
-                    "Credits Reserved",
-                    $"Real-time translation session started. Reserved {cost} credits."),
+                    BillingMessageConstants.Notifications.Realtime.CreditsReservedTitle,
+                    string.Format(BillingMessageConstants.Notifications.Realtime.CreditsReservedBodyTemplate, cost)),
                 cancellationToken);
 
             return Result.Success(new CreditReservationDto(
@@ -133,14 +136,14 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 sub.Id,
                 request.IdempotencyKey,
                 cost,
-                "Reserved",
+                BillingMessageConstants.Notifications.Realtime.ReservationStatus,
                 DateTime.UtcNow.AddMinutes(15)
             ));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error reserving credits for {WorkspaceId}", request.HostWorkspaceId);
-            return Result.Failure<CreditReservationDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorReservingCredits, request.HostWorkspaceId);
+            return Result.Failure<CreditReservationDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -151,17 +154,23 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
     {
         try
         {
-            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, TransactionConstants.TransactionTypes.Consume, cancellationToken);
+            var (_, reservation) = await ReservationHelper.ValidateAndGetReservationAsync(
+                new ReservationLookupRequest(
+                    _redisStore,
+                    _logger,
+                    idempotencyKey,
+                    TransactionConstants.TransactionTypes.Consume),
+                cancellationToken);
 
             if (reservation == null)
             {
-                return Result.Failure<CreditTransactionDto>("Reservation not found or already processed.", ErrorCodes.BillingTransactionNotFound);
+                return Result.Failure<CreditTransactionDto>(BillingMessageConstants.ApiErrorMessages.BillingReservationNotFound, ErrorCodes.BillingTransactionNotFound);
             }
 
             var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(reservation.SubscriptionId, cancellationToken);
             if (sub == null || sub.WorkspaceId != workspaceId)
             {
-                return Result.Failure<CreditTransactionDto>("Subscription invalid.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<CreditTransactionDto>(BillingMessageConstants.ApiErrorMessages.BillingSubscriptionInvalid, ErrorCodes.BillingSubscriptionNotFound);
             }
 
             sub.CreditsUsedThisCycle += reservation.Amount;
@@ -170,39 +179,40 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
 
             Guid.TryParse(idempotencyKey, out var refId);
             
-            var tempLog = UsageMapper.CreateTempUsageLogDto(
-                sub.Id,
-                sub.UserId.ToString(),
-                workspaceId,
-                "RealtimeConfirm",
-                TransactionConstants.TransactionTypes.Consume,
-                refId == Guid.Empty ? null : refId,
-                TransactionConstants.ReferenceTypes.CreditReservation,
-                1,
-                "session",
-                0, // Already consumed during reservation
-                idempotencyKey + "_confirm",
-                "AI Real-time consumption confirmed"
-            );
+            var tempLog = UsageMapper.CreateTempUsageLogDto(new CreateTempUsageLogRequest(
+                SubscriptionId: sub.Id,
+                UserId: sub.UserId.ToString(),
+                WorkspaceId: workspaceId,
+                UsageType: BillingMessageConstants.Notifications.Realtime.UsageTypeConfirm,
+                ChargeType: TransactionConstants.TransactionTypes.Consume,
+                ReferenceId: refId == Guid.Empty ? null : refId,
+                ReferenceType: TransactionConstants.ReferenceTypes.CreditReservation,
+                Quantity: 1,
+                Unit: BillingMessageConstants.Notifications.Realtime.UnitSession,
+                CreditsConsumed: 0,
+                IdempotencyKey: idempotencyKey + BillingMessageConstants.Notifications.Realtime.IdempotencyConfirmSuffix,
+                Details: BillingMessageConstants.Notifications.Realtime.ConsumedDescription));
             
             await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish credit update when consumption confirmed
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(
                     workspaceId,
                     sub.CreditsRemaining,
-                    "Credits Consumed",
-                    "Real-time translation session finished."),
+                    BillingMessageConstants.Notifications.Realtime.CreditsConsumedTitle,
+                    BillingMessageConstants.Notifications.Realtime.CreditsConsumedBody),
                 cancellationToken);
 
             var dto = new CreditTransactionDto(
                 Guid.NewGuid(), // Temp ID
                 -reservation.Amount,
                 TransactionConstants.TransactionTypes.Consume,
-                "AI Real-time consumption confirmed",
+                BillingMessageConstants.Notifications.Realtime.ConsumedDescription,
                 TransactionConstants.ReferenceTypes.CreditReservation,
                 null,
                 sub.CreditsRemaining,
@@ -217,8 +227,8 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error consuming credits for {IdempotencyKey}", idempotencyKey);
-            return Result.Failure<CreditTransactionDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorConsumingCredits, idempotencyKey);
+            return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -229,17 +239,23 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
     {
         try
         {
-            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, TransactionConstants.TransactionTypes.Refund, cancellationToken);
+            var (_, reservation) = await ReservationHelper.ValidateAndGetReservationAsync(
+                new ReservationLookupRequest(
+                    _redisStore,
+                    _logger,
+                    idempotencyKey,
+                    TransactionConstants.TransactionTypes.Refund),
+                cancellationToken);
 
             if (reservation == null)
             {
-                return Result.Failure<bool>("Reservation not found or already processed.", ErrorCodes.BillingTransactionNotFound);
+                return Result.Failure<bool>(BillingMessageConstants.ApiErrorMessages.BillingReservationNotFound, ErrorCodes.BillingTransactionNotFound);
             }
 
             var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(reservation.SubscriptionId, cancellationToken);
             if (sub == null || sub.WorkspaceId != workspaceId)
             {
-                return Result.Failure<bool>("Subscription invalid.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<bool>(BillingMessageConstants.ApiErrorMessages.BillingSubscriptionInvalid, ErrorCodes.BillingSubscriptionNotFound);
             }
 
             sub.CreditsRemaining += reservation.Amount;
@@ -247,60 +263,41 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             _unitOfWork.SubscriptionRepository.Update(sub);
 
             Guid.TryParse(idempotencyKey, out var refId);
-            var tempLog = UsageMapper.CreateTempUsageLogDto(
-                sub.Id,
-                sub.UserId.ToString(),
-                workspaceId,
-                "RealtimeRefund",
-                TransactionConstants.TransactionTypes.Refund,
-                refId == Guid.Empty ? null : refId,
-                TransactionConstants.ReferenceTypes.CreditReservation,
-                1,
-                "session",
-                reservation.Amount,
-                idempotencyKey + "_refund",
-                "AI Real-time session refunded"
-            );
+            var tempLog = UsageMapper.CreateTempUsageLogDto(new CreateTempUsageLogRequest(
+                SubscriptionId: sub.Id,
+                UserId: sub.UserId.ToString(),
+                WorkspaceId: workspaceId,
+                UsageType: BillingMessageConstants.Notifications.Realtime.UsageTypeRefund,
+                ChargeType: TransactionConstants.TransactionTypes.Refund,
+                ReferenceId: refId == Guid.Empty ? null : refId,
+                ReferenceType: TransactionConstants.ReferenceTypes.CreditReservation,
+                Quantity: 1,
+                Unit: BillingMessageConstants.Notifications.Realtime.UnitSession,
+                CreditsConsumed: reservation.Amount,
+                IdempotencyKey: idempotencyKey + BillingMessageConstants.Notifications.Realtime.IdempotencyRefundSuffix,
+                Details: BillingMessageConstants.Notifications.Realtime.RefundedDescription));
 
             await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            // Publish credit update on refund
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(
                     workspaceId,
                     sub.CreditsRemaining,
-                    "Credits Refunded",
-                    $"Refunded {reservation.Amount} credits."),
+                    BillingMessageConstants.Notifications.Realtime.CreditsRefundedTitle,
+                    string.Format(BillingMessageConstants.Notifications.Realtime.CreditsRefundedBodyTemplate, reservation.Amount)),
                 cancellationToken);
 
             return Result.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error refunding credits for {IdempotencyKey}", idempotencyKey);
-            return Result.Failure<bool>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorRefundingCredits, idempotencyKey);
+            return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
-    private async Task PublishCreditUpdateAsync(WarpTalk.Shared.Models.RealtimeNotificationMessage msg, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _messagePublisher.PublishAsync(Domain.Constants.BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, Domain.Constants.BillingMessageConstants.LogMessages.FailedToPublishRealtimeCreditUpdateForWorkspace, msg.UserId);
-        }
-    }
 
-    private async Task<(CreditTransaction? existingTx, RedisCreditReservationDto? reservation)> ValidateAndGetReservationAsync(
-        string idempotencyKey, string transactionType, CancellationToken cancellationToken)
-    {
-        // CreditTransaction is now pushed to Temp Logs, so we cannot query the DB for it immediately.
-        // GetAndRemoveReservationAsync is atomic, providing idempotency guarantees naturally.
-        var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
-        return (null, reservation);
-    }
 }

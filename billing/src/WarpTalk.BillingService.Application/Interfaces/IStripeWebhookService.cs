@@ -1,8 +1,10 @@
+using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IStripeWebhookService
 {
-    Task<bool> HandleWebhookAsync(string jsonPayload, string signatureHeader);
+    Task<Result<bool>> HandleWebhookAsync(string jsonPayload, string signatureHeader, CancellationToken cancellationToken = default);
 }

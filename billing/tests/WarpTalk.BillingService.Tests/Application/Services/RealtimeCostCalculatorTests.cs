@@ -1,81 +1,72 @@
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
-using Moq;
-using WarpTalk.BillingService.Application.Services;
-using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class RealtimeCostCalculatorTests
 {
-    private readonly Mock<IConfiguration> _mockConfig;
-    private readonly UsageService _calculator;
-
-    public RealtimeCostCalculatorTests()
-    {
-        _mockConfig = new Mock<IConfiguration>();
-
-        _mockConfig.Setup(c => c["BillingRates:SttPerSecond"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:TranslationPer100Chars"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerSecond"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerSecond"]).Returns("1.5");
-        _mockConfig.Setup(c => c["BillingRates:AiAssistantInputPer1000Tokens"]).Returns("0.5");
-        _mockConfig.Setup(c => c["BillingRates:AiAssistantOutputPer1000Tokens"]).Returns("2.0");
-
-        _calculator = new UsageService(
-            null!, 
-            null!);
-    }
+    private static readonly ServiceRatesDto DefaultRates = new(
+        SttPerSecond: 1.0,
+        TranslationPer100Chars: 1.0,
+        StandardTtsPerSecond: 1.0,
+        VoiceClonePerSecond: 1.5,
+        AiAssistantInputPer1000Tokens: 0.5,
+        AiAssistantOutputPer1000Tokens: 2.0);
 
     [Fact]
     public void CalculateCreditCost_WithoutVoiceClone_ShouldUseBaseRates()
     {
-        // Arrange
-        var plan = new Plan { Tier = "Startup" };
-
         // Act: 10s STT (10) + 2000 chars translation (20) + 100ms standard TTS (0.1) = 30.1 -> Ceiling = 31
-        var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: false, plan: plan);
+        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
+            AudioSeconds: 10,
+            TokenCount: 2000,
+            GpuInferenceMs: 100,
+            IsVoiceClone: false,
+            Rates: DefaultRates));
 
-        // Assert
         cost.Should().Be(31);
     }
 
     [Fact]
     public void CalculateCreditCost_WithVoiceClone_StartupPlan_ShouldUseVoiceCloneRate()
     {
-        // Arrange
-        var plan = new Plan { Tier = "Startup" };
-
         // Act: 10s STT (10) + 2000 chars translation (20) + 100ms cloned TTS (100/1000 * 1.5 = 0.15) = 30.15 -> Ceiling = 31
-        var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: true, plan: plan);
+        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
+            AudioSeconds: 10,
+            TokenCount: 2000,
+            GpuInferenceMs: 100,
+            IsVoiceClone: true,
+            Rates: DefaultRates));
 
-        // Assert
         cost.Should().Be(31);
     }
 
     [Fact]
     public void CalculateCreditCost_WithVoiceClone_EnterprisePlan_ShouldUseVoiceCloneRate()
     {
-        // Arrange
-        var plan = new Plan { Tier = "Enterprise" };
-
         // Act: 10s STT (10) + 2000 chars translation (20) + 100ms cloned TTS (100/1000 * 1.5 = 0.15) = 30.15 -> Ceiling = 31
-        var cost = _calculator.CalculateCreditCost(audioSeconds: 10, tokenCount: 2000, gpuInferenceMs: 100, isVoiceClone: true, plan: plan);
+        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
+            AudioSeconds: 10,
+            TokenCount: 2000,
+            GpuInferenceMs: 100,
+            IsVoiceClone: true,
+            Rates: DefaultRates));
 
-        // Assert
         cost.Should().Be(31);
     }
 
     [Fact]
     public void CalculateCreditCost_AllZeroInputs_ShouldReturnMinimumCost()
     {
-        // Edge case: zero audio/token/gpu — cost should be at minimum 1 (not 0)
-        var plan = new Plan { Tier = "Startup" };
-
-        var cost = _calculator.CalculateCreditCost(audioSeconds: 0, tokenCount: 0, gpuInferenceMs: 0, isVoiceClone: false, plan: plan);
+        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
+            AudioSeconds: 0,
+            TokenCount: 0,
+            GpuInferenceMs: 0,
+            IsVoiceClone: false,
+            Rates: DefaultRates));
 
         cost.Should().BeGreaterThanOrEqualTo(1);
     }
 }
-

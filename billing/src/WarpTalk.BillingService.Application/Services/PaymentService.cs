@@ -31,14 +31,7 @@ public class PaymentService : IPaymentService
     public async Task<Result<int>> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default)
     {
         // Get the latest snapshot
-        var snapshots = await _unitOfWork.CreditBalanceSnapshotRepository.GetPagedAsync(
-            predicate: s => s.SubscriptionId == subscriptionId,
-            skip: 0,
-            take: 1,
-            orderBy: q => q.OrderByDescending(s => s.SnapshotAt),
-            cancellationToken: cancellationToken);
-
-        var snapshot = snapshots.FirstOrDefault();
+        var snapshot = await _unitOfWork.CreditBalanceSnapshotRepository.GetLatestForSubscriptionAsync(subscriptionId, cancellationToken);
 
         var baseBalance = snapshot?.CreditsRemaining ?? 0;
         var fromDate = snapshot?.SnapshotAt ?? DateTime.MinValue;
@@ -81,21 +74,13 @@ public class PaymentService : IPaymentService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var size = Math.Clamp(query.PageSize, 1, 200);
-            var skip = (Math.Max(1, query.PageNumber) - 1) * size;
-            //get payment history for workspace
-            var items = await _unitOfWork.PaymentRepository.GetPagedAsync(
-                p => p.SubscriptionId == sub.Id,
-                skip, size,
-                q => q.OrderByDescending(p => p.CreatedAt),
-                cancellationToken);
-            //get total payment history for workspace
-            var total = await _unitOfWork.PaymentRepository.CountAsync(
-                p => p.SubscriptionId == sub.Id,
+            var page = await _unitOfWork.PaymentRepository.GetHistoryPageAsync(
+                sub.Id,
+                BillingQueryHelper.ToPageRequest(query),
                 cancellationToken);
 
             return Result.Success(PaginatedResponse<PaymentTransactionDto>.Create(
-                items.Select(p => p.ToDto()).ToList(), total, Math.Max(1, query.PageNumber), size));
+                page.Items.Select(p => p.ToDto()).ToList(), page.TotalCount, page.PageNumber, page.PageSize));
         }
         catch (Exception ex)
         {
@@ -295,12 +280,14 @@ public class PaymentService : IPaymentService
                     currentSub.UpdatedAt = DateTime.UtcNow; // Update timestamp
 
                     // Create credit ledger entry to track activation event
-                    CreditTransaction topupTx = currentSub.CreateStripeSubscriptionTransaction(
-                        plan,
-                        PaymentConstants.PaymentTypes.Subscription, // Or retrieve from payment/request
-                        currentSub.UserId,
-                        currentPayment.Id
-                    );
+                    CreditTransaction topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
+                        new StripeSubscriptionTransactionRequest(
+                            currentSub,
+                            plan,
+                            PaymentConstants.PaymentTypes.Subscription, // Or retrieve from payment/request
+                            currentSub.UserId,
+                            currentPayment.Id
+                        ));
                     await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken); // Queue save transaction
                 }
                 // 5. Handle checkout failure flow (Status is not Paid)

@@ -40,13 +40,13 @@ public static class NotificationMapper
         var content = string.Format(BillingMessageConstants.Notifications.Templates.PlanChangedContent, planName, action);
         if (!string.IsNullOrWhiteSpace(details))
         {
-            content += $" Details: {details}";
+            content += string.Format(BillingMessageConstants.Notifications.Templates.PlanChangedDetails, details);
         }
 
         return new RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
-            UserId = "all",
+            UserId = BillingMessageConstants.Notifications.AllUsers,
             Type = BillingMessageConstants.Notifications.Types.PlanChanged,
             Title = BillingMessageConstants.Notifications.Titles.PlanUpdated,
             Content = content,

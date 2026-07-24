@@ -9,4 +9,5 @@ public interface IPaymentRepository : IGenericRepository<Payment>
 {
     Task<Payment?> GetWithSubscriptionAsync(Guid paymentId, CancellationToken cancellationToken);
     Task<Payment?> GetWithSubscriptionAndPlanAsync(Guid paymentId, CancellationToken cancellationToken);
+    Task<PagedResult<Payment>> GetHistoryPageAsync(Guid subscriptionId, PageRequest page, CancellationToken cancellationToken = default);
 }

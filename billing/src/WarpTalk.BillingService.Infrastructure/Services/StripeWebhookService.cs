@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -9,6 +10,8 @@ using Stripe;
 using Stripe.Checkout;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
 
@@ -34,19 +37,19 @@ public class StripeWebhookService : IStripeWebhookService
         _stripeSubscriptionService = stripeSubscriptionService;
     }
 
-    public async Task<bool> HandleWebhookAsync(string jsonPayload, string signatureHeader)
+    public async Task<Result<bool>> HandleWebhookAsync(string jsonPayload, string signatureHeader, CancellationToken cancellationToken = default)
     {
         try
         {
-            var webhookSecret = _configuration["Stripe:WebhookSecret"];
+            var webhookSecret = _configuration[PaymentConstants.StripeConfigKeys.WebhookSecret];
             Event stripeEvent;
 
-            if (string.IsNullOrEmpty(webhookSecret) || webhookSecret == "whsec_test_secret")
+            if (string.IsNullOrEmpty(webhookSecret) || webhookSecret == PaymentConstants.StripePlaceholders.WebhookSecretPlaceholder)
             {
                 if (!_environment.IsDevelopment())
                 {
-                    _logger.LogError("Stripe webhook secret is not configured in production.");
-                    return false;
+                    _logger.LogError(PaymentConstants.StripePlaceholders.DefaultStripeWebhookProductionSecretError);
+                    return Result.Failure<bool>(PaymentConstants.StripePlaceholders.WebhookSecretNotConfigured, ErrorCodes.InternalServerError);
                 }
 
                 stripeEvent = EventUtility.ParseEvent(jsonPayload, throwOnApiVersionMismatch: false);
@@ -59,29 +62,29 @@ public class StripeWebhookService : IStripeWebhookService
             _logger.LogInformation("Processing Stripe Webhook Event: {EventType}", stripeEvent.Type);
 
             var type = stripeEvent.Type;
-            if (type == "checkout.session.completed")
+            if (type == PaymentConstants.StripeEvents.CheckoutSessionCompleted)
             {
                 if (stripeEvent.Data.Object is Session session)
                 {
-                    var isZeroDecimal = string.Equals(session.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
+                    var isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
                     var finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
 
                     var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                        StripeSessionId: session.Id,
-                        PaymentIntentId: !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
-                        Amount: finalAmount,
-                        Currency: session.Currency,
-                        UserIdStr: session.Metadata.ContainsKey("UserId") ? session.Metadata["UserId"] : string.Empty,
-                        WorkspaceIdStr: session.Metadata.ContainsKey("WorkspaceId") ? session.Metadata["WorkspaceId"] : string.Empty,
-                        PaymentType: session.Metadata.ContainsKey("PaymentType") ? session.Metadata["PaymentType"] : string.Empty,
-                        Status: "paid",
-                        PlanSlug: session.Metadata.ContainsKey("PlanSlug") ? session.Metadata["PlanSlug"] : string.Empty,
-                        BillingCycle: session.Metadata.ContainsKey("BillingCycle") ? session.Metadata["BillingCycle"] : string.Empty
+                         StripeSessionId: session.Id,
+                         PaymentIntentId: !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
+                         Amount: finalAmount,
+                         Currency: session.Currency,
+                         UserIdStr: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? session.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                         WorkspaceIdStr: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? session.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                         PaymentType: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PaymentType) ? session.Metadata[PaymentConstants.StripeMetadata.PaymentType] : string.Empty,
+                         Status: PaymentConstants.PaymentStatuses.Paid,
+                         PlanSlug: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? session.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                         BillingCycle: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? session.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "payment_intent.payment_failed")
+            else if (type == PaymentConstants.StripeEvents.PaymentIntentPaymentFailed)
             {
                 if (stripeEvent.Data.Object is PaymentIntent intent)
                 {
@@ -90,18 +93,18 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentIntentId: intent.Id,
                         Amount: intent.Amount / 100m,
                         Currency: intent.Currency,
-                        UserIdStr: intent.Metadata.ContainsKey("UserId") ? intent.Metadata["UserId"] : string.Empty,
-                        WorkspaceIdStr: intent.Metadata.ContainsKey("WorkspaceId") ? intent.Metadata["WorkspaceId"] : string.Empty,
-                        PaymentType: intent.Metadata.ContainsKey("PaymentType") ? intent.Metadata["PaymentType"] : string.Empty,
-                        Status: "failed",
-                        FailureReason: intent.LastPaymentError?.Message ?? "Payment failed",
-                        PlanSlug: intent.Metadata.ContainsKey("PlanSlug") ? intent.Metadata["PlanSlug"] : string.Empty,
-                        BillingCycle: intent.Metadata.ContainsKey("BillingCycle") ? intent.Metadata["BillingCycle"] : string.Empty
+                        UserIdStr: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? intent.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                        WorkspaceIdStr: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? intent.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                        PaymentType: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PaymentType) ? intent.Metadata[PaymentConstants.StripeMetadata.PaymentType] : string.Empty,
+                        Status: PaymentConstants.PaymentStatuses.Failed,
+                        FailureReason: intent.LastPaymentError?.Message ?? PaymentConstants.StripePlaceholders.DefaultPaymentFailureReason,
+                        PlanSlug: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? intent.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                        BillingCycle: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? intent.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "charge.refunded")
+            else if (type == PaymentConstants.StripeEvents.ChargeRefunded)
             {
                 if (stripeEvent.Data.Object is Charge charge)
                 {
@@ -110,17 +113,17 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentIntentId: charge.PaymentIntentId,
                         Amount: charge.AmountRefunded / 100m,
                         Currency: charge.Currency,
-                        UserIdStr: charge.Metadata.ContainsKey("UserId") ? charge.Metadata["UserId"] : string.Empty,
-                        WorkspaceIdStr: charge.Metadata.ContainsKey("WorkspaceId") ? charge.Metadata["WorkspaceId"] : string.Empty,
-                        PaymentType: charge.Metadata.ContainsKey("PaymentType") ? charge.Metadata["PaymentType"] : string.Empty,
-                        Status: "refunded",
-                        PlanSlug: charge.Metadata.ContainsKey("PlanSlug") ? charge.Metadata["PlanSlug"] : string.Empty,
-                        BillingCycle: charge.Metadata.ContainsKey("BillingCycle") ? charge.Metadata["BillingCycle"] : string.Empty
+                        UserIdStr: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? charge.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                        WorkspaceIdStr: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? charge.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                        PaymentType: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PaymentType) ? charge.Metadata[PaymentConstants.StripeMetadata.PaymentType] : string.Empty,
+                        Status: PaymentConstants.PaymentStatuses.Refunded,
+                        PlanSlug: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? charge.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                        BillingCycle: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? charge.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "charge.dispute.created")
+            else if (type == PaymentConstants.StripeEvents.ChargeDisputeCreated)
             {
                 if (stripeEvent.Data.Object is Dispute dispute)
                 {
@@ -132,12 +135,12 @@ public class StripeWebhookService : IStripeWebhookService
                         UserIdStr: string.Empty,
                         WorkspaceIdStr: string.Empty,
                         PaymentType: string.Empty,
-                        Status: "disputed"
+                        Status: PaymentConstants.PaymentStatuses.Disputed
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "customer.subscription.updated")
+            else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionUpdated)
             {
                 if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
@@ -145,18 +148,18 @@ public class StripeWebhookService : IStripeWebhookService
                         StripeSessionId: string.Empty,
                         PaymentIntentId: subscription.Id,
                         Amount: subscription.Items.Data.FirstOrDefault()?.Price.UnitAmountDecimal / 100m ?? 0,
-                        Currency: subscription.Currency ?? "usd",
-                        UserIdStr: subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
-                        WorkspaceIdStr: subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
-                        PaymentType: "SubscriptionUpdate",
-                        Status: "subscription_updated",
-                        PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
+                        Currency: subscription.Currency ?? PaymentConstants.Currencies.Usd,
+                        UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                        WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                        PaymentType: PaymentConstants.PaymentTypes.SubscriptionUpdate,
+                        Status: PaymentConstants.PaymentStatuses.SubscriptionUpdated,
+                        PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "customer.subscription.deleted")
+            else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionDeleted)
             {
                 if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
@@ -164,28 +167,28 @@ public class StripeWebhookService : IStripeWebhookService
                         StripeSessionId: string.Empty,
                         PaymentIntentId: subscription.Id,
                         Amount: 0,
-                        Currency: "usd",
-                        UserIdStr: subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
-                        WorkspaceIdStr: subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
-                        PaymentType: "Subscription",
-                        Status: "cancelled",
-                        PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
+                        Currency: PaymentConstants.Currencies.Usd,
+                        UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                        WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
+                        PaymentType: PaymentConstants.PaymentTypes.Subscription,
+                        Status: PaymentConstants.PaymentStatuses.Cancelled,
+                        PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
                     if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
-            else if (type == "invoice.paid")
+            else if (type == PaymentConstants.StripeEvents.InvoicePaid)
             {
-                if (stripeEvent.Data.Object is Invoice invoice && (invoice.BillingReason == "subscription_cycle" || invoice.BillingReason == "subscription_create"))
+                if (stripeEvent.Data.Object is Invoice invoice && (invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCycle || invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate))
                 {
                     var subId = invoice.Lines?.FirstOrDefault()?.SubscriptionId;
                     if (!string.IsNullOrEmpty(subId))
                     {
                         var subscription = await _stripeSubscriptionService.GetAsync(subId);
 
-                        string paymentType = invoice.BillingReason == "subscription_create" ? "Subscription" : "SubscriptionRenewal";
-                        var isZeroDecimal = string.Equals(invoice.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
+                        string paymentType = invoice.BillingReason == InvoiceConstants.BillingReasons.SubscriptionCreate ? PaymentConstants.PaymentTypes.Subscription : PaymentConstants.PaymentTypes.SubscriptionRenewal;
+                        var isZeroDecimal = string.Equals(invoice.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
                         var finalAmount = isZeroDecimal ? (decimal)invoice.AmountPaid : ((decimal)invoice.AmountPaid / 100m);
 
                         var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
@@ -193,21 +196,21 @@ public class StripeWebhookService : IStripeWebhookService
                             PaymentIntentId: invoice.Id,
                             Amount: finalAmount,
                             Currency: invoice.Currency,
-                            UserIdStr: subscription.Metadata.ContainsKey("UserId") ? subscription.Metadata["UserId"] : string.Empty,
-                            WorkspaceIdStr: subscription.Metadata.ContainsKey("WorkspaceId") ? subscription.Metadata["WorkspaceId"] : string.Empty,
+                            UserIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.UserId) ? subscription.Metadata[PaymentConstants.StripeMetadata.UserId] : string.Empty,
+                            WorkspaceIdStr: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.WorkspaceId) ? subscription.Metadata[PaymentConstants.StripeMetadata.WorkspaceId] : string.Empty,
                             PaymentType: paymentType,
-                            Status: "paid",
+                            Status: PaymentConstants.PaymentStatuses.Paid,
                             InvoiceUrl: invoice.HostedInvoiceUrl,
                             InvoicePdf: invoice.InvoicePdf,
-                            PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
-                            BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
+                            PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
+                            BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                         ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                        if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                     }
                 }
             }
 
-            return true;
+            return Result.Success(true);
         }
         catch (StripeException ex)
         {
@@ -217,7 +220,7 @@ public class StripeWebhookService : IStripeWebhookService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unexpected error occurred while handling webhook");
-            return false;
+            return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
     }
 }

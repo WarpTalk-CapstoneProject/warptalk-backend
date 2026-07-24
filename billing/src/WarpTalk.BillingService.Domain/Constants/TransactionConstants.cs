@@ -26,6 +26,7 @@ public static class TransactionConstants
         public const string Payment = "payment";
         public const string ManualAdjustment = "manual_adjustment";
         public const string UsageRecord = "usage_record";
+        public const string AggregatedBatch = "AggregatedBatch";
     }
 
     public static class TransactionTypes

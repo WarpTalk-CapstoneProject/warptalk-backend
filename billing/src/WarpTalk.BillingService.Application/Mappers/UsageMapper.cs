@@ -14,7 +14,7 @@ public static class UsageMapper
         UserId = request.UserId,
         Amount = -request.CreditsConsumed,
         Type = TransactionConstants.TransactionTypes.Consume,
-        Description = $"AI Usage: {request.UsageType} by User {request.UserId}",
+        Description = string.Format(BillingMessageConstants.UsageMessages.AiUsageTemplate, request.UsageType, request.UserId),
         ReferenceType = TransactionConstants.ReferenceTypes.UsageRecord,
         ReferenceId = request.TranslationRoomId,
         BalanceAfter = sub.CreditsRemaining,
@@ -64,7 +64,7 @@ public static class UsageMapper
             Quantity: request.InputTokens + request.OutputTokens,
             CreditsConsumed: credits,
             DurationSeconds: null,
-            Details: $"AI Assistant: {request.FeatureName} | Model: {request.ProviderModel ?? "unknown"} | In: {request.InputTokens} tokens @ {inputRatePer1KTokens}/1K | Out: {request.OutputTokens} tokens @ {outputRatePer1KTokens}/1K"
+            Details: string.Format(BillingMessageConstants.UsageMessages.AiAssistantDetailsTemplate, request.FeatureName, request.ProviderModel ?? "unknown", request.InputTokens, inputRatePer1KTokens, request.OutputTokens, outputRatePer1KTokens)
         );
     }
 
@@ -79,7 +79,7 @@ public static class UsageMapper
             Quantity: request.CharacterCount,
             CreditsConsumed: credits,
             DurationSeconds: null,
-            Details: $"Document Translation to {request.TargetLanguage}"
+            Details: string.Format(BillingMessageConstants.UsageMessages.DocumentTranslationTemplate, request.TargetLanguage)
         );
     }
 
@@ -108,42 +108,42 @@ public static class UsageMapper
         WorkspaceId = sub.WorkspaceId,
         TranslationRoomId = request.ReferenceId,
         UsageType = Helpers.CreditRatesHelper.GetUsageType(request.ReferenceType),
-        Unit = "request",
+        Unit = UsageConstants.UsageUnits.Request,
         Quantity = 1,
         CreditsConsumed = request.Amount,
         RecordedAt = DateTime.UtcNow
     };
 
-    public static TempUsageLogDto CreateTempUsageLogDto(Guid subscriptionId, string? userId, Guid workspaceId, string usageType, string chargeType, Guid? referenceId, string referenceType, decimal quantity, string unit, int creditsConsumed, string idempotencyKey, string details, string? translationRoomId = null, Guid? transcriptSegmentId = null) => new()
+    public static TempUsageLogDto CreateTempUsageLogDto(CreateTempUsageLogRequest request) => new()
     {
-        SubscriptionId = subscriptionId,
-        UserId = userId,
-        WorkspaceId = workspaceId,
-        UsageType = usageType,
-        ChargeType = chargeType,
-        ReferenceId = referenceId,
-        ReferenceType = referenceType,
-        Quantity = (double)quantity,
-        Unit = unit,
-        CreditsConsumed = creditsConsumed,
-        IdempotencyKey = idempotencyKey,
-        Details = details,
-        TranslationRoomId = translationRoomId,
-        TranscriptSegmentId = transcriptSegmentId,
+        SubscriptionId = request.SubscriptionId,
+        UserId = request.UserId,
+        WorkspaceId = request.WorkspaceId,
+        UsageType = request.UsageType,
+        ChargeType = request.ChargeType,
+        ReferenceId = request.ReferenceId,
+        ReferenceType = request.ReferenceType,
+        Quantity = (double)request.Quantity,
+        Unit = request.Unit,
+        CreditsConsumed = request.CreditsConsumed,
+        IdempotencyKey = request.IdempotencyKey,
+        Details = request.Details,
+        TranslationRoomId = request.TranslationRoomId,
+        TranscriptSegmentId = request.TranscriptSegmentId,
         CreatedAt = DateTime.UtcNow
     };
 
-    public static UsageRecord CreateAggregatedUsageRecord(Guid subscriptionId, Guid workspaceId, string usageType, decimal quantity, string unit, int creditsConsumed, string details) => new()
+    public static UsageRecord CreateAggregatedUsageRecord(CreateAggregatedUsageRecordRequest request) => new()
     {
         Id = Guid.NewGuid(),
-        SubscriptionId = subscriptionId,
+        SubscriptionId = request.SubscriptionId,
         UserId = Guid.Empty, // Aggregated records do not belong to a specific user
-        WorkspaceId = workspaceId,
-        UsageType = usageType,
-        Quantity = quantity,
-        Unit = unit,
-        CreditsConsumed = creditsConsumed,
-        Details = details,
+        WorkspaceId = request.WorkspaceId,
+        UsageType = request.UsageType,
+        Quantity = request.Quantity,
+        Unit = request.Unit,
+        CreditsConsumed = request.CreditsConsumed,
+        Details = request.Details,
         RecordedAt = DateTime.UtcNow
     };
 }

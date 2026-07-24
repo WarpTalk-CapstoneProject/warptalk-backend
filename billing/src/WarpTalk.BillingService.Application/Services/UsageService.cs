@@ -29,26 +29,6 @@ public class UsageService : IUsageService
         _rateService = rateService;
     }
 
-    public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
-    {
-        // 1. Speech-to-Text: 1.0 Credit / Second
-        double cost = audioSeconds * 1.0;
-
-        // 2. Translation: 1.0 Credit / 100 characters
-        cost += (tokenCount / 100.0) * 1.0;
-
-        // 3. Text-to-Speech: 1.0 Credit / Second (Neural) or 1.5 Credits / Second (Cloned)
-        double ttsSeconds = gpuInferenceMs / 1000.0;
-        double ttsRate = isVoiceClone ? 1.5 : 1.0;
-        cost += ttsSeconds * ttsRate;
-
-        if (cost <= 0 && (audioSeconds > 0 || tokenCount > 0 || gpuInferenceMs > 0))
-        {
-            return 1;
-        }
-
-        return (int)Math.Max(1, Math.Ceiling(cost));
-    }
 
     public Task<Result<CreditBalanceDto>> RecordUsageAsync(
         RecordUsageRequest request, CancellationToken cancellationToken = default)
@@ -56,27 +36,27 @@ public class UsageService : IUsageService
         return ConcurrencyRetryHelper.ExecuteWithConcurrencyRetryAsync(_unitOfWork, _logger, request.HostWorkspaceId, async () =>
         {
             if (request.CreditsConsumed <= 0)
-                return Result.Failure<CreditBalanceDto>("Credits consumed must be greater than zero.", ErrorCodes.ValidationError);
+                return Result.Failure<CreditBalanceDto>(BillingMessageConstants.ApiErrorMessages.BillingCreditsConsumedInvalid, ErrorCodes.ValidationError);
 
             var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(request.HostWorkspaceId, true, cancellationToken);
 
             if (sub is null)
             {
                 return Result.Failure<CreditBalanceDto>(
-                    "No active subscription found for the host workspace.",
+                    BillingMessageConstants.ApiErrorMessages.BillingHostSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
             }
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
             if (plan is null)
-                return Result.Failure<CreditBalanceDto>("Plan not found.", ErrorCodes.BillingPlanNotFound);
+                return Result.Failure<CreditBalanceDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 
 
 
             if (sub.CreditsRemaining < request.CreditsConsumed)
             {
                 return Result.Failure<CreditBalanceDto>(
-                    "Insufficient credits in the host workspace.",
+                    BillingMessageConstants.ApiErrorMessages.BillingHostInsufficientCredits,
                     ErrorCodes.BillingInsufficientCredits);
             }
 
@@ -109,7 +89,7 @@ public class UsageService : IUsageService
                 cancellationToken);
 
             if (sub is null)
-                return Result.Failure<bool>("No active subscription found.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
 
             var usage = request.ToUsageRecord(sub);
             await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
@@ -119,8 +99,8 @@ public class UsageService : IUsageService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error logging usage record for workspace {WorkspaceId}", request.HostWorkspaceId);
-            return Result.Failure<bool>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorLoggingUsageRecord, request.HostWorkspaceId);
+            return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -129,15 +109,16 @@ public class UsageService : IUsageService
         return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
     }
 
-    public Task<Result<CreditBalanceDto>> ChargeAiAssistantAsync(ChargeAiAssistantRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<CreditBalanceDto>> ChargeAiAssistantAsync(ChargeAiAssistantRequest request, CancellationToken cancellationToken = default)
     {
         // Fetch current Admin-configurable rates at call-time so rate changes take effect immediately
-        var rates = _rateService.GetServiceRates().Value;
+        var ratesResult = await _rateService.GetServiceRatesAsync(cancellationToken);
+        var rates = ratesResult.Value;
         var recordRequest = request.ToRecordUsageRequest(
             inputRatePer1KTokens: rates.AiAssistantInputPer1000Tokens,
             outputRatePer1KTokens: rates.AiAssistantOutputPer1000Tokens
         );
-        return RecordUsageAsync(recordRequest, cancellationToken);
+        return await RecordUsageAsync(recordRequest, cancellationToken);
     }
 
     public Task<Result<CreditBalanceDto>> ChargeDocumentTranslationAsync(ChargeDocumentTranslationRequest request, CancellationToken cancellationToken = default)

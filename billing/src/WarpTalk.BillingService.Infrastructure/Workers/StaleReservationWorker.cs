@@ -4,11 +4,13 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -16,12 +18,16 @@ public class StaleReservationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<StaleReservationWorker> _logger;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(5);
+    private readonly BillingWorkerOptions _options;
 
-    public StaleReservationWorker(IServiceProvider serviceProvider, ILogger<StaleReservationWorker> logger)
+    public StaleReservationWorker(
+        IServiceProvider serviceProvider,
+        ILogger<StaleReservationWorker> logger,
+        IOptions<BillingWorkerOptions> options)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _options = options.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,7 +45,7 @@ public class StaleReservationWorker : BackgroundService
                 _logger.LogError(ex, "An error occurred while processing stale reservations.");
             }
 
-            await Task.Delay(_checkInterval, stoppingToken);
+            await Task.Delay(_options.StaleReservationInterval, stoppingToken);
         }
 
         _logger.LogInformation("StaleReservationWorker is stopping.");
@@ -51,10 +57,15 @@ public class StaleReservationWorker : BackgroundService
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
 
-        var expiredReservations = await redisStore.GetExpiredReservationsAsync(DateTimeOffset.UtcNow, cancellationToken);
+        var expiredResult = await redisStore.GetExpiredReservationsAsync(DateTimeOffset.UtcNow, cancellationToken);
+        if (!expiredResult.IsSuccess)
+        {
+            _logger.LogWarning("Failed to get expired reservations from Redis: {Error}", expiredResult.Error);
+            return;
+        }
 
         var count = 0;
-        foreach (var reserve in expiredReservations)
+        foreach (var reserve in expiredResult.Value ?? Array.Empty<RedisCreditReservationDto>())
         {
             var sub = await unitOfWork.SubscriptionRepository.GetByIdAsync(reserve.SubscriptionId, cancellationToken);
             if (sub != null)

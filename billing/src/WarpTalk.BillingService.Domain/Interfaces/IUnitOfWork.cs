@@ -11,7 +11,7 @@ public interface IUnitOfWork : IDisposable
     ISubscriptionRepository Subscriptions => SubscriptionRepository;
     ICreditTransactionRepository CreditTransactionRepository { get; }
     ICreditTransactionRepository CreditTransactions => CreditTransactionRepository;
-    IGenericRepository<CreditBalanceSnapshot> CreditBalanceSnapshotRepository { get; }
+    ICreditBalanceSnapshotRepository CreditBalanceSnapshotRepository { get; }
     IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     IPaymentRepository PaymentRepository { get; }
     IInvoiceRepository InvoiceRepository { get; }

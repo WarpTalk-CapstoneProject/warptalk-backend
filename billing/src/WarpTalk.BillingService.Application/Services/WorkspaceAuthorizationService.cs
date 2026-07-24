@@ -1,4 +1,5 @@
 using System;
+using WarpTalk.BillingService.Domain.Constants;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,11 +26,14 @@ public class WorkspaceAuthorizationService : IWorkspaceAuthorizationService
     {
         try
         {
-            var memberDetails = await _workspaceClient.GetWorkspaceMemberDetailsAsync(workspaceId, userId, cancellationToken);
+            var memberResult = await _workspaceClient.GetWorkspaceMemberDetailsAsync(workspaceId, userId, cancellationToken);
+            if (!memberResult.IsSuccess)
+                return Result.Failure(memberResult.Error ?? BillingMessageConstants.ApiErrorMessages.BillingWorkspaceAuthError, ErrorCodes.InternalServerError);
 
+            var memberDetails = memberResult.Value;
             if (!memberDetails.IsMember || !memberDetails.IsActive)
             {
-                return Result.Failure("Access denied. You are not an active member of this workspace.", ErrorCodes.Forbidden);
+                return Result.Failure(BillingMessageConstants.ApiErrorMessages.BillingWorkspaceAccessDenied, ErrorCodes.Forbidden);
             }
 
             var rolesArray = allowedRoles.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -37,15 +41,15 @@ public class WorkspaceAuthorizationService : IWorkspaceAuthorizationService
 
             if (!hasRole)
             {
-                return Result.Failure($"Access denied. You must be one of the following roles: {allowedRoles}", ErrorCodes.Forbidden);
+                return Result.Failure(string.Format(BillingMessageConstants.ApiErrorMessages.BillingWorkspaceRoleDenied, allowedRoles), ErrorCodes.Forbidden);
             }
 
             return Result.Success();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to authorize user {UserId} for workspace {WorkspaceId}", userId, workspaceId);
-            return Result.Failure("An error occurred during workspace authorization.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToAuthorizeUser, userId, workspaceId);
+            return Result.Failure(BillingMessageConstants.ApiErrorMessages.BillingWorkspaceAuthError, ErrorCodes.InternalServerError);
         }
     }
 }

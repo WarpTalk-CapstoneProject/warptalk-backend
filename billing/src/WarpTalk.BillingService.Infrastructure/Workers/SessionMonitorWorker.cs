@@ -4,8 +4,9 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -13,12 +14,16 @@ public class SessionMonitorWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<SessionMonitorWorker> _logger;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(5);
+    private readonly BillingWorkerOptions _options;
 
-    public SessionMonitorWorker(IServiceProvider serviceProvider, ILogger<SessionMonitorWorker> logger)
+    public SessionMonitorWorker(
+        IServiceProvider serviceProvider,
+        ILogger<SessionMonitorWorker> logger,
+        IOptions<BillingWorkerOptions> options)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _options = options.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -36,7 +41,7 @@ public class SessionMonitorWorker : BackgroundService
                 _logger.LogError(ex, "Error occurred during session monitoring.");
             }
 
-            await Task.Delay(_checkInterval, stoppingToken);
+            await Task.Delay(_options.SessionMonitorInterval, stoppingToken);
         }
 
         _logger.LogInformation("SessionMonitorWorker is stopping.");
@@ -49,8 +54,14 @@ public class SessionMonitorWorker : BackgroundService
 
         var now = DateTimeOffset.UtcNow;
 
-        var expiredSessions = await redisStore.GetExpiredSessionsAsync(now, cancellationToken);
-        foreach (var sessionId in expiredSessions)
+        var expiredResult = await redisStore.GetExpiredSessionsAsync(now, cancellationToken);
+        if (!expiredResult.IsSuccess)
+        {
+            _logger.LogWarning("Failed to get expired sessions from Redis: {Error}", expiredResult.Error);
+            return;
+        }
+
+        foreach (var sessionId in expiredResult.Value ?? Array.Empty<Guid>())
         {
             await redisStore.RemoveSessionAsync(sessionId, cancellationToken);
             _logger.LogInformation("Session {SessionId} missed heartbeats and exceeded 60s grace period. Terminated.", sessionId);

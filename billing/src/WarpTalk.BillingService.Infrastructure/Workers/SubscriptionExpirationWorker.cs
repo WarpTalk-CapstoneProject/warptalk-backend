@@ -1,13 +1,13 @@
 using WarpTalk.BillingService.Domain.Constants;
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using WarpTalk.BillingService.Infrastructure.Persistence;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Options;
 
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -16,12 +16,16 @@ public class SubscriptionExpirationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<SubscriptionExpirationWorker> _logger;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromHours(1);
+    private readonly BillingWorkerOptions _options;
 
-    public SubscriptionExpirationWorker(IServiceProvider serviceProvider, ILogger<SubscriptionExpirationWorker> logger)
+    public SubscriptionExpirationWorker(
+        IServiceProvider serviceProvider,
+        ILogger<SubscriptionExpirationWorker> logger,
+        IOptions<BillingWorkerOptions> options)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _options = options.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,7 +43,7 @@ public class SubscriptionExpirationWorker : BackgroundService
                 _logger.LogError(ex, "Error occurred executing SubscriptionExpirationWorker.");
             }
 
-            await Task.Delay(_checkInterval, stoppingToken);
+            await Task.Delay(_options.SubscriptionExpirationInterval, stoppingToken);
         }
 
         _logger.LogInformation("SubscriptionExpirationWorker is stopping.");
@@ -48,13 +52,11 @@ public class SubscriptionExpirationWorker : BackgroundService
     private async Task ExpireSubscriptionsAsync(CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
         var now = DateTime.UtcNow;
 
-        var expiredSubscriptions = await context.Subscriptions
-            .Where(s => s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd < now)
-            .ToListAsync(cancellationToken);
+        var expiredSubscriptions = await unitOfWork.SubscriptionRepository.GetExpiredActiveSubscriptionsAsync(now, cancellationToken);
 
         if (expiredSubscriptions.Count > 0)
         {
@@ -65,7 +67,7 @@ public class SubscriptionExpirationWorker : BackgroundService
                 sub.UpdatedAt = now;
             }
 
-            await context.SaveChangesAsync(cancellationToken);
+            await unitOfWork.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("Expired {Count} subscriptions.", expiredSubscriptions.Count);
         }
     }

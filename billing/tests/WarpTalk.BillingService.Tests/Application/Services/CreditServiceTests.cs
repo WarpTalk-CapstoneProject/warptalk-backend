@@ -27,6 +27,7 @@ public class CreditServiceTests
     private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IRedisBillingStore> _mockRedisStore;
+    private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly CreditService _creditService;
 
     public CreditServiceTests()
@@ -38,6 +39,7 @@ public class CreditServiceTests
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
         _mockRedisStore = new Mock<IRedisBillingStore>();
+        _mockWorkspaceClient = new Mock<IWorkspaceClient>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
@@ -47,7 +49,8 @@ public class CreditServiceTests
             _mockUnitOfWork.Object,
             new Mock<ILogger<CreditService>>().Object,
             _mockMessagePublisher.Object,
-            _mockConfig.Object);
+            _mockConfig.Object,
+            _mockWorkspaceClient.Object);
     }
 
     [Fact]

@@ -1,15 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.Shared.Protos;
 
 using WarpTalk.BillingService.Domain.Constants;
 
@@ -21,17 +22,20 @@ public class SubscriptionService : ISubscriptionService
     private readonly ILogger<SubscriptionService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IStripePaymentService _stripePaymentService;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionService> logger,
         IBillingMessagePublisher messagePublisher,
-        IStripePaymentService stripePaymentService)
+        IStripePaymentService stripePaymentService,
+        IWorkspaceClient workspaceClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _stripePaymentService = stripePaymentService;
+        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -49,11 +53,11 @@ public class SubscriptionService : ISubscriptionService
                     ErrorCodes.BillingSubscriptionNotFound);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            return Result.Success(sub.ToDto(plan?.Name ?? "Unknown Plan", plan?.Price ?? 0m));
+            return Result.Success(sub.ToDto(plan?.Name ?? BillingMessageConstants.Subscription.UnknownPlan, plan?.Price ?? 0m));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error fetching active subscription for WorkspaceId {WorkspaceId}", workspaceId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorFetchingActiveSubscription, workspaceId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -63,21 +67,12 @@ public class SubscriptionService : ISubscriptionService
     {
         try
         {
-            var size = Math.Clamp(query.PageSize, 1, 200);
-            var skip = (Math.Max(1, query.PageNumber) - 1) * size;
-
-            var subs = await _unitOfWork.SubscriptionRepository.GetPagedAsync(
-                s => s.DeletedAt == null,
-                skip, size,
-                q => q.OrderByDescending(sub => sub.CreatedAt),
-                cancellationToken: cancellationToken);
-
-            var total = await _unitOfWork.SubscriptionRepository.CountAsync(
-                s => s.DeletedAt == null,
+            var page = await _unitOfWork.SubscriptionRepository.GetPageAsync(
+                BillingQueryHelper.ToPageRequest(query),
                 cancellationToken);
 
             var items = new List<SubscriptionDto>();
-            foreach (var sub in subs)
+            foreach (var sub in page.Items)
             {
                 var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
                 items.Add(sub.ToDto(plan?.Name ?? BillingMessageConstants.PlanAuditMessages.UnknownPlan, plan?.Price ?? 0m));
@@ -86,21 +81,12 @@ public class SubscriptionService : ISubscriptionService
             // Resolve workspace names cross-schema
             try
             {
-                var workspaceIds = items
-                    .Where(i => i.WorkspaceId.HasValue && i.WorkspaceId != Guid.Empty)
-                    .Select(i => i.WorkspaceId!.Value)
-                    .Distinct()
-                    .ToArray();
+                var workspaceIds = BillingQueryHelper.GetWorkspaceIds(items);
 
                 if (workspaceIds.Length > 0)
                 {
                     var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-
-                    items = items.Select(i =>
-                        i.WorkspaceId.HasValue && workspaceNames.TryGetValue(i.WorkspaceId.Value, out var wName)
-                            ? i with { WorkspaceName = wName }
-                            : i
-                    ).ToList();
+                    items = BillingQueryHelper.ApplyWorkspaceNames(items, workspaceNames);
                 }
             }
             catch (Exception wsEx)
@@ -108,7 +94,7 @@ public class SubscriptionService : ISubscriptionService
                 _logger.LogWarning(wsEx, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesGlobalSub);
             }
 
-            return Result.Success(PaginatedResponse<SubscriptionDto>.Create(items, total, Math.Max(1, query.PageNumber), size));
+            return Result.Success(PaginatedResponse<SubscriptionDto>.Create(items, page.TotalCount, page.PageNumber, page.PageSize));
         }
         catch (Exception ex)
         {
@@ -145,7 +131,13 @@ public class SubscriptionService : ISubscriptionService
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishRealtimeUpdateAsync(subscription.UserId, BillingMessageConstants.Notifications.ActionCreated, plan.Name, cancellationToken);
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                subscription.UserId,
+                BillingMessageConstants.Notifications.ActionCreated,
+                plan.Name,
+                cancellationToken);
 
             return Result.Success(subscription.ToDto(plan.Name, plan.Price));
         }
@@ -180,20 +172,28 @@ public class SubscriptionService : ISubscriptionService
             // Call Stripe service to cancel Stripe Subscription
             try
             {
-                await _stripePaymentService.CancelSubscriptionAsync(workspaceId);
+                var cancelResult = await _stripePaymentService.CancelSubscriptionAsync(workspaceId, cancellationToken);
+                if (!cancelResult.IsSuccess)
+                    _logger.LogWarning(BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, workspaceId);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, BillingMessageConstants.LogMessages.ErrorCancellingStripeSubscription, workspaceId);
             }
 
-            await PublishRealtimeUpdateAsync(sub.UserId, BillingMessageConstants.Notifications.ActionCancelled, plan?.Name ?? BillingMessageConstants.PlanAuditMessages.UnknownPlan, cancellationToken);
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                sub.UserId,
+                BillingMessageConstants.Notifications.ActionCancelled,
+                plan?.Name ?? BillingMessageConstants.PlanAuditMessages.UnknownPlan,
+                cancellationToken);
 
             return Result.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error cancelling subscription for WorkspaceId {WorkspaceId}", workspaceId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCancellingSubscription, workspaceId);
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -230,7 +230,13 @@ public class SubscriptionService : ISubscriptionService
             bool stripeUpdated = false;
             try
             {
-                stripeUpdated = await _stripePaymentService.UpdateSubscriptionAsync(request.WorkspaceId, newPlan.Price, newPlan.Currency, newPlan.Slug);
+                var updateResult = await _stripePaymentService.UpdateSubscriptionAsync(
+                    new UpdateStripeSubscriptionRequest(request.WorkspaceId, newPlan.Price, newPlan.Currency, newPlan.Slug),
+                    cancellationToken);
+                if (updateResult.IsSuccess)
+                    stripeUpdated = updateResult.Value;
+                else
+                    _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToUpdateStripeSubChangePlan, request.WorkspaceId);
             }
             catch (Exception ex)
             {
@@ -254,7 +260,7 @@ public class SubscriptionService : ISubscriptionService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error changing subscription for WorkspaceId {WorkspaceId} to PlanId {PlanId}", request.WorkspaceId, request.PlanId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorChangingSubscription, request.WorkspaceId, request.PlanId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -287,27 +293,21 @@ public class SubscriptionService : ISubscriptionService
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishRealtimeUpdateAsync(sub.UserId, "activated", plan.Name, cancellationToken);
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                sub.UserId,
+                BillingMessageConstants.Subscription.Actions.Activated,
+                plan.Name,
+                cancellationToken);
 
             return Result.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error activating subscription for WorkspaceId {WorkspaceId}", workspaceId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorActivatingSubscription, workspaceId);
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
-    private async Task PublishRealtimeUpdateAsync(Guid userId, string action, string planName, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var msg = NotificationMapper.ToSubscriptionChangedMessage(userId, action, planName);
-            await _messagePublisher.PublishAsync(BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishRealtimeSubscriptionUpdate, userId);
-        }
-    }
 }

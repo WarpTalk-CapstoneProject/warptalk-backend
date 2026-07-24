@@ -7,6 +7,6 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IBillingRateService
 {
-    Result<ServiceRatesDto> GetServiceRates();
+    Task<Result<ServiceRatesDto>> GetServiceRatesAsync(CancellationToken cancellationToken = default);
     Task<Result<ServiceRatesDto>> UpdateServiceRatesAsync(UpdateServiceRatesRequest request, CancellationToken cancellationToken = default);
 }

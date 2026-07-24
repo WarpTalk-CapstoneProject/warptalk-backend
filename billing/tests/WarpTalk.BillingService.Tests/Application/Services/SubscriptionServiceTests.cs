@@ -24,6 +24,7 @@ public class SubscriptionServiceTests
     private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IStripePaymentService> _mockStripePaymentService;
+    private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
@@ -33,6 +34,7 @@ public class SubscriptionServiceTests
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockStripePaymentService = new Mock<IStripePaymentService>();
+        _mockWorkspaceClient = new Mock<IWorkspaceClient>();
 
         var mockPaymentRepo = new Mock<IPaymentRepository>();
         var mockInvoiceRepo = new Mock<IInvoiceRepository>();
@@ -47,7 +49,8 @@ public class SubscriptionServiceTests
             _mockUnitOfWork.Object,
             new Mock<ILogger<SubscriptionService>>().Object,
             new Mock<IBillingMessagePublisher>().Object,
-            _mockStripePaymentService.Object);
+            _mockStripePaymentService.Object,
+            _mockWorkspaceClient.Object);
     }
 
     [Fact]
@@ -139,7 +142,13 @@ public class SubscriptionServiceTests
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(newPlan);
         // SubscriptionService.ChangeSubscriptionAsync calls UpdateSubscriptionAsync with newPlan.Slug (not Name)
-        _mockStripePaymentService.Setup(x => x.UpdateSubscriptionAsync(workspaceId, newPlan.Price, newPlan.Currency, newPlan.Slug)).ReturnsAsync(true);
+        _mockStripePaymentService.Setup(x => x.UpdateSubscriptionAsync(
+            It.Is<UpdateStripeSubscriptionRequest>(r =>
+                r.WorkspaceId == workspaceId &&
+                r.NewAmount == newPlan.Price &&
+                r.Currency == newPlan.Currency &&
+                r.PlanSlug == newPlan.Slug),
+            It.IsAny<CancellationToken>())).ReturnsAsync(Result.Success(true));
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, newPlanId));
 

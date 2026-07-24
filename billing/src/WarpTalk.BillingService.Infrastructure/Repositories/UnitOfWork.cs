@@ -16,7 +16,7 @@ public class UnitOfWork : IUnitOfWork
         PlanRepository = new PlanRepository(db);
         SubscriptionRepository = new SubscriptionRepository(db);
         CreditTransactionRepository = new CreditTransactionRepository(db);
-        CreditBalanceSnapshotRepository = new GenericRepository<CreditBalanceSnapshot>(db);
+        CreditBalanceSnapshotRepository = new CreditBalanceSnapshotRepository(db);
         UsageRecordRepository = new GenericRepository<UsageRecord>(db);
         PaymentRepository = new PaymentRepository(db);
         InvoiceRepository = new InvoiceRepository(db);
@@ -27,7 +27,7 @@ public class UnitOfWork : IUnitOfWork
     public IPlanRepository PlanRepository { get; }
     public ISubscriptionRepository SubscriptionRepository { get; }
     public ICreditTransactionRepository CreditTransactionRepository { get; }
-    public IGenericRepository<CreditBalanceSnapshot> CreditBalanceSnapshotRepository { get; }
+    public ICreditBalanceSnapshotRepository CreditBalanceSnapshotRepository { get; }
     public IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     public IPaymentRepository PaymentRepository { get; }
     public IInvoiceRepository InvoiceRepository { get; }

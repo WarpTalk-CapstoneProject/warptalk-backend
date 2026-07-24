@@ -1,8 +1,7 @@
-using WarpTalk.BillingService.Domain.Constants;
 using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
-
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -15,7 +14,7 @@ public static class SubscriptionMapper
         sub.PlanId,
         planName,
         price,
-        sub.Status.ToLower(),
+        sub.Status.ToLowerInvariant(),
         sub.CreditsRemaining,
         sub.CreditsUsedThisCycle,
         sub.CurrentPeriodStart,
@@ -39,7 +38,7 @@ public static class SubscriptionMapper
             CreditsRemaining = 0,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
-            CurrentPeriodEnd = now, // Will be updated on activation
+            CurrentPeriodEnd = now,
             AutoRenew = true,
             IsActive = false,
             CreatedAt = now,
@@ -107,4 +106,5 @@ public static class SubscriptionMapper
             UpdatedAt = now
         };
     }
+
 }

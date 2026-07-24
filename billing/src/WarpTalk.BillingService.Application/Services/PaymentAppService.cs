@@ -40,13 +40,18 @@ public class PaymentAppService : IPaymentAppService
             if (request.WorkspaceId == Guid.Empty)
                 return Result.Failure<string>(ErrorCodes.ValidationError, ApiMessageConstants.ValidationMessages.WorkspaceIdRequired);
 
-            var sessionId = await _stripePaymentService.CreateCheckoutSessionAsync(request);
-            return Result.Success<string>(sessionId);
+            var result = await _stripePaymentService.CreateCheckoutSessionAsync(request);
+            if (!result.IsSuccess)
+            {
+                _logger.LogError(BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession);
+                return Result.Failure<string>(result.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed, ErrorCodes.InternalServerError);
+            }
+            return Result.Success<string>(result.Value!);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create checkout session");
-            return Result.Failure<string>(ErrorCodes.InternalServerError, "Failed to create checkout session");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession);
+            return Result.Failure<string>(ErrorCodes.InternalServerError, BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed);
         }
     }
 
@@ -54,13 +59,18 @@ public class PaymentAppService : IPaymentAppService
     {
         try
         {
-            var session = await _stripePaymentService.GetCheckoutSessionAsync(sessionId);
-            return Result.Success<CheckoutSessionDto>(session);
+            var result = await _stripePaymentService.GetCheckoutSessionAsync(sessionId);
+            if (!result.IsSuccess)
+            {
+                _logger.LogError(BillingMessageConstants.LogMessages.FailedToGetCheckoutSession);
+                return Result.Failure<CheckoutSessionDto>(result.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionGetFailed, ErrorCodes.InternalServerError);
+            }
+            return Result.Success<CheckoutSessionDto>(result.Value!);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to get checkout session");
-            return Result.Failure<CheckoutSessionDto>(ErrorCodes.InternalServerError, "Failed to get checkout session");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToGetCheckoutSession);
+            return Result.Failure<CheckoutSessionDto>(ErrorCodes.InternalServerError, BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionGetFailed);
         }
     }
 
@@ -74,7 +84,7 @@ public class PaymentAppService : IPaymentAppService
             if (!Guid.TryParse(request.WorkspaceIdStr, out Guid workspaceId))
             {
                 _logger.LogError(BillingMessageConstants.LogMessages.InvalidWorkspaceIdInMetadata, request.WorkspaceIdStr);
-                return Result.Failure(ErrorCodes.ValidationError, "Invalid workspace id");
+                return Result.Failure(ErrorCodes.ValidationError, BillingMessageConstants.ApiErrorMessages.BillingWorkspaceIdInvalid);
             }
 
             // Parse user ID from metadata string (optional — may be empty)
@@ -106,7 +116,7 @@ public class PaymentAppService : IPaymentAppService
                 if (sub == null)
                 {
                     _logger.LogError(BillingMessageConstants.LogMessages.NoActiveSubscriptionForTopUp, workspaceId);
-                    return Result.Failure(ErrorCodes.BillingSubscriptionNotFound, "No active subscription found for top-up");
+                    return Result.Failure(ErrorCodes.BillingSubscriptionNotFound, BillingMessageConstants.ApiErrorMessages.BillingTopUpSubscriptionNotFound);
                 }
 
                 if (parsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
@@ -132,7 +142,7 @@ public class PaymentAppService : IPaymentAppService
                 if (plan == null)
                 {
                     _logger.LogError(BillingMessageConstants.LogMessages.PlanNotFoundForSubscription, request.PlanSlug);
-                    return Result.Failure(ErrorCodes.BillingPlanNotFound, "Plan not found");
+                    return Result.Failure(ErrorCodes.BillingPlanNotFound, ApiMessageConstants.ErrorMessages.BillingPlanNotFound);
                 }
 
                 if (parsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
@@ -173,7 +183,13 @@ public class PaymentAppService : IPaymentAppService
                     }
 
                     // Create credit ledger entry for this subscription activation
-                    CreditTransaction topupTx = sub.CreateStripeSubscriptionTransaction(plan, request.PaymentType, userId, existingPayment?.Id ?? Guid.NewGuid());
+                    CreditTransaction topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
+                        new StripeSubscriptionTransactionRequest(
+                            sub,
+                            plan,
+                            request.PaymentType,
+                            userId,
+                            existingPayment?.Id ?? Guid.NewGuid()));
                     await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx);
                 }
             }
@@ -193,7 +209,14 @@ public class PaymentAppService : IPaymentAppService
             if (existingPayment == null)
             {
                 // Create new payment record
-                existingPayment = PaymentMapper.CreateStripePayment(sub?.Id, userId, request.Amount, request.Currency, providerTxId, parsedPaymentStatus, request.FailureReason);
+                existingPayment = PaymentMapper.CreateStripePayment(new StripePaymentCreationRequest(
+                    SubscriptionId: sub?.Id,
+                    UserId: userId,
+                    Amount: request.Amount,
+                    Currency: request.Currency,
+                    ProviderTransactionId: providerTxId,
+                    Status: parsedPaymentStatus,
+                    FailureReason: request.FailureReason));
                 await _unitOfWork.PaymentRepository.AddAsync(existingPayment);
             }
             else
@@ -207,7 +230,12 @@ public class PaymentAppService : IPaymentAppService
             // Create invoice for successful payments
             if (parsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
             {
-                Invoice invoice = InvoiceMapper.CreateStripeInvoice(existingPayment.Id, userId, request.Amount, request.Currency, request.InvoicePdf);
+                Invoice invoice = InvoiceMapper.CreateStripeInvoice(new StripeInvoiceCreationRequest(
+                    PaymentId: existingPayment.Id,
+                    UserId: userId,
+                    Amount: request.Amount,
+                    Currency: request.Currency,
+                    PdfUrl: request.InvoicePdf));
                 await _unitOfWork.InvoiceRepository.AddAsync(invoice);
             }
 
@@ -232,7 +260,7 @@ public class PaymentAppService : IPaymentAppService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to publish realtime subscription update for user {UserId}", userId);
+                    _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishRealtimeSubscriptionUpdate, userId);
                 }
             }
 
@@ -240,8 +268,8 @@ public class PaymentAppService : IPaymentAppService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to process payment event");
-            return Result.Failure(ErrorCodes.InternalServerError, "Failed to process payment event");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToProcessPaymentEvent);
+            return Result.Failure(ErrorCodes.InternalServerError, BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed);
         }
     }
 }

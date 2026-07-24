@@ -1,4 +1,5 @@
 using System;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -25,11 +26,11 @@ public record PlanDto(
             string.Empty,
             string.Empty,
             price,
-            "VND",
-            "monthly",
+            PaymentConstants.Currencies.Usd,
+            SubscriptionConstants.BillingCycles.Monthly,
             creditsPerMonth,
             0,
-            features ?? "{}",
+            features ?? SubscriptionConstants.FeatureAccess.EmptyFeaturesJson,
             0,
             isActive)
     {

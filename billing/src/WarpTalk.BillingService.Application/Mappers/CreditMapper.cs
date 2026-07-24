@@ -84,19 +84,19 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction CreateStripeSubscriptionTransaction(this Subscription sub, Plan plan, string paymentType, Guid userId, Guid referenceId) => new()
+    public static CreditTransaction CreateStripeSubscriptionTransaction(StripeSubscriptionTransactionRequest request) => new()
     {
         Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        UserId = userId,
-        Amount = plan.CreditsPerCycle,
+        SubscriptionId = request.Subscription.Id,
+        UserId = request.UserId,
+        Amount = request.Plan.CreditsPerCycle,
         Type = TransactionConstants.TransactionTypes.TopUp,
-        Description = paymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate 
-            ? string.Format(BillingMessageConstants.AdjustmentMessages.PlanUpgradeDirect, plan.Name)
-            : string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate, plan.Name),
-        ReferenceId = referenceId,
+        Description = request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate 
+            ? string.Format(BillingMessageConstants.AdjustmentMessages.PlanUpgradeDirect, request.Plan.Name)
+            : string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate, request.Plan.Name),
+        ReferenceId = request.ReferenceId,
         ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
-        BalanceAfter = sub.CreditsRemaining,
+        BalanceAfter = request.Subscription.CreditsRemaining,
         CreatedAt = DateTime.UtcNow
     };
 
@@ -110,7 +110,7 @@ public static class CreditMapper
         Type = TransactionConstants.TransactionTypes.TopUp,
         Description = string.Format(
             BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate,
-            $"{plan.Name} — Renewal {newStart:yyyy-MM-dd}"),
+            string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanRenewalTemplate, plan.Name, newStart)),
         ReferenceType = TransactionConstants.ReferenceTypes.Payment,
         ReferenceId = sub.Id,
         BalanceAfter = sub.CreditsRemaining,
@@ -124,7 +124,7 @@ public static class CreditMapper
         UserId = userId,
         Amount = amount,
         Type = TransactionConstants.TransactionTypes.Refund,
-        Description = "Auto-refund for stale reservation",
+        Description = BillingMessageConstants.AdjustmentMessages.StaleReservationRefund,
         ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
         BalanceAfter = balanceAfter,
         CreatedAt = DateTime.UtcNow
@@ -164,4 +164,5 @@ public static class CreditMapper
     {
         return items.Select(t => t.ToDto(defaultWorkspaceId)).ToList();
     }
+
 }

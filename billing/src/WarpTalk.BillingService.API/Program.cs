@@ -1,18 +1,17 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
-using WarpTalk.BillingService.Domain.Interfaces;
-using WarpTalk.BillingService.Infrastructure.Persistence;
-using WarpTalk.BillingService.Infrastructure.Repositories;
+using WarpTalk.BillingService.Infrastructure.Extensions;
 using WarpTalk.BillingService.Infrastructure.Services;
 using WarpTalk.BillingService.Infrastructure.Workers;
 using WarpTalk.BillingService.API.Extensions;
+using WarpTalk.BillingService.API.Services;
+using WarpTalk.BillingService.Domain.Constants;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -37,24 +36,7 @@ try
         options.ListenAnyIP(50057, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
-    // --- DbContext ---
-    builder.Services.AddDbContext<BillingDbContext>(options =>
-        options.UseNpgsql(
-            builder.Configuration.GetConnectionString("BillingDb"),
-            npgsqlOptions =>
-            {
-                npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
-                npgsqlOptions.CommandTimeout(30);
-            }));
-
-    // --- Repositories ---
-    builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
-    var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
-    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(sp => 
-        StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
-
-    builder.Services.AddScoped<IRedisBillingStore, WarpTalk.BillingService.Infrastructure.Redis.RedisBillingStore>();
-    builder.Services.AddScoped<IBillingMessagePublisher, WarpTalk.BillingService.Infrastructure.Messaging.RedisBillingMessagePublisher>();
+    builder.Services.AddBillingPersistence(builder.Configuration);
 
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
@@ -93,84 +75,46 @@ try
         o.Address = new Uri(url);
     });
 
-    builder.Services.AddGrpc();
+    builder.Services.AddGrpc(options =>
+    {
+        options.EnableDetailedErrors = true;
+    });
     builder.Services.AddGrpcReflection();
 
-    // --- JWT Authentication ---
-    var jwtSettings = builder.Configuration.GetSection("Jwt");
-    var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
-    if (string.IsNullOrWhiteSpace(secretKey))
-        throw new InvalidOperationException("JWT SecretKey is not configured. Set JWT__SecretKey environment variable in production.");
-
-    var issuer = Environment.GetEnvironmentVariable("JWT__Issuer") ?? jwtSettings["Issuer"] ?? "WarpTalk";
-    var audience = Environment.GetEnvironmentVariable("JWT__Audience") ?? jwtSettings["Audience"] ?? "WarpTalk.API";
-    var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+    builder.Services.AddSignalR();
 
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(options =>
         {
+            var jwtSecret = builder.Configuration["Jwt:Secret"] ?? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!";
             options.TokenValidationParameters = new TokenValidationParameters
             {
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = signingKey,
                 ValidateIssuer = true,
-                ValidIssuer = issuer,
                 ValidateAudience = true,
-                ValidAudience = audience,
                 ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero,
-                NameClaimType = "email",
-                RoleClaimType = "role"
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = builder.Configuration["Jwt:Issuer"],
+                ValidAudience = builder.Configuration["Jwt:Audience"],
+                IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtSecret)),
+                ClockSkew = TimeSpan.FromSeconds(30)
             };
 
             options.Events = new JwtBearerEvents
             {
-                OnChallenge = async context =>
+                OnMessageReceived = context =>
                 {
-                    context.HandleResponse();
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
+                    var accessToken = context.Request.Query["access_token"];
+                    var path = context.HttpContext.Request.Path;
+                    if (!string.IsNullOrEmpty(accessToken) && (path.StartsWithSegments("/hubs") || path.Value.Contains("hub")))
                     {
-                        code = "UNAUTHORIZED",
-                        message = "Authentication required",
-                        timestamp = DateTime.UtcNow
-                    });
-                },
-                OnForbidden = async context =>
-                {
-                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
-                    {
-                        code = "FORBIDDEN",
-                        message = "Access denied",
-                        timestamp = DateTime.UtcNow
-                    });
+                        context.Token = accessToken;
+                    }
+                    return Task.CompletedTask;
                 }
             };
         });
 
-    builder.Services.AddAuthorization(options =>
-    {
-        options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
-        options.AddPolicy("BillingAdmin", policy => policy.RequireRole("billing_admin"));
-    });
-
-    // --- Cors ---
-    var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
-    builder.Services.AddCors(options =>
-    {
-        options.AddPolicy("AllowSpecificOrigins", policy =>
-        {
-            policy
-                .WithOrigins(corsOrigins)
-                .AllowAnyMethod()
-                .AllowAnyHeader()
-                .AllowCredentials()
-                .WithExposedHeaders("X-Total-Count", "X-Page-Number", "X-Page-Size");
-        });
-    });
+    builder.Services.AddAuthorization();
 
     builder.Services.AddHealthChecks()
         .AddNpgSql(
@@ -185,8 +129,13 @@ try
     builder.Services.AddHostedService<SubscriptionRenewalWorker>();
     builder.Services.AddHostedService<DailyAuditAggregationWorker>();
     builder.Services.AddHostedService<BillingAggregationWorker>();
+    builder.Services.AddHostedService<BillingRedisSubscriberService>();
 
-    builder.Services.AddCustomApiBehavior();
+    builder.Services.AddControllers()
+        .AddJsonOptions(options =>
+        {
+            options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        });
     
     builder.Services.AddOpenApi();
 
@@ -208,64 +157,12 @@ try
         Predicate = r => r.Tags.Contains("ready")
     });
 
-    app.Use(async (context, next) =>
-    {
-        var correlationId = context.Request.Headers["X-Correlation-Id"].ToString();
-        if (string.IsNullOrWhiteSpace(correlationId))
-            correlationId = Guid.NewGuid().ToString();
-
-        using (LogContext.PushProperty("CorrelationId", correlationId))
-        using (LogContext.PushProperty("TraceId", context.TraceIdentifier))
-        {
-            context.Items["CorrelationId"] = correlationId;
-            context.Response.Headers["X-Correlation-Id"] = correlationId;
-
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation(
-                "HTTP {Method} {Path} from {RemoteIP} | User: {User}",
-                context.Request.Method,
-                context.Request.Path,
-                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                context.User?.Identity?.Name ?? "anonymous");
-
-            await next();
-
-            logger.LogInformation(
-                "HTTP {Method} {Path} completed with {StatusCode}",
-                context.Request.Method,
-                context.Request.Path,
-                context.Response.StatusCode);
-        }
-    });
-
-    app.UseExceptionHandler(options =>
-    {
-        options.Run(async context =>
-        {
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-            var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
-            var ex = exceptionHandlerPathFeature?.Error;
-            var correlationId = context.Items["CorrelationId"]?.ToString() ?? "unknown";
-
-            logger.LogError(ex, "Unhandled exception in {Path} | CorrelationId: {CorrelationId}", context.Request.Path, correlationId);
-
-            context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-            context.Response.ContentType = "application/json";
-            await context.Response.WriteAsJsonAsync(new
-            {
-                code = "INTERNAL_SERVER_ERROR",
-                message = "An unexpected error occurred",
-                correlationId,
-                timestamp = DateTime.UtcNow
-            });
-        });
-    });
-
-    app.UseCors("AllowSpecificOrigins");
     app.UseAuthentication();
     app.UseAuthorization();
+
     app.MapControllers();
     app.MapGrpcService<BillingServiceGrpc>();
+    app.MapHub<WarpTalk.BillingService.API.Hubs.BillingHub>(BillingMessageConstants.Notifications.HubPaths.Billing);
     
     if (app.Environment.IsDevelopment())
     {
@@ -273,11 +170,8 @@ try
         app.MapGrpcReflectionService();
     }
 
-    using (var scope = app.Services.CreateScope())
-    {
-        scope.ServiceProvider.GetRequiredService<BillingDbContext>();
-        Log.Information("Database connection verified");
-    }
+    app.Services.VerifyBillingDatabase();
+    Log.Information("Database connection verified");
 
     Log.Information("WarpTalk Billing Service started successfully on http://localhost:5107");
     await app.RunAsync();

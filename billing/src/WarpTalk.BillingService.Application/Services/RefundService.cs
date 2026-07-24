@@ -31,13 +31,13 @@ public class RefundService : IRefundService
         {
             var payment = await _unitOfWork.PaymentRepository.GetByIdAsync(paymentId, cancellationToken);
             if (payment == null)
-                return Result.Failure<RefundDto>("Payment transaction not found.", ErrorCodes.NotFound);
+                return Result.Failure<RefundDto>(BillingMessageConstants.ApiErrorMessages.BillingTransactionNotFound, ErrorCodes.NotFound);
 
             if (payment.Status != PaymentConstants.PaymentStatuses.Paid)
-                return Result.Failure<RefundDto>("Only paid transactions can be refunded.", ErrorCodes.ValidationError);
+                return Result.Failure<RefundDto>(BillingMessageConstants.ApiErrorMessages.BillingRefundOnlyPaid, ErrorCodes.ValidationError);
 
             if (request.Amount <= 0 || request.Amount > payment.Amount)
-                return Result.Failure<RefundDto>("Refund amount must be positive and cannot exceed original payment amount.", ErrorCodes.ValidationError);
+                return Result.Failure<RefundDto>(BillingMessageConstants.ApiErrorMessages.BillingRefundAmountInvalid, ErrorCodes.ValidationError);
 
             var refund = RefundMapper.CreateRefund(
                 paymentId: payment.Id,
@@ -57,8 +57,8 @@ public class RefundService : IRefundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error processing refund for PaymentId {PaymentId}", paymentId);
-            return Result.Failure<RefundDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorProcessingRefund, paymentId);
+            return Result.Failure<RefundDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 }

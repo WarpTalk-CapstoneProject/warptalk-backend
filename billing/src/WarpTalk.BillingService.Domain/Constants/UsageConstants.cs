@@ -4,6 +4,7 @@ public static class UsageConstants
 {
     public static class UsageTypes
     {
+        public const string TranslationKeyword = "translation";
         public const string Summary = "summary";
         public const string VoiceCloning = "voice_cloning";
         public const string Chat = "chat";
@@ -25,6 +26,7 @@ public static class UsageConstants
         public const string Profile = "profile";
         public const string Token = "token";
         public const string Character = "character";
+        public const string Request = "request";
     }
 
     public static class UsageDetails

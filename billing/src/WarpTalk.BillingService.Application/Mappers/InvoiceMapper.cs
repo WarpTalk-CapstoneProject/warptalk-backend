@@ -42,7 +42,7 @@ public static class InvoiceMapper
         PdfUrl = string.Empty,
         LineItems = System.Text.Json.JsonSerializer.Serialize(new[] {
             new {
-                description = $"{request.Amount} cr Credit Top-Up Package",
+                description = string.Format(BillingMessageConstants.InvoiceMessages.TopUpPackageTemplate, request.Amount),
                 quantity = 1,
                 amount = payment.Amount
             }
@@ -69,10 +69,10 @@ public static class InvoiceMapper
         Status = InvoiceConstants.InvoiceStatuses.Paid,
         // TODO: Placeholder only — this URL is not functional.
         // Replace with real Stripe invoice PDF URL from Stripe Webhook event payload.
-        PdfUrl = $"https://stripe.com/invoice/{payment.ProviderTransactionId}",
+        PdfUrl = string.Format(InvoiceConstants.Formats.StripeInvoiceUrlTemplate, payment.ProviderTransactionId),
         LineItems = System.Text.Json.JsonSerializer.Serialize(new[] {
             new {
-                description = "WarpTalk Subscription Simulation Package",
+                description = BillingMessageConstants.InvoiceMessages.SimulationPackage,
                 quantity = 1,
                 amount = payment.Amount
             }
@@ -81,22 +81,22 @@ public static class InvoiceMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static Invoice CreateStripeInvoice(Guid paymentId, Guid userId, decimal amount, string? currency, string? pdfUrl)
+    public static Invoice CreateStripeInvoice(StripeInvoiceCreationRequest request)
     {
-        string invoiceNum = "INV-" + DateTime.UtcNow.ToString("yyyyMMdd") + "-" + paymentId.ToString().Substring(0, 8).ToUpper();
+        string invoiceNum = InvoiceConstants.Formats.InvoiceNumberPrefix + DateTime.UtcNow.ToString("yyyyMMdd") + "-" + request.PaymentId.ToString().Substring(0, 8).ToUpper();
         return new Invoice
         {
             Id = Guid.NewGuid(),
-            PaymentId = paymentId,
-            UserId = userId,
+            PaymentId = request.PaymentId,
+            UserId = request.UserId,
             InvoiceNumber = invoiceNum,
-            Subtotal = amount,
+            Subtotal = request.Amount,
             Tax = 0,
-            Total = amount,
-            Currency = currency ?? PaymentConstants.Currencies.Usd,
+            Total = request.Amount,
+            Currency = request.Currency ?? PaymentConstants.Currencies.Usd,
             Status = InvoiceConstants.InvoiceStatuses.Paid,
-            PdfUrl = pdfUrl,
-            LineItems = "[]",
+            PdfUrl = request.PdfUrl,
+            LineItems = InvoiceConstants.Defaults.EmptyLineItems,
             IssuedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow
         };

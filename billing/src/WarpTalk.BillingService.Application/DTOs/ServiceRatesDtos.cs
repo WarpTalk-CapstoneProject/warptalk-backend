@@ -18,3 +18,10 @@ public record UpdateServiceRatesRequest(
     double AiAssistantInputPer1000Tokens,
     double AiAssistantOutputPer1000Tokens
 );
+
+public record RateChangeRequest(
+    string Label,
+    double OldValue,
+    double NewValue,
+    string Unit
+);

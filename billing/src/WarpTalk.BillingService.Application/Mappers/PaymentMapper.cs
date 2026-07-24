@@ -45,61 +45,62 @@ public static class PaymentMapper
         };
     }
 
-    public static Payment ToEntity(this TopUpRequest request, Subscription sub, Guid paymentId, decimal amount, string currency) => new()
+    public static Payment ToEntity(this TopUpPaymentCreationRequest request) => new()
     {
-        Id = paymentId,
-        SubscriptionId = sub.Id,
-        UserId = sub.UserId,
-        Amount = amount,
+        Id = request.PaymentId,
+        SubscriptionId = request.Subscription.Id,
+        UserId = request.Subscription.UserId,
+        Amount = request.Amount,
         TaxAmount = 0m,
-        TotalAmount = amount,
-        Currency = currency,
+        TotalAmount = request.Amount,
+        Currency = request.Currency,
         PaymentMethod = Domain.Constants.PaymentConstants.Providers.TopUpSimulation,
         Provider = Domain.Constants.PaymentConstants.Providers.Stripe,
-        ProviderTransactionId = request.ReferenceId?.ToString() ?? Guid.NewGuid().ToString(),
+        ProviderTransactionId = request.TopUpRequest.ReferenceId?.ToString() ?? Guid.NewGuid().ToString(),
         Status = PaymentConstants.PaymentStatuses.Paid,
         PaidAt = DateTime.UtcNow,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
     };
 
-    public static Payment ToSimulatedEntity(this Subscription sub, Guid paymentId, string stripeInvoiceId, decimal amount, string currency) => new()
+    public static Payment ToSimulatedEntity(this SimulatedPaymentCreationRequest request) => new()
     {
-        Id = paymentId,
-        SubscriptionId = sub.Id,
-        UserId = sub.UserId,
-        Amount = amount,
+        Id = request.PaymentId,
+        SubscriptionId = request.Subscription.Id,
+        UserId = request.Subscription.UserId,
+        Amount = request.Amount,
         TaxAmount = 0m,
-        TotalAmount = amount,
-        Currency = currency.ToLowerInvariant(),
+        TotalAmount = request.Amount,
+        Currency = request.Currency.ToLowerInvariant(),
         PaymentMethod = Domain.Constants.PaymentConstants.Providers.StripeSimulation,
         Provider = Domain.Constants.PaymentConstants.Providers.Stripe,
-        ProviderTransactionId = stripeInvoiceId,
+        ProviderTransactionId = request.StripeInvoiceId,
         Status = PaymentConstants.PaymentStatuses.Paid,
         PaidAt = DateTime.UtcNow,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
     };
 
-    public static Payment CreateStripePayment(Guid? subscriptionId, Guid userId, decimal amount, string? currency, string providerTxId, string parsedPaymentStatus, string? failureReason)
+    public static Payment CreateStripePayment(StripePaymentCreationRequest request)
     {
         var now = DateTime.UtcNow;
         return new Payment
         {
             Id = Guid.NewGuid(),
-            SubscriptionId = subscriptionId ?? Guid.Empty,
-            UserId = userId,
-            Amount = amount,
+            SubscriptionId = request.SubscriptionId ?? Guid.Empty,
+            UserId = request.UserId,
+            Amount = request.Amount,
             TaxAmount = 0m,
-            TotalAmount = amount,
-            Currency = currency ?? PaymentConstants.Currencies.Usd,
+            TotalAmount = request.Amount,
+            Currency = request.Currency ?? PaymentConstants.Currencies.Usd,
             PaymentMethod = PaymentConstants.PaymentMethods.Card,
             Provider = PaymentConstants.Providers.Stripe,
-            ProviderTransactionId = providerTxId,
-            Status = parsedPaymentStatus,
-            FailureReason = failureReason,
+            ProviderTransactionId = request.ProviderTransactionId,
+            Status = request.Status,
+            FailureReason = request.FailureReason,
             CreatedAt = now,
             UpdatedAt = now
         };
     }
+
 }

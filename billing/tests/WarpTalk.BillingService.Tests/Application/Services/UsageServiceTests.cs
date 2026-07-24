@@ -8,6 +8,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
@@ -52,16 +53,28 @@ public class UsageServiceTests
 
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
-            new Mock<ILogger<UsageService>>().Object);
+            new Mock<ILogger<UsageService>>().Object,
+            null!);
     }
 
     [Fact]
     public void CalculateCreditCost_StandardUsage_ShouldCalculateCorrectly()
     {
-        var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
-        
+        var rates = new ServiceRatesDto(
+            SttPerSecond: 1.0,
+            TranslationPer100Chars: 1.0,
+            StandardTtsPerSecond: 1.0,
+            VoiceClonePerSecond: 1.5,
+            AiAssistantInputPer1000Tokens: 0.5,
+            AiAssistantOutputPer1000Tokens: 2.0);
+
         // 60s STT (60 * 1) + 1000 chars translation (1000/100 * 1 = 10) + 1000ms standard TTS (1s * 1 = 1) = 71 credits
-        var cost = _usageService.CalculateCreditCost(60, 1000, 1000, false, plan);
+        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
+            AudioSeconds: 60,
+            TokenCount: 1000,
+            GpuInferenceMs: 1000,
+            IsVoiceClone: false,
+            Rates: rates));
 
         cost.Should().Be(71);
     }

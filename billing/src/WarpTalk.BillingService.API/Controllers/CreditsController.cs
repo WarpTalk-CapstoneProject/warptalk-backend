@@ -9,7 +9,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
-using WarpTalk.BillingService.API.Filters;
+
 using System.Security.Claims;
 
 

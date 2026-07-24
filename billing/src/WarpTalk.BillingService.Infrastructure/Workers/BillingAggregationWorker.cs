@@ -6,10 +6,14 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -17,11 +21,16 @@ public class BillingAggregationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<BillingAggregationWorker> _logger;
+    private readonly BillingWorkerOptions _options;
 
-    public BillingAggregationWorker(IServiceProvider serviceProvider, ILogger<BillingAggregationWorker> logger)
+    public BillingAggregationWorker(
+        IServiceProvider serviceProvider,
+        ILogger<BillingAggregationWorker> logger,
+        IOptions<BillingWorkerOptions> options)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _options = options.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -39,8 +48,7 @@ public class BillingAggregationWorker : BackgroundService
                 _logger.LogError(ex, "An error occurred while aggregating billing temp logs.");
             }
 
-            // Run periodically (e.g., every 5 minutes)
-            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+            await Task.Delay(_options.BillingAggregationInterval, stoppingToken);
         }
     }
 
@@ -50,7 +58,14 @@ public class BillingAggregationWorker : BackgroundService
         var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        var tempLogs = (await redisStore.GetAndClearTempUsageLogDtosAsync(stoppingToken)).ToList();
+        var tempLogsResult = await redisStore.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
+        if (!tempLogsResult.IsSuccess)
+        {
+            _logger.LogWarning("Failed to get temp usage logs from Redis: {Error}", tempLogsResult.Error);
+            return;
+        }
+
+        var tempLogs = (tempLogsResult.Value ?? Array.Empty<TempUsageLogDto>()).ToList();
 
         if (!tempLogs.Any())
         {
@@ -72,15 +87,14 @@ public class BillingAggregationWorker : BackgroundService
                 continue;
 
             // Generate aggregated usage record
-            var usageRecord = UsageMapper.CreateAggregatedUsageRecord(
-                group.Key.SubscriptionId,
-                group.Key.WorkspaceId,
-                group.Key.UsageType,
-                (decimal)totalQuantity,
-                group.Key.Unit,
-                totalCredits,
-                "Aggregated batch"
-            );
+            var usageRecord = UsageMapper.CreateAggregatedUsageRecord(new CreateAggregatedUsageRecordRequest(
+                SubscriptionId: group.Key.SubscriptionId,
+                WorkspaceId: group.Key.WorkspaceId,
+                UsageType: group.Key.UsageType,
+                Quantity: (decimal)totalQuantity,
+                Unit: group.Key.Unit,
+                CreditsConsumed: totalCredits,
+                Details: BillingMessageConstants.UsageMessages.AggregatedBatchDescription));
 
             await unitOfWork.UsageRecordRepository.AddAsync(usageRecord, stoppingToken);
 
@@ -93,10 +107,10 @@ public class BillingAggregationWorker : BackgroundService
                     group.Key.SubscriptionId,
                     transactionAmount,
                     group.Key.ChargeType,
-                    $"Aggregated {group.Key.ChargeType}"
+                    string.Format(BillingMessageConstants.UsageMessages.AggregatedChargeDescriptionTemplate, group.Key.ChargeType)
                 );
                 transaction.WorkspaceId = group.Key.WorkspaceId;
-                transaction.ReferenceType = "AggregatedBatch";
+                transaction.ReferenceType = TransactionConstants.ReferenceTypes.AggregatedBatch;
                 transaction.CreatedAt = DateTime.UtcNow;
 
                 await unitOfWork.CreditTransactionRepository.AddAsync(transaction, stoppingToken);
@@ -104,6 +118,13 @@ public class BillingAggregationWorker : BackgroundService
         }
 
         await unitOfWork.SaveChangesAsync(stoppingToken);
+        var trimResult = await redisStore.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
+        if (!trimResult.IsSuccess)
+        {
+            _logger.LogWarning("Synced aggregated logs to DB, but failed to trim Redis temp usage logs: {Error}", trimResult.Error);
+            return;
+        }
+
         _logger.LogInformation($"Successfully synced aggregated logs to DB.");
     }
 }

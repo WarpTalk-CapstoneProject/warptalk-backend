@@ -10,7 +10,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
-using WarpTalk.BillingService.API.Filters;
+
 using WarpTalk.BillingService.Domain.Interfaces;
 
 
@@ -77,7 +77,7 @@ public class PaymentsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
-        return Ok(new { message = "Webhook processed successfully." });
+        return Ok(new { message = BillingMessageConstants.Webhook.ProcessedSuccessfully });
     }
 
     [HttpPost("checkout")]
@@ -124,8 +124,8 @@ public class PaymentsController : ControllerBase
             }
 
             // Verify the requesting user is an Owner or Admin of this workspace
-            bool hasAccess = await _workspaceClient.VerifyWorkspaceRolesAsync(workspaceId, userId.Value, "Owner", "Admin");
-            if (!hasAccess)
+            var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(workspaceId, userId.Value, "Owner", "Admin");
+            if (!accessResult.IsSuccess || !accessResult.Value)
             {
                 return StatusCode(403, new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden));
             }
@@ -175,14 +175,14 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> Webhook()
     {
         var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
-        var stripeSignature = Request.Headers["Stripe-Signature"].ToString();
+        var stripeSignature = Request.Headers[BillingMessageConstants.Webhook.StripeSignatureHeader].ToString();
 
         try
         {
-            bool result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature);
-            if (!result)
+            var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
+            if (!result.IsSuccess)
             {
-                return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
+                return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
             }
 
             return Ok();

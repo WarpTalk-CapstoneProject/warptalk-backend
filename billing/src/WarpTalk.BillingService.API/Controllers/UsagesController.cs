@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.BillingService.API.Filters;
+
 
 
 namespace WarpTalk.BillingService.API.Controllers;
@@ -149,9 +149,9 @@ public class UsagesController : ControllerBase
 
     [HttpGet("rates")]
     [Authorize]
-    public ActionResult<ServiceRatesDto> GetServiceRates()
+    public async Task<ActionResult<ServiceRatesDto>> GetServiceRates(CancellationToken cancellationToken)
     {
-        var result = _rateService.GetServiceRates();
+        var result = await _rateService.GetServiceRatesAsync(cancellationToken);
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));

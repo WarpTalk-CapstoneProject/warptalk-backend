@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -55,5 +56,61 @@ public record UpdatePaymentStatusRequest(
     string? FailureReason
 );
 
+public record SendBillingNotificationsRequest(
+    IEnumerable<Guid> UserIds,
+    string Type,
+    string Title,
+    string Body,
+    string ActionUrl,
+    Dictionary<string, string>? Metadata = null
+);
 
+public record SendSingleNotificationRequest(
+    Guid UserId,
+    string Type,
+    string Title,
+    string Body,
+    string ActionUrl,
+    Dictionary<string, string>? Metadata = null
+);
 
+public record UpdateStripeSubscriptionRequest(
+    Guid WorkspaceId,
+    decimal NewAmount,
+    string Currency,
+    string PlanSlug
+);
+
+public record StripePaymentCreationRequest(
+    Guid? SubscriptionId,
+    Guid UserId,
+    decimal Amount,
+    string? Currency,
+    string ProviderTransactionId,
+    string Status,
+    string? FailureReason
+);
+
+public record StripeInvoiceCreationRequest(
+    Guid PaymentId,
+    Guid UserId,
+    decimal Amount,
+    string? Currency,
+    string? PdfUrl
+);
+
+public record TopUpPaymentCreationRequest(
+    TopUpRequest TopUpRequest,
+    Domain.Entities.Subscription Subscription,
+    Guid PaymentId,
+    decimal Amount,
+    string Currency
+);
+
+public record SimulatedPaymentCreationRequest(
+    Domain.Entities.Subscription Subscription,
+    Guid PaymentId,
+    string StripeInvoiceId,
+    decimal Amount,
+    string Currency
+);

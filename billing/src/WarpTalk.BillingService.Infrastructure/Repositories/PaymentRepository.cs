@@ -28,4 +28,19 @@ public class PaymentRepository : GenericRepository<Payment>, IPaymentRepository
                 .ThenInclude(s => s.Plan)
             .FirstOrDefaultAsync(p => p.Id == paymentId, cancellationToken);
     }
+
+    public async Task<PagedResult<Payment>> GetHistoryPageAsync(Guid subscriptionId, PageRequest page, CancellationToken cancellationToken = default)
+    {
+        var normalized = RepositoryPaging.Normalize(page);
+        var filtered = _dbSet.Where(p => p.SubscriptionId == subscriptionId);
+
+        var total = await filtered.CountAsync(cancellationToken);
+        var items = await filtered
+            .OrderByDescending(p => p.CreatedAt)
+            .Skip(normalized.Skip)
+            .Take(normalized.PageSize)
+            .ToListAsync(cancellationToken);
+
+        return new PagedResult<Payment>(items, total, normalized.PageNumber, normalized.PageSize);
+    }
 }

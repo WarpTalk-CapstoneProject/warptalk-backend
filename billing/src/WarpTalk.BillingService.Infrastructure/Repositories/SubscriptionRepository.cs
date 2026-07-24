@@ -27,4 +27,48 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
                 .SetProperty(s => s.UpdatedAt, DateTime.UtcNow),
                 cancellationToken);
     }
+
+    public async Task<PagedResult<Subscription>> GetPageAsync(PageRequest page, CancellationToken cancellationToken = default)
+    {
+        var normalized = RepositoryPaging.Normalize(page);
+        var total = await _dbSet.CountAsync(cancellationToken);
+        var items = await _dbSet
+            .OrderByDescending(s => s.CreatedAt)
+            .Skip(normalized.Skip)
+            .Take(normalized.PageSize)
+            .ToListAsync(cancellationToken);
+
+        return new PagedResult<Subscription>(items, total, normalized.PageNumber, normalized.PageSize);
+    }
+
+    public async Task<IReadOnlyList<Subscription>> GetActiveSubscriptionsAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Where(s => s.IsActive && s.DeletedAt == null)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Subscription>> GetDueForRenewalAsync(
+        DateTime renewalThreshold,
+        DateTime lowerBound,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Include(s => s.Plan)
+            .Where(s =>
+                s.IsActive &&
+                s.DeletedAt == null &&
+                s.AutoRenew &&
+                s.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
+                s.CurrentPeriodEnd <= renewalThreshold &&
+                s.CurrentPeriodEnd > lowerBound)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(DateTime now, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Where(s => s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd < now)
+            .ToListAsync(cancellationToken);
+    }
 }

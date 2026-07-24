@@ -1,5 +1,4 @@
-using System;
-using System.Collections.Generic;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -7,7 +6,7 @@ public record CreateCheckoutSessionRequest(
     Guid UserId,
     Guid WorkspaceId,
     decimal Amount,
-    string Currency = "usd",
+    string Currency = PaymentConstants.Currencies.Usd,
     string PaymentType = "",
     string PlanSlug = "",
     string BillingCycle = ""

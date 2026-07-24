@@ -1,23 +1,17 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Linq.Expressions;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Application.Helpers;
-using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared;
-using NotificationClient = WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -27,6 +21,7 @@ public class CreditService : ICreditService
     private readonly ILogger<CreditService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IConfiguration _configuration;
+    private readonly IWorkspaceClient _workspaceClient;
     private readonly INotificationClient? _notificationClient;
 
     public CreditService(
@@ -34,32 +29,25 @@ public class CreditService : ICreditService
         ILogger<CreditService> logger,
         IBillingMessagePublisher messagePublisher,
         IConfiguration configuration,
+        IWorkspaceClient workspaceClient,
         INotificationClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _configuration = configuration;
+        _workspaceClient = workspaceClient;
         _notificationClient = notificationClient;
     }
 
-    private async Task<Result<Subscription>> GetActiveSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken)
-    {
-        var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(workspaceId, cancellationToken: cancellationToken);
-        if (sub is null)
-            return Result.Failure<Subscription>(
-                ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
-                ErrorCodes.BillingSubscriptionNotFound);
 
-        return Result.Success(sub);
-    }
 
     public async Task<Result<CreditBalanceDto>> GetWorkspaceCreditsAsync(
         Guid workspaceId, CancellationToken cancellationToken = default)
     {
         try
         {
-            var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
+            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditBalanceDto>(subResult.Error, subResult.ErrorCode);
             var sub = subResult.Value;
@@ -68,7 +56,7 @@ public class CreditService : ICreditService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting workspace credits for WorkspaceId {WorkspaceId}", workspaceId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingWorkspaceCredits, workspaceId);
             return Result.Failure<CreditBalanceDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -81,7 +69,7 @@ public class CreditService : ICreditService
             if (request.Amount <= 0)
                 return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount);
 
-            var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
+            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditTransactionDto>(subResult.Error, subResult.ErrorCode);
             var sub = subResult.Value;
@@ -101,7 +89,9 @@ public class CreditService : ICreditService
             await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(sub.UserId, sub.CreditsRemaining, string.Empty, string.Empty),
                 cancellationToken);
 
@@ -120,7 +110,7 @@ public class CreditService : ICreditService
                     string.Format(ApiMessageConstants.ErrorMessages.BillingTopUpMinimumRequired, PaymentConstants.StripeLimits.MinimumTopUpCredits), 
                     ErrorCodes.BillingInvalidAmount);
 
-            var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
+            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditBalanceDto>(subResult.Error, subResult.ErrorCode);
             var sub = subResult.Value;
@@ -140,7 +130,12 @@ public class CreditService : ICreditService
             decimal estimatedCostUsd = credits * 0.01m; // 1 USD = 100 Credits (1 Credit = $0.01 USD)
 
             // Create Payment record
-            var paymentTx = request.ToEntity(sub, paymentId, estimatedCostUsd, PaymentConstants.Currencies.Usd);
+            var paymentTx = new TopUpPaymentCreationRequest(
+                request,
+                sub,
+                paymentId,
+                estimatedCostUsd,
+                PaymentConstants.Currencies.Usd).ToEntity();
             await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
 
             // Create Invoice record
@@ -149,7 +144,9 @@ public class CreditService : ICreditService
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(
                     sub.UserId,
                     sub.CreditsRemaining,
@@ -172,7 +169,7 @@ public class CreditService : ICreditService
         if (amount <= 0)
             return Result.Failure<object>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount);
 
-        var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
+        var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
         if (!subResult.IsSuccess)
             return Result.Failure<object>(subResult.Error, subResult.ErrorCode);
         var sub = subResult.Value;
@@ -181,7 +178,12 @@ public class CreditService : ICreditService
         // TODO: Mock ID only — not a real Stripe invoice ID. Replace with actual Stripe invoice ID from webhook.
         var stripeInvoiceId = "in_" + Guid.NewGuid().ToString("N")[..14];
 
-        var paymentTx = sub.ToSimulatedEntity(paymentId, stripeInvoiceId, amount, currency);
+        var paymentTx = new SimulatedPaymentCreationRequest(
+            sub,
+            paymentId,
+            stripeInvoiceId,
+            amount,
+            currency).ToSimulatedEntity();
         await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
 
         var invoice = paymentTx.ToSimulatedEntity();
@@ -196,7 +198,7 @@ public class CreditService : ICreditService
         Guid workspaceId,
         CreditHistoryQuery query,
         CancellationToken cancellationToken = default)
-    {   //all subscriptions of workspace
+    {
         var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
             s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
             cancellationToken);
@@ -207,77 +209,32 @@ public class CreditService : ICreditService
                 ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                 ErrorCodes.BillingSubscriptionNotFound);
 
-        // page size min is 1 and max is 200
-        var pageSize = Math.Clamp(query.PageSize, 1, 200);
-        // skip = (page number - 1) * page size
-        var skip = (Math.Max(1, query.PageNumber) - 1) * pageSize;
-        //base query: join Subscription, filter to this workspace's subscription IDs only
-        IQueryable<CreditTransaction> baseQuery = _unitOfWork.CreditTransactionRepository.Query()
-            .Include(t => t.Subscription)
-            .Where(t => subIds.Contains(t.SubscriptionId));
-        // apply filters
-        var filteredQuery = ApplyCreditTransactionFilters(baseQuery, query);
-        // count total 
-        var total = await filteredQuery.CountAsync(cancellationToken);
-        // take page
-        var items = await filteredQuery
-            .OrderByDescending(t => t.CreatedAt)
-            .Skip(skip)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
-        // create paginated response
+        var page = await _unitOfWork.CreditTransactionRepository.GetHistoryPageAsync(
+            BillingQueryHelper.ToCreditTransactionHistoryFilter(query, subIds),
+            cancellationToken);
+
         return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(
-            items.ToDtoList(workspaceId), total, query.PageNumber, pageSize));
+            page.Items.ToDtoList(workspaceId), page.TotalCount, page.PageNumber, page.PageSize));
     }
 
     public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(
         CreditHistoryQuery query,
         CancellationToken cancellationToken = default)
     {
-        var pageSize = Math.Clamp(query.PageSize, 1, 200);
-        var skip = (Math.Max(1, query.PageNumber) - 1) * pageSize;
+        var page = await _unitOfWork.CreditTransactionRepository.GetHistoryPageAsync(
+            BillingQueryHelper.ToCreditTransactionHistoryFilter(query, null),
+            cancellationToken);
 
-        IQueryable<CreditTransaction> baseQuery = _unitOfWork.CreditTransactionRepository.Query()
-            .Include(t => t.Subscription);
-
-        // filter for workspaceId
-        if (query.WorkspaceId.HasValue)
-        {
-            var targetSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == query.WorkspaceId.Value && s.DeletedAt == null,
-                cancellationToken);
-            if (targetSub != null)
-                baseQuery = baseQuery.Where(t => t.SubscriptionId == targetSub.Id);
-        }
-
-        var filteredQuery = ApplyCreditTransactionFilters(baseQuery, query);
-
-        var total = await filteredQuery.CountAsync(cancellationToken);
-        var items = await filteredQuery
-            .OrderByDescending(t => t.CreatedAt)
-            .Skip(skip)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
-
-        var dtos = items.ToDtoList();
+        var dtos = page.Items.ToDtoList();
 
         try
         {
-            var workspaceIds = dtos
-                .Where(d => d.WorkspaceId.HasValue && d.WorkspaceId != Guid.Empty)
-                .Select(d => d.WorkspaceId!.Value)
-                .Distinct()
-                .ToArray();
+            var workspaceIds = BillingQueryHelper.GetWorkspaceIds(dtos);
 
             if (workspaceIds.Length > 0)
             {
                 var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-
-                dtos = dtos.Select(d =>
-                    d.WorkspaceId.HasValue && workspaceNames.TryGetValue(d.WorkspaceId.Value, out var wName)
-                        ? d with { WorkspaceName = wName }
-                        : d
-                ).ToList();
+                dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames);
             }
         }
         catch (Exception wsEx)
@@ -285,7 +242,7 @@ public class CreditService : ICreditService
             _logger.LogWarning(wsEx, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNames);
         }
 
-        return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, total, query.PageNumber, pageSize));
+        return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, page.TotalCount, page.PageNumber, page.PageSize));
     }
 
     public Task<Result<CreditTransactionDto>> ManualAdjustCreditsAsync(
@@ -300,7 +257,7 @@ public class CreditService : ICreditService
 
         return ConcurrencyRetryHelper.ExecuteWithConcurrencyRetryAsync(_unitOfWork, _logger, workspaceId, async () =>
         {
-            var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
+            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditTransactionDto>(subResult.Error, subResult.ErrorCode);
             var sub = subResult.Value;
@@ -324,7 +281,9 @@ public class CreditService : ICreditService
                 request.Amount,
                 adjustmentTransaction.Description);
 
-            await PublishCreditUpdateAsync(
+            await BillingNotificationHelper.PublishCreditUpdateAsync(
+                _messagePublisher,
+                _logger,
                 NotificationMapper.ToCreditsUpdatedMessage(sub.UserId, sub.CreditsRemaining, notificationTitle, notificationContent),
                 cancellationToken);
 
@@ -332,38 +291,7 @@ public class CreditService : ICreditService
         }, cancellationToken);
     }
 
-    private async Task PublishCreditUpdateAsync(WarpTalk.Shared.Models.RealtimeNotificationMessage msg, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _messagePublisher.PublishAsync(BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishRealtimeCreditUpdate, msg.UserId);
-        }
-    }
 
-    // Shared filter logic for both workspace credit history and global credit history queries.
-    // Each condition is applied independently — only added to the query if the client provides a value.
-    private static IQueryable<CreditTransaction> ApplyCreditTransactionFilters(
-        IQueryable<CreditTransaction> query, CreditHistoryQuery filter)
-    {
-        if (!string.IsNullOrEmpty(filter.Type))
-            query = query.Where(t => t.Type == filter.Type);
 
-        if (filter.FromDate.HasValue)
-            query = query.Where(t => t.CreatedAt >= filter.FromDate.Value);
 
-        if (filter.ToDate.HasValue)
-            query = query.Where(t => t.CreatedAt <= filter.ToDate.Value);
-
-        if (filter.MinAmount.HasValue)
-            query = query.Where(t => Math.Abs(t.Amount) >= filter.MinAmount.Value);
-
-        if (filter.MaxAmount.HasValue)
-            query = query.Where(t => Math.Abs(t.Amount) <= filter.MaxAmount.Value);
-
-        return query;
-    }
 }

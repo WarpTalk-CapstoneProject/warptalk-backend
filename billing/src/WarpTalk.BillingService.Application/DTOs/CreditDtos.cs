@@ -1,7 +1,7 @@
-using WarpTalk.Shared;
 using System;
 using System.ComponentModel.DataAnnotations;
-
+using WarpTalk.Shared;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -47,17 +47,17 @@ public record TopUpRequest(
 public record SimulatePaymentRequest(
     [Required]
     Guid WorkspaceId,
-    decimal Amount = 190000m,
-    string Currency = "vnd"
+    decimal Amount = 10m,
+    string Currency = PaymentConstants.Currencies.Usd
 );
 
 
 public record CreditTransactionDto(
     Guid Id,
     int Amount,        // negative = consumption, positive = top-up
-    string Type,          // "consume" | "top_up" | "adjustment" | "refund"
+    string Type,          // Use TransactionConstants.TransactionTypes ("consume" | "top_up" | "adjustment" | "refund")
     string? Description,
-    string? ReferenceType,
+    string? ReferenceType, // Use TransactionConstants.ReferenceTypes
     Guid? ReferenceId,
     int BalanceAfter,
     DateTime CreatedAt,
@@ -99,4 +99,20 @@ public record UsageAlertDto(
     string WorkspaceName,
     int ConsumedCreditsIn24h,
     string Reason
+);
+
+public record StripeSubscriptionTransactionRequest(
+    Domain.Entities.Subscription Subscription,
+    Domain.Entities.Plan Plan,
+    string PaymentType,
+    Guid UserId,
+    Guid ReferenceId
+);
+
+public record CreditCostRequest(
+    int AudioSeconds,
+    int TokenCount,
+    int GpuInferenceMs,
+    bool IsVoiceClone,
+    ServiceRatesDto Rates
 );

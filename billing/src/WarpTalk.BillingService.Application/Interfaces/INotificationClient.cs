@@ -1,11 +1,11 @@
-using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface INotificationClient
 {
-    Task SendNotificationAsync(Guid userId, string type, string title, string body, string actionUrl, Dictionary<string, string>? metadata = null, CancellationToken cancellationToken = default);
+    Task<Result> SendNotificationsAsync(SendBillingNotificationsRequest request, CancellationToken cancellationToken = default);
 }

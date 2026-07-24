@@ -4,6 +4,7 @@ using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
@@ -162,6 +163,7 @@ builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<WarpTalk.Gateway.Services.SttSimulatorWorker>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 builder.Services.AddHostedService<TranslationRoomRedisSubscriberService>();
+builder.Services.AddHostedService<WarpTalk.Gateway.Services.BillingRedisSubscriberService>();
 
 // 8. Configure Health Checks
 builder.Services.AddHealthChecks();
@@ -290,6 +292,9 @@ app.MapHub<TranslationRoomHub>("/hubs/translation-room")
     .RequireAuthorization("RequireAuth");
 
 app.MapHub<NotificationHub>("/hubs/notification")
+    .RequireAuthorization("RequireAuth");
+
+app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(GatewayBillingConstants.HubPath)
     .RequireAuthorization("RequireAuth");
 
 

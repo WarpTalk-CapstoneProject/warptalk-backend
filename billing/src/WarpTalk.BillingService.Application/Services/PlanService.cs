@@ -44,7 +44,7 @@ public class PlanService : IPlanService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting plans");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlans);
             return Result.Failure<IEnumerable<PlanDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -67,7 +67,7 @@ public class PlanService : IPlanService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting plan by Id {PlanId}", id);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlanById, id);
             return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -90,54 +90,9 @@ public class PlanService : IPlanService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting plan by Slug {Slug}", slug);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlanBySlug, slug);
             return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
-    }
-
-    private Result<PlanDto> ValidatePlanRequest(PlanRequest request)
-    {
-        var currency = request.Currency?.ToUpperInvariant().Trim() ?? "";
-        decimal minPrice = 0.50m; // Stripe minimum for USD
-
-        var cycle = request.BillingCycle?.ToLowerInvariant().Trim();
-        bool isInvalidCycle = cycle is not (SubscriptionConstants.BillingCycles.Monthly or 
-                                            SubscriptionConstants.BillingCycles.Semiannual or 
-                                            SubscriptionConstants.BillingCycles.Yearly);
-        bool isInvalidFeatures = !string.IsNullOrWhiteSpace(request.Features) && 
-                                 !(request.Features.Trim().StartsWith("{") && request.Features.Trim().EndsWith("}")) && 
-                                 !(request.Features.Trim().StartsWith("[") && request.Features.Trim().EndsWith("]"));
-
-        var validations = new (bool IsInvalid, string ErrorMessage)[]
-        {
-            (string.IsNullOrWhiteSpace(request.Name), ApiMessageConstants.ValidationMessages.PlanNameRequired),
-            (request.Name?.Length > 100, ApiMessageConstants.ValidationMessages.PlanNameMaxLength),
-            
-            (string.IsNullOrWhiteSpace(request.Slug), ApiMessageConstants.ValidationMessages.PlanSlugRequired),
-            (request.Slug?.Length > 50, ApiMessageConstants.ValidationMessages.PlanSlugMaxLength),
-            (!string.IsNullOrWhiteSpace(request.Slug) && !System.Text.RegularExpressions.Regex.IsMatch(request.Slug, "^[a-z0-9]+(?:-[a-z0-9]+)*$"), ApiMessageConstants.ValidationMessages.PlanSlugInvalid),
-            
-            (string.IsNullOrWhiteSpace(request.Tier), ApiMessageConstants.ValidationMessages.PlanTierRequired),
-            (request.Tier?.Length > 20, ApiMessageConstants.ValidationMessages.PlanTierMaxLength),
-            
-            (string.IsNullOrWhiteSpace(request.Currency), ApiMessageConstants.ValidationMessages.PlanCurrencyRequired),
-            (currency != "USD", ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid),
-            
-            (string.IsNullOrWhiteSpace(request.BillingCycle), ApiMessageConstants.ValidationMessages.PlanBillingCycleRequired),
-            (!string.IsNullOrWhiteSpace(request.BillingCycle) && isInvalidCycle, ApiMessageConstants.ValidationMessages.PlanBillingCycleInvalid),
-            
-            (request.Price < minPrice, string.Format(ApiMessageConstants.ValidationMessages.PlanMinPrice, currency, minPrice)),
-            (request.CreditsPerCycle < 0, ApiMessageConstants.ValidationMessages.PlanCreditsPerCycleInvalid),
-            (request.MaxParticipants < 2, ApiMessageConstants.ValidationMessages.PlanMaxParticipantsInvalid),
-            (request.SortOrder < 0, ApiMessageConstants.ValidationMessages.PlanSortOrderInvalid),
-            (isInvalidFeatures, ApiMessageConstants.ValidationMessages.PlanFeaturesInvalid)
-        };
-
-        var error = validations.FirstOrDefault(v => v.IsInvalid);
-        if (error.IsInvalid)
-            return Result.Failure<PlanDto>(error.ErrorMessage, ErrorCodes.ValidationError);
-
-        return Result.Success<PlanDto>(null!);
     }
 
     public async Task<Result<PlanDto>> CreatePlanAsync(
@@ -145,7 +100,7 @@ public class PlanService : IPlanService
     {
         try
         {
-            var validationResult = ValidatePlanRequest(request);
+            var validationResult = PlanHelper.ValidatePlanRequest(request);
             if (!validationResult.IsSuccess)
                 return validationResult;
 
@@ -161,13 +116,19 @@ public class PlanService : IPlanService
             await _unitOfWork.PlanRepository.AddAsync(plan, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishPlanUpdateNotificationAsync("created", plan.Name, null, cancellationToken);
+            await BillingNotificationHelper.PublishPlanUpdateAsync(
+                _messagePublisher,
+                _logger,
+                BillingMessageConstants.Plan.Actions.Created,
+                plan.Name,
+                null,
+                cancellationToken);
 
             return Result.Success(plan.ToDto());
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating plan");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingPlan);
             return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
      }
@@ -184,7 +145,7 @@ public class PlanService : IPlanService
             if (plan is null)
                 return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 
-            var validationResult = ValidatePlanRequest(request);
+            var validationResult = PlanHelper.ValidatePlanRequest(request);
             if (!validationResult.IsSuccess)
                 return validationResult;
 
@@ -214,13 +175,19 @@ public class PlanService : IPlanService
             _unitOfWork.PlanRepository.Update(plan);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishPlanUpdateNotificationAsync("updated", plan.Name, changeDetail, cancellationToken);
+            await BillingNotificationHelper.PublishPlanUpdateAsync(
+                _messagePublisher,
+                _logger,
+                BillingMessageConstants.Plan.Actions.Updated,
+                plan.Name,
+                changeDetail,
+                cancellationToken);
 
             return Result.Success(plan.ToDto());
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error updating plan");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorUpdatingPlan);
             return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -242,27 +209,21 @@ public class PlanService : IPlanService
             _unitOfWork.PlanRepository.Update(plan);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishPlanUpdateNotificationAsync("deactivated", plan.Name, null, cancellationToken);
+            await BillingNotificationHelper.PublishPlanUpdateAsync(
+                _messagePublisher,
+                _logger,
+                BillingMessageConstants.Plan.Actions.Deactivated,
+                plan.Name,
+                null,
+                cancellationToken);
 
             return Result.Success(true);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error deactivating plan");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorDeactivatingPlan);
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 
-    private async Task PublishPlanUpdateNotificationAsync(string action, string planName, string? details = null, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var msg = NotificationMapper.ToPlanChangedMessage(action, planName, details);
-            await _messagePublisher.PublishAsync(BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishPlanUpdateBroadcast, planName);
-        }
-    }
 }

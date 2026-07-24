@@ -31,16 +31,3 @@ public record PaginatedResponse<T>(
     }
 }
 
-// ============================================================================
-// ERROR RESPONSE
-// ============================================================================
-
-public record ErrorDetailDto(
-    string Code,
-    string Message,
-    string? Details = null,
-    DateTime Timestamp = default)
-{
-    public ErrorDetailDto(string code, string message, string? details = null)
-        : this(code, message, details, DateTime.UtcNow) { }
-}

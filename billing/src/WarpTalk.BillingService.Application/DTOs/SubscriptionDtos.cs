@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -34,7 +35,7 @@ public record WorkspaceCreditsDto(
     Guid WorkspaceId,
     int CurrentCredits,
     DateTime? SubscriptionEndDate,
-    string SubscriptionStatus = "active");
+    string SubscriptionStatus = SubscriptionConstants.SubscriptionStatuses.Active);
 
 public record TransactionDto(
     Guid Id,

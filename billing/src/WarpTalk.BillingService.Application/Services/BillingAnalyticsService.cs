@@ -16,11 +16,16 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<BillingAnalyticsService> _logger;
+    private readonly IWorkspaceClient _workspaceClient;
 
-    public BillingAnalyticsService(IUnitOfWork unitOfWork, ILogger<BillingAnalyticsService> logger)
+    public BillingAnalyticsService(
+        IUnitOfWork unitOfWork, 
+        ILogger<BillingAnalyticsService> logger,
+        IWorkspaceClient workspaceClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<BillingReportDto>> GetBillingReportAsync(Guid workspaceId, BillingReportQuery query, CancellationToken cancellationToken = default)
@@ -32,7 +37,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             if (sub is null)
-                return Result.Failure<BillingReportDto>("No active subscription found for this workspace.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<BillingReportDto>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
 
             var startDate = new DateTime(query.Year, query.Month, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddMonths(1);
@@ -50,13 +55,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             }
             else
             {
-                var priorTxs = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
-                    tx => tx.SubscriptionId == sub.Id && tx.CreatedAt < startDate,
-                    0, 1,
-                    q => q.OrderByDescending(tx => tx.CreatedAt),
-                    cancellationToken);
-
-                var priorTx = priorTxs.FirstOrDefault();
+                var priorTx = await _unitOfWork.CreditTransactionRepository.GetLatestBeforeAsync(sub.Id, startDate, cancellationToken);
                 if (priorTx != null)
                 {
                     startingBalance = priorTx.BalanceAfter;
@@ -79,7 +78,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                     g.Sum(x => x.Quantity)
                 )).ToList();
 
-            var translationUsages = usages.Where(u => u.UsageType.Contains("translation", StringComparison.OrdinalIgnoreCase) && u.Quantity > 0).ToList();
+            var translationUsages = usages.Where(u => u.UsageType.Contains(UsageConstants.UsageTypes.TranslationKeyword, StringComparison.OrdinalIgnoreCase) && u.Quantity > 0).ToList();
             decimal? averageTranslationCost = translationUsages.Any()
                 ? Math.Round(translationUsages.Sum(u => (decimal)u.CreditsConsumed) / translationUsages.Sum(u => u.Quantity), 2)
                 : null;
@@ -100,8 +99,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error generating billing report for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<BillingReportDto>("Failed to generate billing report.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGeneratingBillingReport, workspaceId);
+            return Result.Failure<BillingReportDto>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsReportFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -115,7 +114,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 
             var subIds = subs.Select(s => s.Id).ToList();
             if (!subIds.Any())
-                return Result.Failure<UsageChartDto>("No subscription found for this workspace.", ErrorCodes.BillingSubscriptionNotFound);
+                return Result.Failure<UsageChartDto>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
 
             var startDate = new DateTime(query.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var endDate = startDate.AddYears(1);
@@ -142,8 +141,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting usage chart for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<UsageChartDto>("Failed to generate chart.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingUsageChart, workspaceId);
+            return Result.Failure<UsageChartDto>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsChartFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -170,8 +169,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting feature adoption for WorkspaceId {WorkspaceId}", workspaceId);
-            return Result.Failure<IEnumerable<FeatureAdoptionDto>>("Failed to generate feature adoption.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingFeatureAdoption, workspaceId);
+            return Result.Failure<IEnumerable<FeatureAdoptionDto>>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsAdoptionFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -194,8 +193,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting global metrics");
-            return Result.Failure<GlobalBillingMetricsDto>("Failed to generate global metrics.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingGlobalMetrics);
+            return Result.Failure<GlobalBillingMetricsDto>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsGlobalMetricsFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -224,8 +223,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting global usage chart");
-            return Result.Failure<UsageChartDto>("Failed to generate global chart.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingGlobalUsageChart);
+            return Result.Failure<UsageChartDto>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsGlobalChartFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -251,8 +250,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting global usage breakdown");
-            return Result.Failure<IEnumerable<UsageSummaryDto>>("Failed to generate global usage breakdown.", "INTERNAL_ERROR");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingGlobalUsageBreakdown);
+            return Result.Failure<IEnumerable<UsageSummaryDto>>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsGlobalBreakdownFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -269,7 +268,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             var topWorkspaces = usages.GroupBy(u => u.WorkspaceId)
                 .Select(g => new TopWorkspaceDto(
                     g.Key,
-                    $"Workspace {g.Key.ToString()[..8].ToUpper()}",
+                    string.Format(BillingMessageConstants.AnalyticsMessages.WorkspaceNameTemplate, g.Key.ToString()[..8].ToUpper()),
                     g.Sum(x => x.CreditsConsumed)
                 ))
                 .OrderByDescending(x => x.TotalCreditsConsumed)
@@ -280,24 +279,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             {
                 try
                 {
-                    var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                    var wasOpen = connection.State == System.Data.ConnectionState.Open;
-                    if (!wasOpen) await connection.OpenAsync(cancellationToken);
-
                     var ids = topWorkspaces.Select(w => w.WorkspaceId).Distinct().ToArray();
-                    using var cmd = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
-                        connection);
-                    cmd.Parameters.AddWithValue("ids", ids);
-
-                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-                    var workspaceNames = new Dictionary<Guid, string>();
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
-                    }
-                    await reader.CloseAsync();
-
+                    var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(ids, cancellationToken);
                     var resolvedTopWorkspaces = new List<TopWorkspaceDto>();
                     foreach (var tw in topWorkspaces)
                     {
@@ -314,7 +297,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to resolve real workspace names for Top Workspaces");
+                    _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesTopWorkspaces);
                 }
             }
 
@@ -322,8 +305,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting top workspaces");
-            return Result.Failure<IEnumerable<TopWorkspaceDto>>("Failed to get top workspaces.", ErrorCodes.InternalServerError);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingTopWorkspaces);
+            return Result.Failure<IEnumerable<TopWorkspaceDto>>(BillingMessageConstants.ApiErrorMessages.BillingAnalyticsTopWorkspacesFailed, ErrorCodes.InternalServerError);
         }
     }
 
@@ -356,49 +339,35 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 
             try
             {
-                var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                if (connection.State != System.Data.ConnectionState.Open)
-                    await connection.OpenAsync(cancellationToken);
-
-                using var cmdSubs = new Npgsql.NpgsqlCommand(
-                    "SELECT id, workspace_id FROM subscription.subscriptions WHERE id = ANY(@subIds)", connection);
-                cmdSubs.Parameters.AddWithValue("subIds", subIds);
-                using var readerSubs = await cmdSubs.ExecuteReaderAsync(cancellationToken);
+                var subs = await _unitOfWork.Subscriptions.FindAsync(s => subIds.Contains(s.Id), cancellationToken);
                 var workspaceIds = new List<Guid>();
-                while (await readerSubs.ReadAsync(cancellationToken))
+                foreach (var s in subs)
                 {
-                    var sId = readerSubs.GetGuid(0);
-                    var wId = readerSubs.GetGuid(1);
-                    subIdToWorkspaceId[sId] = wId;
-                    workspaceIds.Add(wId);
+                    subIdToWorkspaceId[s.Id] = s.WorkspaceId;
+                    workspaceIds.Add(s.WorkspaceId);
                 }
-                await readerSubs.CloseAsync();
 
                 if (workspaceIds.Any())
                 {
-                    using var command = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
-                    command.Parameters.AddWithValue("ids", workspaceIds.ToArray());
-
-                    using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                    while (await reader.ReadAsync(cancellationToken))
+                    var fetchedNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
+                    foreach (var kvp in fetchedNames)
                     {
-                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
+                        workspaceNames[kvp.Key] = kvp.Value;
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to resolve workspace names for alerts");
+                _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesAlerts);
             }
 
             var alerts = grouped.Select(g => {
                 var wId = subIdToWorkspaceId.TryGetValue(g.SubscriptionId, out var id) ? id : Guid.Empty;
                 return new UsageAlertDto(
                     WorkspaceId: wId,
-                    WorkspaceName: workspaceNames.TryGetValue(wId, out var name) ? name : "Unknown Workspace",
+                    WorkspaceName: workspaceNames.TryGetValue(wId, out var name) ? name : BillingMessageConstants.AnalyticsMessages.UnknownWorkspace,
                     ConsumedCreditsIn24h: g.ConsumedCredits,
-                    Reason: $"Unusually high consumption: {g.ConsumedCredits} credits in 24h"
+                    Reason: string.Format(BillingMessageConstants.AnalyticsMessages.HighConsumptionAlertTemplate, g.ConsumedCredits)
                 );
             });
 
@@ -406,8 +375,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting usage alerts");
-            return Result.Failure<IEnumerable<UsageAlertDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingUsageAlerts);
+            return Result.Failure<IEnumerable<UsageAlertDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 }

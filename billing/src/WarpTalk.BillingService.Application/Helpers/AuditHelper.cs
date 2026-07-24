@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.Helpers;
 
@@ -17,7 +18,7 @@ public static class AuditHelper
     {
         if (oldVal != newVal)
         {
-            changes.Add(string.Format(format, newVal ? "enabled" : "disabled"));
+            changes.Add(string.Format(format, newVal ? HelperConstants.Audit.Enabled : HelperConstants.Audit.Disabled));
         }
     }
 }

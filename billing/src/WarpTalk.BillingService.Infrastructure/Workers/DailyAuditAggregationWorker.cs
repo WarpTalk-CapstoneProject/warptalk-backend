@@ -2,12 +2,13 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -15,13 +16,16 @@ public class DailyAuditAggregationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<DailyAuditAggregationWorker> _logger;
+    private readonly BillingWorkerOptions _options;
 
     public DailyAuditAggregationWorker(
         IServiceProvider serviceProvider,
-        ILogger<DailyAuditAggregationWorker> logger)
+        ILogger<DailyAuditAggregationWorker> logger,
+        IOptions<BillingWorkerOptions> options)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _options = options.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -32,12 +36,14 @@ public class DailyAuditAggregationWorker : BackgroundService
         {
             // Tính thời gian chờ đến midnight UTC tiếp theo
             var now = DateTime.UtcNow;
-            var nextMidnight = now.Date.AddDays(1);
-            var delay = nextMidnight - now;
+            var nextRun = now.Date.AddHours(_options.DailyAuditHourUtc);
+            if (nextRun <= now)
+                nextRun = nextRun.AddDays(1);
+            var delay = nextRun - now;
 
             _logger.LogInformation(
                 "DailyAuditAggregationWorker: next run in {Delay:hh\\:mm\\:ss} at {NextRun:u}.",
-                delay, nextMidnight);
+                delay, nextRun);
 
             try
             {
@@ -69,10 +75,7 @@ public class DailyAuditAggregationWorker : BackgroundService
         var snapshotAt = DateTime.UtcNow;
 
         // Lấy tất cả subscriptions đang active (chưa xóa mềm)
-        var activeSubscriptions = await unitOfWork.SubscriptionRepository
-            .Query()
-            .Where(s => s.IsActive && s.DeletedAt == null)
-            .ToListAsync(cancellationToken);
+        var activeSubscriptions = await unitOfWork.SubscriptionRepository.GetActiveSubscriptionsAsync(cancellationToken);
 
         if (activeSubscriptions.Count == 0)
         {
