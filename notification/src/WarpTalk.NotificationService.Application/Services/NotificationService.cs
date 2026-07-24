@@ -11,12 +11,17 @@ namespace WarpTalk.NotificationService.Application.Services;
 public class NotificationService : INotificationService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IEmailSender? _emailSender;
     private readonly ILogger<NotificationService> _logger;
 
-    public NotificationService(IUnitOfWork unitOfWork, ILogger<NotificationService> logger)
+    public NotificationService(
+        IUnitOfWork unitOfWork, 
+        ILogger<NotificationService> logger,
+        IEmailSender? emailSender = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _emailSender = emailSender;
     }
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
@@ -129,7 +134,47 @@ public class NotificationService : INotificationService
         await repo.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
         
+        // Attempt email dispatch if email sender is registered
+        if (_emailSender != null)
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var prefResult = await GetPreferencesAsync(dto.UserId);
+                    if (prefResult.IsSuccess && prefResult.Value.EmailEnabled)
+                    {
+                        var userEmail = extractEmailFromPayload(dto.PayloadJson);
+                        if (!string.IsNullOrWhiteSpace(userEmail))
+                        {
+                            var htmlBody = EmailTemplateRenderer.RenderMeetingReminder(dto.Title, DateTime.UtcNow.AddMinutes(15).ToString("f"), dto.ActionUrl ?? "https://warptalk.app");
+                            await _emailSender.SendEmailAsync(new EmailMessage(userEmail, dto.Title, htmlBody));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Background email delivery failed for notification {Id}", notification.Id);
+                }
+            });
+        }
+        
         return Result.Success(NotificationMessageMapper.ToDto(notification));
+    }
+
+    private static string? extractEmailFromPayload(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("toEmail", out var prop) || doc.RootElement.TryGetProperty("email", out prop))
+            {
+                return prop.GetString();
+            }
+        }
+        catch { }
+        return null;
     }
 
     private NotificationPreferenceDto MapToDto(NotificationPreference p) =>
