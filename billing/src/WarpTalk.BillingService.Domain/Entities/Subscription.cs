@@ -16,7 +16,7 @@ public partial class Subscription
 
     public Guid PlanId { get; set; }
 
-    public string Status { get; set; } = BillingConstants.SubscriptionStatuses.Active;
+    public string Status { get; set; } = SubscriptionConstants.SubscriptionStatuses.Active;
 
     public int CreditsRemaining { get; set; }
 

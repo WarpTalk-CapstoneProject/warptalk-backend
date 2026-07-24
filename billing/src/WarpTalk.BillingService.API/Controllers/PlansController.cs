@@ -22,7 +22,10 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<IEnumerable<PlanDto>>> GetPlans(CancellationToken cancellationToken)
     {
         var result = await _planService.GetActivePlansAsync(cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -31,7 +34,10 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<PlanDto>> GetPlanById(Guid id, CancellationToken cancellationToken)
     {
         var result = await _planService.GetPlanByIdAsync(id, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -40,7 +46,10 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<PlanDto>> GetPlanBySlug(string slug, CancellationToken cancellationToken)
     {
         var result = await _planService.GetPlanBySlugAsync(slug, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -50,7 +59,10 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return CreatedAtAction(nameof(GetPlanById), new { id = result.Value!.Id }, result.Value);
     }
@@ -60,7 +72,10 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -70,17 +85,11 @@ public class PlansController : ControllerBase
     public async Task<ActionResult> DeactivatePlan(Guid id, CancellationToken cancellationToken)
     {
         var result = await _planService.DeactivatePlanAsync(id, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return NoContent();
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        errorCode switch
-        {
-            ErrorCodes.BillingPlanNotFound => NotFound(new ApiErrorResponse(error ?? "Plan not found", errorCode)),
-            "DUPLICATE_SLUG" => BadRequest(new ApiErrorResponse(error ?? "Duplicate slug", errorCode)),
-            "INVALID_REQUEST" => BadRequest(new ApiErrorResponse(error ?? "Invalid request", errorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
-        };
 }

@@ -28,7 +28,7 @@ public partial class Transaction
 
     public string? ProviderOrderId { get; set; }
 
-    public string Status { get; set; } = BillingConstants.TransactionStatuses.Pending;
+    public string Status { get; set; } = TransactionConstants.TransactionStatuses.Pending;
 
     public string? FailureReason { get; set; }
 

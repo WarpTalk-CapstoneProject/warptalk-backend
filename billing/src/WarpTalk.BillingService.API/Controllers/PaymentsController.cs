@@ -39,24 +39,30 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
     {
         var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
 
     [HttpPost]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return StatusCode(201, result.Value);
     }
@@ -66,18 +72,26 @@ public class PaymentsController : ControllerBase
     public async Task<IActionResult> HandleWebhook([FromBody] PaymentWebhookRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.HandleWebhookAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(new { message = "Webhook processed successfully." });
     }
 
     [HttpPost("checkout")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
         try
         {
-            string url = await _paymentAppService.CreateCheckoutSessionAsync(request);
+            var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
+            if (!createResult.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
+        }
+            string url = createResult.Value;
             return Ok(new { url });
         }
         catch (ArgumentException ex)
@@ -95,10 +109,15 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var session = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
+            var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
+            if (!sessionResult.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
+        }
+            var session = sessionResult.Value;
 
             // Validate workspace ID from session metadata
-            string workspaceIdStr = session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.WorkspaceId, string.Empty);
+            string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
             if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
             {
                 return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError));
@@ -112,23 +131,27 @@ public class PaymentsController : ControllerBase
             }
 
             // Fallback: process payment event inline if session already marked as paid
-            if (session.PaymentStatus == BillingConstants.Payments.StatusPaid)
+            if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
             {
-                bool isZeroDecimal = string.Equals(session.Currency, BillingConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
+                bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
                 decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
 
-                await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                var processResult = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                     StripeSessionId: session.Id,
                     PaymentIntentId: !string.IsNullOrEmpty(session.PaymentIntentId) ? session.PaymentIntentId : string.Empty,
                     Amount: finalAmount,
                     Currency: session.Currency,
-                    UserIdStr: session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.UserId, string.Empty),
-                    WorkspaceIdStr: session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.WorkspaceId, string.Empty),
-                    PaymentType: session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.PaymentType, string.Empty),
-                    Status: BillingConstants.Payments.StatusPaid,
-                    PlanSlug: session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.PlanSlug, string.Empty),
-                    BillingCycle: session.Metadata.GetValueOrDefault(BillingConstants.StripeMetadata.BillingCycle, string.Empty)
+                    UserIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.UserId, string.Empty),
+                    WorkspaceIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty),
+                    PaymentType: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PaymentType, string.Empty),
+                    Status: PaymentConstants.Payments.StatusPaid,
+                    PlanSlug: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PlanSlug, string.Empty),
+                    BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
                 ));
+                if (!processResult.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
+        }
             }
 
             return Ok(session);
@@ -173,13 +196,4 @@ public class PaymentsController : ControllerBase
             return StatusCode(500, new ApiErrorResponse(ex.Message, ErrorCodes.InternalServerError));
         }
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        errorCode switch
-        {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, errorCode)),
-            ErrorCodes.BillingPlanNotFound => BadRequest(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingPlanNotFound, errorCode)),
-            ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingAccessDenied, errorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, errorCode ?? ErrorCodes.InternalServerError))
-        };
 }

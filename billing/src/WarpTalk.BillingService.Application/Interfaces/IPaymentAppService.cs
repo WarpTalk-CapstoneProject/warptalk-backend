@@ -1,11 +1,12 @@
 using System.Threading.Tasks;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IPaymentAppService
 {
-    Task<string> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request);
-    Task ProcessPaymentEventAsync(StripePaymentEventRequest request);
-    Task<CheckoutSessionDto> GetCheckoutSessionAsync(string sessionId);
+    Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request);
+    Task<Result> ProcessPaymentEventAsync(StripePaymentEventRequest request);
+    Task<Result<CheckoutSessionDto>> GetCheckoutSessionAsync(string sessionId);
 }

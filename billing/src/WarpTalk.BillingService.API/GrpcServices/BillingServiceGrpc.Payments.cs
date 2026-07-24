@@ -43,7 +43,7 @@ public partial class BillingServiceGrpc
     {
         try
         {
-            await _paymentAppService.ProcessPaymentEventAsync(new Dtos.StripePaymentEventRequest(
+            var result = await _paymentAppService.ProcessPaymentEventAsync(new Dtos.StripePaymentEventRequest(
                 StripeSessionId: request.StripeSessionId,
                 PaymentIntentId: request.ProviderTransactionId,
                 Amount: (decimal)request.Amount,
@@ -58,6 +58,7 @@ public partial class BillingServiceGrpc
                 PlanSlug: request.PlanSlug,
                 BillingCycle: request.BillingCycle
             ));
+            if (!result.IsSuccess) return new ProcessPaymentResponse { Success = false, ErrorMessage = result.Error };
 
             return new ProcessPaymentResponse
             {

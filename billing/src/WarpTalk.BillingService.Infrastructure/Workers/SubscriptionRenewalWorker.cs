@@ -79,7 +79,7 @@ public class SubscriptionRenewalWorker : BackgroundService
                 s.IsActive &&
                 s.DeletedAt == null &&
                 s.AutoRenew &&
-                s.Status == BillingConstants.SubscriptionStatuses.Active &&
+                s.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
                 s.CurrentPeriodEnd <= renewalThreshold &&
                 s.CurrentPeriodEnd > now.AddDays(-1)) // không gia hạn quá trễ (>1 ngày)
             .ToListAsync(cancellationToken);
@@ -142,11 +142,11 @@ public class SubscriptionRenewalWorker : BackgroundService
             UserId = sub.UserId,
             WorkspaceId = sub.WorkspaceId,
             Amount = creditsToAdd,
-            Type = BillingConstants.TransactionTypes.TopUp,
+            Type = TransactionConstants.TransactionTypes.TopUp,
             Description = string.Format(
-                BillingConstants.SuccessMessages.SubscriptionPlanActivationTemplate,
+                BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate,
                 $"{plan.Name} — Renewal {newStart:yyyy-MM-dd}"),
-            ReferenceType = BillingConstants.ReferenceTypes.Payment,
+            ReferenceType = TransactionConstants.ReferenceTypes.Payment,
             ReferenceId = sub.Id,
             BalanceAfter = sub.CreditsRemaining,
             CreatedAt = DateTime.UtcNow
@@ -164,9 +164,9 @@ public class SubscriptionRenewalWorker : BackgroundService
         var newStart = currentPeriodEnd;
         var newEnd = billingCycle switch
         {
-            BillingConstants.BillingCycles.Monthly    => newStart.AddMonths(1),
-            BillingConstants.BillingCycles.Semiannual => newStart.AddMonths(6),
-            BillingConstants.BillingCycles.Yearly     => newStart.AddYears(1),
+            SubscriptionConstants.BillingCycles.Monthly    => newStart.AddMonths(1),
+            SubscriptionConstants.BillingCycles.Semiannual => newStart.AddMonths(6),
+            SubscriptionConstants.BillingCycles.Yearly     => newStart.AddYears(1),
             _                                          => newStart.AddMonths(1) // default monthly
         };
         return (newStart, newEnd);

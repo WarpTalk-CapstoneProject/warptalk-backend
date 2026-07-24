@@ -39,7 +39,7 @@ public static class PaymentMapper
             Currency = currency,
             PaymentMethod = request.PaymentMethod,
             Provider = request.Provider,
-            Status = BillingConstants.PaymentStatuses.Pending,
+            Status = PaymentConstants.PaymentStatuses.Pending,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -54,10 +54,10 @@ public static class PaymentMapper
         TaxAmount = 0m,
         TotalAmount = amount,
         Currency = currency,
-        PaymentMethod = Domain.Constants.BillingConstants.Providers.TopUpSimulation,
-        Provider = Domain.Constants.BillingConstants.Providers.Stripe,
+        PaymentMethod = Domain.Constants.PaymentConstants.Providers.TopUpSimulation,
+        Provider = Domain.Constants.PaymentConstants.Providers.Stripe,
         ProviderTransactionId = request.ReferenceId?.ToString() ?? Guid.NewGuid().ToString(),
-        Status = BillingConstants.PaymentStatuses.Paid,
+        Status = PaymentConstants.PaymentStatuses.Paid,
         PaidAt = DateTime.UtcNow,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
@@ -72,10 +72,10 @@ public static class PaymentMapper
         TaxAmount = 0m,
         TotalAmount = amount,
         Currency = currency.ToLowerInvariant(),
-        PaymentMethod = Domain.Constants.BillingConstants.Providers.StripeSimulation,
-        Provider = Domain.Constants.BillingConstants.Providers.Stripe,
+        PaymentMethod = Domain.Constants.PaymentConstants.Providers.StripeSimulation,
+        Provider = Domain.Constants.PaymentConstants.Providers.Stripe,
         ProviderTransactionId = stripeInvoiceId,
-        Status = BillingConstants.PaymentStatuses.Paid,
+        Status = PaymentConstants.PaymentStatuses.Paid,
         PaidAt = DateTime.UtcNow,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow

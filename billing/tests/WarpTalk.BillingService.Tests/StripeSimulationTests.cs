@@ -34,10 +34,10 @@ public class StripeSimulationTests
         var session = new StripeCheckoutSession("cs_test_123", amountTotal, "usd", "paid", "pi_123", workspaceId.ToString());
         var request = new StripeWebhookEvent("evt_123", "checkout.session.completed", new StripeEventData(session));
 
-        // After constants refactoring, ReferenceType is BillingConstants.ReferenceTypes.Payment ("payment")
+        // After constants refactoring, ReferenceType is TransactionConstants.ReferenceTypes.Payment ("payment")
         _creditServiceMock.Setup(x => x.TopUpCreditsAsync(
             workspaceId,
-            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == BillingConstants.ReferenceTypes.Payment),
+            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == TransactionConstants.ReferenceTypes.Payment),
             It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success(new CreditBalanceDto(workspaceId, 500, 0, 500, "Active", DateTime.UtcNow, DateTime.UtcNow.AddMonths(1))));
 
@@ -48,7 +48,7 @@ public class StripeSimulationTests
         Assert.IsType<OkObjectResult>(result);
         _creditServiceMock.Verify(x => x.TopUpCreditsAsync(
             workspaceId,
-            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == BillingConstants.ReferenceTypes.Payment),
+            It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == TransactionConstants.ReferenceTypes.Payment),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

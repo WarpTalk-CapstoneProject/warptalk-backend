@@ -28,11 +28,14 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -41,7 +44,10 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCreditsDirectly([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsDirectlyAsync(request.WorkspaceId, request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -50,17 +56,23 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditBalanceDto>> TopUpCredits([FromBody] TopUpRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.TopUpCreditsAsync(request.WorkspaceId, request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -69,7 +81,10 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult> SimulatePayment([FromBody] SimulatePaymentRequest request, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.SimulatePaymentAsync(request.WorkspaceId, request.Amount, request.Currency, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         
         return Ok(result.Value);
     }
@@ -82,7 +97,10 @@ public class CreditsController : ControllerBase
 
         var adjustRequest = request with { AdminUserId = adminUserId };
         var result = await _creditService.ManualAdjustCreditsAsync(adjustRequest.WorkspaceId, adjustRequest, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -92,17 +110,10 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        errorCode switch
-        {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? "Subscription not found", errorCode)),
-            ErrorCodes.BillingInsufficientCredits => UnprocessableEntity(new ApiErrorResponse(error ?? "Insufficient credits", errorCode)),
-            "FEATURE_NOT_AVAILABLE" => StatusCode(403, new ApiErrorResponse(error ?? "Feature not available", errorCode)),
-            "INVALID_REQUEST" => BadRequest(new ApiErrorResponse(error ?? "Invalid request", errorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
-        };
 }

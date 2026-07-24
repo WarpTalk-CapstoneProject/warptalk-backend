@@ -25,17 +25,23 @@ public class SubscriptionsController : ControllerBase
     public async Task<ActionResult<SubscriptionDto>> CreateSubscription([FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CreateSubscriptionAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return StatusCode(201, result.Value);
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -47,40 +53,40 @@ public class SubscriptionsController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _subscriptionService.GetGlobalSubscriptionsAsync(query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
 
     [HttpDelete("workspace/{workspaceId}")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return NoContent();
     }
 
     [HttpPut("workspace/{workspaceId}/change-plan")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(Guid workspaceId, [FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)
             return BadRequest(new ApiErrorResponse(ApiMessageConstants.ValidationMessages.WorkspaceIdMismatch, ErrorCodes.ValidationError));
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        errorCode switch
-        {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, errorCode)),
-            ErrorCodes.BillingSubscriptionAlreadyActive => Conflict(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive, errorCode)),
-            ErrorCodes.BillingPlanNotFound => BadRequest(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingPlanNotFound, errorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, errorCode ?? ErrorCodes.InternalServerError))
-        };
 }

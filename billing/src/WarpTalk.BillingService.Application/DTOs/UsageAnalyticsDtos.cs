@@ -19,6 +19,24 @@ public record RecordUsageRequest(
     Guid? SegmentId = null,
     string? Details = null);
 
+public record ChargeVoiceCloneRequest(
+    Guid HostWorkspaceId,
+    Guid UserId,
+    bool IsAdvanced);
+
+public record ChargeAiAssistantRequest(
+    Guid HostWorkspaceId,
+    Guid UserId,
+    int InputTokens,
+    int OutputTokens,
+    string FeatureName);
+
+public record ChargeDocumentTranslationRequest(
+    Guid HostWorkspaceId,
+    Guid UserId,
+    int CharacterCount,
+    string TargetLanguage);
+
 // ============================================================================
 // USAGE / ANALYTICS RESPONSE DTOs
 // ============================================================================

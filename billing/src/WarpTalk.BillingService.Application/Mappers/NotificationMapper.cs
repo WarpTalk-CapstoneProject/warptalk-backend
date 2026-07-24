@@ -13,7 +13,7 @@ public static class NotificationMapper
         {
             Id = Guid.NewGuid().ToString(),
             UserId = userId.ToString(),
-            Type = BillingConstants.Notifications.Types.CreditsUpdated,
+            Type = BillingMessageConstants.Notifications.Types.CreditsUpdated,
             Title = title,
             Content = content,
             PayloadJson = JsonSerializer.Serialize(new { new_balance = newBalance }),
@@ -27,9 +27,9 @@ public static class NotificationMapper
         {
             Id = Guid.NewGuid().ToString(),
             UserId = userId.ToString(),
-            Type = BillingConstants.Notifications.Types.SubscriptionChanged,
-            Title = BillingConstants.Notifications.Titles.SubscriptionUpdated,
-            Content = string.Format(BillingConstants.Notifications.Templates.SubscriptionChangedContent, action, planName),
+            Type = BillingMessageConstants.Notifications.Types.SubscriptionChanged,
+            Title = BillingMessageConstants.Notifications.Titles.SubscriptionUpdated,
+            Content = string.Format(BillingMessageConstants.Notifications.Templates.SubscriptionChangedContent, action, planName),
             PayloadJson = "{}",
             CreatedAt = DateTime.UtcNow.ToString("O")
         };
@@ -37,7 +37,7 @@ public static class NotificationMapper
 
     public static RealtimeNotificationMessage ToPlanChangedMessage(string action, string planName, string? details)
     {
-        var content = string.Format(BillingConstants.Notifications.Templates.PlanChangedContent, planName, action);
+        var content = string.Format(BillingMessageConstants.Notifications.Templates.PlanChangedContent, planName, action);
         if (!string.IsNullOrWhiteSpace(details))
         {
             content += $" Details: {details}";
@@ -47,8 +47,8 @@ public static class NotificationMapper
         {
             Id = Guid.NewGuid().ToString(),
             UserId = "all",
-            Type = BillingConstants.Notifications.Types.PlanChanged,
-            Title = BillingConstants.Notifications.Titles.PlanUpdated,
+            Type = BillingMessageConstants.Notifications.Types.PlanChanged,
+            Title = BillingMessageConstants.Notifications.Titles.PlanUpdated,
             Content = content,
             PayloadJson = "{}",
             CreatedAt = DateTime.UtcNow.ToString("O")

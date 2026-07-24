@@ -23,7 +23,7 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             .Where(s => s.UserId == userId && s.IsActive && s.Id != excludeSubscriptionId)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(s => s.AutoRenew, false)
-                .SetProperty(s => s.Status, BillingConstants.SubscriptionStatuses.Cancelled)
+                .SetProperty(s => s.Status, SubscriptionConstants.SubscriptionStatuses.Cancelled)
                 .SetProperty(s => s.UpdatedAt, DateTime.UtcNow),
                 cancellationToken);
     }

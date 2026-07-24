@@ -20,7 +20,7 @@ public class BillingMapperTests
 
         var subscription = request.ToEntity(plan);
 
-        subscription.Status.Should().Be(BillingConstants.SubscriptionStatuses.Pending);
+        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Pending);
         subscription.IsActive.Should().BeFalse();
         subscription.CreditsRemaining.Should().Be(0); // Credits are only granted upon payment
         subscription.CurrentPeriodStart.Should().BeOnOrAfter(beforeTime);

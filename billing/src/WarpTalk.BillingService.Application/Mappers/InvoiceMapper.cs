@@ -38,7 +38,7 @@ public static class InvoiceMapper
         Tax = payment.TaxAmount,
         Total = payment.TotalAmount,
         Currency = payment.Currency,
-        Status = BillingConstants.InvoiceStatuses.Paid,
+        Status = InvoiceConstants.InvoiceStatuses.Paid,
         PdfUrl = string.Empty,
         LineItems = System.Text.Json.JsonSerializer.Serialize(new[] {
             new {
@@ -66,7 +66,7 @@ public static class InvoiceMapper
         Tax = payment.TaxAmount,
         Total = payment.TotalAmount,
         Currency = payment.Currency,
-        Status = BillingConstants.InvoiceStatuses.Paid,
+        Status = InvoiceConstants.InvoiceStatuses.Paid,
         // TODO: Placeholder only — this URL is not functional.
         // Replace with real Stripe invoice PDF URL from Stripe Webhook event payload.
         PdfUrl = $"https://stripe.com/invoice/{payment.ProviderTransactionId}",

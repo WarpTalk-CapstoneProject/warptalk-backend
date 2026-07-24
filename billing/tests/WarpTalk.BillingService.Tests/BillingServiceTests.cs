@@ -8,6 +8,6 @@ public class BillingServiceTests
     [Fact]
     public void SubscriptionStatus_ShouldExposeExpectedValues()
     {
-        Assert.Equal("active", BillingConstants.SubscriptionStatuses.Active);
+        Assert.Equal("active", SubscriptionConstants.SubscriptionStatuses.Active);
     }
 }

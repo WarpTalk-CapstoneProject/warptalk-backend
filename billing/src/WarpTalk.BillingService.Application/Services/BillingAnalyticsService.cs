@@ -65,8 +65,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 
             int endingBalance = transactions.Any() ? transactions.Last().BalanceAfter : startingBalance;
 
-            int totalTopUps = transactions.Where(tx => tx.Type == BillingConstants.TransactionTypes.TopUp).Sum(tx => tx.Amount);
-            int totalConsumed = Math.Abs(transactions.Where(tx => tx.Type == BillingConstants.TransactionTypes.Consume).Sum(tx => tx.Amount));
+            int totalTopUps = transactions.Where(tx => tx.Type == TransactionConstants.TransactionTypes.TopUp).Sum(tx => tx.Amount);
+            int totalConsumed = Math.Abs(transactions.Where(tx => tx.Type == TransactionConstants.TransactionTypes.Consume).Sum(tx => tx.Amount));
 
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
                 u => u.WorkspaceId == workspaceId && u.RecordedAt >= startDate && u.RecordedAt < endDate,
@@ -127,8 +127,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             var monthlyData = Enumerable.Range(1, 12).Select(month =>
             {
                 var monthTxs = txs.Where(t => t.CreatedAt.Month == month).ToList();
-                var topUp = monthTxs.Where(t => t.Type == BillingConstants.TransactionTypes.TopUp).Sum(t => t.Amount);
-                var consumed = Math.Abs(monthTxs.Where(t => t.Type == BillingConstants.TransactionTypes.Consume).Sum(t => t.Amount));
+                var topUp = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.TopUp).Sum(t => t.Amount);
+                var consumed = Math.Abs(monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.Consume).Sum(t => t.Amount));
 
                 return new MonthlyUsageDto(
                     month,
@@ -214,8 +214,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             for (int i = 1; i <= 12; i++)
             {
                 var monthTxs = txs.Where(t => t.CreatedAt.Month == i).ToList();
-                var consumed = monthTxs.Where(t => t.Type == BillingConstants.TransactionTypes.Consume).Sum(t => Math.Abs(t.Amount));
-                var topUp = monthTxs.Where(t => t.Type == BillingConstants.TransactionTypes.TopUp && t.Amount > 0).Sum(t => t.Amount);
+                var consumed = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.Consume).Sum(t => Math.Abs(t.Amount));
+                var topUp = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.TopUp && t.Amount > 0).Sum(t => t.Amount);
 
                 monthlyData.Add(new MonthlyUsageDto(i, new DateTime(query.Year, i, 1).ToString("MMM"), consumed, topUp));
             }

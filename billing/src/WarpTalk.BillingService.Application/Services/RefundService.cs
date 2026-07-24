@@ -33,7 +33,7 @@ public class RefundService : IRefundService
             if (payment == null)
                 return Result.Failure<RefundDto>("Payment transaction not found.", ErrorCodes.NotFound);
 
-            if (payment.Status != BillingConstants.PaymentStatuses.Paid)
+            if (payment.Status != PaymentConstants.PaymentStatuses.Paid)
                 return Result.Failure<RefundDto>("Only paid transactions can be refunded.", ErrorCodes.ValidationError);
 
             if (request.Amount <= 0 || request.Amount > payment.Amount)
@@ -46,7 +46,7 @@ public class RefundService : IRefundService
                 UserId = payment.UserId,
                 Amount = request.Amount,
                 Reason = request.Reason,
-                Status = BillingConstants.RefundStatuses.Succeeded,
+                Status = TransactionConstants.RefundStatuses.Succeeded,
                 CreatedAt = DateTime.UtcNow,
                 CompletedAt = DateTime.UtcNow
             };

@@ -28,7 +28,7 @@ public class PaymentService : IPaymentService
 
     // --- Ledger Methods ---
 
-    public async Task<int> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default)
+    public async Task<Result<int>> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default)
     {
         // Get the latest snapshot
         var snapshots = await _unitOfWork.CreditBalanceSnapshotRepository.GetPagedAsync(
@@ -52,19 +52,19 @@ public class PaymentService : IPaymentService
         foreach (var entry in entries)
         {
             string type = entry.Type.ToLower();
-            if (type == BillingConstants.TransactionTypes.TopUp || 
-                type == BillingConstants.TransactionTypes.Refund || 
-                type == BillingConstants.TransactionTypes.Adjustment)
+            if (type == TransactionConstants.TransactionTypes.TopUp || 
+                type == TransactionConstants.TransactionTypes.Refund || 
+                type == TransactionConstants.TransactionTypes.Adjustment)
             {
                 netChange += entry.Amount;
             }
-            else if (type == BillingConstants.TransactionTypes.Consume)
+            else if (type == TransactionConstants.TransactionTypes.Consume)
             {
                 netChange -= entry.Amount;
             }
         }
 
-        return baseBalance + netChange;
+        return Result<int>.Success(baseBalance + netChange);
     }
 
     public async Task<Result<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistoryAsync(
@@ -99,7 +99,7 @@ public class PaymentService : IPaymentService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, BillingConstants.LogMessages.ErrorGettingPaymentHistory, workspaceId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPaymentHistory, workspaceId);
             return Result.Failure<PaginatedResponse<PaymentTransactionDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -118,11 +118,11 @@ public class PaymentService : IPaymentService
             if (plan == null) return Result.Failure<PaymentTransactionDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.NotFound);
             //get final amount (discount)
             decimal finalAmount = plan.Price;
-            if (plan.BillingCycle.Equals(BillingConstants.BillingCycles.Semiannual, StringComparison.OrdinalIgnoreCase))
+            if (plan.BillingCycle.Equals(SubscriptionConstants.BillingCycles.Semiannual, StringComparison.OrdinalIgnoreCase))
             {
                 finalAmount *= 0.9m; // 10% discount
             }
-            else if (plan.BillingCycle.Equals(BillingConstants.BillingCycles.Yearly, StringComparison.OrdinalIgnoreCase))
+            else if (plan.BillingCycle.Equals(SubscriptionConstants.BillingCycles.Yearly, StringComparison.OrdinalIgnoreCase))
             {
                 finalAmount *= 0.8m; // 20% discount
             }
@@ -139,7 +139,7 @@ public class PaymentService : IPaymentService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, BillingConstants.LogMessages.ErrorCreatingPayment, request.SubscriptionId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingPayment, request.SubscriptionId);
             return Result.Failure<PaymentTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -158,7 +158,7 @@ public class PaymentService : IPaymentService
 
             if (request.Status.Equals("paid", StringComparison.OrdinalIgnoreCase))
             {
-                payment.Status = BillingConstants.PaymentStatuses.Paid;
+                payment.Status = PaymentConstants.PaymentStatuses.Paid;
             }
             else
             {
@@ -168,7 +168,7 @@ public class PaymentService : IPaymentService
             payment.FailureReason = request.FailureReason;
             payment.UpdatedAt = DateTime.UtcNow;
 
-            if (payment.Status == BillingConstants.PaymentStatuses.Paid)
+            if (payment.Status == PaymentConstants.PaymentStatuses.Paid)
                 payment.PaidAt = DateTime.UtcNow;
 
             _unitOfWork.PaymentRepository.Update(payment);
@@ -178,7 +178,7 @@ public class PaymentService : IPaymentService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, BillingConstants.LogMessages.ErrorUpdatingPaymentStatus, paymentId);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorUpdatingPaymentStatus, paymentId);
             return Result.Failure<PaymentTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -232,21 +232,21 @@ public class PaymentService : IPaymentService
                 }
 
                 // Idempotent Check — skip processing if webhook already processed payment as PAID
-                if (currentPayment.Status == BillingConstants.PaymentStatuses.Paid)
+                if (currentPayment.Status == PaymentConstants.PaymentStatuses.Paid)
                 {
                     // Return success true immediately
                     return Result.Success(true);
                 }
 
                 // 4. Handle checkout success flow (Status is Paid)
-                if (request.Status.Equals(BillingConstants.PaymentStatuses.Paid, StringComparison.OrdinalIgnoreCase))
+                if (request.Status.Equals(PaymentConstants.PaymentStatuses.Paid, StringComparison.OrdinalIgnoreCase))
                 {
                     // Extract subscription from refreshed payment entity
                     Subscription? currentSub = currentPayment.Subscription;
                     if (currentSub == null)
                     {
                         // Log critical error if subscription is missing
-                        _logger.LogError(BillingConstants.LogMessages.WebhookSubscriptionNotFound, currentPayment.SubscriptionId, paymentId);
+                        _logger.LogError(BillingMessageConstants.LogMessages.WebhookSubscriptionNotFound, currentPayment.SubscriptionId, paymentId);
                         // Return subscription not found error response
                         return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
                     }
@@ -256,20 +256,20 @@ public class PaymentService : IPaymentService
                     if (plan == null)
                     {
                         // Log critical error if plan is missing
-                        _logger.LogError(BillingConstants.LogMessages.WebhookPlanNotFound, currentSub.PlanId, currentSub.Id);
+                        _logger.LogError(BillingMessageConstants.LogMessages.WebhookPlanNotFound, currentSub.PlanId, currentSub.Id);
                         // Return plan not found error response
                         return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
                     }
 
                     // Ensure the subscription is pending activation (e.g. newly created for checkout)
-                    if (currentSub.Status != BillingConstants.SubscriptionStatuses.Pending)
+                    if (currentSub.Status != SubscriptionConstants.SubscriptionStatuses.Pending)
                     {
                         // Return state conflict error if subscription is not pending
                         return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingAutoRenewNotSupported, ErrorCodes.InvalidState);
                     }
 
                     // Update payment record to PAID status
-                    currentPayment.Status = BillingConstants.PaymentStatuses.Paid;
+                    currentPayment.Status = PaymentConstants.PaymentStatuses.Paid;
                     // Log current time as payment date
                     currentPayment.PaidAt = DateTime.UtcNow;
                     // Associate Stripe/PayOS external transaction ID
@@ -279,13 +279,13 @@ public class PaymentService : IPaymentService
                     await _unitOfWork.SubscriptionRepository.DeactivateOtherActiveSubscriptionsAsync(currentSub.UserId, currentSub.Id, cancellationToken);
 
                     // Activate the new pending subscription and calculate period end date using switch expression
-                    currentSub.Status = BillingConstants.SubscriptionStatuses.Active; // Set active status
+                    currentSub.Status = SubscriptionConstants.SubscriptionStatuses.Active; // Set active status
                     currentSub.IsActive = true; // Mark subscription active
                     currentSub.CurrentPeriodStart = DateTime.UtcNow; // Log cycle start time
                     currentSub.CurrentPeriodEnd = plan.BillingCycle.ToLower() switch // Calculate end time
                     {
-                        BillingConstants.BillingCycles.Yearly => DateTime.UtcNow.AddYears(1), // Add 1 year for yearly cycle
-                        BillingConstants.BillingCycles.Semiannual => DateTime.UtcNow.AddMonths(6), // Add 6 months for semiannual cycle
+                        SubscriptionConstants.BillingCycles.Yearly => DateTime.UtcNow.AddYears(1), // Add 1 year for yearly cycle
+                        SubscriptionConstants.BillingCycles.Semiannual => DateTime.UtcNow.AddMonths(6), // Add 6 months for semiannual cycle
                         _ => DateTime.UtcNow.AddMonths(1) // Default to 1 month for other cycles
                     };
                     
@@ -300,10 +300,10 @@ public class PaymentService : IPaymentService
                         SubscriptionId = currentSub.Id, // Connect to subscription
                         UserId = currentSub.UserId, // Connect to user
                         Amount = plan.CreditsPerCycle, // Allocation amount
-                        Type = BillingConstants.TransactionTypes.TopUp, // Log transaction type
-                        Description = BillingConstants.SuccessMessages.SubscriptionActivationTopUp, // Ledger description
+                        Type = TransactionConstants.TransactionTypes.TopUp, // Log transaction type
+                        Description = BillingMessageConstants.SuccessMessages.SubscriptionActivationTopUp, // Ledger description
                         ReferenceId = currentPayment.Id, // Link to payment ID
-                        ReferenceType = BillingConstants.ReferenceTypes.Payment, // Reference type
+                        ReferenceType = TransactionConstants.ReferenceTypes.Payment, // Reference type
                         BalanceAfter = currentSub.CreditsRemaining, // Post-transaction balance
                         CreatedAt = DateTime.UtcNow // Creation timestamp
                     };
@@ -313,7 +313,7 @@ public class PaymentService : IPaymentService
                 else
                 {
                     // Update payment record to FAILED status
-                    currentPayment.Status = BillingConstants.PaymentStatuses.Failed;
+                    currentPayment.Status = PaymentConstants.PaymentStatuses.Failed;
                     // Record reason text returned from checkout webhook
                     currentPayment.FailureReason = request.Status;
                     // Log update timestamp
@@ -330,7 +330,7 @@ public class PaymentService : IPaymentService
         catch (Exception ex)
         {
             // Log full exception stack trace with OrderCode context
-            _logger.LogError(ex, BillingConstants.LogMessages.ErrorHandlingWebhook, request.OrderCode);
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorHandlingWebhook, request.OrderCode);
             // Return internal server error response
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }

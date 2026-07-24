@@ -67,9 +67,9 @@ public class StaleReservationWorker : BackgroundService
                 SubscriptionId = reserve.SubscriptionId,
                 UserId = sub?.UserId ?? Guid.Empty,
                 Amount = reserve.Amount,
-                Type = BillingConstants.TransactionTypes.Refund,
+                Type = TransactionConstants.TransactionTypes.Refund,
                 Description = "Auto-refund for stale reservation",
-                ReferenceType = BillingConstants.ReferenceTypes.CreditReservation,
+                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
                 BalanceAfter = sub?.CreditsRemaining ?? 0,
                 CreatedAt = DateTime.UtcNow
             };

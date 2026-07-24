@@ -16,7 +16,7 @@ public partial class Refund
 
     public string? Reason { get; set; }
 
-    public string Status { get; set; } = BillingConstants.RefundStatuses.Pending;
+    public string Status { get; set; } = TransactionConstants.RefundStatuses.Pending;
 
     public string? ProviderRefundId { get; set; }
 

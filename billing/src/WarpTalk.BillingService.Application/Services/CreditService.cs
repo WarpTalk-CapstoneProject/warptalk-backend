@@ -114,8 +114,11 @@ public class CreditService : ICreditService
     {
         return ConcurrencyRetryHelper.ExecuteWithConcurrencyRetryAsync(_unitOfWork, _logger, workspaceId, async () =>
         {
-            if (request.Amount <= 0)
-                return Result.Failure<CreditBalanceDto>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount);
+            // Minimum top-up must meet Stripe's minimum charge requirement (e.g., $0.50 - $0.60 USD)
+            if (request.Amount < PaymentConstants.StripeLimits.MinimumTopUpCredits)
+                return Result.Failure<CreditBalanceDto>(
+                    string.Format(ApiMessageConstants.ErrorMessages.BillingTopUpMinimumRequired, PaymentConstants.StripeLimits.MinimumTopUpCredits), 
+                    ErrorCodes.BillingInvalidAmount);
 
             var subResult = await GetActiveSubscriptionAsync(workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
@@ -129,7 +132,7 @@ public class CreditService : ICreditService
             var transaction = request.ToEntity(sub);
             var paymentId = Guid.NewGuid();
             transaction.ReferenceId = paymentId;
-            transaction.ReferenceType = BillingConstants.ReferenceTypes.StripePayment;
+            transaction.ReferenceType = TransactionConstants.ReferenceTypes.StripePayment;
 
             await _unitOfWork.CreditTransactionRepository.AddAsync(transaction, cancellationToken);
 
@@ -137,7 +140,7 @@ public class CreditService : ICreditService
             decimal estimatedCostUsd = credits * 0.01m; // 1 USD = 100 Credits (1 Credit = $0.01 USD)
 
             // Create Payment record
-            var paymentTx = request.ToEntity(sub, paymentId, estimatedCostUsd, BillingConstants.Currencies.Usd);
+            var paymentTx = request.ToEntity(sub, paymentId, estimatedCostUsd, PaymentConstants.Currencies.Usd);
             await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
 
             // Create Invoice record
@@ -150,8 +153,8 @@ public class CreditService : ICreditService
                 NotificationMapper.ToCreditsUpdatedMessage(
                     sub.UserId,
                     sub.CreditsRemaining,
-                    BillingConstants.SuccessMessages.CreditsAddedTitle,
-                    string.Format(BillingConstants.SuccessMessages.CreditsAddedContent, request.Amount)),
+                    BillingMessageConstants.SuccessMessages.CreditsAddedTitle,
+                    string.Format(BillingMessageConstants.SuccessMessages.CreditsAddedContent, request.Amount)),
                 cancellationToken);
 
             return Result.Success(sub.ToCreditBalanceDto(workspaceId));
@@ -186,7 +189,7 @@ public class CreditService : ICreditService
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return Result.Success<object>(new { message = BillingConstants.SuccessMessages.SimulatePaymentMessage, invoiceId = invoice.Id, stripeInvoiceId });
+        return Result.Success<object>(new { message = BillingMessageConstants.SuccessMessages.SimulatePaymentMessage, invoiceId = invoice.Id, stripeInvoiceId });
     }
 
     public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(
@@ -279,7 +282,7 @@ public class CreditService : ICreditService
         }
         catch (Exception wsEx)
         {
-            _logger.LogWarning(wsEx, BillingConstants.LogMessages.FailedToResolveWorkspaceNames);
+            _logger.LogWarning(wsEx, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNames);
         }
 
         return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, total, query.PageNumber, pageSize));
@@ -312,11 +315,11 @@ public class CreditService : ICreditService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             var notificationTitle = request.Amount > 0
-                ? BillingConstants.AdjustmentMessages.AddedTitle
-                : BillingConstants.AdjustmentMessages.DeductedTitle;
+                ? BillingMessageConstants.AdjustmentMessages.AddedTitle
+                : BillingMessageConstants.AdjustmentMessages.DeductedTitle;
 
             var notificationContent = string.Format(
-                BillingConstants.AdjustmentMessages.ContentTemplate,
+                BillingMessageConstants.AdjustmentMessages.ContentTemplate,
                 request.Amount > 0 ? "+" : "",
                 request.Amount,
                 adjustmentTransaction.Description);
@@ -333,11 +336,11 @@ public class CreditService : ICreditService
     {
         try
         {
-            await _messagePublisher.PublishAsync(BillingConstants.Notifications.Channel, msg, cancellationToken);
+            await _messagePublisher.PublishAsync(BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, BillingConstants.LogMessages.FailedToPublishRealtimeCreditUpdate, msg.UserId);
+            _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishRealtimeCreditUpdate, msg.UserId);
         }
     }
 

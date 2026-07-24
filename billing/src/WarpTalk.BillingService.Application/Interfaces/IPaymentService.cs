@@ -8,7 +8,7 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IPaymentService
 {
-    Task<int> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
+    Task<Result<int>> CalculateBalanceAsync(Guid subscriptionId, CancellationToken cancellationToken = default);
 
     Task<Result<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistoryAsync(Guid workspaceId, PaginationQuery query, CancellationToken cancellationToken = default);
     Task<Result<PaymentTransactionDto>> CreatePaymentAsync(CreatePaymentRequest request, CancellationToken cancellationToken = default);

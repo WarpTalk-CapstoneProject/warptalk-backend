@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Services;
@@ -118,5 +119,20 @@ public class UsageService : IUsageService
             _logger.LogError(ex, "Error logging usage record for workspace {WorkspaceId}", request.HostWorkspaceId);
             return Result.Failure<bool>("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
+    }
+
+    public Task<Result<CreditBalanceDto>> ChargeVoiceCloneAsync(ChargeVoiceCloneRequest request, CancellationToken cancellationToken = default)
+    {
+        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
+    }
+
+    public Task<Result<CreditBalanceDto>> ChargeAiAssistantAsync(ChargeAiAssistantRequest request, CancellationToken cancellationToken = default)
+    {
+        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
+    }
+
+    public Task<Result<CreditBalanceDto>> ChargeDocumentTranslationAsync(ChargeDocumentTranslationRequest request, CancellationToken cancellationToken = default)
+    {
+        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
     }
 }

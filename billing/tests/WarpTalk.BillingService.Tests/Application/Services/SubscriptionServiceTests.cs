@@ -63,7 +63,7 @@ public class SubscriptionServiceTests
 
         result.IsSuccess.Should().BeTrue();
         result.Value!.Status.Should().Be("pending");
-        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s => s.Status == BillingConstants.SubscriptionStatuses.Pending && !s.IsActive && s.CreditsRemaining == 0), default), Times.Once);
+        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s => s.Status == SubscriptionConstants.SubscriptionStatuses.Pending && !s.IsActive && s.CreditsRemaining == 0), default), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }
 
@@ -99,7 +99,7 @@ public class SubscriptionServiceTests
     public async Task CancelSubscriptionAsync_Should_MarkAsCancelled_ButNotDeactivateImmediately()
     {
         var workspaceId = Guid.NewGuid();
-        var subscription = new Subscription { Id = Guid.NewGuid(), Status = BillingConstants.SubscriptionStatuses.Active, IsActive = true };
+        var subscription = new Subscription { Id = Guid.NewGuid(), Status = SubscriptionConstants.SubscriptionStatuses.Active, IsActive = true };
         var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
@@ -108,7 +108,7 @@ public class SubscriptionServiceTests
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, "No longer needed");
 
         result.IsSuccess.Should().BeTrue();
-        subscription.Status.Should().Be(BillingConstants.SubscriptionStatuses.Cancelled);
+        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Cancelled);
         subscription.IsActive.Should().BeTrue(); // Still has access until period_end
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
     }
@@ -132,7 +132,7 @@ public class SubscriptionServiceTests
         var oldPlanId = Guid.NewGuid();
         var newPlanId = Guid.NewGuid();
 
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = oldPlanId, IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active, UserId = Guid.NewGuid() };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = oldPlanId, IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Active, UserId = Guid.NewGuid() };
         // Slug is required for UpdateSubscriptionAsync mock to match
         var newPlan = new Plan { Id = newPlanId, Name = "Premium", Slug = "premium", CreditsPerCycle = 5000, BillingCycle = "monthly", Currency = "usd" };
 
@@ -150,7 +150,7 @@ public class SubscriptionServiceTests
 
         result.IsSuccess.Should().BeTrue();
         // Service uses webhook-based arch: returns Pending DTO, does NOT save synchronously
-        result.Value!.Status.Should().Be(BillingConstants.SubscriptionStatuses.Pending);
+        result.Value!.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Pending);
     }
 
     [Fact]
@@ -158,7 +158,7 @@ public class SubscriptionServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var planId = Guid.NewGuid();
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = planId, IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = planId, IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Active };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
 
@@ -172,7 +172,7 @@ public class SubscriptionServiceTests
     public async Task ChangeSubscriptionAsync_NewPlanNotFound_ShouldReturnFailure()
     {
         var workspaceId = Guid.NewGuid();
-        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = Guid.NewGuid(), IsActive = true, Status = BillingConstants.SubscriptionStatuses.Active };
+        var oldSub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, PlanId = Guid.NewGuid(), IsActive = true, Status = SubscriptionConstants.SubscriptionStatuses.Active };
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync((Plan?)null);

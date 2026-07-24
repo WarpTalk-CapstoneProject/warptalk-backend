@@ -99,7 +99,7 @@ public partial class BillingServiceGrpc
         var plan = await _unitOfWork.PlanRepository.GetByIdAsync(latestSub.PlanId, context.CancellationToken);
 
         bool hasActiveSubscription = latestSub.IsActive && 
-                                     latestSub.Status == BillingConstants.SubscriptionStatuses.Active && 
+                                     latestSub.Status == SubscriptionConstants.SubscriptionStatuses.Active && 
                                      latestSub.CurrentPeriodEnd >= DateTime.UtcNow;
 
         return new GetFeatureAccessResponse

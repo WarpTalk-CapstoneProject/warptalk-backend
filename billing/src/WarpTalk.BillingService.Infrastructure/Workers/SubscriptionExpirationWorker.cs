@@ -61,7 +61,7 @@ public class SubscriptionExpirationWorker : BackgroundService
             foreach (var sub in expiredSubscriptions)
             {
                 sub.IsActive = false;
-                sub.Status = BillingConstants.SubscriptionStatuses.Expired;
+                sub.Status = SubscriptionConstants.SubscriptionStatuses.Expired;
                 sub.UpdatedAt = now;
             }
 

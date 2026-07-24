@@ -35,7 +35,7 @@ public static class SubscriptionMapper
             UserId = request.UserId ?? Guid.Empty,
             WorkspaceId = request.WorkspaceId,
             PlanId = request.PlanId,
-            Status = BillingConstants.SubscriptionStatuses.Pending,
+            Status = SubscriptionConstants.SubscriptionStatuses.Pending,
             CreditsRemaining = 0,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
@@ -56,7 +56,7 @@ public static class SubscriptionMapper
             UserId = oldSub.UserId,
             WorkspaceId = oldSub.WorkspaceId,
             PlanId = newPlan.Id,
-            Status = BillingConstants.SubscriptionStatuses.Pending,
+            Status = SubscriptionConstants.SubscriptionStatuses.Pending,
             CreditsRemaining = oldSub.CreditsRemaining,
             CreditsUsedThisCycle = 0,
             CurrentPeriodStart = now,
@@ -73,14 +73,14 @@ public static class SubscriptionMapper
         var now = DateTime.UtcNow;
         sub.CancellationReason = reason;
         sub.AutoRenew = false;
-        sub.Status = BillingConstants.SubscriptionStatuses.Cancelled;
+        sub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
         sub.UpdatedAt = now;
     }
 
     public static void CancelImmediately(this Subscription sub, string? reason)
     {
         var now = DateTime.UtcNow;
-        sub.Status = BillingConstants.SubscriptionStatuses.Cancelled;
+        sub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
         sub.CancellationReason = reason;
         sub.CancelledAt = now;
         sub.AutoRenew = false;

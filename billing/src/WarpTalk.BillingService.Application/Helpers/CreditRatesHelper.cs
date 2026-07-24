@@ -9,19 +9,19 @@ public static class CreditRatesHelper
 {
     private static readonly Dictionary<string, string> UsageTypeMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        { "Summary", BillingConstants.UsageTypes.Summary },
-        { "VoiceCloning", BillingConstants.UsageTypes.VoiceCloning },
-        { "Chat", BillingConstants.UsageTypes.Chat },
-        { "TTS", BillingConstants.UsageTypes.TextToSpeech },
-        { "STT", BillingConstants.UsageTypes.SpeechToText },
-        { "AiSpeechTranslation", BillingConstants.UsageTypes.VoiceTranslation },
-        { "Translation", BillingConstants.UsageTypes.VoiceTranslation }
+        { "Summary", UsageConstants.UsageTypes.Summary },
+        { "VoiceCloning", UsageConstants.UsageTypes.VoiceCloning },
+        { "Chat", UsageConstants.UsageTypes.Chat },
+        { "TTS", UsageConstants.UsageTypes.TextToSpeech },
+        { "STT", UsageConstants.UsageTypes.SpeechToText },
+        { "AiSpeechTranslation", UsageConstants.UsageTypes.VoiceTranslation },
+        { "Translation", UsageConstants.UsageTypes.VoiceTranslation }
     };
 
     public static string GetUsageType(string referenceType)
     {
-        if (string.IsNullOrEmpty(referenceType)) return BillingConstants.UsageTypes.VoiceTranslation;
-        return UsageTypeMap.TryGetValue(referenceType, out var usageType) ? usageType : BillingConstants.UsageTypes.VoiceTranslation;
+        if (string.IsNullOrEmpty(referenceType)) return UsageConstants.UsageTypes.VoiceTranslation;
+        return UsageTypeMap.TryGetValue(referenceType, out var usageType) ? usageType : UsageConstants.UsageTypes.VoiceTranslation;
     }
     //Calculate the cost of the reservation based on the audio duration and the rates
     public static int CalculateReservationCost(double audioSeconds, bool isVoiceClone, double sttRateMin, double transRateMin, double ttsRateMin, double vcRateMin)

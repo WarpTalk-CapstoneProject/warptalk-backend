@@ -103,17 +103,17 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 SubscriptionId = sub.Id,
                 UserId = sub.UserId,
                 Amount = -cost,
-                Type = BillingConstants.TransactionTypes.Consume,
+                Type = TransactionConstants.TransactionTypes.Consume,
                 Description = "AI Real-time session reservation",
                 ReferenceId = refIdVal == Guid.Empty ? Guid.NewGuid() : refIdVal,
-                ReferenceType = BillingConstants.ReferenceTypes.CreditReservation,
+                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
                 BalanceAfter = sub.CreditsRemaining,
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
 
             // Intermediate reservation is fully maintained on Redis via RedisCreditReservation
-            await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(5), cancellationToken);
+            await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(15), cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish credit update immediately when reserved
@@ -131,7 +131,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 request.IdempotencyKey,
                 cost,
                 "Reserved",
-                DateTime.UtcNow.AddMinutes(5)
+                DateTime.UtcNow.AddMinutes(15)
             ));
         }
         catch (Exception ex)
@@ -148,7 +148,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
     {
         try
         {
-            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, BillingConstants.TransactionTypes.Consume, cancellationToken);
+            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, TransactionConstants.TransactionTypes.Consume, cancellationToken);
 
             if (reservation == null)
             {
@@ -167,7 +167,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
 
             Guid.TryParse(idempotencyKey, out var refId);
             var tx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-                t => t.SubscriptionId == sub.Id && t.ReferenceType == BillingConstants.ReferenceTypes.CreditReservation && t.ReferenceId == refId,
+                t => t.SubscriptionId == sub.Id && t.ReferenceType == TransactionConstants.ReferenceTypes.CreditReservation && t.ReferenceId == refId,
                 cancellationToken);
 
             if (tx != null)
@@ -183,10 +183,10 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                     SubscriptionId = sub.Id,
                     UserId = sub.UserId,
                     Amount = -reservation.Amount,
-                    Type = BillingConstants.TransactionTypes.Consume,
+                    Type = TransactionConstants.TransactionTypes.Consume,
                     Description = "AI Real-time consumption",
                     ReferenceId = refId == Guid.Empty ? null : refId,
-                    ReferenceType = BillingConstants.ReferenceTypes.CreditReservation,
+                    ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
                     BalanceAfter = sub.CreditsRemaining,
                     CreatedAt = DateTime.UtcNow
                 };
@@ -228,7 +228,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
     {
         try
         {
-            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, BillingConstants.TransactionTypes.Refund, cancellationToken);
+            var (_, reservation) = await ValidateAndGetReservationAsync(idempotencyKey, TransactionConstants.TransactionTypes.Refund, cancellationToken);
 
             if (reservation == null)
             {
@@ -250,10 +250,10 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 SubscriptionId = sub.Id,
                 UserId = sub.UserId,
                 Amount = reservation.Amount,
-                Type = BillingConstants.TransactionTypes.Refund,
+                Type = TransactionConstants.TransactionTypes.Refund,
                 Description = "AI Real-time refund (canceled or failed)",
                 ReferenceId = null,
-                ReferenceType = BillingConstants.ReferenceTypes.CreditReservation,
+                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
                 BalanceAfter = sub.CreditsRemaining,
                 CreatedAt = DateTime.UtcNow
             };
@@ -283,11 +283,11 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
     {
         try
         {
-            await _messagePublisher.PublishAsync(Domain.Constants.BillingConstants.Notifications.Channel, msg, cancellationToken);
+            await _messagePublisher.PublishAsync(Domain.Constants.BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, Domain.Constants.BillingConstants.LogMessages.FailedToPublishRealtimeCreditUpdateForWorkspace, msg.UserId);
+            _logger.LogWarning(ex, Domain.Constants.BillingMessageConstants.LogMessages.FailedToPublishRealtimeCreditUpdateForWorkspace, msg.UserId);
         }
     }
 

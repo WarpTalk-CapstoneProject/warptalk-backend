@@ -25,14 +25,17 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [WorkspaceAuthorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = "Owner, Admin")]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetWorkspaceInvoices(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetInvoicesAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
@@ -44,15 +47,11 @@ public class InvoicesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return Ok(result.Value);
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        errorCode switch
-        {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new ApiErrorResponse(error ?? "Subscription not found", errorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(error ?? "An unexpected error occurred", errorCode ?? ErrorCodes.InternalServerError))
-        };
 }

@@ -101,9 +101,9 @@ public class PlanService : IPlanService
         decimal minPrice = 0.50m; // Stripe minimum for USD
 
         var cycle = request.BillingCycle?.ToLowerInvariant().Trim();
-        bool isInvalidCycle = cycle is not (BillingConstants.BillingCycles.Monthly or 
-                                            BillingConstants.BillingCycles.Semiannual or 
-                                            BillingConstants.BillingCycles.Yearly);
+        bool isInvalidCycle = cycle is not (SubscriptionConstants.BillingCycles.Monthly or 
+                                            SubscriptionConstants.BillingCycles.Semiannual or 
+                                            SubscriptionConstants.BillingCycles.Yearly);
         bool isInvalidFeatures = !string.IsNullOrWhiteSpace(request.Features) && 
                                  !(request.Features.Trim().StartsWith("{") && request.Features.Trim().EndsWith("}")) && 
                                  !(request.Features.Trim().StartsWith("[") && request.Features.Trim().EndsWith("]"));
@@ -202,11 +202,11 @@ public class PlanService : IPlanService
             var changes = new List<string>();
 
             if (plan.Price != request.Price)
-                changes.Add(string.Format(BillingConstants.PlanAuditMessages.PriceChanged, plan.Price, request.Price, plan.Currency));
+                changes.Add(string.Format(BillingMessageConstants.PlanAuditMessages.PriceChanged, plan.Price, request.Price, plan.Currency));
 
-            AuditHelper.Track(changes, plan.CreditsPerCycle, request.CreditsPerCycle, BillingConstants.PlanAuditMessages.CreditsChanged);
-            AuditHelper.Track(changes, plan.MaxParticipants, request.MaxParticipants, BillingConstants.PlanAuditMessages.MaxParticipantsChanged);
-            AuditHelper.Track(changes, plan.Name, request.Name, BillingConstants.PlanAuditMessages.NameChanged);
+            AuditHelper.Track(changes, plan.CreditsPerCycle, request.CreditsPerCycle, BillingMessageConstants.PlanAuditMessages.CreditsChanged);
+            AuditHelper.Track(changes, plan.MaxParticipants, request.MaxParticipants, BillingMessageConstants.PlanAuditMessages.MaxParticipantsChanged);
+            AuditHelper.Track(changes, plan.Name, request.Name, BillingMessageConstants.PlanAuditMessages.NameChanged);
 
             string? changeDetail = changes.Any() ? string.Join("; ", changes) : null;
 
@@ -258,11 +258,11 @@ public class PlanService : IPlanService
         try
         {
             var msg = NotificationMapper.ToPlanChangedMessage(action, planName, details);
-            await _messagePublisher.PublishAsync(BillingConstants.Notifications.Channel, msg, cancellationToken);
+            await _messagePublisher.PublishAsync(BillingMessageConstants.Notifications.Channel, msg, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, BillingConstants.LogMessages.FailedToPublishPlanUpdateBroadcast, planName);
+            _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToPublishPlanUpdateBroadcast, planName);
         }
     }
 }

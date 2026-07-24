@@ -26,12 +26,12 @@ public class StripeSimulationController : ControllerBase
         var session = request.data.@object;
         if (session == null || !Guid.TryParse(session.client_reference_id, out var workspaceId))
         {
-            return HandleFailure(ErrorCodes.BillingSimulationInvalidRequest, ApiMessageConstants.ErrorMessages.BillingSimulationInvalidClientRef);
+            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidClientRef, ErrorCodes.BillingSimulationInvalidRequest));
         }
 
-        if (request.type != BillingConstants.StripeEvents.CheckoutSessionCompleted || session.payment_status != BillingConstants.Payments.StatusPaid)
+        if (request.type != PaymentConstants.StripeEvents.CheckoutSessionCompleted || session.payment_status != PaymentConstants.Payments.StatusPaid)
         {
-            return HandleFailure(ErrorCodes.BillingSimulationInvalidRequest, ApiMessageConstants.ErrorMessages.BillingSimulationInvalidEvent);
+            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidEvent, ErrorCodes.BillingSimulationInvalidRequest));
         }
 
         // Stripe amounts are in the smallest currency unit (cents for USD) — 1 cent = 1 credit.
@@ -39,13 +39,16 @@ public class StripeSimulationController : ControllerBase
 
         var result = await _creditService.TopUpCreditsAsync(
             workspaceId,
-            new TopUpRequest(workspaceId, creditsToTopUp, BillingConstants.ReferenceTypes.Payment, Guid.NewGuid()),
+            new TopUpRequest(workspaceId, creditsToTopUp, TransactionConstants.ReferenceTypes.Payment, Guid.NewGuid()),
             ct);
 
-        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         //TODO : Add the logging for the success case. log the request and response 
         return Ok(new SimulatedPaymentResponse(
-            BillingConstants.SuccessMessages.SimulatePaymentMessage,
+            BillingMessageConstants.SuccessMessages.SimulatePaymentMessage,
             creditsToTopUp,
             result.Value.CurrentCredits,
             session
@@ -56,24 +59,21 @@ public class StripeSimulationController : ControllerBase
     public IActionResult GenerateTestPayload([FromQuery] long amountTotal = 5000, [FromQuery] Guid? workspaceId = null)
     {
         var session = new StripeCheckoutSession(
-            $"{BillingConstants.StripeSimulation.SessionPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            $"{PaymentConstants.StripeSimulation.SessionPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
             amountTotal,
-            BillingConstants.Currencies.Usd,
-            BillingConstants.Payments.StatusPaid,
-            $"{BillingConstants.StripeSimulation.PaymentIntentPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            PaymentConstants.Currencies.Usd,
+            PaymentConstants.Payments.StatusPaid,
+            $"{PaymentConstants.StripeSimulation.PaymentIntentPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
             (workspaceId ?? Guid.NewGuid()).ToString()
         );
 
         var payload = new StripeWebhookEvent(
-            $"{BillingConstants.StripeSimulation.EventPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
-            BillingConstants.StripeEvents.CheckoutSessionCompleted,
+            $"{PaymentConstants.StripeSimulation.EventPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
+            PaymentConstants.StripeEvents.CheckoutSessionCompleted,
             new StripeEventData(session)
         );
 
         return Ok(payload);
     }
-
-    private ActionResult HandleFailure(string? errorCode, string? error) =>
-        BadRequest(new ApiErrorResponse(error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, errorCode ?? ErrorCodes.InternalServerError));
 }
 #endif

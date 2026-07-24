@@ -66,7 +66,7 @@ public class StripeWebhookService : IStripeWebhookService
                     var isZeroDecimal = string.Equals(session.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
                     var finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
 
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: session.Id,
                         PaymentIntentId: !string.IsNullOrEmpty(session.InvoiceId) ? session.InvoiceId : session.PaymentIntentId,
                         Amount: finalAmount,
@@ -78,13 +78,14 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: session.Metadata.ContainsKey("PlanSlug") ? session.Metadata["PlanSlug"] : string.Empty,
                         BillingCycle: session.Metadata.ContainsKey("BillingCycle") ? session.Metadata["BillingCycle"] : string.Empty
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "payment_intent.payment_failed")
             {
                 if (stripeEvent.Data.Object is PaymentIntent intent)
                 {
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
                         PaymentIntentId: intent.Id,
                         Amount: intent.Amount / 100m,
@@ -97,13 +98,14 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: intent.Metadata.ContainsKey("PlanSlug") ? intent.Metadata["PlanSlug"] : string.Empty,
                         BillingCycle: intent.Metadata.ContainsKey("BillingCycle") ? intent.Metadata["BillingCycle"] : string.Empty
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "charge.refunded")
             {
                 if (stripeEvent.Data.Object is Charge charge)
                 {
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
                         PaymentIntentId: charge.PaymentIntentId,
                         Amount: charge.AmountRefunded / 100m,
@@ -115,13 +117,14 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: charge.Metadata.ContainsKey("PlanSlug") ? charge.Metadata["PlanSlug"] : string.Empty,
                         BillingCycle: charge.Metadata.ContainsKey("BillingCycle") ? charge.Metadata["BillingCycle"] : string.Empty
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "charge.dispute.created")
             {
                 if (stripeEvent.Data.Object is Dispute dispute)
                 {
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
                         PaymentIntentId: dispute.PaymentIntentId ?? dispute.ChargeId,
                         Amount: dispute.Amount / 100m,
@@ -131,13 +134,14 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentType: string.Empty,
                         Status: "disputed"
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "customer.subscription.updated")
             {
                 if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
                         PaymentIntentId: subscription.Id,
                         Amount: subscription.Items.Data.FirstOrDefault()?.Price.UnitAmountDecimal / 100m ?? 0,
@@ -149,13 +153,14 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
                         BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "customer.subscription.deleted")
             {
                 if (stripeEvent.Data.Object is Stripe.Subscription subscription)
                 {
-                    await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                         StripeSessionId: string.Empty,
                         PaymentIntentId: subscription.Id,
                         Amount: 0,
@@ -167,6 +172,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
                         BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
                     ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                 }
             }
             else if (type == "invoice.paid")
@@ -182,7 +188,7 @@ public class StripeWebhookService : IStripeWebhookService
                         var isZeroDecimal = string.Equals(invoice.Currency, "vnd", StringComparison.OrdinalIgnoreCase);
                         var finalAmount = isZeroDecimal ? (decimal)invoice.AmountPaid : ((decimal)invoice.AmountPaid / 100m);
 
-                        await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                        var result = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
                             StripeSessionId: string.Empty,
                             PaymentIntentId: invoice.Id,
                             Amount: finalAmount,
@@ -196,6 +202,7 @@ public class StripeWebhookService : IStripeWebhookService
                             PlanSlug: subscription.Metadata.ContainsKey("PlanSlug") ? subscription.Metadata["PlanSlug"] : string.Empty,
                             BillingCycle: subscription.Metadata.ContainsKey("BillingCycle") ? subscription.Metadata["BillingCycle"] : string.Empty
                         ));
+                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
                     }
                 }
             }
