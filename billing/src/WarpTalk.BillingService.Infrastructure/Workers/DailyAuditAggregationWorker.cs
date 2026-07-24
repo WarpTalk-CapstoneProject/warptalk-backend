@@ -11,12 +11,6 @@ using WarpTalk.BillingService.Domain.Interfaces;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
-/// <summary>
-/// Chạy mỗi ngày lúc 00:00 UTC.
-/// Với mỗi subscription đang active, ghi lại CreditBalanceSnapshot
-/// thể hiện số dư cuối ngày — phục vụ audit, analytics và đối soát.
-/// (Plan Mục 8A: Daily Aggregation & Sync)
-/// </summary>
 public class DailyAuditAggregationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;

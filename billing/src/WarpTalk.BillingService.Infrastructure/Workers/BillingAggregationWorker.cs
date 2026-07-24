@@ -56,13 +56,13 @@ public class BillingAggregationWorker : BackgroundService
         {
             return;
         }
-
+        //found num logs and aggregat
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
         var groupedLogs = tempLogs
             .GroupBy(l => new { l.SubscriptionId, l.WorkspaceId, l.UsageType, l.ChargeType, l.Unit })
             .ToList();
-
+        //Group logs by subscription id, workspace id, usage type, charge type, and unit
         foreach (var group in groupedLogs)
         {
             var totalCredits = group.Sum(x => x.CreditsConsumed);

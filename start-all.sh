@@ -30,6 +30,7 @@ SERVICES=(
     "transcript|transcript/src/WarpTalk.TranscriptService.API|5103"
     "notification|notification/src/WarpTalk.NotificationService.API|5104"
     "meeting|meeting/src/WarpTalk.MeetingService.API|5105"
+    "billing|billing/src/WarpTalk.BillingService.API|5201"
     "gateway|gateway/src/WarpTalk.Gateway|5200"
 )
 
@@ -46,6 +47,7 @@ print_banner() {
     echo "║  Transcript  (REST+gRPC)      → :5103 / :50053      ║"
     echo "║  Notification (REST)          → :5104 / :50054      ║"
     echo "║  Meeting      (REST)          → :5105 / :50055      ║"
+    echo "║  Billing      (REST)          → :5201                ║"
     echo "║  Gateway     (YARP+SignalR)   → :5200                ║"
     echo "║                                                      ║"
     echo "║  SignalR Hubs:                                       ║"
@@ -57,7 +59,7 @@ print_banner() {
 
 kill_ports() {
     echo -e "${YELLOW}🧹 Cleaning up occupied ports...${NC}"
-    for port in 5101 5102 5103 5104 5105 5106 5200 50051 50052 50053 50054 50055 50056; do
+    for port in 5101 5102 5103 5104 5105 5106 5200 5201 50051 50052 50053 50054 50055 50056; do
         local pids
         pids=$(lsof -ti :"$port" 2>/dev/null || true)
         if [[ -n "$pids" ]]; then
