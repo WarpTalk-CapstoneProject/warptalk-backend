@@ -80,4 +80,26 @@ public static class PaymentMapper
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
     };
+
+    public static Payment CreateStripePayment(Guid? subscriptionId, Guid userId, decimal amount, string? currency, string providerTxId, string parsedPaymentStatus, string? failureReason)
+    {
+        var now = DateTime.UtcNow;
+        return new Payment
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = subscriptionId ?? Guid.Empty,
+            UserId = userId,
+            Amount = amount,
+            TaxAmount = 0m,
+            TotalAmount = amount,
+            Currency = currency ?? PaymentConstants.Currencies.Usd,
+            PaymentMethod = PaymentConstants.PaymentMethods.Card,
+            Provider = PaymentConstants.Providers.Stripe,
+            ProviderTransactionId = providerTxId,
+            Status = parsedPaymentStatus,
+            FailureReason = failureReason,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
 }

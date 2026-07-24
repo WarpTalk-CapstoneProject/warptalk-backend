@@ -295,18 +295,12 @@ public class PaymentService : IPaymentService
                     currentSub.UpdatedAt = DateTime.UtcNow; // Update timestamp
 
                     // Create credit ledger entry to track activation event
-                    CreditTransaction topupTx = new CreditTransaction
-                    {
-                        SubscriptionId = currentSub.Id, // Connect to subscription
-                        UserId = currentSub.UserId, // Connect to user
-                        Amount = plan.CreditsPerCycle, // Allocation amount
-                        Type = TransactionConstants.TransactionTypes.TopUp, // Log transaction type
-                        Description = BillingMessageConstants.SuccessMessages.SubscriptionActivationTopUp, // Ledger description
-                        ReferenceId = currentPayment.Id, // Link to payment ID
-                        ReferenceType = TransactionConstants.ReferenceTypes.Payment, // Reference type
-                        BalanceAfter = currentSub.CreditsRemaining, // Post-transaction balance
-                        CreatedAt = DateTime.UtcNow // Creation timestamp
-                    };
+                    CreditTransaction topupTx = currentSub.CreateStripeSubscriptionTransaction(
+                        plan,
+                        PaymentConstants.PaymentTypes.Subscription, // Or retrieve from payment/request
+                        currentSub.UserId,
+                        currentPayment.Id
+                    );
                     await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken); // Queue save transaction
                 }
                 // 5. Handle checkout failure flow (Status is not Paid)

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using StackExchange.Redis;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.DTOs;
 
 namespace WarpTalk.BillingService.Infrastructure.Redis;
 
@@ -17,6 +18,7 @@ public class RedisBillingStore : IRedisBillingStore
     private const string ReservationHashKey = "warptalk:billing:reservations_hash";
 
     private const string SessionZSetKey = "warptalk:billing:sessions_zset";
+    private const string TempUsageLogDtoListKey = "warptalk:billing:temp_usage_logs";
 
     public RedisBillingStore(IConnectionMultiplexer redis)
     {
@@ -24,7 +26,7 @@ public class RedisBillingStore : IRedisBillingStore
         _db = _redis.GetDatabase();
     }
 
-    public async Task SetReservationAsync(RedisCreditReservation reservation, TimeSpan ttl, CancellationToken cancellationToken = default)
+    public async Task SetReservationAsync(RedisCreditReservationDto reservation, TimeSpan ttl, CancellationToken cancellationToken = default)
     {
         var expireTime = DateTimeOffset.UtcNow.Add(ttl).ToUnixTimeMilliseconds();
         var json = JsonSerializer.Serialize(reservation);
@@ -34,7 +36,7 @@ public class RedisBillingStore : IRedisBillingStore
         await Task.WhenAll(t1, t2);
     }
 
-    public async Task<RedisCreditReservation?> GetAndRemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default)
+    public async Task<RedisCreditReservationDto?> GetAndRemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default)
     {
         var json = await _db.HashGetAsync(ReservationHashKey, idempotencyKey);
         if (json.IsNullOrEmpty) return null;
@@ -43,19 +45,19 @@ public class RedisBillingStore : IRedisBillingStore
         var t2 = _db.HashDeleteAsync(ReservationHashKey, idempotencyKey);
         await Task.WhenAll(t1, t2);
 
-        return JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
-    }    public async Task<IEnumerable<RedisCreditReservation>> GetExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+        return JsonSerializer.Deserialize<RedisCreditReservationDto>((string)json!);
+    }    public async Task<IEnumerable<RedisCreditReservationDto>> GetExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
     {
         var maxScore = now.ToUnixTimeMilliseconds();
         var expiredKeys = await _db.SortedSetRangeByScoreAsync(ReservationZSetKey, 0, maxScore);
 
-        var reservations = new List<RedisCreditReservation>();
+        var reservations = new List<RedisCreditReservationDto>();
         foreach (var key in expiredKeys)
         {
             var json = await _db.HashGetAsync(ReservationHashKey, key);
             if (!json.IsNullOrEmpty)
             {
-                var res = JsonSerializer.Deserialize<RedisCreditReservation>((string)json!);
+                var res = JsonSerializer.Deserialize<RedisCreditReservationDto>((string)json!);
                 if (res != null) reservations.Add(res);
             }
         }
@@ -103,5 +105,38 @@ public class RedisBillingStore : IRedisBillingStore
     public async Task RemoveSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         await _db.SortedSetRemoveAsync(SessionZSetKey, sessionId.ToString());
+    }
+
+    public async Task PushTempUsageLogDtoAsync(TempUsageLogDto log, CancellationToken cancellationToken = default)
+    {
+        var json = JsonSerializer.Serialize(log);
+        await _db.ListRightPushAsync(TempUsageLogDtoListKey, json);
+    }
+
+    public async Task<IEnumerable<TempUsageLogDto>> GetAndClearTempUsageLogDtosAsync(CancellationToken cancellationToken = default)
+    {
+        var transaction = _db.CreateTransaction();
+        var listLengthTask = transaction.ListLengthAsync(TempUsageLogDtoListKey);
+        var popTask = transaction.ListLeftPopAsync(TempUsageLogDtoListKey, int.MaxValue); // Pop all available elements
+        bool success = await transaction.ExecuteAsync();
+
+        if (!success || popTask.Result == null || popTask.Result.Length == 0)
+        {
+            return Array.Empty<TempUsageLogDto>();
+        }
+
+        var logs = new List<TempUsageLogDto>();
+        foreach (var item in popTask.Result)
+        {
+            if (!item.IsNullOrEmpty)
+            {
+                var log = JsonSerializer.Deserialize<TempUsageLogDto>((string)item!);
+                if (log != null)
+                {
+                    logs.Add(log);
+                }
+            }
+        }
+        return logs;
     }
 }

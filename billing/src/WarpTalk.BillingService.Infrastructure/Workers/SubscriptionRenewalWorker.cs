@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -135,22 +136,7 @@ public class SubscriptionRenewalWorker : BackgroundService
         unitOfWork.SubscriptionRepository.Update(sub);
 
         // Ghi CreditTransaction loại top_up để có audit trail
-        var renewalTx = new CreditTransaction
-        {
-            Id = Guid.NewGuid(),
-            SubscriptionId = sub.Id,
-            UserId = sub.UserId,
-            WorkspaceId = sub.WorkspaceId,
-            Amount = creditsToAdd,
-            Type = TransactionConstants.TransactionTypes.TopUp,
-            Description = string.Format(
-                BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate,
-                $"{plan.Name} — Renewal {newStart:yyyy-MM-dd}"),
-            ReferenceType = TransactionConstants.ReferenceTypes.Payment,
-            ReferenceId = sub.Id,
-            BalanceAfter = sub.CreditsRemaining,
-            CreatedAt = DateTime.UtcNow
-        };
+        var renewalTx = sub.CreateRenewalTransaction(plan, newStart);
 
         await unitOfWork.CreditTransactionRepository.AddAsync(renewalTx, cancellationToken);
     }

@@ -70,9 +70,81 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static List<CreditTransactionDto> ToDtoList(this IEnumerable<CreditTransaction> items, Guid defaultWorkspaceId = default)
+    public static CreditTransaction CreateStripeTopUpTransaction(this Subscription sub, int creditsAdded, Guid userId, Guid referenceId) => new()
     {
-        return items.Select(t => new CreditTransactionDto(
+        Id = Guid.NewGuid(),
+        SubscriptionId = sub.Id,
+        UserId = userId,
+        Amount = creditsAdded,
+        Type = TransactionConstants.TransactionTypes.TopUp,
+        Description = BillingMessageConstants.SuccessMessages.StripeCreditTopUp,
+        ReferenceId = referenceId,
+        ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
+        BalanceAfter = sub.CreditsRemaining,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static CreditTransaction CreateStripeSubscriptionTransaction(this Subscription sub, Plan plan, string paymentType, Guid userId, Guid referenceId) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = sub.Id,
+        UserId = userId,
+        Amount = plan.CreditsPerCycle,
+        Type = TransactionConstants.TransactionTypes.TopUp,
+        Description = paymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate 
+            ? string.Format(BillingMessageConstants.AdjustmentMessages.PlanUpgradeDirect, plan.Name)
+            : string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate, plan.Name),
+        ReferenceId = referenceId,
+        ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
+        BalanceAfter = sub.CreditsRemaining,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static CreditTransaction CreateRenewalTransaction(this Subscription sub, Plan plan, DateTime newStart) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = sub.Id,
+        UserId = sub.UserId,
+        WorkspaceId = sub.WorkspaceId,
+        Amount = plan.CreditsPerCycle,
+        Type = TransactionConstants.TransactionTypes.TopUp,
+        Description = string.Format(
+            BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate,
+            $"{plan.Name} — Renewal {newStart:yyyy-MM-dd}"),
+        ReferenceType = TransactionConstants.ReferenceTypes.Payment,
+        ReferenceId = sub.Id,
+        BalanceAfter = sub.CreditsRemaining,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static CreditTransaction CreateStaleReservationRefundTransaction(Guid subscriptionId, Guid userId, int amount, int balanceAfter) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = subscriptionId,
+        UserId = userId,
+        Amount = amount,
+        Type = TransactionConstants.TransactionTypes.Refund,
+        Description = "Auto-refund for stale reservation",
+        ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
+        BalanceAfter = balanceAfter,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static CreditTransaction CreateAggregatedTransaction(Guid subscriptionId, int amount, string type, string description) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = subscriptionId,
+        UserId = Guid.Empty, // Aggregated transactions do not belong to a specific user
+        WorkspaceId = Guid.Empty, // Or could pass workspaceId if needed
+        Amount = amount,
+        Type = type,
+        Description = description,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static CreditTransactionDto ToDto(this CreditTransaction t, Guid defaultWorkspaceId = default)
+    {
+        return new CreditTransactionDto(
             t.Id,
             t.Amount,
             t.Type,
@@ -85,6 +157,11 @@ public static class CreditMapper
             null,
             t.UserId,
             null
-        )).ToList();
+        );
+    }
+
+    public static List<CreditTransactionDto> ToDtoList(this IEnumerable<CreditTransaction> items, Guid defaultWorkspaceId = default)
+    {
+        return items.Select(t => t.ToDto(defaultWorkspaceId)).ToList();
     }
 }

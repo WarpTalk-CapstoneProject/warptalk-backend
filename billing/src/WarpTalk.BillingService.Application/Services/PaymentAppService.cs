@@ -121,19 +121,7 @@ public class PaymentAppService : IPaymentAppService
                     sub.UpdatedAt = DateTime.UtcNow;
 
                     // Create credit ledger entry for this top-up event
-                    CreditTransaction topupTx = new CreditTransaction
-                    {
-                        Id = Guid.NewGuid(),
-                        SubscriptionId = sub.Id,
-                        UserId = userId,
-                        Amount = creditsAdded,
-                        Type = TransactionConstants.TransactionTypes.TopUp,
-                        Description = BillingMessageConstants.SuccessMessages.StripeCreditTopUp,
-                        ReferenceId = existingPayment?.Id ?? Guid.NewGuid(),
-                        ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
-                        BalanceAfter = sub.CreditsRemaining,
-                        CreatedAt = DateTime.UtcNow
-                    };
+                    CreditTransaction topupTx = sub.CreateStripeTopUpTransaction(creditsAdded, userId, existingPayment?.Id ?? Guid.NewGuid());
                     await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx);
                 }
             }
@@ -168,21 +156,7 @@ public class PaymentAppService : IPaymentAppService
                     if (sub == null)
                     {
                         // Create new subscription if none exists
-                        sub = new Subscription
-                        {
-                            Id = Guid.NewGuid(),
-                            WorkspaceId = workspaceId,
-                            PlanId = plan.Id,
-                            UserId = userId,
-                            Status = SubscriptionConstants.SubscriptionStatuses.Active,
-                            CreditsRemaining = plan.CreditsPerCycle,
-                            CreditsUsedThisCycle = 0,
-                            CurrentPeriodStart = DateTime.UtcNow,
-                            CurrentPeriodEnd = periodEnd,
-                            AutoRenew = true,
-                            CreatedAt = DateTime.UtcNow,
-                            UpdatedAt = DateTime.UtcNow
-                        };
+                        sub = SubscriptionMapper.CreateNewStripeSubscription(workspaceId, userId, plan, periodEnd);
                         await _unitOfWork.SubscriptionRepository.AddAsync(sub);
                     }
                     else
@@ -199,21 +173,7 @@ public class PaymentAppService : IPaymentAppService
                     }
 
                     // Create credit ledger entry for this subscription activation
-                    CreditTransaction topupTx = new CreditTransaction
-                    {
-                        Id = Guid.NewGuid(),
-                        SubscriptionId = sub.Id,
-                        UserId = userId,
-                        Amount = plan.CreditsPerCycle,
-                        Type = TransactionConstants.TransactionTypes.TopUp,
-                        Description = request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate 
-                            ? string.Format(BillingMessageConstants.AdjustmentMessages.PlanUpgradeDirect, plan.Name)
-                            : string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate, plan.Name),
-                        ReferenceId = existingPayment?.Id ?? Guid.NewGuid(),
-                        ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
-                        BalanceAfter = sub.CreditsRemaining,
-                        CreatedAt = DateTime.UtcNow
-                    };
+                    CreditTransaction topupTx = sub.CreateStripeSubscriptionTransaction(plan, request.PaymentType, userId, existingPayment?.Id ?? Guid.NewGuid());
                     await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx);
                 }
             }
@@ -233,23 +193,7 @@ public class PaymentAppService : IPaymentAppService
             if (existingPayment == null)
             {
                 // Create new payment record
-                existingPayment = new Payment
-                {
-                    Id = Guid.NewGuid(),
-                    SubscriptionId = sub?.Id ?? Guid.Empty,
-                    UserId = userId,
-                    Amount = request.Amount,
-                    TaxAmount = 0m,
-                    TotalAmount = request.Amount,
-                    Currency = request.Currency ?? PaymentConstants.Currencies.Usd,
-                    PaymentMethod = PaymentConstants.PaymentMethods.Card,
-                    Provider = PaymentConstants.Providers.Stripe,
-                    ProviderTransactionId = providerTxId,
-                    Status = parsedPaymentStatus,
-                    FailureReason = request.FailureReason,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                };
+                existingPayment = PaymentMapper.CreateStripePayment(sub?.Id, userId, request.Amount, request.Currency, providerTxId, parsedPaymentStatus, request.FailureReason);
                 await _unitOfWork.PaymentRepository.AddAsync(existingPayment);
             }
             else
@@ -263,23 +207,7 @@ public class PaymentAppService : IPaymentAppService
             // Create invoice for successful payments
             if (parsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
             {
-                string invoiceNum = "INV-" + DateTime.UtcNow.ToString("yyyyMMdd") + "-" + existingPayment.Id.ToString().Substring(0, 8).ToUpper();
-                Invoice invoice = new Invoice
-                {
-                    Id = Guid.NewGuid(),
-                    PaymentId = existingPayment.Id,
-                    UserId = userId,
-                    InvoiceNumber = invoiceNum,
-                    Subtotal = request.Amount,
-                    Tax = 0,
-                    Total = request.Amount,
-                    Currency = request.Currency ?? PaymentConstants.Currencies.Usd,
-                    Status = InvoiceConstants.InvoiceStatuses.Paid,
-                    PdfUrl = request.InvoicePdf,
-                    LineItems = "[]",
-                    IssuedAt = DateTime.UtcNow,
-                    CreatedAt = DateTime.UtcNow
-                };
+                Invoice invoice = InvoiceMapper.CreateStripeInvoice(existingPayment.Id, userId, request.Amount, request.Currency, request.InvoicePdf);
                 await _unitOfWork.InvoiceRepository.AddAsync(invoice);
             }
 

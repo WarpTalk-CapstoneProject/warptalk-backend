@@ -1,6 +1,7 @@
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Application.Interfaces;
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -35,9 +36,26 @@ public static class UsageMapper
         );
     }
 
+    /// <summary>
+    /// Converts ChargeAiAssistantRequest to RecordUsageRequest using HARD-CODED fallback rates.
+    /// Prefer the overload that accepts explicit rates (from IBillingRateService) to support Admin-configurable pricing.
+    /// </summary>
     public static RecordUsageRequest ToRecordUsageRequest(this ChargeAiAssistantRequest request)
+        => request.ToRecordUsageRequest(inputRatePer1KTokens: 0.5, outputRatePer1KTokens: 2.0);
+
+    /// <summary>
+    /// Converts ChargeAiAssistantRequest to RecordUsageRequest using Admin-configurable rates.
+    /// Formula: credits = ceil((inputTokens / 1000 * rateInput) + (outputTokens / 1000 * rateOutput))
+    /// </summary>
+    public static RecordUsageRequest ToRecordUsageRequest(
+        this ChargeAiAssistantRequest request,
+        double inputRatePer1KTokens,
+        double outputRatePer1KTokens)
     {
-        int credits = (int)Math.Max(1, Math.Ceiling((request.InputTokens / 1000.0) * 0.5 + (request.OutputTokens / 1000.0) * 2.0));
+        int credits = (int)Math.Max(1, Math.Ceiling(
+            (request.InputTokens / 1000.0) * inputRatePer1KTokens +
+            (request.OutputTokens / 1000.0) * outputRatePer1KTokens
+        ));
         return new RecordUsageRequest(
             HostWorkspaceId: request.HostWorkspaceId,
             UserId: request.UserId,
@@ -46,7 +64,7 @@ public static class UsageMapper
             Quantity: request.InputTokens + request.OutputTokens,
             CreditsConsumed: credits,
             DurationSeconds: null,
-            Details: $"AI Assistant: {request.FeatureName} (In: {request.InputTokens}, Out: {request.OutputTokens})"
+            Details: $"AI Assistant: {request.FeatureName} | Model: {request.ProviderModel ?? "unknown"} | In: {request.InputTokens} tokens @ {inputRatePer1KTokens}/1K | Out: {request.OutputTokens} tokens @ {outputRatePer1KTokens}/1K"
         );
     }
 
@@ -93,6 +111,39 @@ public static class UsageMapper
         Unit = "request",
         Quantity = 1,
         CreditsConsumed = request.Amount,
+        RecordedAt = DateTime.UtcNow
+    };
+
+    public static TempUsageLogDto CreateTempUsageLogDto(Guid subscriptionId, string? userId, Guid workspaceId, string usageType, string chargeType, Guid? referenceId, string referenceType, decimal quantity, string unit, int creditsConsumed, string idempotencyKey, string details, string? translationRoomId = null, Guid? transcriptSegmentId = null) => new()
+    {
+        SubscriptionId = subscriptionId,
+        UserId = userId,
+        WorkspaceId = workspaceId,
+        UsageType = usageType,
+        ChargeType = chargeType,
+        ReferenceId = referenceId,
+        ReferenceType = referenceType,
+        Quantity = (double)quantity,
+        Unit = unit,
+        CreditsConsumed = creditsConsumed,
+        IdempotencyKey = idempotencyKey,
+        Details = details,
+        TranslationRoomId = translationRoomId,
+        TranscriptSegmentId = transcriptSegmentId,
+        CreatedAt = DateTime.UtcNow
+    };
+
+    public static UsageRecord CreateAggregatedUsageRecord(Guid subscriptionId, Guid workspaceId, string usageType, decimal quantity, string unit, int creditsConsumed, string details) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = subscriptionId,
+        UserId = Guid.Empty, // Aggregated records do not belong to a specific user
+        WorkspaceId = workspaceId,
+        UsageType = usageType,
+        Quantity = quantity,
+        Unit = unit,
+        CreditsConsumed = creditsConsumed,
+        Details = details,
         RecordedAt = DateTime.UtcNow
     };
 }

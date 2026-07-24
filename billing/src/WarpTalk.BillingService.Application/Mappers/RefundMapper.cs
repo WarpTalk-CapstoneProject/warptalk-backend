@@ -17,4 +17,19 @@ public static class RefundMapper
             CompletedAt: refund.CompletedAt
         );
     }
+
+    public static Refund CreateRefund(Guid paymentId, decimal amount, string? reason, string status)
+    {
+        var now = DateTime.UtcNow;
+        return new Refund
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            Amount = amount,
+            Reason = reason,
+            Status = status,
+            CreatedAt = now,
+            CompletedAt = status == Domain.Constants.PaymentConstants.PaymentStatuses.Refunded ? now : null
+        };
+    }
 }

@@ -39,17 +39,12 @@ public class RefundService : IRefundService
             if (request.Amount <= 0 || request.Amount > payment.Amount)
                 return Result.Failure<RefundDto>("Refund amount must be positive and cannot exceed original payment amount.", ErrorCodes.ValidationError);
 
-            var refund = new Refund
-            {
-                Id = Guid.NewGuid(),
-                PaymentId = paymentId,
-                UserId = payment.UserId,
-                Amount = request.Amount,
-                Reason = request.Reason,
-                Status = TransactionConstants.RefundStatuses.Succeeded,
-                CreatedAt = DateTime.UtcNow,
-                CompletedAt = DateTime.UtcNow
-            };
+            var refund = RefundMapper.CreateRefund(
+                paymentId: payment.Id,
+                amount: request.Amount,
+                reason: request.Reason,
+                status: TransactionConstants.RefundStatuses.Succeeded
+            );
 
             await _unitOfWork.RefundRepository.AddAsync(refund, cancellationToken);
 

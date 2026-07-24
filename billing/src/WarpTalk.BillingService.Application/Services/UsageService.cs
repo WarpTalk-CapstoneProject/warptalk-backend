@@ -17,13 +17,16 @@ public class UsageService : IUsageService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<UsageService> _logger;
+    private readonly IBillingRateService _rateService;
 
     public UsageService(
         IUnitOfWork unitOfWork,
-        ILogger<UsageService> logger)
+        ILogger<UsageService> logger,
+        IBillingRateService rateService)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _rateService = rateService;
     }
 
     public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
@@ -128,7 +131,13 @@ public class UsageService : IUsageService
 
     public Task<Result<CreditBalanceDto>> ChargeAiAssistantAsync(ChargeAiAssistantRequest request, CancellationToken cancellationToken = default)
     {
-        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
+        // Fetch current Admin-configurable rates at call-time so rate changes take effect immediately
+        var rates = _rateService.GetServiceRates().Value;
+        var recordRequest = request.ToRecordUsageRequest(
+            inputRatePer1KTokens: rates.AiAssistantInputPer1000Tokens,
+            outputRatePer1KTokens: rates.AiAssistantOutputPer1000Tokens
+        );
+        return RecordUsageAsync(recordRequest, cancellationToken);
     }
 
     public Task<Result<CreditBalanceDto>> ChargeDocumentTranslationAsync(ChargeDocumentTranslationRequest request, CancellationToken cancellationToken = default)

@@ -87,4 +87,24 @@ public static class SubscriptionMapper
         sub.IsActive = false;
         sub.UpdatedAt = now;
     }
+
+    public static Subscription CreateNewStripeSubscription(Guid workspaceId, Guid userId, Plan plan, DateTime periodEnd)
+    {
+        var now = DateTime.UtcNow;
+        return new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            UserId = userId,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            CreditsRemaining = plan.CreditsPerCycle,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodStart = now,
+            CurrentPeriodEnd = periodEnd,
+            AutoRenew = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
 }

@@ -29,7 +29,9 @@ public record ChargeAiAssistantRequest(
     Guid UserId,
     int InputTokens,
     int OutputTokens,
-    string FeatureName);
+    string FeatureName,
+    /// <summary>Optional: model identifier (e.g. "gpt-4o", "gemini-1.5-pro") for audit trail.</summary>
+    string? ProviderModel = null);
 
 public record ChargeDocumentTranslationRequest(
     Guid HostWorkspaceId,

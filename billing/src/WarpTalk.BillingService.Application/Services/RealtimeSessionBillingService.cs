@@ -85,7 +85,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             if (sub.CreditsRemaining < cost)
                 return Result.Failure<CreditReservationDto>("Insufficient credits.", ErrorCodes.BillingInsufficientCredits);
 
-            var reservation = new RedisCreditReservation
+            var reservation = new RedisCreditReservationDto
             {
                 SubscriptionId = sub.Id,
                 WorkspaceId = request.HostWorkspaceId,
@@ -96,23 +96,26 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             sub.CreditsRemaining -= cost; // Reserve the amount immediately
             _unitOfWork.SubscriptionRepository.Update(sub);
 
-            // Create Transaction immediately when reserved
+            // Create Temp Log for Redis instead of directly writing to Postgres
             Guid.TryParse(request.IdempotencyKey, out var refIdVal);
-            var tx = new CreditTransaction
-            {
-                SubscriptionId = sub.Id,
-                UserId = sub.UserId,
-                Amount = -cost,
-                Type = TransactionConstants.TransactionTypes.Consume,
-                Description = "AI Real-time session reservation",
-                ReferenceId = refIdVal == Guid.Empty ? Guid.NewGuid() : refIdVal,
-                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
-                BalanceAfter = sub.CreditsRemaining,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            var tempLog = UsageMapper.CreateTempUsageLogDto(
+                sub.Id,
+                sub.UserId.ToString(),
+                request.HostWorkspaceId,
+                "RealtimeReservation",
+                TransactionConstants.TransactionTypes.Consume,
+                refIdVal == Guid.Empty ? Guid.NewGuid() : refIdVal,
+                TransactionConstants.ReferenceTypes.CreditReservation,
+                1,
+                "session",
+                cost,
+                request.IdempotencyKey,
+                "AI Real-time session reservation"
+            );
 
-            // Intermediate reservation is fully maintained on Redis via RedisCreditReservation
+            await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
+
+            // Intermediate reservation is fully maintained on Redis via RedisCreditReservationDto
             await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(15), cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
@@ -166,42 +169,25 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             _unitOfWork.SubscriptionRepository.Update(sub);
 
             Guid.TryParse(idempotencyKey, out var refId);
-            var tx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-                t => t.SubscriptionId == sub.Id && t.ReferenceType == TransactionConstants.ReferenceTypes.CreditReservation && t.ReferenceId == refId,
-                cancellationToken);
+            
+            var tempLog = UsageMapper.CreateTempUsageLogDto(
+                sub.Id,
+                sub.UserId.ToString(),
+                workspaceId,
+                "RealtimeConfirm",
+                TransactionConstants.TransactionTypes.Consume,
+                refId == Guid.Empty ? null : refId,
+                TransactionConstants.ReferenceTypes.CreditReservation,
+                1,
+                "session",
+                0, // Already consumed during reservation
+                idempotencyKey + "_confirm",
+                "AI Real-time consumption confirmed"
+            );
+            
+            await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
 
-            if (tx != null)
-            {
-                tx.Description = "AI Real-time consumption";
-                _unitOfWork.CreditTransactionRepository.Update(tx);
-            }
-            else
-            {
-                // Fallback: If not found, create a new one to prevent failure
-                tx = new CreditTransaction
-                {
-                    SubscriptionId = sub.Id,
-                    UserId = sub.UserId,
-                    Amount = -reservation.Amount,
-                    Type = TransactionConstants.TransactionTypes.Consume,
-                    Description = "AI Real-time consumption",
-                    ReferenceId = refId == Guid.Empty ? null : refId,
-                    ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
-                    BalanceAfter = sub.CreditsRemaining,
-                    CreatedAt = DateTime.UtcNow
-                };
-                await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
-            }
-
-            try
-            {
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-            }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateException")
-            {
-                _logger.LogWarning(ex, "Idempotency violation detected for {IdempotencyKey} during consume. Assuming already consumed.", idempotencyKey);
-                return Result.Success(tx.ToDto());
-            }
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish credit update when consumption confirmed
             await PublishCreditUpdateAsync(
@@ -212,7 +198,22 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                     "Real-time translation session finished."),
                 cancellationToken);
 
-            return Result.Success(tx.ToDto());
+            var dto = new CreditTransactionDto(
+                Guid.NewGuid(), // Temp ID
+                -reservation.Amount,
+                TransactionConstants.TransactionTypes.Consume,
+                "AI Real-time consumption confirmed",
+                TransactionConstants.ReferenceTypes.CreditReservation,
+                null,
+                sub.CreditsRemaining,
+                tempLog.CreatedAt,
+                sub.WorkspaceId,
+                null,
+                sub.UserId,
+                null
+            );
+
+            return Result.Success(dto);
         }
         catch (Exception ex)
         {
@@ -245,20 +246,23 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
             sub.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.SubscriptionRepository.Update(sub);
 
-            var refundTx = new CreditTransaction
-            {
-                SubscriptionId = sub.Id,
-                UserId = sub.UserId,
-                Amount = reservation.Amount,
-                Type = TransactionConstants.TransactionTypes.Refund,
-                Description = "AI Real-time refund (canceled or failed)",
-                ReferenceId = null,
-                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
-                BalanceAfter = sub.CreditsRemaining,
-                CreatedAt = DateTime.UtcNow
-            };
+            Guid.TryParse(idempotencyKey, out var refId);
+            var tempLog = UsageMapper.CreateTempUsageLogDto(
+                sub.Id,
+                sub.UserId.ToString(),
+                workspaceId,
+                "RealtimeRefund",
+                TransactionConstants.TransactionTypes.Refund,
+                refId == Guid.Empty ? null : refId,
+                TransactionConstants.ReferenceTypes.CreditReservation,
+                1,
+                "session",
+                reservation.Amount,
+                idempotencyKey + "_refund",
+                "AI Real-time session refunded"
+            );
 
-            await _unitOfWork.CreditTransactionRepository.AddAsync(refundTx, cancellationToken);
+            await _redisStore.PushTempUsageLogDtoAsync(tempLog, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             // Publish credit update on refund
@@ -291,18 +295,11 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
         }
     }
 
-    private async Task<(CreditTransaction? existingTx, RedisCreditReservation? reservation)> ValidateAndGetReservationAsync(
+    private async Task<(CreditTransaction? existingTx, RedisCreditReservationDto? reservation)> ValidateAndGetReservationAsync(
         string idempotencyKey, string transactionType, CancellationToken cancellationToken)
     {
-        var existingTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
-            tx => tx.ReferenceType == "CreditReservation" && tx.Type == transactionType, 
-            cancellationToken);
-
-        if (existingTx != null)
-        {
-            return (existingTx, null);
-        }
-
+        // CreditTransaction is now pushed to Temp Logs, so we cannot query the DB for it immediately.
+        // GetAndRemoveReservationAsync is atomic, providing idempotency guarantees naturally.
         var reservation = await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
         return (null, reservation);
     }

@@ -184,6 +184,7 @@ try
     builder.Services.AddHostedService<SessionMonitorWorker>();
     builder.Services.AddHostedService<SubscriptionRenewalWorker>();
     builder.Services.AddHostedService<DailyAuditAggregationWorker>();
+    builder.Services.AddHostedService<BillingAggregationWorker>();
 
     builder.Services.AddCustomApiBehavior();
     

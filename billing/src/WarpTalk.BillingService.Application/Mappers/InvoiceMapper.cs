@@ -80,4 +80,25 @@ public static class InvoiceMapper
         IssuedAt = DateTime.UtcNow,
         CreatedAt = DateTime.UtcNow
     };
+
+    public static Invoice CreateStripeInvoice(Guid paymentId, Guid userId, decimal amount, string? currency, string? pdfUrl)
+    {
+        string invoiceNum = "INV-" + DateTime.UtcNow.ToString("yyyyMMdd") + "-" + paymentId.ToString().Substring(0, 8).ToUpper();
+        return new Invoice
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = paymentId,
+            UserId = userId,
+            InvoiceNumber = invoiceNum,
+            Subtotal = amount,
+            Tax = 0,
+            Total = amount,
+            Currency = currency ?? PaymentConstants.Currencies.Usd,
+            Status = InvoiceConstants.InvoiceStatuses.Paid,
+            PdfUrl = pdfUrl,
+            LineItems = "[]",
+            IssuedAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        };
+    }
 }

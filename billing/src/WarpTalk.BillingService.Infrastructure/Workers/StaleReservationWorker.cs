@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
 
@@ -62,17 +63,12 @@ public class StaleReservationWorker : BackgroundService
                 unitOfWork.SubscriptionRepository.Update(sub);
             }
 
-            var refundTx = new CreditTransaction
-            {
-                SubscriptionId = reserve.SubscriptionId,
-                UserId = sub?.UserId ?? Guid.Empty,
-                Amount = reserve.Amount,
-                Type = TransactionConstants.TransactionTypes.Refund,
-                Description = "Auto-refund for stale reservation",
-                ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
-                BalanceAfter = sub?.CreditsRemaining ?? 0,
-                CreatedAt = DateTime.UtcNow
-            };
+            var refundTx = CreditMapper.CreateStaleReservationRefundTransaction(
+                reserve.SubscriptionId,
+                sub?.UserId ?? Guid.Empty,
+                reserve.Amount,
+                sub?.CreditsRemaining ?? 0
+            );
 
             await unitOfWork.CreditTransactionRepository.AddAsync(refundTx, cancellationToken);
             await redisStore.RemoveReservationAsync(reserve.IdempotencyKey, cancellationToken);
