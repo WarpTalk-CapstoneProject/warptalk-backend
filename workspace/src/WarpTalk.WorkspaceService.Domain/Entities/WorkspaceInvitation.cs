@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -19,9 +19,17 @@ public partial class WorkspaceInvitation
 
     public Guid InvitedBy { get; set; }
 
-    public string TokenHash { get; set; } = null!;
+    public string? TokenHash { get; set; }
 
     public string Status { get; set; } = null!;
+
+    public string DeliveryStatus { get; set; } = "NotSent";
+
+    public string? ProviderMessageId { get; set; }
+
+    public DateTime? LastSentAt { get; set; }
+
+    public int SentCount { get; set; }
 
     public DateTime ExpiresAt { get; set; }
 

@@ -13,6 +13,7 @@ public static class ErrorCodes
     public const string Forbidden = "FORBIDDEN";
     public const string InvalidState = "INVALID_STATE";
     public const string ValidationError = "VALIDATION_ERROR";
+    public const string Conflict = "CONFLICT";
 
     // ── Billing ───────────────────────────────────────────
     public const string BillingSubscriptionNotFound = "BILLING_SUBSCRIPTION_NOT_FOUND";

@@ -10,14 +10,13 @@ public record InviteMemberRequest(
 );
 
 public record AcceptInvitationRequest(
-    [Required] string Token
+    string? Token = null
 );
 
 public record CreateJoinRequestCommand(
     string? RoomCode,
     string? WorkspaceSlug
 );
-
 
 public record WorkspaceInvitationDto(
     Guid Id,
@@ -26,6 +25,10 @@ public record WorkspaceInvitationDto(
     string RoleName,
     string Status,
     string MembershipType,
+    string DeliveryStatus,
+    string? ProviderMessageId,
+    DateTime? LastSentAt,
+    int SentCount,
     DateTime ExpiresAt,
     DateTime CreatedAt,
     DateTime? AcceptedAt
@@ -33,8 +36,9 @@ public record WorkspaceInvitationDto(
 
 public record InviteMemberResponse(
     WorkspaceInvitationDto Invitation,
-    string RawToken, // temporary vì chưa có handle notifications/email cho invitation
-    string EmailLanguage
+    string? RawToken,
+    string EmailLanguage,
+    string? Warning = null
 );
 
 public record PreviewInvitationResponse(

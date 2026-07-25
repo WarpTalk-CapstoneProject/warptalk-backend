@@ -109,7 +109,7 @@ public static class WorkspaceMapper
     public static AiUsagePolicyDto ToDto(this AiUsagePolicyConfiguration config)
     {
         return new AiUsagePolicyDto(
-            config.AllowExternalLlm,
+            true,
             config.RedactPii.ToDto(),
             config.Dlp.ToDto(),
             config.TranslationProfile.ToDto()
@@ -119,7 +119,7 @@ public static class WorkspaceMapper
     public static AiUsagePolicyConfiguration ToConfiguration(this AiUsagePolicyDto dto)
     {
         return new AiUsagePolicyConfiguration(
-            dto.AllowExternalLlm,
+            true,
             dto.RedactPii.ToConfiguration(),
             dto.Dlp.ToConfiguration(),
             dto.TranslationProfile.ToConfiguration()

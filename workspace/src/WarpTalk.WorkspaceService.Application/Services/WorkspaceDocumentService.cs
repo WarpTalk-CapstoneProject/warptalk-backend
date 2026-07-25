@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Configuration;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Helpers;
@@ -32,6 +36,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly ILogger<WorkspaceDocumentService> _logger;
+    private readonly string _storageProvider;
 
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
@@ -42,6 +47,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         ITranslationRoomClient translationRoomClient,
         IWorkspaceDocumentStorage storage,
         IDocumentTextExtractor textExtractor,
+        IOptions<ObjectStorageOptions> storageOptions,
         ILogger<WorkspaceDocumentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -52,6 +58,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _translationRoomClient = translationRoomClient;
         _storage = storage;
         _textExtractor = textExtractor;
+        _storageProvider = storageOptions.Value.Provider ?? WorkspaceDocumentConstants.LocalStorageProvider;
         _logger = logger;
     }
 
@@ -76,20 +83,20 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
 
             var docId = Guid.NewGuid();
-            var extension = System.IO.Path.GetExtension(request.File.FileName);
+            var extension = WorkspaceDocumentHelper.NormalizeExtension(System.IO.Path.GetExtension(request.File.FileName));
+            if (!WorkspaceDocumentHelper.IsSupportedUploadExtension(extension))
+            {
+                var allowed = string.Join(", ", WorkspaceDocumentConstants.SupportedUploadExtensions);
+                return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
+            }
+
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
             var status = isOwnerOrAdmin 
-                ? WorkspaceDocumentStatus.active 
+                ? WorkspaceDocumentStatus.@public 
                 : WorkspaceDocumentStatus.pending_approval;
 
-            var isImage = extension.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
-                          extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                          extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
-                          extension.Equals(".webp", StringComparison.OrdinalIgnoreCase) ||
-                          extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase);
-
-            var effectiveIsAiAllowed = request.IsAiAllowed && !isImage;
+            var effectiveIsAiAllowed = request.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
 
             WorkspaceDocumentIngestionStatus ingestionStatus;
             if (!effectiveIsAiAllowed)
@@ -105,7 +112,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var aiEligible = false; // Initial state: false until ingestion completes or if IsAiAllowed == false
 
-            var document = request.ToEntity(docId, workspaceId, userId, storageKey, status, ingestionStatus, aiEligible);
+            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storageProvider, status, ingestionStatus, aiEligible);
             document.IsAiAllowed = effectiveIsAiAllowed;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
@@ -127,9 +134,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 throw;
             }
 
-            if (isOwnerOrAdmin && request.IsAiAllowed)
+            if (effectiveIsAiAllowed)
             {
-                // Publish upload event to trigger Pre-Ingestion security scan and eventual Qdrant sync
                 await _eventPublisher.PublishDocumentUploadedAsync(
                     document.Id,
                     workspaceId,
@@ -137,11 +143,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     document.FileName,
                     document.FileExtension,
                     userId,
-                    document.IsSensitive,
+                    document.ConfidentialityLevel,
                     ct);
             }
 
-            await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.IsSensitive }, _logger, ct);
+            await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.ConfidentialityLevel }, _logger, ct);
 
             var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
             return Result.Success(document.ToDto(downloadUrl));
@@ -320,10 +326,9 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.Name = request.Name;
             }
 
-            if (request.IsSensitive.HasValue)
+            if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel))
             {
-                document.IsSensitive = request.IsSensitive.Value;
-                document.ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(request.IsSensitive.Value);
+                document.ConfidentialityLevel = request.ConfidentialityLevel;
             }
 
             if (request.IsAiAllowed.HasValue && request.IsAiAllowed.Value != document.IsAiAllowed)
@@ -344,7 +349,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 {
                     // Toggled back to AI Context Document (IsAiAllowed = true)
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
-                    if (string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase))
                     {
                         await _eventPublisher.PublishDocumentUploadedAsync(
                             document.Id,
@@ -353,7 +358,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                             document.FileName,
                             document.FileExtension,
                             userId,
-                            document.IsSensitive,
+                            document.ConfidentialityLevel,
                             ct);
                     }
                 }
@@ -502,23 +507,28 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (request.Approve)
             {
-                document.Status = WorkspaceDocumentStatus.active.ToString();
-                document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
-                document.AiEligible = true;
+                document.Status = WorkspaceDocumentStatus.@public.ToString();
+                document.AiEligible = document.IsAiAllowed && !document.IsRestricted();
+                document.IngestionStatus = document.AiEligible 
+                    ? WorkspaceDocumentIngestionStatus.pending.ToString() 
+                    : WorkspaceDocumentIngestionStatus.skipped.ToString();
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // Publish event to Redis Stream for AI Ingestion
-                await _eventPublisher.PublishDocumentUploadedAsync(
-                    document.Id,
-                    workspaceId,
-                    document.StorageKey,
-                    document.FileName,
-                    document.FileExtension,
-                    document.UploadedBy ?? userId,
-                    document.IsSensitive,
-                    ct);
+                if (document.AiEligible)
+                {
+                    // Publish event to Redis Stream for AI Ingestion
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        document.UploadedBy ?? userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
 
                 await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ApproveDocument, logger: _logger, ct: ct);
             }
@@ -562,7 +572,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadDocument, logger: _logger, ct: ct);
 
-            return Result.Success(new DocumentDownloadStreamDto(stream, document.MimeType, document.FileName));
+            return Result.Success(new DocumentDownloadStreamDto(stream, WorkspaceDocumentHelper.GetSafeContentType(document.FileExtension), document.FileName));
         }
         catch (Exception ex)
         {
@@ -696,7 +706,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure("Document is not archived.", ErrorCodes.ValidationError);
             }
 
-            document.Status = WorkspaceDocumentStatus.active.ToString();
+            document.Status = WorkspaceDocumentStatus.@public.ToString();
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
             document.AiEligible = false; // Scanner will re-evaluate on background security scan
 
@@ -711,7 +721,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.FileName,
                 document.FileExtension,
                 document.UploadedBy ?? userId,
-                document.IsSensitive,
+                document.ConfidentialityLevel,
                 ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RestoreDocument, logger: _logger, ct: ct);

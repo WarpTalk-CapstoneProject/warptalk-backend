@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Events;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Clients;
 
@@ -34,9 +35,10 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
         string fileName,
         string fileExtension,
         Guid userId,
-        bool isSensitive,
+        string? confidentialityLevel = null,
         CancellationToken ct = default)
     {
+        var level = confidentialityLevel ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
         var message = new WorkspaceDocumentIngestionRequestedEvent
         {
             DocumentId = documentId.ToString(),
@@ -45,7 +47,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             FileName = fileName,
             FileExtension = fileExtension,
             RequestedByUserId = userId.ToString(),
-            IsSensitive = isSensitive,
+            IsSensitive = string.Equals(level, WorkspaceDocumentConstants.SensitiveConfidentialityLevel, StringComparison.OrdinalIgnoreCase),
         };
 
         await PublishRabbitMqEventAsync(message, documentId, ct);
@@ -55,7 +57,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             entries.Add(new NameValueEntry("file_name", fileName));
             entries.Add(new NameValueEntry("file_extension", fileExtension));
             entries.Add(new NameValueEntry("uploaded_by", userId.ToString()));
-            entries.Add(new NameValueEntry("is_sensitive", isSensitive.ToString()));
+            entries.Add(new NameValueEntry("confidentiality_level", level));
         });
     }
 

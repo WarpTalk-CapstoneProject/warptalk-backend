@@ -4,6 +4,6 @@ namespace WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 
 public record PatchDocumentRequest(
     string? Name,
-    bool? IsSensitive,
+    string? ConfidentialityLevel,
     bool? IsAiAllowed
 );

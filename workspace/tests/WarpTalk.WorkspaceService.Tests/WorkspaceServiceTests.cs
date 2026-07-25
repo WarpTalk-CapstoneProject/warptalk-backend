@@ -45,6 +45,7 @@ public class WorkspaceServiceTests
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
         _workspaceService = new AppWorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<AppWorkspaceService>>(), _authIdentity, _eventPublisher);

@@ -44,13 +44,15 @@ public class WorkspaceInvitationServiceTests
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
 
         _workspaceInvitationService = new WorkspaceInvitationService(
             _unitOfWork, 
             Substitute.For<ILogger<WorkspaceInvitationService>>(), 
             _authIdentity,
-            _translationRoomClient);
+            _translationRoomClient,
+            Substitute.For<IWorkspaceInvitationEmailComposer>());
     }
 
     private void StubRoleName(Guid roleId, string roleName)

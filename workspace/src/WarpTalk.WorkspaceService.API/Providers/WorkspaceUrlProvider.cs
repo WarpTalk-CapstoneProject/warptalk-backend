@@ -22,18 +22,17 @@ public class WorkspaceUrlProvider : IWorkspaceUrlProvider
     public string GetDocumentDownloadUrl(Guid workspaceId, Guid documentId)
     {
         var httpContext = _httpContextAccessor.HttpContext;
-
-        if (httpContext == null)
-        {
-            // Fallback to relative URL if HTTP context is not available (e.g. background threads / unit tests)
-            return string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, workspaceId, documentId);
-        }
-
-        return _linkGenerator.GetUriByAction(
-            httpContext,
+        var relativePath = _linkGenerator.GetPathByAction(
             action: "DownloadDocument",
             controller: "WorkspaceDocuments",
             values: new { workspaceId, documentId }
-        ) ?? string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, workspaceId, documentId);
+        ) ?? $"/api/v1/workspaces/{workspaceId}/documents/{documentId}/download";
+
+        if (httpContext?.Request != null)
+        {
+            return $"{httpContext.Request.Scheme}://{httpContext.Request.Host}{relativePath}";
+        }
+
+        return relativePath;
     }
 }

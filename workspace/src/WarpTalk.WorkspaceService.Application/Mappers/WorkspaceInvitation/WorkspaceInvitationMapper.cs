@@ -1,6 +1,5 @@
 using System;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
-using WarpTalk.WorkspaceService.Application.Validators;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -9,7 +8,7 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceInvitationMapper
 {
-    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string tokenHash, string membershipType, DateTime? utcNow = null)
+    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
         return new WorkspaceInvitation
@@ -21,6 +20,8 @@ public static class WorkspaceInvitationMapper
             InvitedBy = inviterUserId,
             TokenHash = tokenHash,
             Status = InvitationStatus.PENDING.ToString(),
+            DeliveryStatus = "NotSent",
+            SentCount = 0,
             MembershipType = membershipType,
             ExpiresAt = now.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
             CreatedAt = now
@@ -40,8 +41,12 @@ public static class WorkspaceInvitationMapper
             invitation.WorkspaceId,
             invitation.Email,
             roleName,
-            invitation.Status.ToString(),
+            invitation.Status,
             invitation.MembershipType,
+            invitation.DeliveryStatus ?? "NotSent",
+            invitation.ProviderMessageId,
+            invitation.LastSentAt,
+            invitation.SentCount,
             invitation.ExpiresAt,
             invitation.CreatedAt,
             invitation.AcceptedAt

@@ -18,6 +18,8 @@ using WarpTalk.WorkspaceService.Infrastructure.Storage;
 using WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 using WarpTalk.WorkspaceService.API.Providers;
 using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure;
+using WarpTalk.Shared.Extensions;
 using MassTransit;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -74,75 +76,68 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
 builder.Services.AddScoped<IWorkspaceMemberRepository, WorkspaceMemberRepository>();
 builder.Services.AddScoped<IWorkspaceInvitationRepository, WorkspaceInvitationRepository>();
+
 // Services
 builder.Services.AddScoped<IWorkspaceService, WarpTalk.WorkspaceService.Application.Services.WorkspaceService>();
 builder.Services.AddScoped<IWorkspaceMemberService, WorkspaceMemberService>();
 builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
+builder.Services.AddScoped<IWorkspaceInvitationEmailComposer, WorkspaceInvitationEmailComposer>();
+builder.Services.AddResendClient(builder.Configuration);
 builder.Services.AddScoped<IWorkspaceDocumentService, WorkspaceDocumentService>();
+builder.Services.AddScoped<IVerifiedDomainService, VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
 builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, HybridWorkspaceDocumentEventPublisher>();
 builder.Services.AddScoped<IWorkspaceEventPublisher, RedisWorkspaceEventPublisher>();
-builder.Services.AddSingleton<IWorkspaceDocumentStorage, LocalEncryptedWorkspaceDocumentStorage>();
+builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
+builder.Services.AddHostedService<DocumentEmbeddingIndexResultConsumerService>();
 builder.Services.AddHostedService<MeetingStartedEventConsumer>();
 
-builder.Services.AddMassTransit(x =>
-{
-    x.UsingRabbitMq((context, cfg) =>
-    {
-        var host = builder.Configuration["RabbitMQ:Host"] ?? "localhost";
-        var virtualHost = builder.Configuration["RabbitMQ:VirtualHost"] ?? "/";
-        var username = builder.Configuration["RabbitMQ:Username"] ?? "guest";
-        var password = builder.Configuration["RabbitMQ:Password"] ?? "guest";
-
-        cfg.Host(host, virtualHost, h =>
-        {
-            h.Username(username);
-            h.Password(password);
-        });
-
-        cfg.ConfigureEndpoints(context);
-    });
-});
+builder.Services.AddWarpTalkMassTransit(builder.Configuration);
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 
-builder.Services.AddControllers();
-
-var rawJwtSecret = builder.Configuration["Jwt:Secret"];
-var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) || 
-                         rawJwtSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
-                         rawJwtSecret.Length < 32;
-
-var validatedSecret = isDefaultOrInvalid 
-    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!" 
-    : rawJwtSecret;
-
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        var secretKey = builder.Configuration["Jwt:Secret"]
+            ?? builder.Configuration["JwtSettings:SecretKey"]
+            ?? "super_secret_jwt_key_that_is_at_least_32_bytes_long_123456";
+
+        var issuer = builder.Configuration["Jwt:Issuer"]
+            ?? builder.Configuration["JwtSettings:Issuer"]
+            ?? "WarpTalk.AuthService";
+
+        var audience = builder.Configuration["Jwt:Audience"]
+            ?? builder.Configuration["JwtSettings:Audience"]
+            ?? "WarpTalk";
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(validatedSecret!))
+            ValidIssuer = issuer,
+            ValidAudience = audience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey))
         };
     });
 
 builder.Services.AddAuthorization();
 builder.Services.AddGrpc();
+builder.Services.AddControllers();
+
+builder.Services.AddEndpointsApiExplorer();
 
 var app = builder.Build();
 
 app.UseRouting();
+
 app.UseAuthentication();
 app.UseAuthorization();
 

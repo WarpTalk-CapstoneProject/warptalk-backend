@@ -25,7 +25,7 @@ public class RedisDocumentEventPublisher : IWorkspaceDocumentEventPublisher
         string fileName,
         string fileExtension,
         Guid userId,
-        bool isSensitive,
+        string? confidentialityLevel = null,
         CancellationToken ct = default)
     {
         try
@@ -40,7 +40,7 @@ public class RedisDocumentEventPublisher : IWorkspaceDocumentEventPublisher
                 new NameValueEntry("file_name", fileName),
                 new NameValueEntry("file_extension", fileExtension),
                 new NameValueEntry("uploaded_by", userId.ToString()),
-                new NameValueEntry("is_sensitive", isSensitive.ToString())
+                new NameValueEntry("confidentiality_level", confidentialityLevel ?? "general")
             });
         }
         catch (Exception ex)

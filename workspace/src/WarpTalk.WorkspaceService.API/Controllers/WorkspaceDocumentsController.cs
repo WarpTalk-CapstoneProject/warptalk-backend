@@ -135,10 +135,15 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess || result.Value == null)
         {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
         }
 
         var dto = result.Value;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
         return File(dto.Stream, dto.ContentType, dto.FileName);
     }
 

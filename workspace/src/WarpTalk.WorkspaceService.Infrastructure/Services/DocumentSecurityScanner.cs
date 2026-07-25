@@ -18,7 +18,9 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<DocumentSecurityScanner> _logger;
 
-    public DocumentSecurityScanner(IConnectionMultiplexer redis, ILogger<DocumentSecurityScanner> logger)
+    public DocumentSecurityScanner(
+        IConnectionMultiplexer redis,
+        ILogger<DocumentSecurityScanner> logger)
     {
         _redis = redis;
         _logger = logger;

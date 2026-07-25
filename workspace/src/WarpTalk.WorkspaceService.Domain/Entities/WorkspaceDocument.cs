@@ -55,8 +55,6 @@ public partial class WorkspaceDocument
 
     public string? IndexVersion { get; set; }
 
-    public bool IsSensitive { get; set; }
-
     public string ConfidentialityLevel { get; set; } = null!;
 
     public string RetentionState { get; set; } = null!;

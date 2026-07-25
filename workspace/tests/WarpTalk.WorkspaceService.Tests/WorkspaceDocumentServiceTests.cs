@@ -4,8 +4,10 @@ using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Configuration;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Evaluators;
@@ -38,6 +40,7 @@ public class WorkspaceDocumentServiceTests
     private readonly IWorkspaceUrlProvider _urlProvider;
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceDocumentStorage _storage;
+    private readonly IOptions<ObjectStorageOptions> _storageOptions;
     private readonly WorkspaceDocumentService _documentService;
 
     public WorkspaceDocumentServiceTests()
@@ -53,6 +56,10 @@ public class WorkspaceDocumentServiceTests
         _urlProvider = Substitute.For<IWorkspaceUrlProvider>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
+        _storageOptions = Options.Create(new ObjectStorageOptions
+        {
+            Provider = WorkspaceDocumentConstants.LocalStorageProvider
+        });
 
         // Set up mock repository mappings
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
@@ -61,7 +68,7 @@ public class WorkspaceDocumentServiceTests
         _unitOfWork.WorkspaceDocumentAuditRepository.Returns(_workspaceDocumentAuditRepository);
 
         _urlProvider.GetDocumentDownloadUrl(Arg.Any<Guid>(), Arg.Any<Guid>())
-            .Returns(x => string.Format(WorkspaceDocumentConstants.DownloadUrlFormat, x.ArgAt<Guid>(0), x.ArgAt<Guid>(1)));
+            .Returns(x => $"/api/v1/workspaces/{x.ArgAt<Guid>(0)}/documents/{x.ArgAt<Guid>(1)}/download");
 
         _documentService = new WorkspaceDocumentService(
             _unitOfWork,
@@ -72,6 +79,7 @@ public class WorkspaceDocumentServiceTests
             _translationRoomClient,
             _storage,
             Substitute.For<IDocumentTextExtractor>(),
+            _storageOptions,
             Substitute.For<ILogger<WorkspaceDocumentService>>()
         );
     }
@@ -100,7 +108,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
@@ -112,7 +120,8 @@ public class WorkspaceDocumentServiceTests
         
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
-        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
+        await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
+            Arg.Any<Guid>(), workspaceId, Arg.Any<string>(), "file.pdf", ".pdf", userId, Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -133,7 +142,7 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
 
         // The blob write to storage succeeds, but the DB save that should follow it fails —
         // simulating a connection drop after the encrypted file already landed on disk.
@@ -166,20 +175,103 @@ public class WorkspaceDocumentServiceTests
         mockFile.FileName.Returns("file.pdf");
         mockFile.Length.Returns(1024);
         mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("test content")));
-        var request = new UploadDocumentApiRequest("Doc1", "upload", null, false, mockFile);
+        var request = new UploadDocumentApiRequest("Doc1", "upload", null, "internal", mockFile);
 
         // Act
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal(WorkspaceDocumentStatus.active.ToString(), result.Value.Status);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), result.Value.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), result.Value.IngestionStatus);
 
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
-            Arg.Any<Guid>(), workspaceId, Arg.Any<string>(), "file.pdf", ".pdf", userId, false, Arg.Any<CancellationToken>());
+            Arg.Any<Guid>(), workspaceId, Arg.Any<string>(), "file.pdf", ".pdf", userId, Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldRejectUnsupportedHtmlFile()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, IsActive = true };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(memberRoleId, "Member");
+
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns("payload.html");
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("<script>alert(1)</script>")));
+        var request = new UploadDocumentApiRequest("Payload", "upload", null, "internal", mockFile);
+
+        var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
+    }
+
+    [Theory]
+    [InlineData("legacy.doc")]
+    [InlineData("legacy.xls")]
+    public async Task UploadDocumentAsync_ShouldRejectLegacyOfficeFormats(string fileName)
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, IsActive = true };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(memberRoleId, "Member");
+
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns(fileName);
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream(Encoding.UTF8.GetBytes("legacy")));
+        var request = new UploadDocumentApiRequest("Legacy", "upload", null, "internal", mockFile);
+
+        var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _storage.DidNotReceiveWithAnyArgs().SaveDocumentContentAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task UploadDocumentAsync_ShouldStoreImageButSkipAiIngestion()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, IsActive = true };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
+        StubRoleName(memberRoleId, "Member");
+
+        var mockFile = Substitute.For<IFormFile>();
+        mockFile.FileName.Returns("chart.png");
+        mockFile.Length.Returns(1024);
+        mockFile.OpenReadStream().Returns(new MemoryStream([0x89, 0x50, 0x4E, 0x47]));
+        var request = new UploadDocumentApiRequest("Chart", "upload", null, "internal", mockFile, IsAiAllowed: true);
+
+        var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value.IsAiAllowed);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), result.Value.IngestionStatus);
+        await _storage.Received(1).SaveDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(default, default, default!, default!, default!, default, default, default);
     }
 
     [Fact]
@@ -201,7 +293,7 @@ public class WorkspaceDocumentServiceTests
             FileName = "file.pdf",
             FileExtension = ".pdf",
             UploadedBy = Guid.NewGuid(),
-            IsSensitive = false
+            ConfidentialityLevel = "general"
         };
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
@@ -215,14 +307,14 @@ public class WorkspaceDocumentServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal(WorkspaceDocumentStatus.active.ToString(), document.Status);
+        Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), document.IngestionStatus);
         Assert.True(document.AiEligible);
 
         _workspaceDocumentRepository.Received(1).Update(document);
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
-            documentId, workspaceId, "key", "file.pdf", ".pdf", document.UploadedBy.Value, false, Arg.Any<CancellationToken>());
+            documentId, workspaceId, "key", "file.pdf", ".pdf", document.UploadedBy.Value, Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

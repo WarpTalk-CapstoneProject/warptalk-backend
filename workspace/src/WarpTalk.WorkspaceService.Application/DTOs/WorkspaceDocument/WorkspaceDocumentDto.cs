@@ -17,7 +17,6 @@ public record WorkspaceDocumentDto(
     string IngestionStatus,
     bool AiEligible,
     bool IsAiAllowed,
-    bool IsSensitive,
     string ConfidentialityLevel,
     string RetentionState,
     string Status,

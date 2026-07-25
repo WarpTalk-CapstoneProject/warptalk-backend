@@ -45,7 +45,7 @@ public class HybridWorkspaceDocumentEventPublisherTests
             "doc.pdf",
             ".pdf",
             userId,
-            isSensitive: true,
+            confidentialityLevel: "restricted",
             CancellationToken.None);
 
         await _publishEndpoint.Received(1).Publish(
@@ -66,7 +66,7 @@ public class HybridWorkspaceDocumentEventPublisherTests
                 Contains(entries, "document_id", documentId.ToString()) &&
                 Contains(entries, "workspace_id", workspaceId.ToString()) &&
                 Contains(entries, "storage_key", "workspace/doc.pdf") &&
-                Contains(entries, "is_sensitive", "True")));
+                Contains(entries, "confidentiality_level", "restricted")));
     }
 
     [Fact]
