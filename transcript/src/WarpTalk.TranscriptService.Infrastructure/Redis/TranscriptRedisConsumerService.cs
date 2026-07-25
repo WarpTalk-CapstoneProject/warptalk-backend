@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.Shared.Protos;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
 
@@ -28,6 +29,14 @@ public class TranscriptRedisConsumerService : BackgroundService
     private List<string> _streamKeyCache = new();
     private DateTime _streamKeyCachedAt = DateTime.MinValue;
     private static readonly TimeSpan StreamKeyCacheDuration = TimeSpan.FromSeconds(30);
+
+    // Cache the resolved AllowExternalLlm flag per workspace so PublishEmbeddingIndexRequestAsync
+    // (called once per persisted segment — i.e. potentially many times a second across a busy
+    // meeting) doesn't fire a gRPC call to WorkspaceService on every single segment. Mirrors the
+    // same "don't hit a sibling service on every chunk" reasoning as stt_worker's per-meeting
+    // glossary prompt cache (warptalk-ai/stt_worker/worker.py).
+    private readonly Dictionary<Guid, (bool AllowExternalLlm, DateTime CachedAt)> _workspacePolicyCache = new();
+    private static readonly TimeSpan WorkspacePolicyCacheDuration = TimeSpan.FromMinutes(5);
 
     public TranscriptRedisConsumerService(
         IConnectionMultiplexer redis,
@@ -169,6 +178,7 @@ public class TranscriptRedisConsumerService : BackgroundService
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var roomClient = scope.ServiceProvider.GetRequiredService<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>();
             var authClient = scope.ServiceProvider.GetRequiredService<WarpTalk.Shared.Protos.UserService.UserServiceClient>();
+            var workspaceClient = scope.ServiceProvider.GetRequiredService<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>();
 
             // 1. Get or create the CURRENT transcript (head-pointer) for this room.
             var transcript = await unitOfWork.Transcripts.FirstOrDefaultAsync(
@@ -263,7 +273,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // try/catch rather than returning false (which would redeliver the whole message).
                 try
                 {
-                    await PublishEmbeddingIndexRequestAsync(transcript, segment, cancellationToken);
+                    var allowExternalLlm = await ResolveAllowExternalLlmAsync(transcript.WorkspaceId, workspaceClient, cancellationToken);
+                    await PublishEmbeddingIndexRequestAsync(transcript, segment, allowExternalLlm, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -520,13 +531,50 @@ public class TranscriptRedisConsumerService : BackgroundService
     }
 
     /// <summary>
+    /// Resolves this workspace's real AiUsagePolicy.AllowExternalLlm via WorkspaceService's
+    /// GetWorkspaceSettings gRPC call, cached per workspace for
+    /// <see cref="WorkspacePolicyCacheDuration"/> so a busy meeting doesn't fire one gRPC call
+    /// per segment. Fails OPEN (returns true) on any RPC error — same "opt-out, unset ⇒ allowed"
+    /// default WorkspaceGrpcService itself applies when no policy is configured, so a transient
+    /// WorkspaceService outage degrades to today's behavior rather than blocking every
+    /// transcript segment from being embedded.
+    /// </summary>
+    private async Task<bool> ResolveAllowExternalLlmAsync(
+        Guid workspaceId, WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient, CancellationToken ct)
+    {
+        if (_workspacePolicyCache.TryGetValue(workspaceId, out var cached) &&
+            DateTime.UtcNow - cached.CachedAt < WorkspacePolicyCacheDuration)
+        {
+            return cached.AllowExternalLlm;
+        }
+
+        bool allowExternalLlm;
+        try
+        {
+            var response = await workspaceClient.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+            allowExternalLlm = response.AllowExternalLlm;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to resolve AI usage policy for workspace {WorkspaceId}; defaulting to allowed.", workspaceId);
+            allowExternalLlm = true;
+        }
+
+        _workspacePolicyCache[workspaceId] = (allowExternalLlm, DateTime.UtcNow);
+        return allowExternalLlm;
+    }
+
+    /// <summary>
     /// Publishes one transcribed segment as a single chunk to the "embedding:index_requests"
     /// Redis Stream that warptalk-ai's EmbeddingWorker consumes. Field names must match
     /// EmbeddingIndexRequest.from_redis() in warptalk-ai/embedding_worker/schemas.py exactly;
     /// chunk keys (id/text/metadata) must match EmbeddingChunk. collection_id follows the
     /// "workspace_{id}" convention chat_tools.py's semantic_search already assumes.
     /// </summary>
-    private async Task PublishEmbeddingIndexRequestAsync(Transcript transcript, TranscriptSegment segment, CancellationToken ct)
+    private async Task PublishEmbeddingIndexRequestAsync(
+        Transcript transcript, TranscriptSegment segment, bool allowExternalLlm, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(segment.OriginalText)) return;
 
@@ -552,10 +600,14 @@ public class TranscriptRedisConsumerService : BackgroundService
             new("source_type", "transcript"),
             new("source_id", transcript.Id.ToString()),
             new("chunks_json", JsonSerializer.Serialize(new[] { chunk })),
-            new("external_llm_allowed", "true"),
+            new("external_llm_allowed", allowExternalLlm ? "true" : "false"),
+            // No per-segment PII/DLP content scan exists for transcripts (unlike
+            // WorkspaceDocument.AiEligible, which IS derived from such a scan) — that's a
+            // separate, larger feature (see docs/workspace-memory-research.md §2.3/§3.4), not
+            // part of this fix. Left true to preserve today's working semantic-search behavior.
             new("ai_retrieval_allowed", "true"),
-            new("retention_state", "active"),
-            new("deletion_state", "active"),
+            new("retention_state", transcript.IsActive ? "active" : "inactive"),
+            new("deletion_state", transcript.DeletedAt == null ? "active" : "deleted"),
             new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
         };
 

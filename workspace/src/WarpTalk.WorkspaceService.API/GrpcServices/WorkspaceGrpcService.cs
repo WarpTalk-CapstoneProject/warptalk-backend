@@ -160,7 +160,12 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         {
             ArtifactRetentionDays = config.ArtifactRetentionDays,
             AllowExternalCollaboration = config.AllowExternalCollaboration,
-            IsProfanityFilterEnabled = config.IsProfanityFilterEnabled
+            IsProfanityFilterEnabled = config.IsProfanityFilterEnabled,
+            // Opt-out semantics: unset at workspace level ⇒ allowed. Mirrors the fallback
+            // DocumentSecurityGuardrailConsumerService.ResolvePolicySettingsAsync already
+            // applies for documents.
+            AllowExternalLlm = config.AiUsagePolicy?.AllowExternalLlm ?? true,
+            UseGlobalGlossary = config.AiUsagePolicy?.UseGlobalGlossary ?? true
         };
     }
 }

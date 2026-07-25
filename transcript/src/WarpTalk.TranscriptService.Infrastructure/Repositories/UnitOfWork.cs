@@ -19,6 +19,8 @@ public class UnitOfWork : IUnitOfWork
     private IGenericRepository<TranscriptCorrection>? _transcriptCorrections;
     private IGenericRepository<Glossary>? _glossaries;
     private IGenericRepository<GlossaryTerm>? _glossaryTerms;
+    private IGenericRepository<GlobalGlossaryTerm>? _globalGlossaryTerms;
+    private IGenericRepository<GlobalGlossaryAudit>? _globalGlossaryAudits;
     private IGenericRepository<TranscriptExport>? _transcriptExports;
     private IGenericRepository<TranslationContent>? _translationContents;
     private IGenericRepository<SegmentTranslationLink>? _segmentTranslationLinks;
@@ -41,8 +43,14 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<Glossary> Glossaries => 
         _glossaries ??= new GenericRepository<Glossary>(_context);
 
-    public IGenericRepository<GlossaryTerm> GlossaryTerms => 
+    public IGenericRepository<GlossaryTerm> GlossaryTerms =>
         _glossaryTerms ??= new GenericRepository<GlossaryTerm>(_context);
+
+    public IGenericRepository<GlobalGlossaryTerm> GlobalGlossaryTerms =>
+        _globalGlossaryTerms ??= new GenericRepository<GlobalGlossaryTerm>(_context);
+
+    public IGenericRepository<GlobalGlossaryAudit> GlobalGlossaryAudits =>
+        _globalGlossaryAudits ??= new GenericRepository<GlobalGlossaryAudit>(_context);
 
     public IGenericRepository<TranscriptExport> TranscriptExports =>
         _transcriptExports ??= new GenericRepository<TranscriptExport>(_context);

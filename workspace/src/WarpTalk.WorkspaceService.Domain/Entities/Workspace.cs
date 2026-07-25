@@ -45,8 +45,6 @@ public partial class Workspace
 
     public virtual ICollection<WorkspaceInvitation> WorkspaceInvitations { get; set; } = new List<WorkspaceInvitation>();
 
-    public virtual ICollection<WorkspaceKnowledgeGlossary> WorkspaceKnowledgeGlossaries { get; set; } = new List<WorkspaceKnowledgeGlossary>();
-
     public virtual ICollection<WorkspaceMember> WorkspaceMembers { get; set; } = new List<WorkspaceMember>();
 
     public virtual ICollection<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; } = new List<WorkspaceVerifiedDomain>();

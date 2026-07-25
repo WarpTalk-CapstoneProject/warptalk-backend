@@ -62,7 +62,11 @@ public record CreateGlossaryTermDto(
     
     [MaxLength(100, ErrorMessage = "Domain cannot exceed 100 characters.")]
     string? Domain,
-    
+
+    string? Definition,
+    string? UsageNote,
+    [MaxLength(50)] string? PartOfSpeech,
+
     [Range(0, 10, ErrorMessage = "Priority must be between 0 and 10.")]
     int Priority = 0
 );
@@ -81,11 +85,15 @@ public record UpdateGlossaryTermDto(
     
     [MaxLength(100, ErrorMessage = "Domain cannot exceed 100 characters.")]
     string? Domain,
-    
+
+    string? Definition,
+    string? UsageNote,
+    [MaxLength(50)] string? PartOfSpeech,
+
     [Range(0, 10, ErrorMessage = "Priority must be between 0 and 10.")]
     int Priority,
-    
-    [Required(ErrorMessage = "IsActive is required.")] 
+
+    [Required(ErrorMessage = "IsActive is required.")]
     bool IsActive
 );
 
@@ -96,6 +104,9 @@ public record GlossaryTermDto(
     string TargetTerm,
     string? Context,
     string? Domain,
+    string? Definition,
+    string? UsageNote,
+    string? PartOfSpeech,
     int Priority,
     bool IsActive,
     DateTime CreatedAt,
