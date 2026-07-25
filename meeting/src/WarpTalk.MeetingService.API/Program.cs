@@ -132,8 +132,6 @@ builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
-builder.Services.AddHostedService<WarpTalk.MeetingService.Infrastructure.Workers.FractionalBillingWorker>();
-
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:TranslationRoomService"];

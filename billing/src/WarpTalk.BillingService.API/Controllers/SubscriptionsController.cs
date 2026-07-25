@@ -34,7 +34,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
@@ -47,7 +47,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("global")]
-    [AllowAnonymous]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
@@ -62,7 +62,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
@@ -75,7 +75,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPut("workspace/{workspaceId}/change-plan")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(Guid workspaceId, [FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)

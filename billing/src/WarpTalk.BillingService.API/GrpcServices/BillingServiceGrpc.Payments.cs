@@ -24,7 +24,7 @@ public partial class BillingServiceGrpc
         if (!result.IsSuccess)
             throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToFetchTransactionHistory));
 
-        return result.Value.ToGrpc();
+        return result.Value!.ToGrpc();
     }
 
     public override async Task<ProcessPaymentResponse> ProcessPaymentEvent(ProcessPaymentEventRequest request, ServerCallContext context)

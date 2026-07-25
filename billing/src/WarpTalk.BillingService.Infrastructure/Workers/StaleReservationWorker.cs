@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
@@ -70,7 +71,7 @@ public class StaleReservationWorker : BackgroundService
             var sub = await unitOfWork.SubscriptionRepository.GetByIdAsync(reserve.SubscriptionId, cancellationToken);
             if (sub != null)
             {
-                sub.CreditsRemaining += reserve.Amount;
+                sub.ApplyRefund(reserve.Amount);
                 unitOfWork.SubscriptionRepository.Update(sub);
             }
 

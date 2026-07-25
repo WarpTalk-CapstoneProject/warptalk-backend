@@ -6,6 +6,7 @@ using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
+using WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 using WarpTalk.BillingService.Infrastructure.Extensions;
 using WarpTalk.BillingService.Infrastructure.Services;
 using WarpTalk.BillingService.Infrastructure.Workers;
@@ -40,10 +41,14 @@ try
 
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
+    builder.Services.AddScoped<ICreditGrantService, CreditGrantService>();
     builder.Services.AddScoped<IRealtimeSessionBillingService, RealtimeSessionBillingService>();
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
     builder.Services.AddScoped<IPaymentService, PaymentService>();
+    builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
+    builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
+    builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
     builder.Services.AddScoped<IRefundService, RefundService>();
     builder.Services.AddScoped<IUsageService, UsageService>();
@@ -105,7 +110,9 @@ try
                 {
                     var accessToken = context.Request.Query["access_token"];
                     var path = context.HttpContext.Request.Path;
-                    if (!string.IsNullOrEmpty(accessToken) && (path.StartsWithSegments("/hubs") || path.Value.Contains("hub")))
+                    if (!string.IsNullOrEmpty(accessToken) &&
+                        (path.StartsWithSegments("/hubs") ||
+                         path.Value?.Contains("hub", StringComparison.OrdinalIgnoreCase) == true))
                     {
                         context.Token = accessToken;
                     }

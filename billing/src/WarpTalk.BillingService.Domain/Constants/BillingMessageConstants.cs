@@ -250,6 +250,7 @@ public static class BillingMessageConstants
         public const string Workspace = "Workspace";
         public const string Plan = "Plan";
         public const string FailedToTopUpCredits = "Failed to top up credits";
+        public const string DirectTopUpDisabled = "Direct credit top-up is disabled. Credits can only be granted by verified payment processing.";
         public const string AuthenticationRequired = "Authentication required";
         public const string AccessDenied = "Access denied";
         public const string FailedToFetchTransactionHistory = "Failed to fetch transaction history";

@@ -55,7 +55,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
@@ -68,7 +68,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
@@ -81,7 +81,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult> DeactivatePlan(Guid id, CancellationToken cancellationToken)
     {
         var result = await _planService.DeactivatePlanAsync(id, cancellationToken);

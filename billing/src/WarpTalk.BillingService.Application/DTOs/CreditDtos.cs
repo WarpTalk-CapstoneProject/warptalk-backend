@@ -28,7 +28,7 @@ public record ConsumeCreditsRequest(
     string ReferenceType,
 
     Guid? ReferenceId
-);
+) : IWorkspaceScopedRequest;
 
 public record TopUpRequest(
     [Required]
@@ -42,14 +42,23 @@ public record TopUpRequest(
     string ReferenceType,
 
     Guid? ReferenceId
-);
+) : IWorkspaceScopedRequest;
+
+public record GrantCreditsRequest(
+    Guid WorkspaceId,
+    int Amount,
+    string ReferenceType,
+    Guid? ReferenceId,
+    Guid? UserId,
+    string? Description = null
+) : IWorkspaceScopedRequest;
 
 public record SimulatePaymentRequest(
     [Required]
     Guid WorkspaceId,
     decimal Amount = 10m,
     string Currency = PaymentConstants.Currencies.Usd
-);
+) : IWorkspaceScopedRequest;
 
 
 public record CreditTransactionDto(
@@ -92,7 +101,7 @@ public record ManualAdjustCreditsRequest(
 
     [Required]
     string AdminUserId
-);
+) : IWorkspaceScopedRequest;
 
 public record UsageAlertDto(
     Guid WorkspaceId,

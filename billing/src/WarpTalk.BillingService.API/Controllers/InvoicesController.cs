@@ -25,7 +25,7 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetWorkspaceInvoices(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -41,7 +41,7 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("global")]
-    [AllowAnonymous]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetGlobalInvoices(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken)

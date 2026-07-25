@@ -286,7 +286,7 @@ public class SubscriptionService : ISubscriptionService
 
             sub.IsActive = true;
             sub.Status = SubscriptionConstants.SubscriptionStatuses.Active;
-            sub.CreditsRemaining += plan.CreditsPerCycle;
+            sub.ApplyCycleAllocation(plan.CreditsPerCycle);
             sub.CurrentPeriodEnd = DateTime.UtcNow.AddDays(30); // Or based on plan BillingCycle
             sub.UpdatedAt = DateTime.UtcNow;
 

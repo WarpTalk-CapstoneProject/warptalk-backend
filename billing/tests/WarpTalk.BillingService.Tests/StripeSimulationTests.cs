@@ -1,6 +1,8 @@
 using WarpTalk.BillingService.Domain.Constants;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Hosting;
 using Moq;
 using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.DTOs;
@@ -12,15 +14,18 @@ namespace WarpTalk.BillingService.Tests;
 
 public class StripeSimulationTests
 {
-    private readonly Mock<ICreditService> _creditServiceMock;
+    private readonly Mock<ICreditGrantService> _creditGrantServiceMock;
+    private readonly Mock<IWebHostEnvironment> _environmentMock;
     private readonly Mock<ILogger<StripeSimulationController>> _loggerMock;
     private readonly StripeSimulationController _controller;
 
     public StripeSimulationTests()
     {
-        _creditServiceMock = new Mock<ICreditService>();
+        _creditGrantServiceMock = new Mock<ICreditGrantService>();
+        _environmentMock = new Mock<IWebHostEnvironment>();
+        _environmentMock.SetupGet(x => x.EnvironmentName).Returns(Environments.Development);
         _loggerMock = new Mock<ILogger<StripeSimulationController>>();
-        _controller = new StripeSimulationController(_creditServiceMock.Object, _loggerMock.Object);
+        _controller = new StripeSimulationController(_creditGrantServiceMock.Object, _environmentMock.Object, _loggerMock.Object);
     }
 
     [Fact]
@@ -35,7 +40,7 @@ public class StripeSimulationTests
         var request = new StripeWebhookEvent("evt_123", "checkout.session.completed", new StripeEventData(session));
 
         // After constants refactoring, ReferenceType is TransactionConstants.ReferenceTypes.Payment ("payment")
-        _creditServiceMock.Setup(x => x.TopUpCreditsAsync(
+        _creditGrantServiceMock.Setup(x => x.GrantCreditsAsync(
             workspaceId,
             It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == TransactionConstants.ReferenceTypes.Payment),
             It.IsAny<CancellationToken>()))
@@ -46,7 +51,7 @@ public class StripeSimulationTests
 
         // Assert
         Assert.IsType<OkObjectResult>(result);
-        _creditServiceMock.Verify(x => x.TopUpCreditsAsync(
+        _creditGrantServiceMock.Verify(x => x.GrantCreditsAsync(
             workspaceId,
             It.Is<TopUpRequest>(r => r.Amount == expectedCredits && r.ReferenceType == TransactionConstants.ReferenceTypes.Payment),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -65,7 +70,7 @@ public class StripeSimulationTests
 
         // Assert
         Assert.IsType<BadRequestObjectResult>(result);
-        _creditServiceMock.Verify(x => x.TopUpCreditsAsync(
+        _creditGrantServiceMock.Verify(x => x.GrantCreditsAsync(
             It.IsAny<Guid>(),
             It.IsAny<TopUpRequest>(),
             It.IsAny<CancellationToken>()), Times.Never);

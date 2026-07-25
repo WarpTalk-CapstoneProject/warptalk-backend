@@ -191,7 +191,7 @@ public class PaymentServiceTests
         {
             Id = paymentId, SubscriptionId = Guid.NewGuid(),
             Status = PaymentConstants.PaymentStatuses.Pending,
-            Subscription = null
+            Subscription = null!
         };
 
         _mockPaymentRepo.Setup(r => r.GetWithSubscriptionAsync(paymentId, It.IsAny<CancellationToken>()))

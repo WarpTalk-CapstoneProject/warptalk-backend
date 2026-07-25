@@ -15,6 +15,13 @@ public static class PaymentConstants
         public const string Subscription = "Subscription";
         public const string SubscriptionRenewal = "SubscriptionRenewal";
         public const string SubscriptionUpdate = "SubscriptionUpdate";
+
+        public static readonly IReadOnlySet<string> SubscriptionLifecycleTypes = new HashSet<string>
+        {
+            Subscription,
+            SubscriptionRenewal,
+            SubscriptionUpdate
+        };
     }
 
     public static class PaymentStatuses
@@ -71,6 +78,7 @@ public static class PaymentConstants
     public static class StripePrefixes
     {
         public const string Session = "cs_";
+        public const string Invoice = "in_";
         public const string PaymentIntent = "pi_";
         public const string MockSession = "mock_session_";
         public const string MockPaymentIntent = "mock_pi_";

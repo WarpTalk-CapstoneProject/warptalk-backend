@@ -19,6 +19,7 @@ public class BillingRedisSubscriberServiceTests
     private readonly Mock<IClientProxy> _clientProxy = new();
     private readonly Mock<ILogger<BillingRedisSubscriberService>> _logger = new();
     private readonly BillingRedisSubscriberService _service;
+    private readonly TaskCompletionSource _subscribed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private Action<RedisChannel, RedisValue>? _messageHandler;
     private RedisChannel _subscribedChannel;
@@ -35,6 +36,7 @@ public class BillingRedisSubscriberServiceTests
             {
                 _subscribedChannel = channel;
                 _messageHandler = handler;
+                _subscribed.SetResult();
             })
             .Returns(Task.CompletedTask);
 
@@ -48,6 +50,7 @@ public class BillingRedisSubscriberServiceTests
     public async Task StartAsync_SubscribesToBillingNotificationChannel()
     {
         await _service.StartAsync(CancellationToken.None);
+        await _subscribed.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         _subscriber.Verify(s => s.SubscribeAsync(
             It.IsAny<RedisChannel>(),
@@ -61,6 +64,7 @@ public class BillingRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithBillingNotification_BroadcastsToUserBillingGroup()
     {
         await _service.StartAsync(CancellationToken.None);
+        await _subscribed.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var broadcasted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _clientProxy
             .Setup(p => p.SendCoreAsync(
@@ -79,9 +83,7 @@ public class BillingRedisSubscriberServiceTests
             Content = "Your billing credits changed."
         };
 
-        _messageHandler?.Invoke(
-            RedisChannel.Literal(BillingMessageConstants.Notifications.Channel),
-            new RedisValue(JsonSerializer.Serialize(message)));
+        await PublishMessageAsync(JsonSerializer.Serialize(message));
 
         await broadcasted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -102,6 +104,7 @@ public class BillingRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithNonBillingNotification_DoesNotBroadcast()
     {
         await _service.StartAsync(CancellationToken.None);
+        await _subscribed.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var message = new RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
@@ -111,9 +114,7 @@ public class BillingRedisSubscriberServiceTests
             Content = "Not billing."
         };
 
-        _messageHandler?.Invoke(
-            RedisChannel.Literal(BillingMessageConstants.Notifications.Channel),
-            new RedisValue(JsonSerializer.Serialize(message)));
+        await PublishMessageAsync(JsonSerializer.Serialize(message));
 
         _clients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
         _clientProxy.Verify(p => p.SendCoreAsync(
@@ -126,10 +127,9 @@ public class BillingRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithEmptyMessage_DoesNotBroadcast()
     {
         await _service.StartAsync(CancellationToken.None);
+        await _subscribed.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        _messageHandler?.Invoke(
-            RedisChannel.Literal(BillingMessageConstants.Notifications.Channel),
-            RedisValue.EmptyString);
+        await PublishMessageAsync(RedisValue.EmptyString);
 
         _clients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
         _clientProxy.Verify(p => p.SendCoreAsync(
@@ -142,11 +142,17 @@ public class BillingRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithInvalidJson_DoesNotBroadcast()
     {
         await _service.StartAsync(CancellationToken.None);
+        await _subscribed.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        _messageHandler?.Invoke(
-            RedisChannel.Literal(BillingMessageConstants.Notifications.Channel),
-            new RedisValue("{ invalid_json: "));
+        await PublishMessageAsync("{ invalid_json: ");
 
         _clients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
+    }
+
+    private async Task PublishMessageAsync(RedisValue message)
+    {
+        var channel = RedisChannel.Literal(BillingMessageConstants.Notifications.Channel);
+        _messageHandler?.Invoke(channel, message);
+        await Task.Yield();
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Hosting;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
@@ -11,18 +12,28 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/[controller]")]
 public class StripeSimulationController : ControllerBase
 {
-    private readonly ICreditService _creditService;
+    private readonly ICreditGrantService _creditGrantService;
+    private readonly IWebHostEnvironment _environment;
     private readonly ILogger<StripeSimulationController> _logger;
 
-    public StripeSimulationController(ICreditService creditService, ILogger<StripeSimulationController> logger)
+    public StripeSimulationController(
+        ICreditGrantService creditGrantService,
+        IWebHostEnvironment environment,
+        ILogger<StripeSimulationController> logger)
     {
-        _creditService = creditService;
+        _creditGrantService = creditGrantService;
+        _environment = environment;
         _logger = logger;
     }
 
     [HttpPost("webhook")]
     public async Task<IActionResult> HandleSimulatedWebhook([FromBody] StripeWebhookEvent request, CancellationToken ct)
     {
+        if (!_environment.IsDevelopment())
+        {
+            return NotFound();
+        }
+
         var session = request.data.@object;
         if (session == null || !Guid.TryParse(session.client_reference_id, out var workspaceId))
         {
@@ -37,7 +48,7 @@ public class StripeSimulationController : ControllerBase
         // Stripe amounts are in the smallest currency unit (cents for USD) — 1 cent = 1 credit.
         int creditsToTopUp = (int)session.amount_total;
 
-        var result = await _creditService.TopUpCreditsAsync(
+        var result = await _creditGrantService.GrantCreditsAsync(
             workspaceId,
             new TopUpRequest(workspaceId, creditsToTopUp, TransactionConstants.ReferenceTypes.Payment, Guid.NewGuid()),
             ct);
@@ -50,7 +61,7 @@ public class StripeSimulationController : ControllerBase
         return Ok(new SimulatedPaymentResponse(
             BillingMessageConstants.SuccessMessages.SimulatePaymentMessage,
             creditsToTopUp,
-            result.Value.CurrentCredits,
+            result.Value!.CurrentCredits,
             session
         ));
     }
@@ -58,6 +69,11 @@ public class StripeSimulationController : ControllerBase
     [HttpGet("generate-test-payload")]
     public IActionResult GenerateTestPayload([FromQuery] long amountTotal = 5000, [FromQuery] Guid? workspaceId = null)
     {
+        if (!_environment.IsDevelopment())
+        {
+            return NotFound();
+        }
+
         var session = new StripeCheckoutSession(
             $"{PaymentConstants.StripeSimulation.SessionPrefix}{Guid.NewGuid().ToString("N").Substring(0, 20)}",
             amountTotal,

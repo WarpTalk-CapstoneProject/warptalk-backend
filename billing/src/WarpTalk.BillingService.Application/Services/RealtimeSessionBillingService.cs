@@ -258,8 +258,7 @@ public class RealtimeSessionBillingService : IRealtimeSessionBillingService
                 return Result.Failure<bool>(BillingMessageConstants.ApiErrorMessages.BillingSubscriptionInvalid, ErrorCodes.BillingSubscriptionNotFound);
             }
 
-            sub.CreditsRemaining += reservation.Amount;
-            sub.UpdatedAt = DateTime.UtcNow;
+            sub.ApplyRefund(reservation.Amount);
             _unitOfWork.SubscriptionRepository.Update(sub);
 
             Guid.TryParse(idempotencyKey, out var refId);

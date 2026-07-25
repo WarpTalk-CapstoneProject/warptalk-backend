@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
@@ -19,7 +20,7 @@ public static class SubscriptionRenewalHelper
         var creditsToAdd = plan.CreditsPerCycle;
         var (newStart, newEnd) = CalculateNextCycleDates(subscription.CurrentPeriodEnd, plan.BillingCycle);
 
-        subscription.CreditsRemaining += creditsToAdd;
+        subscription.ApplyCycleAllocation(creditsToAdd);
         subscription.CreditsUsedThisCycle = 0;
         subscription.CurrentPeriodStart = newStart;
         subscription.CurrentPeriodEnd = newEnd;

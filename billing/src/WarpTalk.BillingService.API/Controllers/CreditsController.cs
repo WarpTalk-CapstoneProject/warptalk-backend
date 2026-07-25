@@ -3,16 +3,15 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Hosting;
+using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
-
-using System.Security.Claims;
-
-
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -22,13 +21,18 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class CreditsController : ControllerBase
 {
     private readonly ICreditService _creditService;
-    public CreditsController(ICreditService creditService)
+    private readonly IWebHostEnvironment _environment;
+
+    public CreditsController(
+        ICreditService creditService,
+        IWebHostEnvironment environment)
     {
         _creditService = creditService;
+        _environment = environment;
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
@@ -41,6 +45,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpPost("consume-direct")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner)]
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCreditsDirectly([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsDirectlyAsync(request.WorkspaceId, request, cancellationToken);
@@ -53,11 +58,17 @@ public class CreditsController : ControllerBase
     }
 
     [HttpPost("topup")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner)]
     public async Task<ActionResult<CreditBalanceDto>> TopUpCredits([FromBody] TopUpRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.TopUpCreditsAsync(request.WorkspaceId, request, cancellationToken);
         if (!result.IsSuccess)
         {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+            {
+                return StatusCode(StatusCodes.Status410Gone, new ApiErrorResponse(result.Error, result.ErrorCode));
+            }
+
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
@@ -65,7 +76,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
@@ -80,6 +91,11 @@ public class CreditsController : ControllerBase
     [HttpPost("simulate-payment")]
     public async Task<ActionResult> SimulatePayment([FromBody] SimulatePaymentRequest request, CancellationToken cancellationToken = default)
     {
+        if (!_environment.IsDevelopment())
+        {
+            return NotFound();
+        }
+
         var result = await _creditService.SimulatePaymentAsync(request.WorkspaceId, request.Amount, request.Currency, cancellationToken);
         if (!result.IsSuccess)
         {
@@ -90,7 +106,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpPost("manual-adjust")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<CreditTransactionDto>> ManualAdjustCredits([FromBody] ManualAdjustCreditsRequest request, CancellationToken cancellationToken)
     {
         var adminUserId = User.GetUserId()?.ToString() ?? Guid.Empty.ToString();
@@ -106,7 +122,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("history/global")]
-    [AllowAnonymous]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);

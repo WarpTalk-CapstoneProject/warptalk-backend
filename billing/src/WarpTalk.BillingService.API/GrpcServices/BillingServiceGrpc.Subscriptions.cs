@@ -27,7 +27,7 @@ public partial class BillingServiceGrpc
             throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToCreateSubscription));
         }
 
-        return result.Value.ToGrpc();
+        return result.Value!.ToGrpc();
     }
 
     public override async Task<SubscriptionResponse> GetActiveSubscription(GetActiveSubscriptionRequest request, ServerCallContext context)
@@ -42,7 +42,7 @@ public partial class BillingServiceGrpc
             return GrpcBillingMapper.ToEmptySubscriptionResponse(result.Error ?? BillingMessageConstants.Grpc.NoActiveSubscription);
         }
 
-        return result.Value.ToGrpc();
+        return result.Value!.ToGrpc();
     }
 
     public override async Task<SubscriptionResponse> CancelSubscription(CancelSubscriptionRequest request, ServerCallContext context)

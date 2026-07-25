@@ -32,6 +32,7 @@ public static class ApiMessageConstants
         public const string BillingSimulationFailed = "Failed to process simulated payment.";
         public const string BillingStripeUpdateFailed = "Failed to update subscription on Stripe. Please check your payment method and try again.";
         public const string BillingTopUpMinimumRequired = "Top-up amount must be at least {0} credits to meet Stripe's minimum payment requirement.";
+        public const string BillingDirectTopUpDisabled = "Direct credit top-up is disabled. Use Stripe Checkout and a verified payment webhook to grant credits.";
     }
 
     public static class ValidationMessages

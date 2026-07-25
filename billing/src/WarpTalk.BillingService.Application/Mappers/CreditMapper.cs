@@ -56,6 +56,32 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
+    public static GrantCreditsRequest ToGrantCreditsRequest(
+        this TopUpRequest request,
+        Guid? userId,
+        string? description = null) => new(
+        request.WorkspaceId,
+        request.Amount,
+        request.ReferenceType,
+        request.ReferenceId,
+        userId,
+        description);
+
+    public static CreditTransaction ToEntity(this GrantCreditsRequest request, Subscription sub) => new()
+    {
+        Id = Guid.NewGuid(),
+        SubscriptionId = sub.Id,
+        WorkspaceId = request.WorkspaceId,
+        UserId = request.UserId ?? sub.UserId,
+        Amount = request.Amount,
+        Type = TransactionConstants.TransactionTypes.TopUp,
+        Description = request.Description ?? BillingMessageConstants.SuccessMessages.StripeCreditTopUp,
+        ReferenceType = request.ReferenceType,
+        ReferenceId = request.ReferenceId,
+        BalanceAfter = sub.CreditsRemaining,
+        CreatedAt = DateTime.UtcNow
+    };
+
     public static CreditTransaction ToEntity(this ManualAdjustCreditsRequest request, Subscription sub) => new()
     {
         Id = Guid.NewGuid(),

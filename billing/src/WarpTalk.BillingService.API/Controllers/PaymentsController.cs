@@ -39,7 +39,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -55,7 +55,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
@@ -81,17 +81,18 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost("checkout")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
         try
         {
             var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
             if (!createResult.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
-        }
-            string url = createResult.Value;
+            {
+                return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
+            }
+
+            string url = createResult.Value!;
             return Ok(new { url });
         }
         catch (ArgumentException ex)
@@ -111,10 +112,11 @@ public class PaymentsController : ControllerBase
         {
             var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
             if (!sessionResult.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
-        }
-            var session = sessionResult.Value;
+            {
+                return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
+            }
+
+            var session = sessionResult.Value!;
 
             // Validate workspace ID from session metadata
             string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
@@ -124,7 +126,11 @@ public class PaymentsController : ControllerBase
             }
 
             // Verify the requesting user is an Owner or Admin of this workspace
-            var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(workspaceId, userId.Value, "Owner", "Admin");
+            var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                workspaceId,
+                userId.Value,
+                WorkspaceRoleConstants.Owner,
+                WorkspaceRoleConstants.Admin);
             if (!accessResult.IsSuccess || !accessResult.Value)
             {
                 return StatusCode(403, new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden));
@@ -149,9 +155,9 @@ public class PaymentsController : ControllerBase
                     BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
                 ));
                 if (!processResult.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
-        }
+                {
+                    return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
+                }
             }
 
             return Ok(session);

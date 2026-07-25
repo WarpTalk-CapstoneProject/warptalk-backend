@@ -23,7 +23,7 @@ public class RefundsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<RefundDto>> RefundPayment([FromBody] RefundPaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _refundService.RefundPaymentAsync(

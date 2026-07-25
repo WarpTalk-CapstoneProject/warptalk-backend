@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using Grpc.Core;
+using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
@@ -13,7 +14,7 @@ public static class GrpcAuthorizationExtensions
         this IWorkspaceAuthorizationService workspaceAuthService,
         Guid workspaceId, 
         ServerCallContext context, 
-        string allowedRoles = "Owner, Admin")
+        string allowedRoles = WorkspaceRoleConstants.OwnerAdmin)
     {
         var httpContext = context.GetHttpContext();
         var userId = httpContext.User.GetUserId();
@@ -26,7 +27,7 @@ public static class GrpcAuthorizationExtensions
         var authResult = await workspaceAuthService.AuthorizeAsync(workspaceId, userId.Value, allowedRoles, context.CancellationToken);
         if (!authResult.IsSuccess)
         {
-            var statusCode = authResult.ErrorCode == "FORBIDDEN" ? StatusCode.PermissionDenied : StatusCode.Internal;
+            var statusCode = authResult.ErrorCode == ErrorCodes.Forbidden ? StatusCode.PermissionDenied : StatusCode.Internal;
             throw new RpcException(new Status(statusCode, authResult.Error ?? BillingMessageConstants.Grpc.AccessDenied));
         }
     }

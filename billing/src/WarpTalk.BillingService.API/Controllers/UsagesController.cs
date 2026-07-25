@@ -44,7 +44,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/report")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<BillingReportDto>> GetBillingReport(Guid workspaceId, [FromQuery] BillingReportQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetBillingReportAsync(workspaceId, query, cancellationToken);
@@ -57,7 +57,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/chart")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<UsageChartDto>> GetWorkspaceUsageChart(Guid workspaceId, [FromQuery] UsageChartQuery query, CancellationToken cancellationToken)
     {
         var result = await _analyticsService.GetWorkspaceUsageChartAsync(workspaceId, query, cancellationToken);
@@ -69,7 +69,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/breakdown")]
-    [Authorize(Roles = "Owner, Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
     public async Task<ActionResult<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoption(
         Guid workspaceId,
         [FromQuery] UsageChartQuery query,
@@ -84,7 +84,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalMetricsAsync(cancellationToken);
@@ -96,7 +96,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/chart")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart([FromQuery] UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalUsageChartAsync(query, cancellationToken);
@@ -108,7 +108,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/breakdown")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdown(
         [FromQuery] UsageChartQuery query,
         CancellationToken cancellationToken = default)
@@ -122,7 +122,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/top-workspaces")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<IEnumerable<TopWorkspaceDto>>> GetTopWorkspaces(
         [FromQuery] UsageChartQuery query,
         CancellationToken cancellationToken = default)
@@ -136,7 +136,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/alerts")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetUsageAlertsAsync(cancellationToken);
@@ -160,7 +160,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPut("rates")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
     public async Task<ActionResult<ServiceRatesDto>> UpdateServiceRates([FromBody] UpdateServiceRatesRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateService.UpdateServiceRatesAsync(request, cancellationToken);

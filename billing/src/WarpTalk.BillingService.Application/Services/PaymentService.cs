@@ -275,7 +275,7 @@ public class PaymentService : IPaymentService
                     };
                     
                     // Top up subscription with plan's cycle credits and reset tracker
-                    currentSub.CreditsRemaining += plan.CreditsPerCycle; // Credit allocation
+                    currentSub.ApplyCycleAllocation(plan.CreditsPerCycle); // Credit allocation
                     currentSub.CreditsUsedThisCycle = 0; // Reset usage counter
                     currentSub.UpdatedAt = DateTime.UtcNow; // Update timestamp
 

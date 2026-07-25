@@ -19,7 +19,7 @@ public partial class BillingServiceGrpc
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(BillingMessageConstants.Grpc.Workspace, request.WorkspaceId);
 
-        return result.Value.ToGrpc();
+        return result.Value!.ToGrpc();
     }
 
     public override async Task<ConsumeCreditsResponse> ConsumeCredits(ConsumeCreditsRequest request, ServerCallContext context)
@@ -37,23 +37,15 @@ public partial class BillingServiceGrpc
             throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToConsumeCredits));
         }
 
-        return result.Value.ToConsumeCreditsResponse();
+        return result.Value!.ToConsumeCreditsResponse();
     }
 
     public override async Task<GetCreditsResponse> TopUpCredits(TopUpRequest request, ServerCallContext context)
     {
-        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
-            throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
-
-        var result = await _creditService.TopUpCreditsAsync(
-            workspaceId, 
-            request.ToDto(workspaceId), 
-            context.CancellationToken);
-
-        if (!result.IsSuccess)
-            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToTopUpCredits));
-
-        return result.Value.ToGrpc();
+        await Task.CompletedTask;
+        throw new RpcException(new Status(
+            StatusCode.PermissionDenied,
+            BillingMessageConstants.Grpc.DirectTopUpDisabled));
     }
 
     public override async Task<CreditHistoryResponse> GetCreditHistory(GetHistoryRequest request, ServerCallContext context)
@@ -69,6 +61,6 @@ public partial class BillingServiceGrpc
         if (!result.IsSuccess)
             throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToFetchCreditHistory));
 
-        return result.Value.ToGrpc();
+        return result.Value!.ToGrpc();
     }
 }

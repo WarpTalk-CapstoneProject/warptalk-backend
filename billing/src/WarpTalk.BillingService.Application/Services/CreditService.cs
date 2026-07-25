@@ -102,60 +102,9 @@ public class CreditService : ICreditService
     public Task<Result<CreditBalanceDto>> TopUpCreditsAsync(
         Guid workspaceId, TopUpRequest request, CancellationToken cancellationToken = default)
     {
-        return ConcurrencyRetryHelper.ExecuteWithConcurrencyRetryAsync(_unitOfWork, _logger, workspaceId, async () =>
-        {
-            // Minimum top-up must meet Stripe's minimum charge requirement (e.g., $0.50 - $0.60 USD)
-            if (request.Amount < PaymentConstants.StripeLimits.MinimumTopUpCredits)
-                return Result.Failure<CreditBalanceDto>(
-                    string.Format(ApiMessageConstants.ErrorMessages.BillingTopUpMinimumRequired, PaymentConstants.StripeLimits.MinimumTopUpCredits), 
-                    ErrorCodes.BillingInvalidAmount);
-
-            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
-            if (!subResult.IsSuccess)
-                return Result.Failure<CreditBalanceDto>(subResult.Error, subResult.ErrorCode);
-            var sub = subResult.Value;
-
-            sub.CreditsRemaining += request.Amount;
-            sub.UpdatedAt = DateTime.UtcNow;
-            _unitOfWork.SubscriptionRepository.Update(sub);
-
-            var transaction = request.ToEntity(sub);
-            var paymentId = Guid.NewGuid();
-            transaction.ReferenceId = paymentId;
-            transaction.ReferenceType = TransactionConstants.ReferenceTypes.StripePayment;
-
-            await _unitOfWork.CreditTransactionRepository.AddAsync(transaction, cancellationToken);
-
-            decimal credits = request.Amount;
-            decimal estimatedCostUsd = credits * 0.01m; // 1 USD = 100 Credits (1 Credit = $0.01 USD)
-
-            // Create Payment record
-            var paymentTx = new TopUpPaymentCreationRequest(
-                request,
-                sub,
-                paymentId,
-                estimatedCostUsd,
-                PaymentConstants.Currencies.Usd).ToEntity();
-            await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
-
-            // Create Invoice record
-            var invoice = request.ToEntity(paymentTx);
-            await _unitOfWork.InvoiceRepository.AddAsync(invoice, cancellationToken);
-
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-            await BillingNotificationHelper.PublishCreditUpdateAsync(
-                _messagePublisher,
-                _logger,
-                NotificationMapper.ToCreditsUpdatedMessage(
-                    sub.UserId,
-                    sub.CreditsRemaining,
-                    BillingMessageConstants.SuccessMessages.CreditsAddedTitle,
-                    string.Format(BillingMessageConstants.SuccessMessages.CreditsAddedContent, request.Amount)),
-                cancellationToken);
-
-            return Result.Success(sub.ToCreditBalanceDto(workspaceId));
-        }, cancellationToken);
+        return Task.FromResult(Result.Failure<CreditBalanceDto>(
+            ApiMessageConstants.ErrorMessages.BillingDirectTopUpDisabled,
+            ErrorCodes.Forbidden));
     }
 
     // TODO: This method is for internal testing/simulation only and does NOT integrate with real Stripe.
@@ -176,7 +125,7 @@ public class CreditService : ICreditService
 
         var paymentId = Guid.NewGuid();
         // TODO: Mock ID only — not a real Stripe invoice ID. Replace with actual Stripe invoice ID from webhook.
-        var stripeInvoiceId = "in_" + Guid.NewGuid().ToString("N")[..14];
+        var stripeInvoiceId = PaymentConstants.StripePrefixes.Invoice + Guid.NewGuid().ToString("N")[..14];
 
         var paymentTx = new SimulatedPaymentCreationRequest(
             sub,
@@ -262,8 +211,7 @@ public class CreditService : ICreditService
                 return Result.Failure<CreditTransactionDto>(subResult.Error, subResult.ErrorCode);
             var sub = subResult.Value;
 
-            sub.CreditsRemaining += request.Amount;
-            sub.UpdatedAt = DateTime.UtcNow;
+            sub.ApplyAdjustment(request.Amount);
             _unitOfWork.SubscriptionRepository.Update(sub);
 
             var adjustmentTransaction = request.ToEntity(sub);
