@@ -16,6 +16,41 @@ namespace WarpTalk.WorkspaceService.Tests;
 public class AiPolicyResolverTests
 {
     [Fact]
+    public async Task ResolvePolicySettingsAsync_ShouldEnablePiiByDefault_WhenPoliciesAreMissing()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            AiUsagePolicy = null
+        };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{}"
+        };
+
+        var workspaceRepository = Substitute.For<IWorkspaceRepository>();
+        workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        var unitOfWork = Substitute.For<IUnitOfWork>();
+        unitOfWork.WorkspaceRepository.Returns(workspaceRepository);
+
+        var resolver = new AiPolicyResolver(Substitute.For<ILogger<AiPolicyResolver>>());
+
+        // Act
+        var result = await resolver.ResolvePolicySettingsAsync(unitOfWork, document);
+
+        // Assert
+        Assert.True(result.PiiEnabled);
+        Assert.False(result.DlpEnabled);
+        Assert.True(result.AllowExternalLlm);
+    }
+
+    [Fact]
     public async Task ResolvePolicySettingsAsync_ShouldAlwaysAllowExternalLlm_WhenPoliciesDisableIt()
     {
         // Arrange

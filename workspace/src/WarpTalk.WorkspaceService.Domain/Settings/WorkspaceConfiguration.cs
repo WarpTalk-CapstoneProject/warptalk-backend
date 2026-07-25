@@ -68,7 +68,15 @@ public class WorkspaceConfiguration
     private static AiUsagePolicyConfiguration NormalizeAiUsagePolicy(AiUsagePolicyConfiguration? value)
     {
         return value == null
-            ? new AiUsagePolicyConfiguration(AllowExternalLlm: true, RedactPii: null, Dlp: null, TranslationProfile: null)
+            ? new AiUsagePolicyConfiguration(
+                AllowExternalLlm: true,
+                RedactPii: new PiiRedactionConfiguration(Enabled: true),
+                Dlp: new DlpConfiguration(Enabled: false, KeywordsBlacklist: new List<string>()),
+                TranslationProfile: new TranslationProfileConfiguration(
+                    TranslationTone: "professional",
+                    LanguageSpecificRules: new LanguageSpecificRules(
+                        VietnameseHonorificStyle: "formal_hierarchical",
+                        JapaneseHonorificStyle: "keigo_teineigo")))
             : value with { AllowExternalLlm = true };
     }
 }

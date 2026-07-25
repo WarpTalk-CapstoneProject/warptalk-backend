@@ -25,7 +25,7 @@ public class AiPolicyResolver : IAiPolicyResolver
         WorkspaceDocument document,
         CancellationToken ct = default)
     {
-        bool piiEnabled = false;
+        bool piiEnabled = true;
         bool dlpEnabled = false;
         var keywordsBlacklist = new System.Collections.Generic.List<string>();
         // WarpTalk has no local embedding provider in production; AI-context documents

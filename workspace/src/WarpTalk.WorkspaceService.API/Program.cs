@@ -20,7 +20,6 @@ using WarpTalk.WorkspaceService.API.Providers;
 using WarpTalk.WorkspaceService.Infrastructure.Services;
 using WarpTalk.WorkspaceService.Infrastructure;
 using WarpTalk.Shared.Extensions;
-using MassTransit;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,15 +87,13 @@ builder.Services.AddScoped<IVerifiedDomainService, VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
 builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
-builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, HybridWorkspaceDocumentEventPublisher>();
+builder.Services.AddScoped<IWorkspaceDocumentEventPublisher, RedisDocumentEventPublisher>();
 builder.Services.AddScoped<IWorkspaceEventPublisher, RedisWorkspaceEventPublisher>();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
 builder.Services.AddHostedService<DocumentEmbeddingIndexResultConsumerService>();
 builder.Services.AddHostedService<MeetingStartedEventConsumer>();
-
-builder.Services.AddWarpTalkMassTransit(builder.Configuration);
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();

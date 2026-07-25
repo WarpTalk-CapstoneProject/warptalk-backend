@@ -698,7 +698,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (!isOwnerOrAdmin && !isDocOwner)
             {
-                return Result.Failure("Forbidden. Only owner, admin, or document owner can restore.", ErrorCodes.Forbidden);
+                var audit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                    a => a.DocumentId == document.Id && a.Action == WorkspaceDocumentConstants.AuditActions.ArchiveDocument, "", ct);
+                var isArchiver = audit != null && audit.ActorId == userId;
+                if (!isArchiver)
+                {
+                    return Result.Failure("Forbidden. Only owner, admin, document owner, or archiver can restore.", ErrorCodes.Forbidden);
+                }
             }
 
             if (document.Status != WorkspaceDocumentStatus.archived.ToString())

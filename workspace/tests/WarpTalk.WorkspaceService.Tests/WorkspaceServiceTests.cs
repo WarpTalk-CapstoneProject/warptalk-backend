@@ -620,7 +620,13 @@ public class WorkspaceServiceTests
             new List<string>(),
             true,
             true,
-            null,
+            new AiUsagePolicyDto(
+                true,
+                new PiiRedactionDto(true),
+                new DlpDto(true, new List<string> { "confidential" }),
+                new TranslationProfileDto(
+                    "professional",
+                    new LanguageSpecificRulesDto("formal_hierarchical", "keigo_teineigo"))),
             false
         );
 
@@ -645,7 +651,19 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        await _workspaceRepository.Received(1).UpdateSettingsAsync(workspaceId, Arg.Is<WorkspaceConfiguration>(c => c.DefaultLanguage == "vi"), userId, Arg.Any<CancellationToken>());
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId,
+            Arg.Is<WorkspaceConfiguration>(c =>
+                c.DefaultLanguage == "vi"
+                && c.AiUsagePolicy != null
+                && c.AiUsagePolicy.RedactPii != null
+                && c.AiUsagePolicy.RedactPii.Enabled
+                && c.AiUsagePolicy.Dlp != null
+                && c.AiUsagePolicy.Dlp.Enabled
+                && c.AiUsagePolicy.Dlp.KeywordsBlacklist != null
+                && c.AiUsagePolicy.Dlp.KeywordsBlacklist.Contains("confidential")),
+            userId,
+            Arg.Any<CancellationToken>());
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 

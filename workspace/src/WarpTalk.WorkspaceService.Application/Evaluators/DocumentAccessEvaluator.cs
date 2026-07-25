@@ -88,14 +88,20 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
     {
         var isPublishedDocument = IsPublishedDocumentStatus(document.Status);
 
-        // Archived check: only Owner/Admin or Document Owner can view/download archived documents.
+        // Archived check: only Owner/Admin, Document Owner, or the Archiver can view/download archived documents.
         if (string.Equals(document.Status, WorkspaceDocumentStatus.archived.ToString(), StringComparison.OrdinalIgnoreCase))
         {
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
             var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
             if (!isOwnerOrAdmin && !isDocOwner)
             {
-                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+                var audit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                    a => a.DocumentId == document.Id && a.Action == WorkspaceDocumentConstants.AuditActions.ArchiveDocument, "", ct);
+                var isArchiver = audit != null && audit.ActorId == userId;
+                if (!isArchiver)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+                }
             }
         }
 

@@ -23,6 +23,14 @@ public class WorkspaceConfigurationTests
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
         Assert.NotNull(config.AiUsagePolicy);
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
+        Assert.NotNull(config.AiUsagePolicy.RedactPii);
+        Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
+        Assert.NotNull(config.AiUsagePolicy.Dlp);
+        Assert.False(config.AiUsagePolicy.Dlp.Enabled);
+        Assert.NotNull(config.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.Empty(config.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.NotNull(config.AiUsagePolicy.TranslationProfile);
+        Assert.Equal("professional", config.AiUsagePolicy.TranslationProfile.TranslationTone);
     }
 
     [Fact]
@@ -44,6 +52,8 @@ public class WorkspaceConfigurationTests
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
         Assert.NotNull(config.AiUsagePolicy);
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
+        Assert.NotNull(config.AiUsagePolicy.RedactPii);
+        Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
     }
 
     [Fact]
