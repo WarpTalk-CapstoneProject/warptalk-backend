@@ -108,7 +108,8 @@ public static class WorkspaceMapper
             config.AllowExternalLlm,
             config.RedactPii.ToDto(),
             config.Dlp.ToDto(),
-            config.TranslationProfile.ToDto()
+            config.TranslationProfile.ToDto(),
+            config.UseGlobalGlossary
         );
     }
 
@@ -118,7 +119,8 @@ public static class WorkspaceMapper
             dto.AllowExternalLlm,
             dto.RedactPii.ToConfiguration(),
             dto.Dlp.ToConfiguration(),
-            dto.TranslationProfile.ToConfiguration()
+            dto.TranslationProfile.ToConfiguration(),
+            dto.UseGlobalGlossary
         );
     }
 

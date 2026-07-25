@@ -6,7 +6,8 @@ public record AiUsagePolicyDto(
     bool? AllowExternalLlm,
     PiiRedactionDto? RedactPii,
     DlpDto? Dlp,
-    TranslationProfileDto? TranslationProfile
+    TranslationProfileDto? TranslationProfile,
+    bool? UseGlobalGlossary = null
 );
 
 public record PiiRedactionDto(

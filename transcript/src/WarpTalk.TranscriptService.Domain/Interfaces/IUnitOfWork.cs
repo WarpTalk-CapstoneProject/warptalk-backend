@@ -12,6 +12,8 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<TranscriptCorrection> TranscriptCorrections { get; }
     IGenericRepository<Glossary> Glossaries { get; }
     IGenericRepository<GlossaryTerm> GlossaryTerms { get; }
+    IGenericRepository<GlobalGlossaryTerm> GlobalGlossaryTerms { get; }
+    IGenericRepository<GlobalGlossaryAudit> GlobalGlossaryAudits { get; }
     IGenericRepository<TranscriptExport> TranscriptExports { get; }
     IGenericRepository<TranslationContent> TranslationContents { get; }
     IGenericRepository<SegmentTranslationLink> SegmentTranslationLinks { get; }

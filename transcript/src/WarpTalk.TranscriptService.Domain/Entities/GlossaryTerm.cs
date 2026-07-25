@@ -17,6 +17,12 @@ public partial class GlossaryTerm
 
     public string? Domain { get; set; }
 
+    public string? Definition { get; set; }
+
+    public string? UsageNote { get; set; }
+
+    public string? PartOfSpeech { get; set; }
+
     public int Priority { get; set; }
 
     public bool IsActive { get; set; }

@@ -83,7 +83,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             {
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/api/v1/meetings/chat-hub"))
+                // SignalR can't attach an Authorization header, and the chat file download link is
+                // opened as a plain <a href> (no header either) — both fall back to a query-string token.
+                var isChatHub = path.StartsWithSegments("/api/v1/meetings/chat-hub");
+                var isChatFileDownload = path.Value != null && path.Value.Contains("/chat/files/") && path.Value.EndsWith("/download");
+                if (!string.IsNullOrEmpty(accessToken) && (isChatHub || isChatFileDownload))
                 {
                     context.Token = accessToken;
                 }
@@ -96,9 +100,22 @@ builder.Services.AddSignalR();
 
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
+builder.Services.AddHttpClient<ILiveKitEgressService, LiveKitEgressService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
+
+// Polls + Q&A
+builder.Services.AddScoped<IPollsService, PollsService>();
+builder.Services.AddScoped<IQuestionsService, QuestionsService>();
+
+// Breakout rooms (scoped-down)
+builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
+
+// WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
+// fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
+// authoritative election path).
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallbackConsumerWorker>();
 
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
@@ -107,6 +124,7 @@ builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAs
 builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
+builder.Services.AddScoped<IMeetingChatFileStorage, WarpTalk.MeetingService.Infrastructure.Storage.LocalMeetingChatFileStorage>();
 builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 
 // History service

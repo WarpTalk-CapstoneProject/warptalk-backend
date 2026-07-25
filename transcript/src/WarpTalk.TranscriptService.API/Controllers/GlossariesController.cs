@@ -15,10 +15,29 @@ namespace WarpTalk.TranscriptService.API.Controllers;
 public class GlossariesController : ControllerBase
 {
     private readonly IGlossaryService _glossaryService;
+    private readonly IGlobalGlossaryService _globalGlossaryService;
 
-    public GlossariesController(IGlossaryService glossaryService)
+    public GlossariesController(IGlossaryService glossaryService, IGlobalGlossaryService globalGlossaryService)
     {
         _glossaryService = glossaryService;
+        _globalGlossaryService = globalGlossaryService;
+    }
+
+    /// <summary>
+    /// Read-only, any authenticated user: the currently-published global glossary terms, so the
+    /// workspace Terminology UI can show which system-managed terms apply and let the user
+    /// override one with a workspace-level term of the same key. See
+    /// docs/global-glossary-plan.md §5.5.4. Unlike GlobalGlossariesController this has no
+    /// [Authorize(Roles = "admin")] — it only ever returns published rows.
+    /// </summary>
+    [HttpGet("global")]
+    public async Task<ActionResult<IEnumerable<GlobalGlossaryTermDto>>> GetPublishedGlobalTerms(CancellationToken cancellationToken)
+    {
+        var result = await _globalGlossaryService.GetTermsAsync(
+            new GlobalGlossaryTermQuery(Page: 1, PageSize: 200, Status: "published"), cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+
+        return Ok(result.Value!.Items);
     }
 
     [HttpPost]

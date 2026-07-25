@@ -20,6 +20,10 @@ public partial class TranscriptDbContext : DbContext
 
     public virtual DbSet<GlossaryTerm> GlossaryTerms { get; set; }
 
+    public virtual DbSet<GlobalGlossaryTerm> GlobalGlossaryTerms { get; set; }
+
+    public virtual DbSet<GlobalGlossaryAudit> GlobalGlossaryAudits { get; set; }
+
     public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
     public virtual DbSet<Transcript> Transcripts { get; set; }
@@ -119,6 +123,11 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.Domain)
                 .HasMaxLength(50)
                 .HasColumnName("domain");
+            entity.Property(e => e.Definition).HasColumnName("definition");
+            entity.Property(e => e.UsageNote).HasColumnName("usage_note");
+            entity.Property(e => e.PartOfSpeech)
+                .HasMaxLength(50)
+                .HasColumnName("part_of_speech");
             entity.Property(e => e.GlossaryId).HasColumnName("glossary_id");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
@@ -143,6 +152,81 @@ public partial class TranscriptDbContext : DbContext
                 .HasForeignKey(d => d.GlossaryId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("glossary_terms_glossary_id_fkey");
+        });
+
+        modelBuilder.Entity<GlobalGlossaryTerm>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("global_glossary_terms_pkey");
+
+            entity.ToTable("global_glossary_terms", "transcript");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.Term)
+                .HasMaxLength(255)
+                .HasColumnName("term");
+            entity.Property(e => e.PreferredTranslation)
+                .HasMaxLength(255)
+                .HasColumnName("preferred_translation");
+            entity.Property(e => e.SourceLanguage)
+                .HasMaxLength(15)
+                .HasColumnName("source_language");
+            entity.Property(e => e.TargetLanguage)
+                .HasMaxLength(15)
+                .HasColumnName("target_language");
+            entity.Property(e => e.BusinessDomain)
+                .HasMaxLength(100)
+                .HasColumnName("business_domain");
+            entity.Property(e => e.Definition).HasColumnName("definition");
+            entity.Property(e => e.UsageNote).HasColumnName("usage_note");
+            entity.Property(e => e.Priority)
+                .HasDefaultValue(5)
+                .HasColumnName("priority");
+            entity.Property(e => e.Status)
+                .HasMaxLength(30)
+                .HasDefaultValue("draft")
+                .HasColumnName("status");
+            entity.Property(e => e.Version)
+                .HasDefaultValue(1)
+                .HasColumnName("version");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            entity.Property(e => e.DeletedBy).HasColumnName("deleted_by");
+        });
+
+        modelBuilder.Entity<GlobalGlossaryAudit>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("global_glossary_audits_pkey");
+
+            entity.ToTable("global_glossary_audits", "transcript");
+
+            entity.HasIndex(e => e.TermId, "idx_global_glossary_audits_term_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.TermId).HasColumnName("term_id");
+            entity.Property(e => e.Action)
+                .HasMaxLength(30)
+                .HasColumnName("action");
+            entity.Property(e => e.BeforeJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("before_json");
+            entity.Property(e => e.AfterJson)
+                .HasColumnType("jsonb")
+                .HasColumnName("after_json");
+            entity.Property(e => e.ActorUserId).HasColumnName("actor_user_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
         });
 
         modelBuilder.Entity<SchemaMigration>(entity =>

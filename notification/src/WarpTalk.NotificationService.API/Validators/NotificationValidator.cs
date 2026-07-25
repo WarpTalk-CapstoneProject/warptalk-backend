@@ -32,6 +32,12 @@ public static class NotificationValidator
             }
         },
         {
+            NotificationConstants.TypeMeetingReminder, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String }, { "minutes_until_start", JsonValueKind.String } }
+            }
+        },
+        {
             "TRANSCRIPT_READY", new PayloadSchema
             {
                 RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }

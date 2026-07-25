@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.SignalR;
 using StackExchange.Redis;
 using System.Security.Claims;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using WarpTalk.Gateway.Services;
 
 namespace WarpTalk.Gateway.Hubs;
@@ -65,16 +66,27 @@ public class TranslationRoomHub : Hub
             var roomUserKey = $"{roomIdStr}_{userId}";
             _roomUserToConnection.TryRemove(roomUserKey, out _);
 
-            // Publish event to Redis for TranslationRoomService to process participant left
+            // Publish event to Redis for TranslationRoomService to process participant left.
+            // WT-08: MeetingService's HostFallbackConsumerWorker ALSO subscribes to this same
+            // channel — if the departing user held the room's ActiveHostId, it elects a
+            // replacement and broadcasts "HostChanged" back through the Gateway commands
+            // channel (see MeetingRoomService.HandleHostOfflineAsync). Reused rather than
+            // adding a second "translationRoom:host-offline" publish here, since the hub has
+            // no cheap way to know host status itself (same trust-boundary gap as
+            // SpotlightParticipant/MuteAll below) — the consumer re-derives that from the DB.
             var db = _redis.GetDatabase();
             await db.PublishAsync("translationRoom:participant-offline", $"{roomIdStr}:{userId}");
 
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
+            await db.HashDeleteAsync($"translationRoom:{roomIdStr}:voice_preferences", userId);
 
-            await Clients.OthersInGroup(TranslationRoomGroupName(Guid.Parse(roomIdStr)))
-                .SendAsync("ParticipantLeft", userId);
+            var groupName = TranslationRoomGroupName(Guid.Parse(roomIdStr));
+            await Clients.OthersInGroup(groupName).SendAsync("ParticipantLeft", userId);
+            // A hand left raised by a connection that never lowers it (crash, closed tab)
+            // would otherwise stay stuck on everyone else's screen forever.
+            await Clients.OthersInGroup(groupName).SendAsync("HandRaised", userId, false);
         }
 
         _logger.LogInformation(
@@ -96,6 +108,8 @@ public class TranslationRoomHub : Hub
         var groupName = TranslationRoomGroupName(translationRoomId);
         var roomIdStr = translationRoomId.ToString();
         var roomUserKey = $"{roomIdStr}_{userId}";
+        var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
+        var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
 
         // Enforce BR-159-014: Concurrent Session Limit (1 device per room)
         if (_roomUserToConnection.TryGetValue(roomUserKey, out var existingConnectionId))
@@ -121,7 +135,7 @@ public class TranslationRoomHub : Hub
             UserId: Guid.Parse(userId),
             DisplayName: displayName,
             SpeakLanguage: speakLanguage,
-            ListenLanguage: listenLanguage,
+            ListenLanguage: normalizedListenLanguage,
             IsMuted: false,
             JoinedAt: DateTime.UtcNow);
 
@@ -136,7 +150,7 @@ public class TranslationRoomHub : Hub
         await db.HashSetAsync(
             $"translationRoom:{translationRoomId}:languages",
             userId,
-            listenLanguage);
+            normalizedListenLanguage);
 
         // Every participant is simultaneously a translation source (when speaking) and a
         // target (their own listen language) — the AI pipeline previously had no visibility
@@ -147,11 +161,11 @@ public class TranslationRoomHub : Hub
         await db.HashSetAsync(
             $"translationRoom:{translationRoomId}:speak_languages",
             userId,
-            NormalizeLanguageCode(speakLanguage));
+            normalizedSpeakLanguage);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} joined translationRoom {TranslationRoomId} (speak={SpeakLanguage}, listen={ListenLanguage})",
-            userId, translationRoomId, speakLanguage, listenLanguage);
+            userId, translationRoomId, normalizedSpeakLanguage, normalizedListenLanguage);
     }
 
     private static string NormalizeLanguageCode(string language) =>
@@ -175,13 +189,18 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLeft", userId);
 
+        // A hand left raised when someone leaves would otherwise stay stuck for everyone else.
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("HandRaised", userId, false);
+
         // Unregister from AI pipeline — stops consuming if last participant
         _translationRoomRegistry.UnregisterParticipant(translationRoomId.ToString(), userId);
 
-        // Clean up language preference
+        // Clean up language/voice preference
         var db = _redis.GetDatabase();
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:languages", userId);
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:speak_languages", userId);
+        await db.HashDeleteAsync($"translationRoom:{translationRoomId}:voice_preferences", userId);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} left translationRoom {TranslationRoomId}",
@@ -199,6 +218,277 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantMuteChanged", userId, isMuted);
     }
+
+    /// <summary>
+    /// Toggle the caller's raised-hand state and broadcast it to the rest of the room.
+    /// Purely ephemeral (no persistence) — LeaveTranslationRoom and the fully-offline
+    /// branch of OnDisconnectedAsync also emit HandRaised(userId, false) so a raised
+    /// hand never stays stuck after someone leaves or disconnects.
+    /// </summary>
+    public async Task RaiseHand(Guid translationRoomId, bool isRaised)
+    {
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("HandRaised", userId, isRaised);
+    }
+
+    // Only these render as flying/fading reaction bubbles on the client — anything else
+    // is rejected rather than silently broadcast.
+    private static readonly HashSet<string> AllowedReactionEmojis = new() { "👍", "❤️", "😂", "🎉", "👏", "😮" };
+
+    /// <summary>
+    /// Broadcast an emoji reaction to EVERYONE in the room, including the caller, so the
+    /// sender also sees their own reaction animate. Ephemeral — no persistence.
+    /// </summary>
+    public async Task SendReaction(Guid translationRoomId, string emoji)
+    {
+        if (string.IsNullOrWhiteSpace(emoji) || !AllowedReactionEmojis.Contains(emoji))
+            throw new HubException("Unsupported reaction emoji.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("ReactionReceived", userId, emoji, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Broadcast collaborative meeting note changes to everyone in the room.
+    /// </summary>
+    public async Task SendCollaborativeNoteDelta(Guid translationRoomId, string noteContent)
+    {
+        var userId = GetUserId();
+        var displayName = GetDisplayName();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("CollaborativeNoteUpdated", userId, displayName, noteContent, DateTime.UtcNow);
+    }
+
+    /// <summary>
+    /// Host-only: admit a waiting participant from the queue into the live room.
+    /// </summary>
+    public async Task AdmitWaitingParticipant(Guid translationRoomId, string targetUserId)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("ParticipantAdmitted", targetUserId);
+
+        _logger.LogInformation("TranslationRoomHub: Participant {TargetUserId} admitted to room {RoomId}", targetUserId, translationRoomId);
+    }
+
+    /// <summary>
+    /// Host-only: force everyone's view to spotlight one participant.
+    ///
+    /// KNOWN GAP: unlike MeetingRoomService.TransferHostAsync (which can check
+    /// room.ActiveHostId/HostId against the caller because it owns a DB/gRPC-backed
+    /// room lookup), this Gateway hub has no injected repository or gRPC client for
+    /// TranslationRoom/host data — only Redis, the connection registry, and the JWT
+    /// claims already on Context.User. There is no cheap way to verify the caller is
+    /// actually the room host from inside the hub today, so — like ToggleMute,
+    /// SetListenLanguage, etc. — this trusts the caller's claimed identity from the JWT
+    /// and does not verify host status server-side. A real fix needs either a gRPC
+    /// client to TranslationRoomService injected into this hub, or a Redis-cached
+    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// </summary>
+    public async Task SpotlightParticipant(Guid translationRoomId, Guid targetUserId, bool on)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.Group(groupName)
+            .SendAsync("SpotlightChanged", targetUserId, on);
+    }
+
+    /// <summary>
+    /// Host-only (WT-04): force-mute every OTHER participant's mic. Each person can unmute
+    /// themselves afterwards — this is not a hard/enforced mute, just a one-time nudge.
+    ///
+    /// KNOWN GAP: identical trust-boundary gap to SpotlightParticipant above, for the exact
+    /// same reason — this Gateway hub has no injected repository/gRPC client for
+    /// TranslationRoom/host data, only Redis, the connection registry, and JWT claims. There
+    /// is no cheap way to verify the caller is actually the room host from inside the hub
+    /// today, so this trusts the caller's claimed identity and does not verify host status
+    /// server-side. A real fix needs the same thing SpotlightParticipant's comment describes:
+    /// a gRPC client to TranslationRoomService injected into this hub, or a Redis-cached
+    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// </summary>
+    public async Task MuteAll(Guid translationRoomId)
+    {
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ForceMuted");
+
+        _logger.LogInformation("TranslationRoomHub: MuteAll invoked for translationRoom {TranslationRoomId}", translationRoomId);
+    }
+
+    /// <summary>
+    /// Change the caller's own listen (output) language mid-meeting — lets a
+    /// participant switch which dubbed track/transcript language they hear without
+    /// leaving and rejoining the room. Previously listenLanguage was only ever set
+    /// once, in JoinTranslationRoom; there was no way to change it without a full
+    /// reconnect.
+    ///
+    /// Just updates the same `translationRoom:{id}:languages` hash translation_worker
+    /// already reads per-utterance (see TranslationWorker._get_target_languages) — the
+    /// AI pipeline picks up the new target language on the very next utterance, no
+    /// pipeline restart needed. The client applies the switch to its own local state
+    /// immediately (optimistic); this broadcast is only for OTHER clients that want to
+    /// reflect a participant's current listen language (e.g. the people panel).
+    /// </summary>
+    public async Task SetListenLanguage(Guid translationRoomId, string listenLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(listenLanguage))
+            throw new HubException("listenLanguage is required.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+        var normalizedListenLanguage = NormalizeLanguageCode(listenLanguage);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync(
+            $"translationRoom:{translationRoomId}:languages",
+            userId,
+            normalizedListenLanguage);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantLanguageChanged", userId, normalizedListenLanguage);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed listen language to {ListenLanguage} in translationRoom {TranslationRoomId}",
+            userId, normalizedListenLanguage, translationRoomId);
+    }
+
+    /// <summary>
+    /// Change the caller's own SPOKEN (source) language mid-meeting — the counterpart to
+    /// SetListenLanguage above, but for what this participant is speaking rather than what
+    /// they want to hear. livekit_ingress_worker reads this room's
+    /// "translationRoom:{id}:speak_languages" hash fresh on every published speech chunk
+    /// (no caching), so the change takes effect on the very next utterance for the STT
+    /// allow-list and cross-script hallucination guard. The OpenAI Realtime session itself
+    /// (stt_worker's per-(meeting,speaker) session, pinned to the language at creation time)
+    /// re-pins on its own the next time a session is (re)created — see
+    /// OpenAISTT._get_or_create_session's language-change eviction.
+    /// </summary>
+    public async Task SetSpeakLanguage(Guid translationRoomId, string speakLanguage)
+    {
+        if (string.IsNullOrWhiteSpace(speakLanguage))
+            throw new HubException("speakLanguage is required.");
+
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+        var normalizedSpeakLanguage = NormalizeLanguageCode(speakLanguage);
+
+        var db = _redis.GetDatabase();
+        await db.HashSetAsync(
+            $"translationRoom:{translationRoomId}:speak_languages",
+            userId,
+            normalizedSpeakLanguage);
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantSpeakLanguageChanged", userId, normalizedSpeakLanguage);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed speak language to {SpeakLanguage} in translationRoom {TranslationRoomId}",
+            userId, normalizedSpeakLanguage, translationRoomId);
+    }
+
+    /// <summary>
+    /// Change the caller's own preferred TTS voice for the language they're currently
+    /// listening in — mid-meeting, like SetListenLanguage. `voiceId` is a real Cartesia
+    /// voice id (from GET /api/v1/translation-rooms/{id}/voices?language={lang}) or an
+    /// empty string to clear the preference and fall back to the automatic per-speaker
+    /// default (tts_worker._hashed_default_voice_id, or the speaker's cloned voice).
+    ///
+    /// Updates `translationRoom:{id}:voice_preferences` (userId -> voiceId), which
+    /// tts_worker cross-references against `:languages` on every utterance (see
+    /// TTSWorker._get_explicit_voice_choices) — the new voice applies from this
+    /// listener's very next utterance heard, no pipeline restart needed. Unlike
+    /// listen-language, a voice preference is scoped to whatever language the caller is
+    /// CURRENTLY listening in; switching languages via SetListenLanguage does not carry
+    /// a voice pick over (voices differ by Cartesia language table), so the client
+    /// should treat a language change as clearing its own locally-remembered voice pick
+    /// too.
+    /// </summary>
+    public async Task SetVoicePreference(Guid translationRoomId, string voiceId)
+    {
+        var userId = GetUserId();
+        var groupName = TranslationRoomGroupName(translationRoomId);
+
+        var db = _redis.GetDatabase();
+        if (string.IsNullOrWhiteSpace(voiceId))
+        {
+            await db.HashDeleteAsync($"translationRoom:{translationRoomId}:voice_preferences", userId);
+        }
+        else
+        {
+            await db.HashSetAsync(
+                $"translationRoom:{translationRoomId}:voice_preferences",
+                userId,
+                voiceId);
+        }
+
+        await Clients.OthersInGroup(groupName)
+            .SendAsync("ParticipantVoiceChanged", userId, voiceId);
+
+        _logger.LogInformation(
+            "TranslationRoomHub: User {UserId} changed voice preference to {VoiceId} in translationRoom {TranslationRoomId}",
+            userId, voiceId, translationRoomId);
+    }
+
+    /// <summary>
+    /// Real Cartesia voices tts_worker can render `language` in — for the control
+    /// bar's voice picker. Reads the SAME Redis-cached catalog tts_worker itself uses
+    /// (see TTSWorker._get_voice_catalog / CartesiaSynthesizer.list_voices), so every
+    /// option returned here is guaranteed synthesizable — never a fabricated id.
+    ///
+    /// Returns an empty list (not an error) if tts_worker hasn't populated the cache
+    /// for this language yet — that only happens once someone's speech has actually
+    /// been translated into it since the cache last expired (voice_catalog_cache_ttl_
+    /// seconds, 6h default). The client should treat an empty result as "no picker
+    /// options available right now" and fall back to whatever the automatic default
+    /// voice already provides, not surface it as a failure.
+    /// </summary>
+    // tts_worker writes voice_catalog:{language} as lowercase-key JSON (Python's
+    // json.dumps of a plain dict — {"id":..., "name":..., "gender":...}).
+    // JsonSerializer.Deserialize is case-SENSITIVE by default, which would silently
+    // leave every VoiceCatalogEntry field null against those lowercase keys instead
+    // of throwing — caught by GetVoiceCatalog_ShouldReturnParsedEntries_WhenCachePresent.
+    private static readonly JsonSerializerOptions VoiceCatalogJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    public async Task<List<VoiceOptionDto>> GetVoiceCatalog(string language)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+            return new List<VoiceOptionDto>();
+
+        var db = _redis.GetDatabase();
+        var raw = await db.StringGetAsync($"voice_catalog:{NormalizeLanguageCode(language)}");
+        if (raw.IsNullOrEmpty)
+            return new List<VoiceOptionDto>();
+
+        try
+        {
+            var entries = JsonSerializer.Deserialize<List<VoiceCatalogEntry>>((string)raw!, VoiceCatalogJsonOptions) ?? new();
+            return entries
+                .Select(e => new VoiceOptionDto(e.Id, e.Name, e.Gender ?? ""))
+                .ToList();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "TranslationRoomHub: voice_catalog cache for {Language} was not valid JSON", language);
+            return new List<VoiceOptionDto>();
+        }
+    }
+
+    // Mirrors the dict shape tts_worker.CartesiaSynthesizer.list_voices() caches as
+    // JSON — {"id": ..., "name": ..., "gender": ...} per entry.
+    private sealed record VoiceCatalogEntry(string Id, string Name, string? Gender);
 
     /// <summary>
     /// Broadcast a live transcript segment to all translationRoom participants.

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using Microsoft.AspNetCore.Http;
 
 namespace WarpTalk.MeetingService.Application.DTOs;
 
@@ -23,6 +25,10 @@ public class MeetingChatMessageDto
     public bool TranslationEnabled { get; set; }
     public List<ChatMentionDto> Mentions { get; set; } = new();
     public DateTime CreatedAt { get; set; }
+    public string? FileUrl { get; set; }
+    public string? FileName { get; set; }
+    public long? FileSizeBytes { get; set; }
+    public string? ContentType { get; set; }
 }
 
 public class SendMeetingChatMessageRequest
@@ -50,4 +56,16 @@ public class MeetingChatTranslationDto
 public class ModerateMeetingChatMessageRequest
 {
     public string Reason { get; set; } = null!;
+}
+
+public class UploadMeetingChatFileRequest
+{
+    public IFormFile File { get; set; } = null!;
+}
+
+public class MeetingChatFileDownloadResult
+{
+    public Stream Stream { get; set; } = null!;
+    public string ContentType { get; set; } = null!;
+    public string FileName { get; set; } = null!;
 }

@@ -17,6 +17,7 @@ public static class ArtifactMapper
             FileUrl = request.FileUrl,
             FileFormat = request.FileFormat,
             FileSizeBytes = request.SizeBytes,
+            Content = request.Content,
             ContainsRawAudio = request.ContainsRawAudio,
             ContainsRawVideo = request.ContainsRawVideo,
             ConsentRequired = request.ConsentRequired,

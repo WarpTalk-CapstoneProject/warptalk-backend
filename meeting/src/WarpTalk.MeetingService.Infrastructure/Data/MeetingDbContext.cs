@@ -30,6 +30,20 @@ public partial class MeetingDbContext : DbContext
 
     public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
+    public virtual DbSet<Poll> Polls { get; set; }
+
+    public virtual DbSet<PollOption> PollOptions { get; set; }
+
+    public virtual DbSet<PollVote> PollVotes { get; set; }
+
+    public virtual DbSet<Question> Questions { get; set; }
+
+    public virtual DbSet<QuestionVote> QuestionVotes { get; set; }
+
+    public virtual DbSet<BreakoutSession> BreakoutSessions { get; set; }
+
+    public virtual DbSet<BreakoutAssignment> BreakoutAssignments { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -79,6 +93,14 @@ public partial class MeetingDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
+            entity.Property(e => e.ContentType)
+                .HasMaxLength(255)
+                .HasColumnName("content_type");
+            entity.Property(e => e.FileName)
+                .HasMaxLength(255)
+                .HasColumnName("file_name");
+            entity.Property(e => e.FileSizeBytes).HasColumnName("file_size_bytes");
+            entity.Property(e => e.FileUrl).HasColumnName("file_url");
             entity.Property(e => e.IsHidden).HasColumnName("is_hidden");
             entity.Property(e => e.MeetingRoomId).HasColumnName("meeting_room_id");
             entity.Property(e => e.Mentions)
@@ -277,6 +299,13 @@ public partial class MeetingDbContext : DbContext
                 .HasMaxLength(255)
                 .HasDefaultValueSql("'CREATED'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.IsLocked)
+                .HasDefaultValue(false)
+                .HasColumnName("is_locked");
+            entity.Property(e => e.MuteOnEntry)
+                .HasDefaultValue(false)
+                .HasColumnName("mute_on_entry");
+            entity.Property(e => e.ActiveEgressId).HasColumnName("active_egress_id");
             entity.Property(e => e.TranslationRoomId).HasColumnName("translation_room_id");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
@@ -362,6 +391,151 @@ public partial class MeetingDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'success'::character varying")
                 .HasColumnName("status");
+        });
+
+        modelBuilder.Entity<Poll>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("polls_pkey");
+
+            entity.ToTable("polls", "meeting");
+
+            entity.HasIndex(e => e.MeetingRoomId, "idx_polls_meeting_room_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.MeetingRoomId).HasColumnName("meeting_room_id");
+            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.Question).HasColumnName("question");
+            entity.Property(e => e.IsMultipleChoice)
+                .HasDefaultValue(false)
+                .HasColumnName("is_multiple_choice");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'open'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ClosedAt).HasColumnName("closed_at");
+        });
+
+        modelBuilder.Entity<PollOption>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("poll_options_pkey");
+
+            entity.ToTable("poll_options", "meeting");
+
+            entity.HasIndex(e => e.PollId, "idx_poll_options_poll_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.PollId).HasColumnName("poll_id");
+            entity.Property(e => e.Label).HasColumnName("label");
+            entity.Property(e => e.Position).HasColumnName("position");
+        });
+
+        modelBuilder.Entity<PollVote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("poll_votes_pkey");
+
+            entity.ToTable("poll_votes", "meeting");
+
+            entity.HasIndex(e => e.PollId, "idx_poll_votes_poll_id");
+            entity.HasIndex(e => new { e.PollId, e.OptionId, e.UserId }, "poll_votes_poll_id_option_id_user_id_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.PollId).HasColumnName("poll_id");
+            entity.Property(e => e.OptionId).HasColumnName("option_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+        });
+
+        modelBuilder.Entity<Question>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("questions_pkey");
+
+            entity.ToTable("questions", "meeting");
+
+            entity.HasIndex(e => e.MeetingRoomId, "idx_questions_meeting_room_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.MeetingRoomId).HasColumnName("meeting_room_id");
+            entity.Property(e => e.AskedBy).HasColumnName("asked_by");
+            entity.Property(e => e.AskedByDisplayName).HasColumnName("asked_by_display_name");
+            entity.Property(e => e.Body).HasColumnName("body");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'open'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.AnsweredAt).HasColumnName("answered_at");
+        });
+
+        modelBuilder.Entity<QuestionVote>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("question_votes_pkey");
+
+            entity.ToTable("question_votes", "meeting");
+
+            entity.HasIndex(e => e.QuestionId, "idx_question_votes_question_id");
+            entity.HasIndex(e => new { e.QuestionId, e.UserId }, "question_votes_question_id_user_id_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.QuestionId).HasColumnName("question_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
+        modelBuilder.Entity<BreakoutSession>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("breakout_sessions_pkey");
+
+            entity.ToTable("breakout_sessions", "meeting");
+
+            entity.HasIndex(e => e.ParentMeetingRoomId, "idx_breakout_sessions_parent_meeting_room_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.ParentMeetingRoomId).HasColumnName("parent_meeting_room_id");
+            entity.Property(e => e.ProviderRoomName).HasColumnName("provider_room_name");
+            entity.Property(e => e.Label).HasColumnName("label");
+            entity.Property(e => e.DurationSeconds).HasColumnName("duration_seconds");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.EndedAt).HasColumnName("ended_at");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+        });
+
+        modelBuilder.Entity<BreakoutAssignment>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("breakout_assignments_pkey");
+
+            entity.ToTable("breakout_assignments", "meeting");
+
+            entity.HasIndex(e => e.BreakoutSessionId, "idx_breakout_assignments_session_id");
+            entity.HasIndex(e => e.UserId, "idx_breakout_assignments_user_id");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.BreakoutSessionId).HasColumnName("breakout_session_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
         });
 
         OnModelCreatingPartial(modelBuilder);

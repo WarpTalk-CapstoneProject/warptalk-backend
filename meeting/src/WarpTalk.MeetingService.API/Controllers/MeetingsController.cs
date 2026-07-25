@@ -139,6 +139,84 @@ public class MeetingsController : ControllerBase
         return Ok(new { message = "Participant kicked and invitation revoked" });
     }
 
+    [HttpPost("rooms/{translationRoomId}/lock")]
+    public async Task<IActionResult> SetLock(Guid translationRoomId, [FromBody] LockRoomRequest request)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.SetLockAsync(translationRoomId, userId.Value, request.Locked);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = request.Locked ? "Room locked" : "Room unlocked" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/mute-on-entry")]
+    public async Task<IActionResult> SetMuteOnEntry(Guid translationRoomId, [FromBody] MuteOnEntryRequest request)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.SetMuteOnEntryAsync(translationRoomId, userId.Value, request.MuteOnEntry);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Mute-on-entry updated" });
+    }
+
+    [HttpPost("rooms/{translationRoomId}/recording")]
+    public async Task<IActionResult> SetRecording(Guid translationRoomId, [FromBody] RecordingActionRequest request)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.SetRecordingAsync(translationRoomId, userId.Value, request.Action);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.InvalidState || result.ErrorCode == ErrorCodes.ValidationError)
+                return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
+
     [HttpPost("rooms/{translationRoomId}/end")]
     public async Task<IActionResult> EndMeeting(Guid translationRoomId)
     {

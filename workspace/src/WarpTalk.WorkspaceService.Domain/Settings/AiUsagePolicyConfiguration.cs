@@ -6,7 +6,12 @@ public record AiUsagePolicyConfiguration(
     bool? AllowExternalLlm,
     PiiRedactionConfiguration? RedactPii,
     DlpConfiguration? Dlp,
-    TranslationProfileConfiguration? TranslationProfile
+    TranslationProfileConfiguration? TranslationProfile,
+    // Opt-out semantics (matches AllowExternalLlm): unset ⇒ true. The system-managed global
+    // glossary (transcript.global_glossary_terms) is merged into every workspace's STT/MT
+    // prompts by default — a workspace sets this false to exclude it. See
+    // docs/global-glossary-plan.md §2.4.
+    bool? UseGlobalGlossary = null
 );
 
 public record PiiRedactionConfiguration(
