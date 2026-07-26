@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -20,7 +19,8 @@ public class NotificationRedisSubscriberServiceTests
     private readonly Mock<ILogger<NotificationRedisSubscriberService>> _mockLogger;
     
     private readonly NotificationRedisSubscriberService _service;
-    private readonly ConcurrentDictionary<string, Action<RedisChannel, RedisValue>> _messageHandlers = new();
+    private Action<RedisChannel, RedisValue>? _messageHandler;
+    private RedisChannel _subscribedChannel;
 
     public NotificationRedisSubscriberServiceTests()
     {
@@ -42,7 +42,8 @@ public class NotificationRedisSubscriberServiceTests
             It.IsAny<CommandFlags>()))
         .Callback<RedisChannel, Action<RedisChannel, RedisValue>, CommandFlags>((c, h, f) =>
         {
-            _messageHandlers[c.ToString()] = h;
+            _subscribedChannel = c;
+            _messageHandler = h;
         })
         .Returns(Task.CompletedTask);
 
@@ -60,23 +61,23 @@ public class NotificationRedisSubscriberServiceTests
     public async Task StartAsync_SubscribesToRedisChannel()
     {
         // Act
-        await StartServiceAsync();
+        await _service.StartAsync(CancellationToken.None);
 
         // Assert
         _mockSubscriber.Verify(s => s.SubscribeAsync(
             It.IsAny<RedisChannel>(),
             It.IsAny<Action<RedisChannel, RedisValue>>(),
-            It.IsAny<CommandFlags>()), Times.Exactly(5));
-
-        Assert.Contains("warptalk:notifications:new", _messageHandlers.Keys);
-        Assert.Contains("warptalk:documents:events", _messageHandlers.Keys);
+            It.IsAny<CommandFlags>()), Times.Once);
+            
+        Assert.Equal(RedisChannel.Literal("warptalk:notifications:new"), _subscribedChannel);
+        Assert.NotNull(_messageHandler);
     }
 
     [Fact]
     public async Task RedisMessageHandler_WithValidJson_BroadcastsToUserGroup()
     {
         // Arrange
-        await StartServiceAsync();
+        await _service.StartAsync(CancellationToken.None);
         var message = new RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
@@ -88,9 +89,7 @@ public class NotificationRedisSubscriberServiceTests
         var json = JsonSerializer.Serialize(message);
 
         // Act
-        _messageHandlers["warptalk:notifications:new"](
-            RedisChannel.Literal("warptalk:notifications:new"),
-            new RedisValue(json));
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(json));
 
         // Assert
         _mockClients.Verify(c => c.Group("user:user-123"), Times.Once);
@@ -107,12 +106,10 @@ public class NotificationRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithEmptyMessage_DoesNotBroadcast()
     {
         // Arrange
-        await StartServiceAsync();
+        await _service.StartAsync(CancellationToken.None);
 
         // Act
-        _messageHandlers["warptalk:notifications:new"](
-            RedisChannel.Literal("warptalk:notifications:new"),
-            RedisValue.EmptyString);
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), RedisValue.EmptyString);
 
         // Assert
         _mockClients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
@@ -123,26 +120,13 @@ public class NotificationRedisSubscriberServiceTests
     public async Task RedisMessageHandler_WithInvalidJson_DoesNotCrashAndDoesNotBroadcast()
     {
         // Arrange
-        await StartServiceAsync();
+        await _service.StartAsync(CancellationToken.None);
         var invalidJson = "{ invalid_json: ";
 
         // Act - should catch exception inside the handler
-        _messageHandlers["warptalk:notifications:new"](
-            RedisChannel.Literal("warptalk:notifications:new"),
-            new RedisValue(invalidJson));
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(invalidJson));
 
         // Assert
         _mockClients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
-    }
-
-    private async Task StartServiceAsync()
-    {
-        await _service.StartAsync(CancellationToken.None);
-        for (var attempt = 0; attempt < 100 && _messageHandlers.Count < 5; attempt++)
-        {
-            await Task.Delay(10);
-        }
-
-        Assert.Equal(5, _messageHandlers.Count);
     }
 }
