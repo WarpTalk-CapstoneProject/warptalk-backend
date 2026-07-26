@@ -91,6 +91,26 @@ public class MergeTermsTests
     }
 
     [Fact]
+    public void MergeTerms_WorkspaceTermsExceedingMaxTermsAreTrimmedByPriority()
+    {
+        var workspaceTerms = new List<PromptTerm>
+        {
+            new("ws-low", "l", 1),
+            new("ws-high", "h", 10),
+            new("ws-mid", "m", 5),
+        };
+        var globalTerms = new List<PromptTerm> { new("global-1", "g1", 9) };
+
+        var (merged, droppedAsOverridden, droppedAsOverBudget) =
+            GlossaryStartedEventConsumer.MergeTerms(workspaceTerms, globalTerms, maxTerms: 2);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Equal(new[] { "ws-high", "ws-mid" }, merged.ConvertAll(t => t.Source));
+        Assert.Equal(0, droppedAsOverridden);
+        Assert.Equal(2, droppedAsOverBudget); // 1 ws-low dropped + 1 global-1 dropped
+    }
+
+    [Fact]
     public void MergeTerms_EmptyInputsReturnEmptyMerge()
     {
         var (merged, droppedAsOverridden, droppedAsOverBudget) =

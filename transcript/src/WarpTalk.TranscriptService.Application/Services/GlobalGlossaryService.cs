@@ -183,6 +183,7 @@ public class GlobalGlossaryService : IGlobalGlossaryService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             await WriteAuditAsync(term.Id, "deleted", before, term, actorUserId, cancellationToken);
+            await TryPublishEmbeddingDeleteRequestAsync(term.Id, cancellationToken);
 
             return Result.Success();
         }
@@ -255,6 +256,7 @@ public class GlobalGlossaryService : IGlobalGlossaryService
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
             await WriteAuditAsync(term.Id, "archived", before, term, actorUserId, cancellationToken);
+            await TryPublishEmbeddingDeleteRequestAsync(term.Id, cancellationToken);
 
             return Result.Success();
         }
@@ -387,6 +389,46 @@ public class GlobalGlossaryService : IGlobalGlossaryService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to publish embedding index request for global glossary term {TermId}", term.Id);
+        }
+    }
+
+    /// <summary>
+    /// Removes a term's vector from the "global_glossary" Qdrant collection via
+    /// EmbeddingWorker.process's explicit deletion_state="deleted" path (warptalk-ai/
+    /// embedding_worker/worker.py) — called on both archive and (soft) delete, since either
+    /// one means the term should stop being surfaced by semantic search. Safe to call even
+    /// for a term that was never published (never indexed): Qdrant delete-by-id is a no-op
+    /// when the id isn't present, and EmbeddingWorker/QdrantVectorStore.delete treat a
+    /// missing collection the same way. A publish failure must not fail the admin action it
+    /// rides along with, so it's swallowed here (logged only).
+    /// </summary>
+    private async Task TryPublishEmbeddingDeleteRequestAsync(Guid termId, CancellationToken ct)
+    {
+        try
+        {
+            var chunk = new { id = termId.ToString(), text = "", metadata = new { } };
+
+            var entries = new NameValueEntry[]
+            {
+                new("job_id", Guid.NewGuid().ToString()),
+                new("workspace_id", GlobalWorkspaceSentinel),
+                new("collection_id", GlobalCollectionId),
+                new("source_type", "global_glossary_term"),
+                new("source_id", termId.ToString()),
+                new("chunks_json", JsonSerializer.Serialize(new[] { chunk })),
+                new("external_llm_allowed", "true"),
+                new("ai_retrieval_allowed", "true"),
+                new("retention_state", "active"),
+                new("deletion_state", "deleted"),
+                new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+            };
+
+            var db = _redis.GetDatabase();
+            await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish embedding delete request for global glossary term {TermId}", termId);
         }
     }
 
