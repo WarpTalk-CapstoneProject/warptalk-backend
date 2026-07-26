@@ -22,7 +22,17 @@ public partial class Plan
 
     public int CreditsPerCycle { get; set; }
 
+    public int OverageCapCredits { get; set; }
 
+    public decimal OveragePricePerCredit { get; set; } = 4.0000m;
+
+    public int LowBalanceThresholdCredits { get; set; }
+
+    public int RolloverCapCredits { get; set; }
+
+    public int InvoiceTermsDays { get; set; } = 15;
+
+    public int InvoiceGraceHours { get; set; } = 360;
 
     public int MaxParticipants { get; set; } = 2;
 

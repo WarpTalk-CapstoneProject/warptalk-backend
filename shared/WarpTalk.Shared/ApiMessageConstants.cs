@@ -79,7 +79,7 @@ public static class ApiMessageConstants
         public const string PlanTierRequired = "Tier is required.";
         public const string PlanTierMaxLength = "Tier must not exceed 20 characters.";
         public const string PlanCurrencyRequired = "Currency is required.";
-        public const string PlanCurrencyInvalid = "Currency must be 'USD'.";
+        public const string PlanCurrencyInvalid = "Currency must be 'USD' or 'VND'.";
         public const string PlanBillingCycleRequired = "Billing cycle is required.";
         public const string PlanBillingCycleInvalid = "Billing cycle must be 'monthly', 'semiannual', or 'yearly'.";
         public const string PlanMinPrice = "Price for {0} must be at least {1} due to Stripe payment constraints.";
@@ -88,5 +88,11 @@ public static class ApiMessageConstants
         public const string PlanMaxLanguagesInvalid = "Max languages must be at least 1.";
         public const string PlanSortOrderInvalid = "Sort order must be non-negative.";
         public const string PlanFeaturesInvalid = "Features must be a valid JSON string.";
+        public const string PlanOverageCapInvalid = "Overage cap credits must be non-negative.";
+        public const string PlanOveragePriceInvalid = "Overage price per credit must be non-negative.";
+        public const string PlanLowBalanceThresholdInvalid = "Low balance threshold must be greater than overage cap when overage is enabled.";
+        public const string PlanRolloverCapInvalid = "Rollover cap credits must be non-negative.";
+        public const string PlanInvoiceTermsInvalid = "Invoice terms days must be greater than 0.";
+        public const string PlanInvoiceGraceInvalid = "Invoice grace hours must be greater than 0.";
     }
 }

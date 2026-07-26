@@ -14,6 +14,12 @@ public static class PlanMapper
         plan.Currency,
         plan.BillingCycle,
         plan.CreditsPerCycle,
+        plan.OverageCapCredits,
+        plan.OveragePricePerCredit,
+        plan.LowBalanceThresholdCredits,
+        plan.RolloverCapCredits,
+        plan.InvoiceTermsDays,
+        plan.InvoiceGraceHours,
         plan.MaxParticipants,
         plan.Features,
         plan.SortOrder,
@@ -30,6 +36,12 @@ public static class PlanMapper
         Currency = request.Currency,
         BillingCycle = request.BillingCycle,
         CreditsPerCycle = request.CreditsPerCycle,
+        OverageCapCredits = request.OverageCapCredits,
+        OveragePricePerCredit = request.OveragePricePerCredit,
+        LowBalanceThresholdCredits = request.LowBalanceThresholdCredits,
+        RolloverCapCredits = request.RolloverCapCredits,
+        InvoiceTermsDays = request.InvoiceTermsDays,
+        InvoiceGraceHours = request.InvoiceGraceHours,
         MaxParticipants = request.MaxParticipants,
         Features = request.Features,
         SortOrder = request.SortOrder,
@@ -47,6 +59,12 @@ public static class PlanMapper
         plan.Currency = request.Currency;
         plan.BillingCycle = request.BillingCycle;
         plan.CreditsPerCycle = request.CreditsPerCycle;
+        plan.OverageCapCredits = request.OverageCapCredits;
+        plan.OveragePricePerCredit = request.OveragePricePerCredit;
+        plan.LowBalanceThresholdCredits = request.LowBalanceThresholdCredits;
+        plan.RolloverCapCredits = request.RolloverCapCredits;
+        plan.InvoiceTermsDays = request.InvoiceTermsDays;
+        plan.InvoiceGraceHours = request.InvoiceGraceHours;
         plan.MaxParticipants = request.MaxParticipants;
         plan.Features = request.Features;
         plan.SortOrder = request.SortOrder;

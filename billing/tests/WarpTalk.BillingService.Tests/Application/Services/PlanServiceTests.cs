@@ -77,6 +77,74 @@ public class PlanServiceTests
     }
 
     [Fact]
+    public async Task CreatePlanAsync_ShouldMapPhase2PlanDefaults_WhenValidVndRequest()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            OveragePricePerCredit: 4.0000m,
+            LowBalanceThresholdCredits: 140_000,
+            RolloverCapCredits: 700_000,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default))
+            .ReturnsAsync((Plan?)null);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Currency.Should().Be("VND");
+        result.Value.OverageCapCredits.Should().Be(105_000);
+        result.Value.OveragePricePerCredit.Should().Be(4.0000m);
+        result.Value.LowBalanceThresholdCredits.Should().Be(140_000);
+        result.Value.RolloverCapCredits.Should().Be(700_000);
+        result.Value.InvoiceTermsDays.Should().Be(15);
+        result.Value.InvoiceGraceHours.Should().Be(360);
+        _mockPlanRepo.Verify(
+            r => r.AddAsync(
+                It.Is<Plan>(p =>
+                    p.Slug == "enterprise" &&
+                    p.OverageCapCredits == 105_000 &&
+                    p.LowBalanceThresholdCredits == 140_000 &&
+                    p.RolloverCapCredits == 700_000),
+                default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenLowBalanceThresholdDoesNotWarnBeforeOverage()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            LowBalanceThresholdCredits: 105_000);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+    }
+
+    [Fact]
     public async Task DeactivatePlanAsync_ShouldDeactivatePlan_WhenFound()
     {
         var planId = Guid.NewGuid();

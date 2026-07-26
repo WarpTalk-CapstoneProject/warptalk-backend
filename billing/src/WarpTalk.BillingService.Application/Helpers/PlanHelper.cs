@@ -11,9 +11,14 @@ public static class PlanHelper
     public static Result<PlanDto> ValidatePlanRequest(PlanRequest request)
     {
         var currency = request.Currency?.Trim() ?? "";
-        const decimal minPrice = 0.50m;
-
         var cycle = request.BillingCycle?.ToLowerInvariant().Trim();
+        var isInvalidCurrency = !string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase) &&
+                                !string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase);
+        var minPrice = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase)
+            ? 15000m
+            : 0.50m;
+        var shouldWarnBeforeOverage = request.OverageCapCredits > 0 &&
+                                      request.LowBalanceThresholdCredits <= request.OverageCapCredits;
         var isInvalidCycle = cycle is not (SubscriptionConstants.BillingCycles.Monthly or
                                           SubscriptionConstants.BillingCycles.Semiannual or
                                           SubscriptionConstants.BillingCycles.Yearly);
@@ -31,11 +36,17 @@ public static class PlanHelper
             (string.IsNullOrWhiteSpace(request.Tier), ApiMessageConstants.ValidationMessages.PlanTierRequired),
             (request.Tier?.Length > 20, ApiMessageConstants.ValidationMessages.PlanTierMaxLength),
             (string.IsNullOrWhiteSpace(request.Currency), ApiMessageConstants.ValidationMessages.PlanCurrencyRequired),
-            (!string.Equals(currency, PaymentConstants.Currencies.Usd, System.StringComparison.OrdinalIgnoreCase), ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid),
+            (isInvalidCurrency, ApiMessageConstants.ValidationMessages.PlanCurrencyInvalid),
             (string.IsNullOrWhiteSpace(request.BillingCycle), ApiMessageConstants.ValidationMessages.PlanBillingCycleRequired),
             (!string.IsNullOrWhiteSpace(request.BillingCycle) && isInvalidCycle, ApiMessageConstants.ValidationMessages.PlanBillingCycleInvalid),
             (request.Price < minPrice, string.Format(ApiMessageConstants.ValidationMessages.PlanMinPrice, currency, minPrice)),
             (request.CreditsPerCycle < 0, ApiMessageConstants.ValidationMessages.PlanCreditsPerCycleInvalid),
+            (request.OverageCapCredits < 0, ApiMessageConstants.ValidationMessages.PlanOverageCapInvalid),
+            (request.OveragePricePerCredit < 0, ApiMessageConstants.ValidationMessages.PlanOveragePriceInvalid),
+            (shouldWarnBeforeOverage, ApiMessageConstants.ValidationMessages.PlanLowBalanceThresholdInvalid),
+            (request.RolloverCapCredits < 0, ApiMessageConstants.ValidationMessages.PlanRolloverCapInvalid),
+            (request.InvoiceTermsDays <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceTermsInvalid),
+            (request.InvoiceGraceHours <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceGraceInvalid),
             (request.MaxParticipants < 2, ApiMessageConstants.ValidationMessages.PlanMaxParticipantsInvalid),
             (request.SortOrder < 0, ApiMessageConstants.ValidationMessages.PlanSortOrderInvalid),
             (isInvalidFeatures, ApiMessageConstants.ValidationMessages.PlanFeaturesInvalid)

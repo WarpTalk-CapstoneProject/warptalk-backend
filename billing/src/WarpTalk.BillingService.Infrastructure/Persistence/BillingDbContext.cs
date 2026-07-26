@@ -72,6 +72,25 @@ public partial class BillingDbContext : DbContext
                 .HasColumnName("billing_cycle");
             entity.Property(e => e.CreditsPerCycle)
                 .HasColumnName("credits_per_cycle");
+            entity.Property(e => e.OverageCapCredits)
+                .HasDefaultValue(0)
+                .HasColumnName("overage_cap_credits");
+            entity.Property(e => e.OveragePricePerCredit)
+                .HasPrecision(12, 4)
+                .HasDefaultValue(4.0000m)
+                .HasColumnName("overage_price_per_credit");
+            entity.Property(e => e.LowBalanceThresholdCredits)
+                .HasDefaultValue(0)
+                .HasColumnName("low_balance_threshold_credits");
+            entity.Property(e => e.RolloverCapCredits)
+                .HasDefaultValue(0)
+                .HasColumnName("rollover_cap_credits");
+            entity.Property(e => e.InvoiceTermsDays)
+                .HasDefaultValue(15)
+                .HasColumnName("invoice_terms_days");
+            entity.Property(e => e.InvoiceGraceHours)
+                .HasDefaultValue(360)
+                .HasColumnName("invoice_grace_hours");
             entity.Property(e => e.MaxParticipants)
                 .HasDefaultValue(2)
                 .HasColumnName("max_participants");
