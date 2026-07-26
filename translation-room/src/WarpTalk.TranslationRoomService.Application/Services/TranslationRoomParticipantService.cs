@@ -45,7 +45,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             // the WT-65 intent kept: host or any participant (regardless of Status) may list
             // participants. ErrorCodes.Forbidden matches this method's own pinned unit test
             // (GetParticipantsAsync_ShouldReturnForbidden_WhenRequesterIsNotInRoom).
-            if (room.HostId != requestedByUserId && requester == null && room.WorkspaceId == Guid.Empty)
+            if (room.HostId != requestedByUserId && requester == null)
             {
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Forbidden);
             }

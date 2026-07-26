@@ -20,121 +20,13 @@ public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
     private readonly ITranslationRoomArtifactService _artifactService;
-    private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
-    private readonly ILogger<TranslationRoomsController> _logger;
 
     public TranslationRoomsController(
         ITranslationRoomService translationRoomService,
-        ITranslationRoomArtifactService artifactService,
-        WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
-        ILogger<TranslationRoomsController> logger)
+        ITranslationRoomArtifactService artifactService)
     {
         _translationRoomService = translationRoomService;
         _artifactService = artifactService;
-        _workspaceClient = workspaceClient;
-        _logger = logger;
-    }
-
-
-    [AllowAnonymous]
-    [HttpGet("preflight/{roomCode}")]
-    public async Task<IActionResult> GetRoomPreflight(string roomCode, CancellationToken ct)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(roomCode))
-            {
-                return NotFound(new ApiErrorResponse("Translation room not found or unavailable.", ErrorCodes.NotFound));
-            }
-
-            // 1. Resolve room from TranslationRoom service
-            var roomResult = await _translationRoomService.GetTranslationRoomByCodeAsync(roomCode, ct);
-            if (!roomResult.IsSuccess || roomResult.Value == null)
-            {
-                // [Security] Return generic 404 to avoid code enumeration
-                return NotFound(new ApiErrorResponse("Translation room not found or unavailable.", ErrorCodes.NotFound));
-            }
-
-            var room = roomResult.Value;
-
-            // 2. Fetch workspace preflight details from Workspace service via gRPC
-            var userEmail = User.FindFirstValue(ClaimTypes.Email);
-            var workspacePreflightRequest = new WarpTalk.Shared.Protos.GetWorkspacePreflightRequest
-            {
-                WorkspaceId = room.WorkspaceId.ToString(),
-                UserEmail = userEmail ?? string.Empty
-            };
-
-            WarpTalk.Shared.Protos.GetWorkspacePreflightResponse workspaceDetails;
-            try
-            {
-                workspaceDetails = await _workspaceClient.GetWorkspacePreflightDetailsAsync(workspacePreflightRequest, cancellationToken: ct);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to call GetWorkspacePreflightDetails via gRPC for WorkspaceId {WorkspaceId}", room.WorkspaceId);
-                return NotFound(new ApiErrorResponse("Translation room not found or unavailable.", ErrorCodes.NotFound));
-            }
-
-            if (!workspaceDetails.IsActive)
-            {
-                // [Security] Return generic 404 to avoid enumeration of rooms in inactive/deleted workspaces
-                return NotFound(new ApiErrorResponse("Translation room not found or unavailable.", ErrorCodes.NotFound));
-            }
-
-            // 3. Verify user membership in Workspace via gRPC
-            bool isUserMember = false;
-            var userIdStr = User.GetUserId()?.ToString();
-            if (!string.IsNullOrEmpty(userIdStr))
-            {
-                try
-                {
-                    var memberDetails = await _workspaceClient.GetWorkspaceMemberDetailsAsync(
-                        new WarpTalk.Shared.Protos.GetWorkspaceMemberRequest
-                        {
-                            WorkspaceId = room.WorkspaceId.ToString(),
-                            UserId = userIdStr
-                        },
-                        cancellationToken: ct);
-                    isUserMember = memberDetails.IsMember;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to call GetWorkspaceMemberDetails via gRPC for user {UserId}", userIdStr);
-                }
-            }
-
-            // 4. Check if join request is required (if user is authenticated but not a member)
-            bool isAuthenticated = !string.IsNullOrEmpty(userIdStr);
-            bool requiresJoinRequest = isAuthenticated && !isUserMember;
-
-            // 5. Expose workspace name and slug ONLY if user is member, domain is matched, or external collaboration allowed
-            bool isDomainMatched = workspaceDetails.IsDomainMatched;
-            bool allowExternalCollaboration = workspaceDetails.AllowExternalCollaboration;
-
-            bool canExposeWorkspaceInfo = isUserMember || isDomainMatched || allowExternalCollaboration;
-
-            string? workspaceName = canExposeWorkspaceInfo ? workspaceDetails.WorkspaceName : null;
-            string? workspaceSlug = canExposeWorkspaceInfo ? workspaceDetails.WorkspaceSlug : null;
-
-            var response = new RoomPreflightResponse(
-                RoomCode: roomCode,
-                RequiresJoinRequest: requiresJoinRequest,
-                IsUserMember: isUserMember,
-                IsDomainMatched: isDomainMatched,
-                AllowExternalCollaboration: allowExternalCollaboration,
-                WorkspaceName: workspaceName,
-                WorkspaceSlug: workspaceSlug,
-                IsAuthenticated: isAuthenticated
-            );
-
-            return Ok(response);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error occurred during room preflight for room code {RoomCode}", roomCode);
-            return NotFound(new ApiErrorResponse("Translation room not found or unavailable.", ErrorCodes.NotFound));
-        }
     }
 
     [HttpGet]

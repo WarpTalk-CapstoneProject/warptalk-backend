@@ -157,10 +157,6 @@ builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcSettings:AuthServiceUrl"] ?? "http://localhost:5101");
 });
-builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
-{
-    o.Address = new Uri(builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056");
-});
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.TranscriptServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcSettings:TranscriptServiceUrl"] ?? "http://localhost:50055");
@@ -171,7 +167,6 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.No
 {
     o.Address = new Uri(builder.Configuration["GrpcSettings:NotificationServiceUrl"] ?? "http://localhost:50054");
 });
-
 
 builder.Services.AddControllers();
 builder.Services.AddCustomApiBehavior();

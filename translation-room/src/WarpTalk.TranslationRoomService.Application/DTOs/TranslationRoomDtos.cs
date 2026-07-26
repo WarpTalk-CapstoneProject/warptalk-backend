@@ -200,15 +200,3 @@ public record TranslationRoomFeedbackStateDto(
     bool HasSubmitted,
     TranslationRoomFeedbackDto? Feedback
 );
-
-public record RoomPreflightResponse(
-    string RoomCode,
-    bool RequiresJoinRequest,
-    bool IsUserMember,
-    bool IsDomainMatched,
-    bool AllowExternalCollaboration,
-    string? WorkspaceName,
-    string? WorkspaceSlug,
-    bool IsAuthenticated
-);
-
