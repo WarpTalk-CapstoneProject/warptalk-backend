@@ -19,8 +19,8 @@ Remove the extracted-text viewer and editor from the document detail UI. Keep on
 
 - Document detail page no longer requests or renders extracted text.
 - A single Download action remains available; there is no separate Save As action.
-- Targeted frontend ESLint passes with no errors.
-- Full Next production build is currently blocked by missing local LiveKit packages, Google Fonts network access, and the Docker frontend build timing out at the Next build step.
+- All 12 frontend Node tests pass.
+- The Next.js production build passes and the frontend Docker image is recreated.
 
 ## Regression Risk
 

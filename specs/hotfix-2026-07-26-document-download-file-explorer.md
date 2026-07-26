@@ -18,9 +18,10 @@ Keep one Download action. Open the native File System Access picker before reque
 ## Verification
 
 - Add frontend regression tests verifying that Download opens the native picker before loading the Blob and retains the browser-download fallback.
-- Targeted frontend lint passes and all 12 existing frontend Node tests pass.
+- All 12 frontend Node tests pass.
+- The Next.js production build passes and the frontend Docker image is recreated.
 - The backend `DownloadDocument` test passes (1/1).
-- Full frontend `tsc --noEmit` remains blocked by pre-existing missing `@livekit/*` declarations and a stale `.next` generated route reference unrelated to this hotfix.
+- Frontend health responds with HTTP 200.
 
 ## Regression Risk
 

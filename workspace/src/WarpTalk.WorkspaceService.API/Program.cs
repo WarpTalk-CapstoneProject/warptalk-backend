@@ -87,6 +87,7 @@ builder.Services.AddScoped<IVerifiedDomainService, VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
 builder.Services.AddScoped<IDocumentSecurityScanner, DocumentSecurityScanner>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
+builder.Services.AddWarpTalkMassTransit(builder.Configuration);
 builder.Services.AddInfrastructureServices(builder.Configuration);
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<DocumentSecurityGuardrailConsumerService>();
