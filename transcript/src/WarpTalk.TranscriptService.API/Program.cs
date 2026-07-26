@@ -46,6 +46,7 @@ builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepositor
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();
+builder.Services.AddScoped<IGlobalGlossaryService, GlobalGlossaryService>();
 builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 
@@ -56,6 +57,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString));
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
 
 // --- Authentication ---
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -88,6 +90,11 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcUrls:BillingServiceUrl"] ?? "http://localhost:50054");
+});
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcUrls:WorkspaceServiceUrl"] ?? "http://localhost:50056");
 });
 
 builder.Services.AddControllers()

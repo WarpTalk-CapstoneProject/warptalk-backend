@@ -61,18 +61,28 @@ public class IdleRoomMonitoringWorker : BackgroundService
             var participantList = participants.ToList();
 
             var hasConnectedParticipants = participantList.Any(p => p.Status == "CONNECTED");
-            
+
             if (!hasConnectedParticipants)
             {
-                DateTime lastActivityTime = room.CreatedAt;
-                if (participantList.Any())
+                // Anchor the idle clock to when the room was last actually occupied — the
+                // most recent LeftAt (or JoinedAt, if someone disconnected without a formal
+                // leave) across participants — not a participant row's generic UpdatedAt.
+                // UpdatedAt can be bumped by unrelated edits (e.g. a language preference
+                // change) while nobody is present, which would wrongly keep resetting the
+                // timer and prevent an empty room from ever auto-ending.
+                DateTime lastPresentTime = room.StartedAt ?? room.CreatedAt;
+                var departureTimes = participantList
+                    .Select(p => p.LeftAt ?? p.JoinedAt)
+                    .Where(t => t.HasValue)
+                    .Select(t => t!.Value);
+                if (departureTimes.Any())
                 {
-                    lastActivityTime = participantList.Max(p => p.UpdatedAt);
+                    lastPresentTime = departureTimes.Max();
                 }
 
-                if (DateTime.UtcNow - lastActivityTime > _idleTimeout)
+                if (DateTime.UtcNow - lastPresentTime > _idleTimeout)
                 {
-                    _logger.LogInformation("Room {RoomId} has been idle since {IdleTime}. Auto-ending the room.", room.Id, lastActivityTime);
+                    _logger.LogInformation("Room {RoomId} has had no participants since {IdleTime}. Auto-ending the room.", room.Id, lastPresentTime);
                     
                     var result = await roomService.EndTranslationRoomAsync(room.Id, room.HostId, ct);
                     if (!result.IsSuccess)

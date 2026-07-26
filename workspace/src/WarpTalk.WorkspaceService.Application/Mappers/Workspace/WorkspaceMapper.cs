@@ -112,7 +112,8 @@ public static class WorkspaceMapper
             true,
             config.RedactPii.ToDto(),
             config.Dlp.ToDto(),
-            config.TranslationProfile.ToDto()
+            config.TranslationProfile.ToDto(),
+            config.UseGlobalGlossary
         );
     }
 
@@ -122,7 +123,8 @@ public static class WorkspaceMapper
             true,
             dto.RedactPii.ToConfiguration(),
             dto.Dlp.ToConfiguration(),
-            dto.TranslationProfile.ToConfiguration()
+            dto.TranslationProfile.ToConfiguration(),
+            dto.UseGlobalGlossary
         );
     }
 

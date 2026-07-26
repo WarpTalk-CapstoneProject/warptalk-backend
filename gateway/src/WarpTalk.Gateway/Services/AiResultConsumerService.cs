@@ -207,7 +207,11 @@ public sealed class AiResultConsumerService : BackgroundService
                         OriginalText: originalText,
                         TranslatedText: translatedText,
                         SourceLang: RedisStreamService.GetField(entry, "source_lang") ?? "",
-                        TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "");
+                        TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "",
+                        StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_ms"), out var tStart) ? tStart : 0,
+                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var tEnd) ? tEnd : 0,
+                        SourceSegmentId: RedisStreamService.GetField(entry, "source_segment_id") ?? "",
+                        ChunkIndex: int.TryParse(RedisStreamService.GetField(entry, "chunk_index"), out var chunkIdx) ? chunkIdx : 0);
 
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")

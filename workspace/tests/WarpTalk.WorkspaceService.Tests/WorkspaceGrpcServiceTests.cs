@@ -248,6 +248,98 @@ public class WorkspaceGrpcServiceTests
         Assert.Equal(StatusCode.NotFound, exception.StatusCode);
     }
 
+    [Fact]
+    public async Task GetWorkspaceSettings_ShouldDefaultAllowExternalLlmToTrue_WhenAiUsagePolicyNotConfigured()
+    {
+        // Arrange — opt-out semantics: no AiUsagePolicy at all ⇒ allowed.
+        var workspaceId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"ArtifactRetentionDays\":15}"
+        };
+
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
+
+        // Act
+        var response = await _service.GetWorkspaceSettings(request, _context);
+
+        // Assert
+        Assert.True(response.AllowExternalLlm);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettings_ShouldReturnAllowExternalLlmFalse_WhenWorkspaceDisabledIt()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"AiUsagePolicy\":{\"AllowExternalLlm\":false}}"
+        };
+
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
+
+        // Act
+        var response = await _service.GetWorkspaceSettings(request, _context);
+
+        // Assert
+        Assert.False(response.AllowExternalLlm);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettings_ShouldDefaultUseGlobalGlossaryToTrue_WhenAiUsagePolicyNotConfigured()
+    {
+        // Arrange — opt-out semantics: no AiUsagePolicy at all ⇒ global glossary applies.
+        var workspaceId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"ArtifactRetentionDays\":15}"
+        };
+
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
+
+        // Act
+        var response = await _service.GetWorkspaceSettings(request, _context);
+
+        // Assert
+        Assert.True(response.UseGlobalGlossary);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceSettings_ShouldReturnUseGlobalGlossaryFalse_WhenWorkspaceOptedOut()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"AiUsagePolicy\":{\"UseGlobalGlossary\":false}}"
+        };
+
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        var request = new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() };
+
+        // Act
+        var response = await _service.GetWorkspaceSettings(request, _context);
+
+        // Assert
+        Assert.False(response.UseGlobalGlossary);
+    }
+
     private class TestServerCallContext : ServerCallContext
     {
         private readonly CancellationToken _cancellationToken;

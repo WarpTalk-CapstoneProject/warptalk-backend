@@ -35,6 +35,15 @@ public partial class MeetingChatMessage
 
     public string Mentions { get; set; } = null!;
 
+    /// <summary>Only populated when MessageType == "file".</summary>
+    public string? FileUrl { get; set; }
+
+    public string? FileName { get; set; }
+
+    public long? FileSizeBytes { get; set; }
+
+    public string? ContentType { get; set; }
+
     public virtual ICollection<MeetingChatAssistantRequest> MeetingChatAssistantRequests { get; set; } = new List<MeetingChatAssistantRequest>();
 
     public virtual ICollection<MeetingChatModerationEvent> MeetingChatModerationEvents { get; set; } = new List<MeetingChatModerationEvent>();

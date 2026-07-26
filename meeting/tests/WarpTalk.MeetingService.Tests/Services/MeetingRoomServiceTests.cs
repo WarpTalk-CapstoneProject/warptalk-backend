@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +21,7 @@ public class MeetingRoomServiceTests
     private readonly Mock<ITranslationRoomGrpcService> _grpcServiceMock = new();
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
     private readonly Mock<IRedisService> _redisServiceMock = new();
+    private readonly Mock<ILiveKitEgressService> _egressServiceMock = new();
     private readonly MeetingRoomService _sut;
 
     public MeetingRoomServiceTests()
@@ -27,13 +29,287 @@ public class MeetingRoomServiceTests
         _redisServiceMock
             .Setup(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()))
             .ReturnsAsync(Result.Success());
+        _redisServiceMock
+            .Setup(r => r.PublishStreamMessageAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(Result.Success());
 
         _sut = new MeetingRoomService(
             _tokenServiceMock.Object,
             _grpcServiceMock.Object,
             _unitOfWorkMock.Object,
             _redisServiceMock.Object,
+            _egressServiceMock.Object,
             Mock.Of<ILogger<MeetingRoomService>>());
+    }
+
+    private static Mock<IMeetingRoomRepository> SetupMeetingRoomRepository(Mock<IUnitOfWork> unitOfWorkMock, MeetingRoom? meetingRoom)
+    {
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(meetingRoom);
+        unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+        return roomRepoMock;
+    }
+
+    [Fact]
+    public async Task SetLockAsync_LocksRoom_WhenCallerIsActiveHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = hostId, ProviderRoomName = translationRoomId.ToString() };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        var result = await _sut.SetLockAsync(translationRoomId, hostId, true);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(meetingRoom.IsLocked);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload => HasProperty(payload, "Command", "RoomLockChanged") && HasProperty(payload, "RoomId", translationRoomId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetLockAsync_ReturnsForbidden_WhenCallerIsNotHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = Guid.NewGuid(), ProviderRoomName = translationRoomId.ToString() };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        var result = await _sut.SetLockAsync(translationRoomId, Guid.NewGuid(), true);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.False(meetingRoom.IsLocked);
+    }
+
+    [Fact]
+    public async Task JoinMeetingAsync_RejectsNewJoiner_WhenRoomIsLocked()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+
+        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+        {
+            HostId = hostId.ToString(),
+            Status = "IN_PROGRESS",
+            WorkspaceId = Guid.NewGuid().ToString()
+        };
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = meetingRoomId,
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS",
+            IsLocked = true
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingParticipant?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var participantsCacheKey = $"meeting:participants:{translationRoomId}";
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetParticipantsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse()));
+
+        var invitationRepoMock = new Mock<IGenericRepository<MeetingInvitation>>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingInvitation, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingInvitation?)null);
+        _unitOfWorkMock.Setup(u => u.Repository<MeetingInvitation>()).Returns(invitationRepoMock.Object);
+
+        var result = await _sut.JoinMeetingAsync(translationRoomId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal("Room is locked.", result.Error);
+        _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetRecordingAsync_StartsEgress_AndPersistsEgressId_WhenCallerIsHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = hostId, ProviderRoomName = "room-1" };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        _egressServiceMock
+            .Setup(e => e.StartRoomCompositeEgressAsync("room-1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success("egress-123"));
+
+        var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "start");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.Recording);
+        Assert.Equal("egress-123", result.Value.EgressId);
+        Assert.Equal("egress-123", meetingRoom.ActiveEgressId);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload => HasProperty(payload, "Command", "RecordingStateChanged"))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SetRecordingAsync_StopsEgress_AndClearsEgressId()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = hostId, ProviderRoomName = "room-1", ActiveEgressId = "egress-123" };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        _egressServiceMock
+            .Setup(e => e.StopEgressAsync("egress-123", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(true));
+
+        var result = await _sut.SetRecordingAsync(translationRoomId, hostId, "stop");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.Recording);
+        Assert.Null(meetingRoom.ActiveEgressId);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+    }
+
+    [Fact]
+    public async Task SetRecordingAsync_ReturnsForbidden_WhenCallerIsNotHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = Guid.NewGuid(), ProviderRoomName = "room-1" };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        var result = await _sut.SetRecordingAsync(translationRoomId, Guid.NewGuid(), "start");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        _egressServiceMock.Verify(e => e.StartRoomCompositeEgressAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleHostOfflineAsync_ElectsEarliestJoinedActiveParticipant_WhenDepartedUserWasHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+        var departedHostId = Guid.NewGuid();
+        var earlierUserId = Guid.NewGuid();
+        var laterUserId = Guid.NewGuid();
+
+        var meetingRoom = new MeetingRoom { Id = meetingRoomId, TranslationRoomId = translationRoomId, ActiveHostId = departedHostId, ProviderRoomName = "room-1" };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participants = new List<MeetingParticipant>
+        {
+            new() { MeetingRoomId = meetingRoomId, UserId = laterUserId, IsActive = true, JoinedAt = DateTime.UtcNow },
+            new() { MeetingRoomId = meetingRoomId, UserId = earlierUserId, IsActive = true, JoinedAt = DateTime.UtcNow.AddMinutes(-5) },
+        };
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participants);
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var result = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(earlierUserId, meetingRoom.ActiveHostId);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload => HasProperty(payload, "Command", "HostChanged") && HasProperty(payload, "NewHostUserId", earlierUserId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleHostOfflineAsync_DoesNothing_WhenDepartedUserWasNotHost_AndSomeoneElseIsHost()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var currentHostId = Guid.NewGuid();
+        var departedUserId = Guid.NewGuid();
+
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = currentHostId, ProviderRoomName = "room-1" };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var result = await _sut.HandleHostOfflineAsync(translationRoomId, departedUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(currentHostId, meetingRoom.ActiveHostId);
+        roomRepoMock.Verify(r => r.Update(It.IsAny<MeetingRoom>()), Times.Never);
+        _redisServiceMock.Verify(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleHostOfflineAsync_ClearsHost_WhenNoActiveParticipantsRemain()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var departedHostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom { Id = Guid.NewGuid(), TranslationRoomId = translationRoomId, ActiveHostId = departedHostId, ProviderRoomName = "room-1" };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FindAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<MeetingParticipant>());
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var result = await _sut.HandleHostOfflineAsync(translationRoomId, departedHostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(meetingRoom.ActiveHostId);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        _redisServiceMock.Verify(r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
     }
 
     [Fact]
@@ -126,8 +402,93 @@ public class MeetingRoomServiceTests
         _unitOfWorkMock.Verify(u => u.RollbackTransactionAsync(), Times.Once);
     }
 
+    [Fact]
+    public async Task EndMeetingAsync_PublishesMeetingEndedEvent_AndTriggersAiSummary()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid().ToString();
+
+        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+        {
+            HostId = hostId.ToString(),
+            Status = "IN_PROGRESS",
+            WorkspaceId = workspaceId
+        };
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
+
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingRoom?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "meeting.ended",
+                It.Is<object>(payload =>
+                    HasProperty(payload, "TranslationRoomId", translationRoomId.ToString()) &&
+                    HasProperty(payload, "WorkspaceId", workspaceId))),
+            Times.Once);
+
+        _redisServiceMock.Verify(
+            r => r.PublishStreamMessageAsync(
+                "stt:results",
+                It.Is<Dictionary<string, string>>(fields =>
+                    fields["meeting_id"] == translationRoomId.ToString() &&
+                    fields["text"] == "__MEETING_END__")),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task EndMeetingAsync_StillSucceeds_WhenAiSummaryTriggerFails()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        var roomDetails = new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+        {
+            HostId = hostId.ToString(),
+            Status = "IN_PROGRESS",
+            WorkspaceId = Guid.NewGuid().ToString()
+        };
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(roomDetails));
+
+        var roomRepoMock = new Mock<IMeetingRoomRepository>();
+        roomRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingRoom?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
+
+        _redisServiceMock
+            .Setup(r => r.PublishStreamMessageAsync("stt:results", It.IsAny<Dictionary<string, string>>()))
+            .ThrowsAsync(new InvalidOperationException("Redis unavailable"));
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.True(result.IsSuccess);
+    }
+
     private static bool HasProperty(object payload, string propertyName, string expectedValue)
     {
+        // PublishGatewayCommandAsync builds a Dictionary<string, object?> (see
+        // MeetingRoomService) rather than an anonymous type for the Gateway commands
+        // channel, unlike the plain anonymous-object payloads used elsewhere (e.g.
+        // "meeting.started"/"meeting.ended") — so this helper needs to check both shapes.
+        if (payload is System.Collections.IDictionary dictionary)
+        {
+            return dictionary.Contains(propertyName) &&
+                   string.Equals(dictionary[propertyName]?.ToString(), expectedValue, StringComparison.Ordinal);
+        }
+
         var property = payload.GetType().GetProperty(propertyName);
         return string.Equals(property?.GetValue(payload)?.ToString(), expectedValue, StringComparison.Ordinal);
     }

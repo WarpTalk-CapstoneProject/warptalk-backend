@@ -896,6 +896,34 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    public async Task<Result<string>> GenerateCalendarIcsAsync(Guid translationRoomId, CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (room == null)
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!room.ScheduledAt.HasValue)
+                return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotScheduled, ErrorCodes.InvalidState);
+
+            var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
+            var ics = IcsCalendarBuilder.Build(
+                uid: $"{room.Id}@warptalk.vn",
+                title: room.Title,
+                description: room.Description,
+                scheduledAtUtc: room.ScheduledAt.Value,
+                joinLink: joinLink);
+
+            return Result.Success(ics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while generating calendar .ics. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure<string>("An unexpected error occurred while generating the calendar invite.", ErrorCodes.InternalServerError);
+        }
+    }
+
     private IQueryable<TranslationRoom> BuildAccessibleRoomsQuery(Guid userId, string? userEmail)
     {
         var query = _unitOfWork.Repository<TranslationRoom>().Query();
@@ -977,9 +1005,17 @@ public class TranslationRoomService : ITranslationRoomService
 
     private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)
     {
-        var type = artifact.FileFormat?.Equals("debug", StringComparison.OrdinalIgnoreCase) == true
-            ? "DEBUG_LOG"
-            : "TRANSCRIPT_EXPORT";
+        // WT-13: previously this ignored artifact.ArtifactType entirely and derived `type`
+        // only from FileFormat, so every artifact (summary, recording, transcript alike)
+        // came back as "TRANSCRIPT_EXPORT" unless FileFormat happened to be "debug" — which
+        // silently broke any client-side filtering by artifact type (e.g. the AI summaries
+        // page looking for "summary_export"). Use the actual stored ArtifactType, falling
+        // back to the old heuristic only if it's somehow missing.
+        var type = !string.IsNullOrWhiteSpace(artifact.ArtifactType)
+            ? artifact.ArtifactType
+            : artifact.FileFormat?.Equals("debug", StringComparison.OrdinalIgnoreCase) == true
+                ? "DEBUG_LOG"
+                : "TRANSCRIPT_EXPORT";
 
         return new TranslationRoomArtifactDto(
             artifact.Id,
@@ -994,7 +1030,8 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.ConsentRequired,
             artifact.RetentionUntil,
             artifact.Status,
-            artifact.CreatedAt
+            artifact.CreatedAt,
+            artifact.Content
         );
     }
 

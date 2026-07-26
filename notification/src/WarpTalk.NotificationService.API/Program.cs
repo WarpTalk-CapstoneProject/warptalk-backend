@@ -42,6 +42,20 @@ builder.Services.AddDbContext<NotificationDbContext>(options =>
 
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
+
+// Register official Resend .NET SDK
+builder.Services.AddOptions();
+builder.Services.AddHttpClient<Resend.ResendClient>();
+builder.Services.Configure<Resend.ResendClientOptions>(o =>
+{
+    o.ApiToken = builder.Configuration["RESEND_API_KEY"] 
+                 ?? builder.Configuration["Resend:ApiKey"] 
+                 ?? Environment.GetEnvironmentVariable("RESEND_API_KEY") 
+                 ?? "re_placeholder_key";
+});
+builder.Services.AddTransient<Resend.IResend, Resend.ResendClient>();
+builder.Services.AddTransient<IEmailSender, WarpTalk.NotificationService.Infrastructure.Services.ResendEmailSender>();
+
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();

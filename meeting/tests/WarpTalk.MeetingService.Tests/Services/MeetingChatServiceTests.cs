@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Moq;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
@@ -27,6 +29,7 @@ public class MeetingChatServiceTests
     private readonly Mock<IMeetingChatModerationEventRepository> _moderationRepoMock;
     private readonly Mock<IMeetingChatTranslationRepository> _translationRepoMock;
     private readonly Mock<IChatTranslator> _chatTranslatorMock;
+    private readonly Mock<IMeetingChatFileStorage> _fileStorageMock;
     private readonly MeetingChatService _sut;
 
     private readonly Guid _roomId = Guid.NewGuid();
@@ -45,6 +48,7 @@ public class MeetingChatServiceTests
         _moderationRepoMock = new Mock<IMeetingChatModerationEventRepository>();
         _translationRepoMock = new Mock<IMeetingChatTranslationRepository>();
         _chatTranslatorMock = new Mock<IChatTranslator>();
+        _fileStorageMock = new Mock<IMeetingChatFileStorage>();
 
         _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(_roomRepoMock.Object);
         _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(_participantRepoMock.Object);
@@ -61,7 +65,14 @@ public class MeetingChatServiceTests
         _chatTranslatorMock.Setup(t => t.ModelName).Returns("gpt-4o-mini");
         _chatTranslatorMock.Setup(t => t.PromptVersion).Returns(1);
 
-        _sut = new MeetingChatService(_unitOfWorkMock.Object, _notifierMock.Object, _redisMock.Object, _chatTranslatorMock.Object);
+        _sut = new MeetingChatService(_unitOfWorkMock.Object, _notifierMock.Object, _redisMock.Object, _chatTranslatorMock.Object, _fileStorageMock.Object);
+    }
+
+    private static IFormFile CreateFormFile(string fileName, string contentType, int sizeBytes)
+    {
+        var content = new byte[sizeBytes];
+        var stream = new MemoryStream(content);
+        return new FormFile(stream, 0, sizeBytes, "file", fileName) { Headers = new Microsoft.AspNetCore.Http.HeaderDictionary(), ContentType = contentType };
     }
 
     private MeetingRoom CreateRoom(Guid? createdBy = null) => new()
@@ -350,5 +361,126 @@ public class MeetingChatServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal("TRANSLATION_FAILED", result.ErrorCode);
         _translationRepoMock.Verify(r => r.AddAsync(It.IsAny<MeetingChatTranslation>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // --- UploadFile Tests ---
+
+    [Fact]
+    public async Task UploadFileAsync_RejectsBlockedExtension()
+    {
+        var file = CreateFormFile("virus.exe", "application/octet-stream", 100);
+        var request = new UploadMeetingChatFileRequest { File = file };
+
+        var result = await _sut.UploadFileAsync(_roomId, _hostId, request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        _roomRepoMock.Verify(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task UploadFileAsync_RejectsOversizedFile()
+    {
+        var file = CreateFormFile("big.zip", "application/zip", 26 * 1024 * 1024);
+        var request = new UploadMeetingChatFileRequest { File = file };
+
+        var result = await _sut.UploadFileAsync(_roomId, _hostId, request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UploadFileAsync_NotActiveParticipant_ReturnsFailure()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom());
+
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingParticipant?)null);
+
+        var file = CreateFormFile("doc.pdf", "application/pdf", 100);
+        var request = new UploadMeetingChatFileRequest { File = file };
+
+        var result = await _sut.UploadFileAsync(_roomId, _userId, request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UploadFileAsync_ActiveParticipant_SavesAndBroadcasts()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom());
+
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateParticipant(_userId));
+
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var file = CreateFormFile("notes.pdf", "application/pdf", 100);
+        var request = new UploadMeetingChatFileRequest { File = file };
+
+        var result = await _sut.UploadFileAsync(_roomId, _userId, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("file", result.Value!.MessageType);
+        Assert.Equal("notes.pdf", result.Value!.FileName);
+        Assert.Equal(100, result.Value!.FileSizeBytes);
+        _fileStorageMock.Verify(s => s.SaveAsync(It.IsAny<string>(), It.IsAny<Stream>(), It.IsAny<CancellationToken>()), Times.Once);
+        _notifierMock.Verify(n => n.BroadcastMessageReceivedAsync(_roomId, It.IsAny<MeetingChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // --- DownloadFile Tests ---
+
+    [Fact]
+    public async Task DownloadFileAsync_MessageNotFound_ReturnsFailure()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom(_hostId));
+
+        _chatMessageRepoMock.Setup(r => r.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingChatMessage?)null);
+
+        var result = await _sut.DownloadFileAsync(_roomId, Guid.NewGuid(), _hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("NOT_FOUND", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DownloadFileAsync_FileMessage_ReturnsStream()
+    {
+        var messageId = Guid.NewGuid();
+        var message = new MeetingChatMessage
+        {
+            Id = messageId,
+            MeetingRoomId = _roomId,
+            MessageType = "file",
+            FileName = "notes.pdf",
+            ContentType = "application/pdf",
+            OriginalText = "notes.pdf",
+            OriginalLanguage = "en",
+            SenderType = "user",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom(_hostId));
+
+        _chatMessageRepoMock.Setup(r => r.GetByIdAsync(messageId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(message);
+
+        _fileStorageMock.Setup(s => s.OpenReadAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MemoryStream());
+
+        var result = await _sut.DownloadFileAsync(_roomId, messageId, _hostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("notes.pdf", result.Value!.FileName);
+        Assert.Equal("application/pdf", result.Value!.ContentType);
     }
 }

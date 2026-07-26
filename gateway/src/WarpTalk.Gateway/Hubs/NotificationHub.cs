@@ -131,6 +131,20 @@ public class NotificationHub : Hub
         }
     }
 
+    public async Task SubscribeWorkspace(string workspaceId)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceId)) return;
+        await Groups.AddToGroupAsync(Context.ConnectionId, WorkspaceGroupName(workspaceId));
+        _logger.LogDebug("NotificationHub: Connection {ConnectionId} joined group {GroupName}", Context.ConnectionId, WorkspaceGroupName(workspaceId));
+    }
+
+    public async Task UnsubscribeWorkspace(string workspaceId)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceId)) return;
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, WorkspaceGroupName(workspaceId));
+        _logger.LogDebug("NotificationHub: Connection {ConnectionId} left group {GroupName}", Context.ConnectionId, WorkspaceGroupName(workspaceId));
+    }
+
     // ── Helpers ────────────────────────────────────────────
 
     private string GetUserId() =>
@@ -139,4 +153,5 @@ public class NotificationHub : Hub
         ?? throw new HubException("User identity not found in token.");
 
     private static string UserGroupName(string userId) => $"user:{userId}";
+    private static string WorkspaceGroupName(string workspaceId) => $"workspace:{workspaceId}";
 }

@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
 
@@ -71,6 +72,33 @@ public class TranslationRoomAudioRouteController : ControllerBase
         CancellationToken ct)
     {
         var result = await _audioRouteService.ToggleVoiceCloneAsync(roomId, routeId, dto, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    /// <summary>
+    /// Self-service: the calling participant consents (or withdraws consent) to have
+    /// THEIR OWN voice cloned for every listener they currently speak to in this room.
+    /// See ITranslationRoomAudioRouteService.SetVoiceCloneConsentAsync.
+    /// </summary>
+    [HttpPost("voice-clone-consent")]
+    public async Task<IActionResult> SetVoiceCloneConsent(
+        [FromRoute] Guid roomId,
+        [FromBody] SetVoiceCloneConsentDto dto,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _audioRouteService.SetVoiceCloneConsentAsync(roomId, userId.Value, dto.Enabled, ct);
 
         if (result.IsSuccess)
         {

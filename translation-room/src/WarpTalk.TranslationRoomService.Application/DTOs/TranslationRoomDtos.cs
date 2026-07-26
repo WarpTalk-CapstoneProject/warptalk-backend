@@ -140,7 +140,10 @@ public record TranslationRoomArtifactDto(
     bool ConsentRequired,
     DateTime? RetentionUntil,
     string Status,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    // WT-13: inline payload (e.g. AI meeting-summary JSON) for artifact types that don't
+    // need real file storage. Null for transcript/recording artifacts.
+    string? Content = null
 );
 
 public record CreateArtifactRequest(
@@ -152,7 +155,8 @@ public record CreateArtifactRequest(
     bool ContainsRawAudio,
     bool ContainsRawVideo,
     bool ConsentRequired,
-    DateTime? RetentionUntil = null
+    DateTime? RetentionUntil = null,
+    string? Content = null
 );
 
 public record TranslationRoomHistoryItemDto(

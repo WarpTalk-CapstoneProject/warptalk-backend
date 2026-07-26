@@ -395,6 +395,23 @@ public class TranslationRoomsController : ControllerBase
 
         return CreatedAtAction(nameof(GetMyFeedback), new { id }, result.Value!);
     }
+    // WT-14: plain downloadable/emailable link, so [Authorize] here also accepts a JWT
+    // via the "access_token" query string (see Program.cs JwtBearerEvents.OnMessageReceived) —
+    // a calendar app or browser tab opening this URL directly can't attach an Authorization header.
+    [HttpGet("{id}/calendar.ics")]
+    public async Task<IActionResult> DownloadCalendarIcs(Guid id, CancellationToken ct)
+    {
+        var result = await _translationRoomService.GenerateCalendarIcsAsync(id, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        var bytes = System.Text.Encoding.UTF8.GetBytes(result.Value!);
+        return File(bytes, "text/calendar", "meeting.ics");
+    }
+
 //Chua co enpoint PATCH nen tach rieng settings
     [HttpPut("{id}/settings")]
     public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)

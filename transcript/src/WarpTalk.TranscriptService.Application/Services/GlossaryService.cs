@@ -181,6 +181,9 @@ public class GlossaryService : IGlossaryService
             term.TargetTerm = dto.TargetTerm;
             term.Context = dto.Context;
             term.Domain = dto.Domain;
+            term.Definition = dto.Definition;
+            term.UsageNote = dto.UsageNote;
+            term.PartOfSpeech = dto.PartOfSpeech;
             term.Priority = dto.Priority;
             term.IsActive = dto.IsActive;
             term.UpdatedAt = DateTime.UtcNow;

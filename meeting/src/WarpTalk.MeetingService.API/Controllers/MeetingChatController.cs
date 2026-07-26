@@ -75,7 +75,37 @@ public class MeetingChatController : ControllerBase
             if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
         }
-            
+
         return Ok();
+    }
+
+    [HttpPost("files")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(25 * 1024 * 1024)]
+    public async Task<IActionResult> UploadFile(Guid roomId, [FromForm] UploadMeetingChatFileRequest request, CancellationToken ct)
+    {
+        var result = await _chatService.UploadFileAsync(roomId, CurrentUserId, request, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            return BadRequest(result.Error);
+        }
+
+        return Ok(result.Value);
+    }
+
+    [HttpGet("files/{messageId:guid}/download")]
+    public async Task<IActionResult> DownloadFile(Guid roomId, Guid messageId, CancellationToken ct)
+    {
+        var result = await _chatService.DownloadFileAsync(roomId, messageId, CurrentUserId, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
+            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            return BadRequest(result.Error);
+        }
+
+        return File(result.Value!.Stream, result.Value.ContentType, result.Value.FileName);
     }
 }

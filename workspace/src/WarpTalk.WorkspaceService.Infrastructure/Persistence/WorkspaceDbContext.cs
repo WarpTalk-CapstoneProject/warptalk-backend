@@ -27,8 +27,6 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceInvitation> WorkspaceInvitations { get; set; }
 
-    public virtual DbSet<WorkspaceKnowledgeGlossary> WorkspaceKnowledgeGlossaries { get; set; }
-
     public virtual DbSet<WorkspaceMember> WorkspaceMembers { get; set; }
 
     public virtual DbSet<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; }
@@ -343,62 +341,6 @@ public partial class WorkspaceDbContext : DbContext
                 .HasForeignKey(d => d.WorkspaceId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("workspace_invitations_workspace_id_fkey");
-        });
-
-        modelBuilder.Entity<WorkspaceKnowledgeGlossary>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("workspace_knowledge_glossaries_pkey");
-
-            entity.ToTable("workspace_knowledge_glossaries", "workspace");
-
-            entity.HasIndex(e => new { e.WorkspaceId, e.BusinessDomain, e.SourceLanguage }, "idx_workspace_glossaries_lookup");
-
-            entity.HasIndex(e => new { e.WorkspaceId, e.BusinessDomain, e.SourceLanguage, e.TargetLanguage, e.Term }, "workspace_knowledge_glossarie_workspace_id_business_domain__key").IsUnique();
-
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.BusinessDomain)
-                .HasMaxLength(100)
-                .HasColumnName("business_domain");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.CreatedBy).HasColumnName("created_by");
-            entity.Property(e => e.Definition).HasColumnName("definition");
-            entity.Property(e => e.Name)
-                .HasMaxLength(255)
-                .HasColumnName("name");
-            entity.Property(e => e.PartOfSpeech)
-                .HasMaxLength(50)
-                .HasColumnName("part_of_speech");
-            entity.Property(e => e.PreferredTranslation)
-                .HasMaxLength(255)
-                .HasColumnName("preferred_translation");
-            entity.Property(e => e.SourceLanguage)
-                .HasMaxLength(20)
-                .HasColumnName("source_language");
-            entity.Property(e => e.Status)
-                .HasMaxLength(30)
-                .HasDefaultValueSql("'active'::character varying")
-                .HasColumnName("status");
-            entity.Property(e => e.TargetLanguage)
-                .HasMaxLength(20)
-                .HasColumnName("target_language");
-            entity.Property(e => e.Term)
-                .HasMaxLength(255)
-                .HasColumnName("term");
-            entity.Property(e => e.UpdatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("updated_at");
-            entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
-            entity.Property(e => e.UsageNote).HasColumnName("usage_note");
-            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
-
-            entity.HasOne(d => d.Workspace).WithMany(p => p.WorkspaceKnowledgeGlossaries)
-                .HasForeignKey(d => d.WorkspaceId)
-                .OnDelete(DeleteBehavior.Restrict)
-                .HasConstraintName("workspace_knowledge_glossaries_workspace_id_fkey");
         });
 
         modelBuilder.Entity<WorkspaceMember>(entity =>
