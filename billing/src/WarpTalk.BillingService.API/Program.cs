@@ -76,6 +76,7 @@ try
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
     builder.Services.AddScoped<IStripeWebhookService, StripeWebhookService>();
+    builder.Services.AddScoped<Stripe.SubscriptionService>();
     builder.Services.AddScoped<INotificationClient, WarpTalk.BillingService.Infrastructure.Clients.NotificationClient>();
     builder.Services.AddScoped<IWorkspaceClient, WarpTalk.BillingService.Infrastructure.Clients.WorkspaceClient>();
 
