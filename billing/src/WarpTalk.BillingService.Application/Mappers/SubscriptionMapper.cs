@@ -107,4 +107,33 @@ public static class SubscriptionMapper
         };
     }
 
+    public static Subscription ToTrialEntity(this TrialSubscriptionRequest request, Plan plan, string ownerDomain)
+    {
+        var now = DateTime.UtcNow;
+        var trialEnd = now.AddDays(SubscriptionConstants.TrialDefaults.DurationDays);
+
+        return new Subscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.UserId,
+            WorkspaceId = request.WorkspaceId,
+            PlanId = plan.Id,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            CreditsRemaining = SubscriptionConstants.TrialDefaults.Credits,
+            CreditsUsedThisCycle = 0,
+            CreditsPerCycleOverride = SubscriptionConstants.TrialDefaults.Credits,
+            OverageCapCreditsOverride = SubscriptionConstants.TrialDefaults.OverageCapCredits,
+            ContractPriceVnd = null,
+            TrialEndsAt = trialEnd,
+            OwnerEmailDomain = ownerDomain,
+            CurrentPeriodStart = now,
+            CurrentPeriodEnd = trialEnd,
+            AutoRenew = false,
+            IsActive = true,
+            ServiceState = SubscriptionConstants.ServiceStates.Healthy,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
 }

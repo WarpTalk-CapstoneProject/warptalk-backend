@@ -17,7 +17,8 @@ public record RecordUsageRequest(
     int? DurationSeconds,
     Guid? TranslationRoomId = null,
     Guid? SegmentId = null,
-    string? Details = null);
+    string? Details = null,
+    string? IdempotencyKey = null);
 
 public record ChargeVoiceCloneRequest(
     Guid HostWorkspaceId,

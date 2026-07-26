@@ -1,9 +1,10 @@
 using FluentAssertions;
 using Moq;
 using WarpTalk.BillingService.Application.DTOs;
-using WarpTalk.BillingService.Domain.Entities;
-using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Infrastructure.Workers;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Tests.Infrastructure.Workers;
 
@@ -16,22 +17,19 @@ public class BillingAggregationWorkerTests
         var workspaceId = Guid.NewGuid();
         var gpt41RateId = Guid.NewGuid();
         var gpt5RateId = Guid.NewGuid();
-        var usageRecords = new List<UsageRecord>();
-        var transactions = new List<CreditTransaction>();
-        var usageRepo = new Mock<IGenericRepository<UsageRecord>>();
-        var transactionRepo = new Mock<ICreditTransactionRepository>();
-        var unitOfWork = new Mock<IUnitOfWork>();
+        var settlementRequests = new List<SettleUsageChargeRequest>();
+        var settlementService = new Mock<IUsageSettlementService>();
 
-        usageRepo
-            .Setup(r => r.AddAsync(It.IsAny<UsageRecord>(), It.IsAny<CancellationToken>()))
-            .Callback<UsageRecord, CancellationToken>((record, _) => usageRecords.Add(record))
-            .Returns(Task.CompletedTask);
-        transactionRepo
-            .Setup(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
-            .Callback<CreditTransaction, CancellationToken>((transaction, _) => transactions.Add(transaction))
-            .Returns(Task.CompletedTask);
-        unitOfWork.Setup(u => u.UsageRecordRepository).Returns(usageRepo.Object);
-        unitOfWork.Setup(u => u.CreditTransactionRepository).Returns(transactionRepo.Object);
+        settlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<SettleUsageChargeRequest, CancellationToken>((request, _) => settlementRequests.Add(request))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(
+                true,
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                100,
+                SubscriptionConstants.ServiceStates.Healthy,
+                null)));
 
         var logs = new List<TempUsageLogDto>
         {
@@ -71,24 +69,23 @@ public class BillingAggregationWorkerTests
             }
         };
 
-        await BillingAggregationWorker.AggregateTempLogsIntoUnitOfWorkAsync(
+        await BillingAggregationWorker.AggregateTempLogsAsync(
             logs,
-            unitOfWork.Object,
+            settlementService.Object,
+            null,
+            null,
             CancellationToken.None);
 
-        usageRecords.Should().HaveCount(2);
-        transactions.Should().HaveCount(2);
-        transactions.Should().Contain(t =>
+        settlementRequests.Should().HaveCount(2);
+        settlementRequests.Should().Contain(t =>
             t.PricingRateCardId == gpt41RateId &&
             t.UnitPriceSnapshot == 0.131500m &&
-            t.UsageRecordId.HasValue &&
             t.ChargeType == "AI_ASSISTANT" &&
-            t.Currency == "VND");
-        transactions.Should().Contain(t =>
+            t.Currency == PaymentConstants.Currencies.VndAccounting);
+        settlementRequests.Should().Contain(t =>
             t.PricingRateCardId == gpt5RateId &&
             t.UnitPriceSnapshot == 0.025000m &&
-            t.UsageRecordId.HasValue &&
             t.ChargeType == "AI_ASSISTANT" &&
-            t.Currency == "VND");
+            t.Currency == PaymentConstants.Currencies.VndAccounting);
     }
 }

@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
@@ -32,5 +33,33 @@ public class InvoiceRepository : GenericRepository<Invoice>, IInvoiceRepository
             .ToListAsync(cancellationToken);
 
         return new PagedResult<Invoice>(items, total, normalized.PageNumber, normalized.PageSize);
+    }
+
+    public async Task<IReadOnlyList<Invoice>> GetOverdueOpenInvoicesAsync(DateTime now, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Include(i => i.Payment)
+            .ThenInclude(p => p.Subscription)
+            .ThenInclude(s => s.Plan)
+            .Where(i =>
+                i.DueAt != null &&
+                i.DueAt < now &&
+                i.Status != InvoiceConstants.InvoiceStatuses.Paid &&
+                i.Status != InvoiceConstants.InvoiceStatuses.Void)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<Invoice>> GetOpenInvoicesDueBeforeAsync(DateTime threshold, CancellationToken cancellationToken = default)
+    {
+        return await _dbSet
+            .Include(i => i.Payment)
+            .ThenInclude(p => p.Subscription)
+            .ThenInclude(s => s.Plan)
+            .Where(i =>
+                i.DueAt != null &&
+                i.DueAt <= threshold &&
+                i.Status != InvoiceConstants.InvoiceStatuses.Paid &&
+                i.Status != InvoiceConstants.InvoiceStatuses.Void)
+            .ToListAsync(cancellationToken);
     }
 }

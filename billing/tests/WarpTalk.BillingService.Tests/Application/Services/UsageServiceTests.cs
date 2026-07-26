@@ -28,6 +28,7 @@ public class UsageServiceTests
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
     private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
+    private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly UsageService _usageService;
 
     public UsageServiceTests()
@@ -38,6 +39,7 @@ public class UsageServiceTests
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
+        _mockSettlementService = new Mock<IUsageSettlementService>();
 
         _mockConfig.Setup(c => c["BillingRates:SttPerSecond"]).Returns("1.0");
         _mockConfig.Setup(c => c["BillingRates:TranslationPer100Chars"]).Returns("1.0");
@@ -54,7 +56,8 @@ public class UsageServiceTests
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<UsageService>>().Object,
-            null!);
+            null!,
+            _mockSettlementService.Object);
     }
 
     [Fact]
@@ -93,6 +96,9 @@ public class UsageServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(true, Guid.NewGuid(), Guid.NewGuid(), 400, SubscriptionConstants.ServiceStates.Healthy, null)));
 
         var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, null);
         var result = await _usageService.RecordUsageAsync(request);
@@ -100,10 +106,11 @@ public class UsageServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value!.CurrentCredits.Should().Be(400); // 500 - 100
 
-        _mockSubRepo.Verify(r => r.Update(It.Is<Subscription>(s => s.CreditsRemaining == 400)), Times.Once);
-        _mockTxRepo.Verify(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()), Times.Once);
-        _mockUsageRepo.Verify(r => r.AddAsync(It.IsAny<UsageRecord>(), It.IsAny<CancellationToken>()), Times.Once);
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(
+                It.Is<SettleUsageChargeRequest>(r => r.CreditsConsumed == 100 && r.WorkspaceId == hostWorkspaceId),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
@@ -121,11 +128,18 @@ public class UsageServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(true, Guid.NewGuid(), Guid.NewGuid(), 400, SubscriptionConstants.ServiceStates.Healthy, null)));
 
         var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, segmentId, "Segment details");
         var result = await _usageService.RecordUsageAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        _mockUsageRepo.Verify(r => r.AddAsync(It.Is<UsageRecord>(u => u.SegmentId == segmentId), It.IsAny<CancellationToken>()), Times.Once);
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(
+                It.Is<SettleUsageChargeRequest>(r => r.TranscriptSegmentId == segmentId),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 }

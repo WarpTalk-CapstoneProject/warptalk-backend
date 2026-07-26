@@ -217,4 +217,57 @@ public class RedisBillingStore : IRedisBillingStore
             return Result.Failure(ex.Message, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result> SetAiServiceStateAsync(Guid workspaceId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var key = string.Format(RedisConstants.Keys.WorkspaceAiServiceStateTemplate, workspaceId);
+            var payload = JsonSerializer.Serialize(new
+            {
+                workspaceId,
+                serviceState,
+                suspendedReason,
+                updatedAt = DateTime.UtcNow
+            });
+
+            await _db.StringSetAsync(key, payload, TimeSpan.FromHours(24));
+            await _db.StringSetAsync(
+                string.Format(RedisConstants.Keys.WorkspaceAiServiceSuspendedTemplate, workspaceId),
+                serviceState == SubscriptionConstants.ServiceStates.Suspended ? RedisConstants.Values.True : RedisConstants.Values.False,
+                TimeSpan.FromHours(24));
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure(ex.Message, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> SetAiServiceStateForRoomAsync(Guid translationRoomId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                translationRoomId,
+                serviceState,
+                suspendedReason,
+                updatedAt = DateTime.UtcNow
+            });
+
+            await _db.StringSetAsync(string.Format(RedisConstants.Keys.TranslationRoomAiServiceStateTemplate, translationRoomId), payload, TimeSpan.FromHours(24));
+            await _db.StringSetAsync(
+                string.Format(RedisConstants.Keys.TranslationRoomAiServiceSuspendedTemplate, translationRoomId),
+                serviceState == SubscriptionConstants.ServiceStates.Suspended ? RedisConstants.Values.True : RedisConstants.Values.False,
+                TimeSpan.FromHours(24));
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure(ex.Message, ErrorCodes.InternalServerError);
+        }
+    }
 }

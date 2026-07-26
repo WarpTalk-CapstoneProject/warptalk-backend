@@ -148,6 +148,66 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
+    public async Task<Result<SubscriptionDto>> CreateTrialSubscriptionAsync(
+        TrialSubscriptionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var ownerDomain = EmailDomainHelper.NormalizeDomain(request.OwnerEmail);
+            if (ownerDomain is null)
+                return Result.Failure<SubscriptionDto>(BillingMessageConstants.ApiErrorMessages.BillingOwnerEmailInvalid, ErrorCodes.ValidationError);
+
+            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Slug == SubscriptionConstants.PlanSlugs.Enterprise && p.IsActive && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                    ErrorCodes.BillingPlanNotFound);
+
+            var existingActive = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (existingActive is not null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
+                    ErrorCodes.BillingSubscriptionAlreadyActive);
+
+            var existingTrialForDomain = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.OwnerEmailDomain != null &&
+                     s.OwnerEmailDomain.ToLower() == ownerDomain &&
+                     s.TrialEndsAt != null &&
+                     s.DeletedAt == null,
+                cancellationToken);
+
+            if (existingTrialForDomain is not null)
+                return Result.Failure<SubscriptionDto>(BillingMessageConstants.ApiErrorMessages.BillingTrialAlreadyExistsForOwnerDomain, ErrorCodes.BillingSubscriptionConflict);
+
+            var subscription = request.ToTrialEntity(plan, ownerDomain);
+
+            await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                subscription.UserId,
+                BillingMessageConstants.Notifications.ActionCreated,
+                plan.Name,
+                cancellationToken);
+
+            return Result.Success(subscription.ToDto(plan.Name, plan.Price));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingTrialSubscription, request.WorkspaceId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<bool>> CancelSubscriptionAsync(
         Guid workspaceId, string? reason, CancellationToken cancellationToken = default)
     {

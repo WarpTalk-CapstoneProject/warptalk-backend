@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Application.Helpers;
+using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 
 using WarpTalk.BillingService.Domain.Constants;
@@ -23,6 +24,7 @@ public class CreditService : ICreditService
     private readonly IConfiguration _configuration;
     private readonly IWorkspaceClient _workspaceClient;
     private readonly INotificationClient? _notificationClient;
+    private readonly IUsageSettlementService? _settlementService;
 
     public CreditService(
         IUnitOfWork unitOfWork,
@@ -30,7 +32,8 @@ public class CreditService : ICreditService
         IBillingMessagePublisher messagePublisher,
         IConfiguration configuration,
         IWorkspaceClient workspaceClient,
-        INotificationClient? notificationClient = null)
+        INotificationClient? notificationClient = null,
+        IUsageSettlementService? settlementService = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -38,6 +41,7 @@ public class CreditService : ICreditService
         _configuration = configuration;
         _workspaceClient = workspaceClient;
         _notificationClient = notificationClient;
+        _settlementService = settlementService;
     }
 
 
@@ -49,8 +53,8 @@ public class CreditService : ICreditService
         {
             var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
-                return Result.Failure<CreditBalanceDto>(subResult.Error, subResult.ErrorCode);
-            var sub = subResult.Value;
+                return Result.Failure<CreditBalanceDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
+            var sub = subResult.Value!;
 
             return Result.Success(sub.ToCreditBalanceDto(workspaceId));
         }
@@ -71,8 +75,23 @@ public class CreditService : ICreditService
 
             var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
-                return Result.Failure<CreditTransactionDto>(subResult.Error, subResult.ErrorCode);
-            var sub = subResult.Value;
+                return Result.Failure<CreditTransactionDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
+            var sub = subResult.Value!;
+
+            if (_settlementService is not null)
+            {
+                var settlement = await _settlementService.SettleUsageChargeAsync(
+                    request.ToSettlementRequest(sub, workspaceId),
+                    cancellationToken);
+
+                if (!settlement.IsSuccess)
+                    return Result.Failure<CreditTransactionDto>(settlement.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, settlement.ErrorCode);
+
+                if (settlement.Value?.Applied != true)
+                    return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
+
+                return Result.Success(settlement.Value.ToCreditTransactionDto(request, sub, workspaceId));
+            }
 
             if (sub.CreditsRemaining < request.Amount)
                 return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
@@ -120,8 +139,8 @@ public class CreditService : ICreditService
 
         var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
         if (!subResult.IsSuccess)
-            return Result.Failure<object>(subResult.Error, subResult.ErrorCode);
-        var sub = subResult.Value;
+            return Result.Failure<object>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
+        var sub = subResult.Value!;
 
         var paymentId = Guid.NewGuid();
         // TODO: Mock ID only — not a real Stripe invoice ID. Replace with actual Stripe invoice ID from webhook.
@@ -208,8 +227,8 @@ public class CreditService : ICreditService
         {
             var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
-                return Result.Failure<CreditTransactionDto>(subResult.Error, subResult.ErrorCode);
-            var sub = subResult.Value;
+                return Result.Failure<CreditTransactionDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
+            var sub = subResult.Value!;
 
             sub.ApplyAdjustment(request.Amount);
             _unitOfWork.SubscriptionRepository.Update(sub);

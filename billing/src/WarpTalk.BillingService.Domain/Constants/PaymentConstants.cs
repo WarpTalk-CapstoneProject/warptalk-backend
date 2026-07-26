@@ -7,6 +7,7 @@ public static class PaymentConstants
         public const string Stripe = "stripe";
         public const string TopUpSimulation = "top_up_simulation";
         public const string StripeSimulation = "stripe_simulation";
+        public const string InternalInvoice = "internal_invoice";
     }
 
     public static class PaymentTypes
@@ -38,6 +39,7 @@ public static class PaymentConstants
     public static class PaymentMethods
     {
         public const string Card = "card";
+        public const string Invoice = "invoice";
         public const string StripeUpgradeDirect = "Stripe Upgrade (Direct)";
         public const string StripeUpgradeSimulation = "Stripe Upgrade (Simulation)";
     }
@@ -53,6 +55,7 @@ public static class PaymentConstants
     {
         public const string Usd = "usd";
         public const string Vnd = "vnd";
+        public const string VndAccounting = "VND";
     }
 
     public static class StripeMetadata

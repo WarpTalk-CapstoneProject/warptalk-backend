@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using Microsoft.Extensions.Hosting;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -37,12 +38,12 @@ public class StripeSimulationController : ControllerBase
         var session = request.data.@object;
         if (session == null || !Guid.TryParse(session.client_reference_id, out var workspaceId))
         {
-            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidClientRef, ErrorCodes.BillingSimulationInvalidRequest));
+            return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidClientRef, ErrorCodes.BillingSimulationInvalidRequest);
         }
 
         if (request.type != PaymentConstants.StripeEvents.CheckoutSessionCompleted || session.payment_status != PaymentConstants.Payments.StatusPaid)
         {
-            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidEvent, ErrorCodes.BillingSimulationInvalidRequest));
+            return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingSimulationInvalidEvent, ErrorCodes.BillingSimulationInvalidRequest);
         }
 
         // Stripe amounts are in the smallest currency unit (cents for USD) — 1 cent = 1 credit.
@@ -55,7 +56,7 @@ public class StripeSimulationController : ControllerBase
 
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
         //TODO : Add the logging for the success case. log the request and response 
         return Ok(new SimulatedPaymentResponse(

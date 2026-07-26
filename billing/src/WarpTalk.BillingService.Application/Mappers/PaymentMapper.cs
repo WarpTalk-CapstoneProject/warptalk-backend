@@ -1,6 +1,7 @@
 using WarpTalk.BillingService.Domain.Constants;
 using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Domain.Entities;
 
 
@@ -100,6 +101,36 @@ public static class PaymentMapper
             FailureReason = request.FailureReason,
             CreatedAt = now,
             UpdatedAt = now
+        };
+    }
+
+    public static Payment CreateBillingCyclePayment(BillingCyclePaymentCreationRequest request)
+    {
+        if (request.Subscription.Plan is null)
+            throw new ArgumentException("Billing cycle payment requires subscription.Plan to be loaded.", nameof(request));
+
+        return new Payment
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = request.Subscription.Id,
+            UserId = request.Subscription.UserId,
+            Amount = request.Subtotal,
+            TaxAmount = request.Tax,
+            TotalAmount = request.Total,
+            Currency = request.Subscription.Plan.Currency,
+            PaymentMethod = PaymentConstants.PaymentMethods.Invoice,
+            Provider = PaymentConstants.Providers.InternalInvoice,
+            ProviderTransactionId = BillingCycleTransactionIdHelper.Create(request.Subscription.Id, request.Subscription.CurrentPeriodEnd),
+            Status = PaymentConstants.PaymentStatuses.Pending,
+            ProviderMetadata = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                reason = InvoiceConstants.BillingReasons.SubscriptionCycle,
+                periodStart = request.Subscription.CurrentPeriodStart,
+                periodEnd = request.Subscription.CurrentPeriodEnd,
+                overageCredits = request.OverageCredits
+            }),
+            CreatedAt = request.Now,
+            UpdatedAt = request.Now
         };
     }
 

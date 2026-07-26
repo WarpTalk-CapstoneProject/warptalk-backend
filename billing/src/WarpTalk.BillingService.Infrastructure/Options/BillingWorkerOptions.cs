@@ -13,6 +13,8 @@ public sealed class BillingWorkerOptions
     public int DailyAuditHourUtc { get; set; }
     public int BillingAggregationIntervalMinutes { get; set; }
     public int BillingAggregationBatchSize { get; set; }
+    public int BillingCycleIntervalMinutes { get; set; } = 60;
+    public int InvoiceOverdueIntervalMinutes { get; set; } = 60;
 
     public TimeSpan SessionMonitorInterval => TimeSpan.FromSeconds(SessionMonitorIntervalSeconds);
     public TimeSpan StaleReservationInterval => TimeSpan.FromMinutes(StaleReservationIntervalMinutes);
@@ -21,4 +23,6 @@ public sealed class BillingWorkerOptions
     public TimeSpan SubscriptionRenewalWindow => TimeSpan.FromHours(SubscriptionRenewalWindowHours);
     public TimeSpan SubscriptionRenewalLookback => TimeSpan.FromHours(SubscriptionRenewalLookbackHours);
     public TimeSpan BillingAggregationInterval => TimeSpan.FromMinutes(BillingAggregationIntervalMinutes);
+    public TimeSpan BillingCycleInterval => TimeSpan.FromMinutes(BillingCycleIntervalMinutes);
+    public TimeSpan InvoiceOverdueInterval => TimeSpan.FromMinutes(InvoiceOverdueIntervalMinutes);
 }

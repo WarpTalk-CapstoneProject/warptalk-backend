@@ -57,6 +57,7 @@ try
     builder.Services.AddScoped<IBillingRateService, BillingRateService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddScoped<IPaymentAppService, PaymentAppService>();
+    builder.Services.AddScoped<IUsageSettlementService, PostgresUsageSettlementService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
@@ -131,9 +132,9 @@ try
 
     // --- Background Workers ---
     builder.Services.AddHostedService<SubscriptionExpirationWorker>();
-    builder.Services.AddHostedService<StaleReservationWorker>();
     builder.Services.AddHostedService<SessionMonitorWorker>();
-    builder.Services.AddHostedService<SubscriptionRenewalWorker>();
+    builder.Services.AddHostedService<BillingCycleWorker>();
+    builder.Services.AddHostedService<InvoiceOverdueSweeper>();
     builder.Services.AddHostedService<DailyAuditAggregationWorker>();
     builder.Services.AddHostedService<BillingAggregationWorker>();
     builder.Services.AddHostedService<BillingRedisSubscriberService>();

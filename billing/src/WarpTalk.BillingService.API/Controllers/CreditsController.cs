@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using Microsoft.Extensions.Hosting;
 using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
@@ -36,12 +37,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPost("consume-direct")]
@@ -49,12 +45,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCreditsDirectly([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsDirectlyAsync(request.WorkspaceId, request, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPost("topup")]
@@ -66,10 +57,10 @@ public class CreditsController : ControllerBase
         {
             if (result.ErrorCode == ErrorCodes.Forbidden)
             {
-                return StatusCode(StatusCodes.Status410Gone, new ApiErrorResponse(result.Error, result.ErrorCode));
+                return this.ToErrorResult(StatusCodes.Status410Gone, result.Error, result.ErrorCode);
             }
 
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return Ok(result.Value);
@@ -80,12 +71,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPost("simulate-payment")]
@@ -99,7 +85,7 @@ public class CreditsController : ControllerBase
         var result = await _creditService.SimulatePaymentAsync(request.WorkspaceId, request.Amount, request.Currency, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
         
         return Ok(result.Value);
@@ -113,12 +99,7 @@ public class CreditsController : ControllerBase
 
         var adjustRequest = request with { AdminUserId = adminUserId };
         var result = await _creditService.ManualAdjustCreditsAsync(adjustRequest.WorkspaceId, adjustRequest, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("history/global")]
@@ -128,7 +109,7 @@ public class CreditsController : ControllerBase
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
         return Ok(result.Value);
     }

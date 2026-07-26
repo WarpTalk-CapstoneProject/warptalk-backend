@@ -20,11 +20,23 @@ public static class InvoiceConstants
     public static class Defaults
     {
         public const string EmptyLineItems = "[]";
+        public const decimal VatRate = 0.10m;
     }
 
     public static class BillingReasons
     {
         public const string SubscriptionCycle = "subscription_cycle";
         public const string SubscriptionCreate = "subscription_create";
+    }
+
+    public static class LineItemTypes
+    {
+        public const string Subscription = "subscription";
+        public const string Overage = "overage";
+    }
+
+    public static class LineItemDescriptions
+    {
+        public const string UsageOverCommittedCredits = "Usage over committed credits";
     }
 }

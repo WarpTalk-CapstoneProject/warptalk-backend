@@ -22,4 +22,7 @@ public interface IRedisBillingStore
     Task<Result> PushTempUsageLogDtoAsync(TempUsageLogDto log, CancellationToken cancellationToken = default);
     Task<Result<IReadOnlyList<TempUsageLogDto>>> GetTempUsageLogBatchAsync(int batchSize, CancellationToken cancellationToken = default);
     Task<Result> TrimTempUsageLogBatchAsync(int processedCount, CancellationToken cancellationToken = default);
+
+    Task<Result> SetAiServiceStateAsync(Guid workspaceId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
+    Task<Result> SetAiServiceStateForRoomAsync(Guid translationRoomId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
 }

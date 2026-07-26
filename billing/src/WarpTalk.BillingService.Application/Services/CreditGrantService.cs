@@ -36,21 +36,21 @@ public sealed class CreditGrantService : ICreditGrantService
             var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
             {
-                return Result.Failure<CreditBalanceDto>(subResult.Error, subResult.ErrorCode);
+                return Result.Failure<CreditBalanceDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
             }
+            var sub = subResult.Value!;
 
             var grantResult = await QueueCreditGrantAsync(
-                subResult.Value,
-                request.ToGrantCreditsRequest(subResult.Value.UserId),
+                sub,
+                request.ToGrantCreditsRequest(sub.UserId),
                 cancellationToken);
             if (!grantResult.IsSuccess)
             {
-                return Result.Failure<CreditBalanceDto>(grantResult.Error, grantResult.ErrorCode);
+                return Result.Failure<CreditBalanceDto>(grantResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, grantResult.ErrorCode);
             }
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            var sub = subResult.Value;
             await BillingNotificationHelper.PublishCreditUpdateAsync(
                 _messagePublisher,
                 _logger,

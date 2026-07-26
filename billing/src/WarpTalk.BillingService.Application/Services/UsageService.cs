@@ -18,15 +18,18 @@ public class UsageService : IUsageService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<UsageService> _logger;
     private readonly IBillingRateService _rateService;
+    private readonly IUsageSettlementService _settlementService;
 
     public UsageService(
         IUnitOfWork unitOfWork,
         ILogger<UsageService> logger,
-        IBillingRateService rateService)
+        IBillingRateService rateService,
+        IUsageSettlementService settlementService)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _rateService = rateService;
+        _settlementService = settlementService;
     }
 
 
@@ -53,27 +56,20 @@ public class UsageService : IUsageService
 
 
 
-            if (sub.CreditsRemaining < request.CreditsConsumed)
-            {
-                return Result.Failure<CreditBalanceDto>(
-                    BillingMessageConstants.ApiErrorMessages.BillingHostInsufficientCredits,
-                    ErrorCodes.BillingInsufficientCredits);
-            }
+            var settlement = await _settlementService.SettleUsageChargeAsync(
+                request.ToSettlementRequest(sub),
+                cancellationToken);
 
-            sub.CreditsRemaining -= request.CreditsConsumed;
-            sub.CreditsUsedThisCycle += request.CreditsConsumed;
-            sub.UpdatedAt = DateTime.UtcNow;
-            _unitOfWork.SubscriptionRepository.Update(sub);
+            if (!settlement.IsSuccess)
+                return Result.Failure<CreditBalanceDto>(settlement.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, settlement.ErrorCode);
 
-            // 1. Create Transaction (Accounting)
-            var tx = request.ToCreditTransaction(sub);
-            await _unitOfWork.CreditTransactionRepository.AddAsync(tx, cancellationToken);
+            if (settlement.Value?.Applied != true)
+                return Result.Failure<CreditBalanceDto>(BillingMessageConstants.ApiErrorMessages.BillingHostInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
 
-            // 2. Create Usage Record (Analytics)
-            var usage = request.ToUsageRecord(sub);
-            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
-
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            var settlementValue = settlement.Value!;
+            sub.CreditsRemaining = settlementValue.BalanceAfter ?? sub.CreditsRemaining;
+            sub.ServiceState = settlementValue.ServiceState ?? sub.ServiceState;
+            sub.SuspendedReason = settlementValue.SuspendedReason;
 
             return Result.Success(sub.ToCreditBalanceDto(request.HostWorkspaceId));
         }, cancellationToken);
@@ -113,7 +109,10 @@ public class UsageService : IUsageService
     {
         // Fetch current Admin-configurable rates at call-time so rate changes take effect immediately
         var ratesResult = await _rateService.GetServiceRatesAsync(cancellationToken);
-        var rates = ratesResult.Value;
+        if (!ratesResult.IsSuccess)
+            return Result.Failure<CreditBalanceDto>(ratesResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, ratesResult.ErrorCode);
+
+        var rates = ratesResult.Value!;
         var recordRequest = request.ToRecordUsageRequest(
             inputRatePer1KTokens: rates.AiAssistantInputPer1000Tokens,
             outputRatePer1KTokens: rates.AiAssistantOutputPer1000Tokens

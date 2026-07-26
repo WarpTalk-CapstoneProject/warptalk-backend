@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -32,12 +33,7 @@ public class InvoicesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetInvoicesAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("global")]
@@ -47,11 +43,6 @@ public class InvoicesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 }

@@ -16,10 +16,12 @@ namespace WarpTalk.BillingService.Infrastructure.Services;
 public class StripePaymentService : IStripePaymentService
 {
     private readonly IConfiguration _configuration;
+    private readonly IStripeSdkClient _stripeSdkClient;
 
-    public StripePaymentService(IConfiguration configuration)
+    public StripePaymentService(IConfiguration configuration, IStripeSdkClient stripeSdkClient)
     {
         _configuration = configuration;
+        _stripeSdkClient = stripeSdkClient;
     }
 
     public async Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request, CancellationToken cancellationToken = default)
@@ -105,8 +107,7 @@ public class StripePaymentService : IStripePaymentService
                 options.PaymentIntentData = new SessionPaymentIntentDataOptions { Metadata = metadata };
             }
 
-            SessionService service = new SessionService();
-            Session session = await service.CreateAsync(options);
+            Session session = await _stripeSdkClient.CreateCheckoutSessionAsync(options, cancellationToken);
 
             return Result.Success(session.Url);
         }
@@ -120,13 +121,12 @@ public class StripePaymentService : IStripePaymentService
     {
         try
         {
-            var subscriptionService = new Stripe.SubscriptionService();
             var searchOptions = new SubscriptionSearchOptions
             {
                 Query = string.Format(PaymentConstants.StripeSearchQueries.SubscriptionSearchTemplate, PaymentConstants.StripeMetadata.WorkspaceId, request.WorkspaceId, PaymentConstants.StripeStatuses.Active)
             };
 
-            var searchResults = await subscriptionService.SearchAsync(searchOptions);
+            var searchResults = await _stripeSdkClient.SearchSubscriptionsAsync(searchOptions, cancellationToken);
 
             if (searchResults.Data.Count == 0)
                 return Result.Success(false);
@@ -134,8 +134,7 @@ public class StripePaymentService : IStripePaymentService
             var subscription = searchResults.Data.First();
             var subscriptionItemId = subscription.Items.Data[0].Id;
 
-            var productService = new ProductService();
-            var productList = await productService.ListAsync(new ProductListOptions { Active = true, Limit = 100 });
+            var productList = await _stripeSdkClient.ListProductsAsync(new ProductListOptions { Active = true, Limit = 100 }, cancellationToken);
             var existingProduct = productList.Data.FirstOrDefault(p => p.Name == request.PlanSlug);
 
             string productId;
@@ -145,19 +144,18 @@ public class StripePaymentService : IStripePaymentService
             }
             else
             {
-                var newProduct = await productService.CreateAsync(new ProductCreateOptions
+                var newProduct = await _stripeSdkClient.CreateProductAsync(new ProductCreateOptions
                 {
                     Name = request.PlanSlug,
                     Metadata = new Dictionary<string, string>
                     {
                         { PaymentConstants.StripeMetadata.PlanSlug, request.PlanSlug.ToLowerInvariant() }
                     }
-                });
+                }, cancellationToken);
                 productId = newProduct.Id;
             }
 
-            var priceService = new PriceService();
-            var newPrice = await priceService.CreateAsync(new PriceCreateOptions
+            var newPrice = await _stripeSdkClient.CreatePriceAsync(new PriceCreateOptions
             {
                 Product = productId,
                 UnitAmount = string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
@@ -168,7 +166,7 @@ public class StripePaymentService : IStripePaymentService
                 {
                     Interval = PaymentConstants.PriceIntervals.Month
                 }
-            });
+            }, cancellationToken);
 
             var options = new SubscriptionUpdateOptions
             {
@@ -187,7 +185,7 @@ public class StripePaymentService : IStripePaymentService
                 ProrationBehavior = PaymentConstants.StripeProrationBehaviors.AlwaysInvoice
             };
 
-            await subscriptionService.UpdateAsync(subscription.Id, options);
+            await _stripeSdkClient.UpdateSubscriptionAsync(subscription.Id, options, cancellationToken);
             return Result.Success(true);
         }
         catch (Exception ex)
@@ -200,13 +198,12 @@ public class StripePaymentService : IStripePaymentService
     {
         try
         {
-            var service = new Stripe.SubscriptionService();
             var searchOptions = new SubscriptionSearchOptions
             {
                 Query = string.Format(PaymentConstants.StripeSearchQueries.SubscriptionSearchTemplate, PaymentConstants.StripeMetadata.WorkspaceId, workspaceId, PaymentConstants.StripeStatuses.Active)
             };
 
-            var searchResults = await service.SearchAsync(searchOptions);
+            var searchResults = await _stripeSdkClient.SearchSubscriptionsAsync(searchOptions, cancellationToken);
 
             if (searchResults.Data.Count == 0)
                 return Result.Success(false);
@@ -217,7 +214,7 @@ public class StripePaymentService : IStripePaymentService
                 {
                     CancelAtPeriodEnd = true
                 };
-                await service.UpdateAsync(sub.Id, updateOptions);
+                await _stripeSdkClient.UpdateSubscriptionAsync(sub.Id, updateOptions, cancellationToken);
             }
 
             return Result.Success(true);
@@ -234,16 +231,16 @@ public class StripePaymentService : IStripePaymentService
         {
             if (providerTransactionId.StartsWith(PaymentConstants.StripePrefixes.Session))
             {
-                var sessionService = new SessionService();
-                var session = await sessionService.GetAsync(providerTransactionId);
+                var session = await _stripeSdkClient.GetCheckoutSessionAsync(providerTransactionId, cancellationToken);
+                if (session is null)
+                    return Result.Failure<(string, string)>(PaymentConstants.StripeErrorMessages.SessionNotFound, ErrorCodes.NotFound);
 
                 if (session.PaymentStatus == PaymentConstants.StripeStatuses.Paid)
                     return Result.Success((PaymentConstants.PaymentStatuses.Paid, string.Empty));
 
                 if (!string.IsNullOrEmpty(session.PaymentIntentId))
                 {
-                    var piService = new PaymentIntentService();
-                    var pi = await piService.GetAsync(session.PaymentIntentId);
+                    var pi = await _stripeSdkClient.GetPaymentIntentAsync(session.PaymentIntentId, cancellationToken);
                     if (pi.Status == PaymentConstants.StripeStatuses.Succeeded) return Result.Success((PaymentConstants.PaymentStatuses.Paid, string.Empty));
                     if (pi.Status == PaymentConstants.StripeStatuses.RequiresPaymentMethod || pi.Status == PaymentConstants.StripeStatuses.Canceled)
                         return Result.Success((PaymentConstants.PaymentStatuses.Failed, pi.LastPaymentError?.Message ?? PaymentConstants.StripePlaceholders.DefaultPaymentFailureOrCanceledReason));
@@ -253,8 +250,7 @@ public class StripePaymentService : IStripePaymentService
             }
             else if (providerTransactionId.StartsWith(PaymentConstants.StripePrefixes.PaymentIntent))
             {
-                var piService = new PaymentIntentService();
-                var pi = await piService.GetAsync(providerTransactionId);
+                var pi = await _stripeSdkClient.GetPaymentIntentAsync(providerTransactionId, cancellationToken);
                 if (pi.Status == PaymentConstants.StripeStatuses.Succeeded) return Result.Success((PaymentConstants.PaymentStatuses.Paid, string.Empty));
                 if (pi.Status == PaymentConstants.StripeStatuses.RequiresPaymentMethod || pi.Status == PaymentConstants.StripeStatuses.Canceled)
                     return Result.Success((PaymentConstants.PaymentStatuses.Failed, pi.LastPaymentError?.Message ?? PaymentConstants.StripePlaceholders.DefaultPaymentFailureOrCanceledReason));
@@ -278,16 +274,17 @@ public class StripePaymentService : IStripePaymentService
 
             if (providerTransactionId.StartsWith(PaymentConstants.StripePrefixes.Session))
             {
-                var sessionService = new SessionService();
-                var session = await sessionService.GetAsync(providerTransactionId);
+                var session = await _stripeSdkClient.GetCheckoutSessionAsync(providerTransactionId, cancellationToken);
+                if (session is null)
+                    return Result.Success(false);
+
                 paymentIntentId = session.PaymentIntentId;
 
                 if (string.IsNullOrEmpty(paymentIntentId))
                 {
                     if (!string.IsNullOrEmpty(session.InvoiceId))
                     {
-                        var invoiceService = new Stripe.InvoiceService();
-                        var invoice = await invoiceService.GetAsync(session.InvoiceId);
+                        var invoice = await _stripeSdkClient.GetInvoiceAsync(session.InvoiceId, cancellationToken);
                         paymentIntentId = ((dynamic)invoice).PaymentIntentId;
                     }
                 }
@@ -296,13 +293,12 @@ public class StripePaymentService : IStripePaymentService
             if (string.IsNullOrEmpty(paymentIntentId))
                 return Result.Success(false);
 
-            var refundService = new Stripe.RefundService();
             var options = new RefundCreateOptions
             {
                 PaymentIntent = paymentIntentId
             };
 
-            await refundService.CreateAsync(options);
+            await _stripeSdkClient.CreateRefundAsync(options, cancellationToken);
             return Result.Success(true);
         }
         catch (Exception ex)
@@ -344,8 +340,7 @@ public class StripePaymentService : IStripePaymentService
             }
             else
             {
-                var service = new SessionService();
-                var session = await service.GetAsync(sessionId);
+                var session = await _stripeSdkClient.GetCheckoutSessionAsync(sessionId, cancellationToken);
                 if (session == null)
                     return Result.Failure<CheckoutSessionDto>(PaymentConstants.StripeErrorMessages.SessionNotFound, ErrorCodes.NotFound);
 

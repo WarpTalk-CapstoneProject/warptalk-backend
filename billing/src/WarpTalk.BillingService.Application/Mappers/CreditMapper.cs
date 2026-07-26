@@ -187,6 +187,29 @@ public static class CreditMapper
         );
     }
 
+    public static CreditTransactionDto ToCreditTransactionDto(
+        this SettleUsageChargeResult settlement,
+        ConsumeCreditsRequest request,
+        Subscription subscription,
+        Guid workspaceId)
+    {
+        var settledTransaction = new CreditTransaction
+        {
+            Id = settlement.TransactionId ?? Guid.NewGuid(),
+            SubscriptionId = subscription.Id,
+            UserId = subscription.UserId,
+            WorkspaceId = workspaceId,
+            Amount = -request.Amount,
+            Type = TransactionConstants.TransactionTypes.Consume,
+            ReferenceType = request.ReferenceType,
+            ReferenceId = request.ReferenceId,
+            BalanceAfter = settlement.BalanceAfter ?? subscription.CreditsRemaining,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        return settledTransaction.ToDto();
+    }
+
     public static List<CreditTransactionDto> ToDtoList(this IEnumerable<CreditTransaction> items, Guid defaultWorkspaceId = default)
     {
         return items.Select(t => t.ToDto(defaultWorkspaceId)).ToList();

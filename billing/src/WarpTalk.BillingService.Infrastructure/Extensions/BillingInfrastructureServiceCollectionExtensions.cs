@@ -10,6 +10,7 @@ using WarpTalk.BillingService.Infrastructure.Options;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Redis;
 using WarpTalk.BillingService.Infrastructure.Repositories;
+using WarpTalk.BillingService.Infrastructure.Services;
 
 namespace WarpTalk.BillingService.Infrastructure.Extensions;
 
@@ -29,7 +30,9 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 options.SubscriptionRenewalLookbackHours > 0 &&
                 options.DailyAuditHourUtc is >= 0 and <= 23 &&
                 options.BillingAggregationIntervalMinutes > 0 &&
-                options.BillingAggregationBatchSize > 0,
+                options.BillingAggregationBatchSize > 0 &&
+                options.BillingCycleIntervalMinutes > 0 &&
+                options.InvoiceOverdueIntervalMinutes > 0,
                 "Billing worker options are missing or invalid.")
             .ValidateOnStart();
 
@@ -53,6 +56,8 @@ public static class BillingInfrastructureServiceCollectionExtensions
 
         services.AddScoped<IRedisBillingStore, RedisBillingStore>();
         services.AddScoped<IBillingMessagePublisher, RedisBillingMessagePublisher>();
+        services.AddScoped<IBillingCycleClosingService, BillingCycleClosingService>();
+        services.AddScoped<IStripeSdkClient, StripeSdkClient>();
 
         return services;
     }

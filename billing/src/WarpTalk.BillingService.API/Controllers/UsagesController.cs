@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -32,15 +33,10 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPost("record-usage")]
-    public async Task<ActionResult> RecordUsage([FromBody] RecordUsageRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<CreditBalanceDto>> RecordUsage([FromBody] RecordUsageRequest request, CancellationToken cancellationToken)
     {
         var result = await _usageService.RecordUsageAsync(request, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("workspace/{workspaceId}/report")]
@@ -48,12 +44,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<BillingReportDto>> GetBillingReport(Guid workspaceId, [FromQuery] BillingReportQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetBillingReportAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("workspace/{workspaceId}/chart")]
@@ -61,11 +52,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<UsageChartDto>> GetWorkspaceUsageChart(Guid workspaceId, [FromQuery] UsageChartQuery query, CancellationToken cancellationToken)
     {
         var result = await _analyticsService.GetWorkspaceUsageChartAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("workspace/{workspaceId}/breakdown")]
@@ -76,11 +63,7 @@ public class UsagesController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetWorkspaceFeatureAdoptionAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("metrics/global")]
@@ -88,11 +71,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalMetricsAsync(cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("metrics/global/chart")]
@@ -100,11 +79,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart([FromQuery] UsageChartQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalUsageChartAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("metrics/global/breakdown")]
@@ -114,11 +89,7 @@ public class UsagesController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetGlobalUsageBreakdownAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("metrics/global/top-workspaces")]
@@ -128,11 +99,7 @@ public class UsagesController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetTopWorkspacesAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("metrics/global/alerts")]
@@ -140,11 +107,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
     {
         var result = await _analyticsService.GetUsageAlertsAsync(cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("rates")]
@@ -152,11 +115,7 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<ServiceRatesDto>> GetServiceRates(CancellationToken cancellationToken)
     {
         var result = await _rateService.GetServiceRatesAsync(cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPut("rates")]
@@ -164,10 +123,6 @@ public class UsagesController : ControllerBase
     public async Task<ActionResult<ServiceRatesDto>> UpdateServiceRates([FromBody] UpdateServiceRatesRequest request, CancellationToken cancellationToken)
     {
         var result = await _rateService.UpdateServiceRatesAsync(request, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 }

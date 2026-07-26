@@ -1,4 +1,5 @@
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.Helpers;
 
@@ -19,6 +20,12 @@ public static class CreditMutationHelper
     private static void ApplyCreditDelta(this Subscription subscription, int amount)
     {
         subscription.CreditsRemaining += amount;
+        if (subscription.CreditsRemaining >= 0)
+        {
+            subscription.OverageStartedAt = null;
+            subscription.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
+            subscription.SuspendedReason = null;
+        }
         subscription.UpdatedAt = DateTime.UtcNow;
     }
 }

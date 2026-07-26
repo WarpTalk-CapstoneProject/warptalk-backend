@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -27,7 +28,19 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.CreateSubscriptionAsync(request, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
+
+        return StatusCode(201, result.Value);
+    }
+
+    [HttpPost("trial")]
+    public async Task<ActionResult<SubscriptionDto>> CreateTrialSubscription([FromBody] TrialSubscriptionRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.CreateTrialSubscriptionAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return StatusCode(201, result.Value);
@@ -38,12 +51,7 @@ public class SubscriptionsController : ControllerBase
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("global")]
@@ -53,12 +61,7 @@ public class SubscriptionsController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _subscriptionService.GetGlobalSubscriptionsAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpDelete("workspace/{workspaceId}")]
@@ -68,7 +71,7 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return NoContent();
@@ -79,14 +82,9 @@ public class SubscriptionsController : ControllerBase
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(Guid workspaceId, [FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)
-            return BadRequest(new ApiErrorResponse(ApiMessageConstants.ValidationMessages.WorkspaceIdMismatch, ErrorCodes.ValidationError));
+            return this.ToBadRequest(ApiMessageConstants.ValidationMessages.WorkspaceIdMismatch, ErrorCodes.ValidationError);
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 }

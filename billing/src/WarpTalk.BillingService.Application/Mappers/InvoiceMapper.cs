@@ -33,7 +33,7 @@ public static class InvoiceMapper
         Id = Guid.NewGuid(),
         UserId = payment.UserId,
         PaymentId = payment.Id,
-        InvoiceNumber = payment.ProviderTransactionId,
+        InvoiceNumber = payment.ProviderTransactionId ?? payment.Id.ToString("N"),
         Subtotal = payment.Amount,
         Tax = payment.TaxAmount,
         Total = payment.TotalAmount,
@@ -61,7 +61,7 @@ public static class InvoiceMapper
         Id = Guid.NewGuid(),
         UserId = payment.UserId,
         PaymentId = payment.Id,
-        InvoiceNumber = payment.ProviderTransactionId,
+        InvoiceNumber = payment.ProviderTransactionId ?? payment.Id.ToString("N"),
         Subtotal = payment.Amount,
         Tax = payment.TaxAmount,
         Total = payment.TotalAmount,
@@ -99,6 +99,47 @@ public static class InvoiceMapper
             LineItems = InvoiceConstants.Defaults.EmptyLineItems,
             IssuedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow
+        };
+    }
+
+    public static Invoice CreateBillingCycleInvoice(BillingCycleInvoiceCreationRequest request)
+    {
+        if (request.Subscription.Plan is null)
+            throw new ArgumentException("Billing cycle invoice requires subscription.Plan to be loaded.", nameof(request));
+
+        return new Invoice
+        {
+            Id = Guid.NewGuid(),
+            PaymentId = request.PaymentId,
+            UserId = request.Subscription.UserId,
+            InvoiceNumber = $"{InvoiceConstants.Formats.InvoiceNumberPrefix}{request.Now:yyyyMMdd}-{request.PaymentId.ToString("N")[..8].ToUpperInvariant()}",
+            Subtotal = request.Subtotal,
+            Tax = request.Tax,
+            Total = request.Total,
+            Currency = request.Plan.Currency,
+            Status = InvoiceConstants.InvoiceStatuses.Open,
+            LineItems = System.Text.Json.JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    type = InvoiceConstants.LineItemTypes.Subscription,
+                    description = request.Plan.Name,
+                    quantity = 1,
+                    unitPrice = (decimal?)null,
+                    amount = request.ContractPrice
+                },
+                new
+                {
+                    type = InvoiceConstants.LineItemTypes.Overage,
+                    description = InvoiceConstants.LineItemDescriptions.UsageOverCommittedCredits,
+                    quantity = request.OverageCredits,
+                    unitPrice = request.OveragePricePerCredit,
+                    amount = request.OverageAmount
+                }
+            }),
+            IssuedAt = request.Now,
+            DueAt = request.Now.AddDays(request.InvoiceTermsDays),
+            CreatedAt = request.Now
         };
     }
 }

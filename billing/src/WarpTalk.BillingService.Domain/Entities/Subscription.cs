@@ -55,6 +55,28 @@ public partial class Subscription
 
     public DateTime? TrialEndsAt { get; set; }
 
+    public int? CreditsPerCycleOverride { get; set; }
+
+    public decimal? ContractPriceVnd { get; set; }
+
+    public int? OverageCapCreditsOverride { get; set; }
+
+    public decimal? OveragePricePerCreditOverride { get; set; }
+
+    public int? InvoiceTermsDaysOverride { get; set; }
+
+    public string? BillingContactEmail { get; set; }
+
+    public int OverageCreditsThisCycle { get; set; }
+
+    public DateTime? OverageStartedAt { get; set; }
+
+    public string ServiceState { get; set; } = SubscriptionConstants.ServiceStates.Healthy;
+
+    public string? SuspendedReason { get; set; }
+
+    public string? OwnerEmailDomain { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; }

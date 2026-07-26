@@ -27,7 +27,9 @@ public record ConsumeCreditsRequest(
     [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
     string ReferenceType,
 
-    Guid? ReferenceId
+    Guid? ReferenceId,
+
+    string? IdempotencyKey = null
 ) : IWorkspaceScopedRequest;
 
 public record TopUpRequest(

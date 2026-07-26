@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -46,12 +47,7 @@ public class PaymentsController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPost]
@@ -61,7 +57,7 @@ public class PaymentsController : ControllerBase
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return StatusCode(201, result.Value);
@@ -74,7 +70,7 @@ public class PaymentsController : ControllerBase
         var result = await _paymentService.HandleWebhookAsync(request, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return Ok(new { message = BillingMessageConstants.Webhook.ProcessedSuccessfully });
@@ -89,7 +85,7 @@ public class PaymentsController : ControllerBase
             var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
             if (!createResult.IsSuccess)
             {
-                return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
+                return this.ToBadRequest(createResult.Error, createResult.ErrorCode);
             }
 
             string url = createResult.Value!;
@@ -97,7 +93,7 @@ public class PaymentsController : ControllerBase
         }
         catch (ArgumentException ex)
         {
-            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
         }
     }
 
@@ -113,7 +109,7 @@ public class PaymentsController : ControllerBase
             var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
             if (!sessionResult.IsSuccess)
             {
-                return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
+                return this.ToBadRequest(sessionResult.Error, sessionResult.ErrorCode);
             }
 
             var session = sessionResult.Value!;
@@ -122,7 +118,7 @@ public class PaymentsController : ControllerBase
             string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
             if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
             {
-                return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError));
+                return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
             }
 
             // Verify the requesting user is an Owner or Admin of this workspace
@@ -133,7 +129,7 @@ public class PaymentsController : ControllerBase
                 WorkspaceRoleConstants.Admin);
             if (!accessResult.IsSuccess || !accessResult.Value)
             {
-                return StatusCode(403, new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden));
+                return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
             }
 
             // Fallback: process payment event inline if session already marked as paid
@@ -156,7 +152,7 @@ public class PaymentsController : ControllerBase
                 ));
                 if (!processResult.IsSuccess)
                 {
-                    return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
+                    return this.ToBadRequest(processResult.Error, processResult.ErrorCode);
                 }
             }
 
@@ -164,15 +160,15 @@ public class PaymentsController : ControllerBase
         }
         catch (ArgumentException ex)
         {
-            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new ApiErrorResponse(ex.Message, ErrorCodes.NotFound));
+            return this.ToErrorResult(StatusCodes.Status404NotFound, ex.Message, ErrorCodes.NotFound);
         }
         catch (Exception ex)
         {
-            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
         }
     }
 
@@ -188,18 +184,18 @@ public class PaymentsController : ControllerBase
             var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
             if (!result.IsSuccess)
             {
-                return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
+                return this.ToBadRequest(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError);
             }
 
             return Ok();
         }
         catch (Stripe.StripeException ex)
         {
-            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new ApiErrorResponse(ex.Message, ErrorCodes.InternalServerError));
+            return this.ToErrorResult(StatusCodes.Status500InternalServerError, ex.Message, ErrorCodes.InternalServerError);
         }
     }
 }

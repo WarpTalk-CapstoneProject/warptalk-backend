@@ -151,13 +151,11 @@ public class PaymentAppService : IPaymentAppService
         var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
             s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null);
 
-        return Result.Success(new PaymentEventContext(
-            request,
+        return Result.Success(request.ToPaymentEventContext(
             workspaceId,
             userId,
             providerTxId,
             ParsePaymentStatus(request.Status),
-            existingPayment?.Id ?? Guid.NewGuid(),
             existingPayment,
             subscription));
     }

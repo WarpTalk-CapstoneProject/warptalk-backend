@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,10 +9,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Constants;
-using WarpTalk.BillingService.Domain.Entities;
-using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -57,7 +54,7 @@ public class BillingAggregationWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
-        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var settlementService = scope.ServiceProvider.GetRequiredService<IUsageSettlementService>();
 
         var tempLogsResult = await redisStore.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
         if (!tempLogsResult.IsSuccess)
@@ -74,9 +71,7 @@ public class BillingAggregationWorker : BackgroundService
         }
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
-        await AggregateTempLogsIntoUnitOfWorkAsync(tempLogs, unitOfWork, stoppingToken);
-
-        await unitOfWork.SaveChangesAsync(stoppingToken);
+        await AggregateTempLogsAsync(tempLogs, settlementService, redisStore, _logger, stoppingToken);
         var trimResult = await redisStore.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
         if (!trimResult.IsSuccess)
         {
@@ -87,9 +82,11 @@ public class BillingAggregationWorker : BackgroundService
         _logger.LogInformation($"Successfully synced aggregated logs to DB.");
     }
 
-    public static async Task AggregateTempLogsIntoUnitOfWorkAsync(
+    public static async Task AggregateTempLogsAsync(
         IReadOnlyList<TempUsageLogDto> tempLogs,
-        IUnitOfWork unitOfWork,
+        IUsageSettlementService settlementService,
+        IRedisBillingStore? redisStore,
+        ILogger? logger,
         CancellationToken stoppingToken)
     {
         var groupedLogs = tempLogs
@@ -103,7 +100,8 @@ public class BillingAggregationWorker : BackgroundService
                 l.Provider,
                 l.Model,
                 l.PricingRateCardId,
-                l.UnitPriceSnapshot
+                l.UnitPriceSnapshot,
+                l.ReferenceType
             })
             .ToList();
 
@@ -115,46 +113,51 @@ public class BillingAggregationWorker : BackgroundService
             if (totalCredits == 0 && totalQuantity == 0)
                 continue;
 
-            var usageRecord = UsageMapper.CreateAggregatedUsageRecord(new CreateAggregatedUsageRecordRequest(
-                SubscriptionId: group.Key.SubscriptionId,
-                WorkspaceId: group.Key.WorkspaceId,
-                UsageType: group.Key.UsageType,
-                Quantity: (decimal)totalQuantity,
-                Unit: group.Key.Unit,
-                CreditsConsumed: totalCredits,
-                Details: JsonSerializer.Serialize(new
-                {
-                    description = BillingMessageConstants.UsageMessages.AggregatedBatchDescription,
-                    chargeType = group.Key.ChargeType,
-                    provider = group.Key.Provider,
-                    model = group.Key.Model,
-                    pricingRateCardId = group.Key.PricingRateCardId,
-                    unitPriceSnapshot = group.Key.UnitPriceSnapshot
-                })));
-
-            await unitOfWork.UsageRecordRepository.AddAsync(usageRecord, stoppingToken);
-
-            if (totalCredits != 0) 
+            if (totalCredits != 0)
             {
-                var transactionAmount = -totalCredits; 
+                var settlementRequest = group.ToAggregatedSettlementRequest();
+                var settlement = await settlementService.SettleUsageChargeAsync(
+                    settlementRequest,
+                    stoppingToken);
 
-                var transaction = CreditMapper.CreateAggregatedTransaction(
-                    group.Key.SubscriptionId,
-                    transactionAmount,
-                    group.Key.ChargeType,
-                    string.Format(BillingMessageConstants.UsageMessages.AggregatedChargeDescriptionTemplate, group.Key.ChargeType)
-                );
-                transaction.WorkspaceId = group.Key.WorkspaceId;
-                transaction.ChargeType = group.Key.ChargeType;
-                transaction.PricingRateCardId = group.Key.PricingRateCardId;
-                transaction.UsageRecordId = usageRecord.Id;
-                transaction.UnitPriceSnapshot = group.Key.UnitPriceSnapshot;
-                transaction.Currency = "VND";
-                transaction.ReferenceType = TransactionConstants.ReferenceTypes.AggregatedBatch;
-                transaction.CreatedAt = DateTime.UtcNow;
+                if (!settlement.IsSuccess)
+                {
+                    logger?.LogError(
+                        "Failed to settle aggregated billing group. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}, Error={Error}",
+                        group.Key.SubscriptionId,
+                        group.Key.ChargeType,
+                        settlement.Error);
+                    continue;
+                }
 
-                await unitOfWork.CreditTransactionRepository.AddAsync(transaction, stoppingToken);
+                if (settlement.Value?.ServiceState == SubscriptionConstants.ServiceStates.Suspended)
+                {
+                    logger?.LogWarning(
+                        "Billing settlement suspended AI service. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}, Reason={Reason}",
+                        group.Key.WorkspaceId,
+                        group.Key.SubscriptionId,
+                        settlement.Value.SuspendedReason);
+                }
+
+                if (!string.IsNullOrWhiteSpace(settlement.Value?.ServiceState) && redisStore is not null)
+                {
+                    await redisStore.SetAiServiceStateAsync(
+                        group.Key.WorkspaceId,
+                        settlement.Value.ServiceState!,
+                        settlement.Value.SuspendedReason,
+                        stoppingToken);
+
+                    if (settlementRequest.TranslationRoomId.HasValue)
+                    {
+                        await redisStore.SetAiServiceStateForRoomAsync(
+                            settlementRequest.TranslationRoomId.Value,
+                            settlement.Value.ServiceState!,
+                            settlement.Value.SuspendedReason,
+                            stoppingToken);
+                    }
+                }
             }
         }
     }
+
 }

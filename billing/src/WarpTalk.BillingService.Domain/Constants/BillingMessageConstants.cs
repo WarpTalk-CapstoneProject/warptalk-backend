@@ -40,6 +40,13 @@ public static class BillingMessageConstants
         public const string AggregatedChargeDescriptionTemplate = "Aggregated {0}";
     }
 
+    public static class DisabledFeatureMessages
+    {
+        public const string CreditReservation = "Credit reservation is disabled. Usage is settled by atomic usage settlement.";
+        public const string CreditReservationConfirmation = "Credit reservation confirmation is disabled. Usage is settled by atomic usage settlement.";
+        public const string CreditReservationRefund = "Credit reservation refund is disabled. Usage is settled by atomic usage settlement.";
+    }
+
     public static class AnalyticsMessages
     {
         public const string WorkspaceNameTemplate = "Workspace {0}";
@@ -147,6 +154,7 @@ public static class BillingMessageConstants
         public const string FailedToSendNotificationsToUsers = "Failed to send notifications to users";
         public const string FailedToSendNotificationViaGrpcToUser = "Failed to send notification via gRPC client to user {UserId}";
         public const string FailedToProcessRedisBillingNotification = "Failed to process incoming Redis billing notification message.";
+        public const string ErrorCreatingTrialSubscription = "Error creating trial subscription for WorkspaceId {WorkspaceId}";
     }
 
     public static class Notifications
@@ -301,6 +309,10 @@ public static class BillingMessageConstants
         
         public const string BillingRateValuesInvalid = "All rate values must be greater than zero.";
         public const string BillingAppSettingsNotFound = "appsettings.json not found on server.";
+        public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
+        public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";
+        public const string BillingAiServiceSuspended = "Workspace AI service is suspended.";
+        public const string BillingWorkspaceMeetingQuotaExceeded = "Workspace has exceeded its active meeting quota.";
     }
 
     public static class Validation

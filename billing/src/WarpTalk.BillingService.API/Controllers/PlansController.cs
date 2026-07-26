@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -22,36 +23,21 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<IEnumerable<PlanDto>>> GetPlans(CancellationToken cancellationToken)
     {
         var result = await _planService.GetActivePlansAsync(cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("{id}")]
     public async Task<ActionResult<PlanDto>> GetPlanById(Guid id, CancellationToken cancellationToken)
     {
         var result = await _planService.GetPlanByIdAsync(id, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("slug/{slug}")]
     public async Task<ActionResult<PlanDto>> GetPlanBySlug(string slug, CancellationToken cancellationToken)
     {
         var result = await _planService.GetPlanBySlugAsync(slug, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpPost]
@@ -61,7 +47,7 @@ public class PlansController : ControllerBase
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return CreatedAtAction(nameof(GetPlanById), new { id = result.Value!.Id }, result.Value);
@@ -72,12 +58,7 @@ public class PlansController : ControllerBase
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(result.Value);
+        return result.ToActionResult(this);
     }
 
     [HttpDelete("{id}")]
@@ -87,7 +68,7 @@ public class PlansController : ControllerBase
         var result = await _planService.DeactivatePlanAsync(id, cancellationToken);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return this.ToBadRequest(result.Error, result.ErrorCode);
         }
 
         return NoContent();

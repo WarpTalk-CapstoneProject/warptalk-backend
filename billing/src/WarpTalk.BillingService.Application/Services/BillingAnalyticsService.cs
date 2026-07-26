@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
 
@@ -72,11 +73,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             var breakdown = usages.GroupBy(u => u.UsageType)
-                .Select(g => new UsageBreakdownDto(
-                    g.Key,
-                    g.Sum(x => x.CreditsConsumed),
-                    g.Sum(x => x.Quantity)
-                )).ToList();
+                .Select(BillingAnalyticsMapper.ToUsageBreakdownDto)
+                .ToList();
 
             var translationUsages = usages.Where(u => u.UsageType.Contains(UsageConstants.UsageTypes.TranslationKeyword, StringComparison.OrdinalIgnoreCase) && u.Quantity > 0).ToList();
             decimal? averageTranslationCost = translationUsages.Any()
@@ -90,8 +88,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 ? (int)Math.Round(meetingGroups.Average(g => g.Sum(u => u.CreditsConsumed)))
                 : null;
 
-            var report = new BillingReportDto(
-                workspaceId, query.Month, query.Year, startingBalance, endingBalance,
+            var report = BillingAnalyticsMapper.ToBillingReportDto(
+                workspaceId, query, startingBalance, endingBalance,
                 totalTopUps, totalConsumed, averageTranslationCost, averageCostPerMeeting, breakdown
             );
 
@@ -124,20 +122,9 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             var monthlyData = Enumerable.Range(1, 12).Select(month =>
-            {
-                var monthTxs = txs.Where(t => t.CreatedAt.Month == month).ToList();
-                var topUp = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.TopUp).Sum(t => t.Amount);
-                var consumed = Math.Abs(monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.Consume).Sum(t => t.Amount));
+                BillingAnalyticsMapper.ToMonthlyUsageDto(query.Year, month, txs)).ToList();
 
-                return new MonthlyUsageDto(
-                    month,
-                    new DateTime(query.Year, month, 1).ToString("MMM"),
-                    consumed,
-                    topUp
-                );
-            }).ToList();
-
-            return Result.Success(new UsageChartDto(query.Year, monthlyData));
+            return Result.Success(BillingAnalyticsMapper.ToUsageChartDto(query.Year, monthlyData));
         }
         catch (Exception ex)
         {
@@ -157,11 +144,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             var adoption = usages.GroupBy(u => u.UsageType)
-                .Select(g => new FeatureAdoptionDto(
-                    g.Key,
-                    g.Count(),
-                    g.Sum(x => x.CreditsConsumed)
-                ))
+                .Select(BillingAnalyticsMapper.ToFeatureAdoptionDto)
                 .OrderByDescending(x => x.TotalCreditsConsumed)
                 .ToList();
 
@@ -189,7 +172,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             var thirtyDaysAgo = DateTime.UtcNow.AddDays(-30);
             var auditEvents = await _unitOfWork.CreditTransactionRepository.CountAsync(t => t.CreatedAt >= thirtyDaysAgo, cancellationToken);
 
-            return Result.Success(new GlobalBillingMetricsDto(totalBalance, activeWorkspaces, monthlyUsage, auditEvents));
+            return Result.Success(BillingAnalyticsMapper.ToGlobalBillingMetricsDto(totalBalance, activeWorkspaces, monthlyUsage, auditEvents));
         }
         catch (Exception ex)
         {
@@ -212,14 +195,10 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             var monthlyData = new List<MonthlyUsageDto>();
             for (int i = 1; i <= 12; i++)
             {
-                var monthTxs = txs.Where(t => t.CreatedAt.Month == i).ToList();
-                var consumed = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.Consume).Sum(t => Math.Abs(t.Amount));
-                var topUp = monthTxs.Where(t => t.Type == TransactionConstants.TransactionTypes.TopUp && t.Amount > 0).Sum(t => t.Amount);
-
-                monthlyData.Add(new MonthlyUsageDto(i, new DateTime(query.Year, i, 1).ToString("MMM"), consumed, topUp));
+                monthlyData.Add(BillingAnalyticsMapper.ToGlobalMonthlyUsageDto(query.Year, i, txs));
             }
 
-            return Result.Success(new UsageChartDto(query.Year, monthlyData));
+            return Result.Success(BillingAnalyticsMapper.ToUsageChartDto(query.Year, monthlyData));
         }
         catch (Exception ex)
         {
@@ -239,10 +218,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             var breakdown = usages.GroupBy(u => u.UsageType)
-                .Select(g => new UsageSummaryDto(
-                    g.Key,
-                    g.Sum(x => x.CreditsConsumed)
-                ))
+                .Select(BillingAnalyticsMapper.ToUsageSummaryDto)
                 .OrderByDescending(x => x.TotalCreditsConsumed)
                 .ToList();
 
@@ -266,11 +242,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 cancellationToken);
 
             var topWorkspaces = usages.GroupBy(u => u.WorkspaceId)
-                .Select(g => new TopWorkspaceDto(
-                    g.Key,
-                    string.Format(BillingMessageConstants.AnalyticsMessages.WorkspaceNameTemplate, g.Key.ToString()[..8].ToUpper()),
-                    g.Sum(x => x.CreditsConsumed)
-                ))
+                .Select(BillingAnalyticsMapper.ToTopWorkspaceDto)
                 .OrderByDescending(x => x.TotalCreditsConsumed)
                 .Take(query.Limit)
                 .ToList();
@@ -363,12 +335,11 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 
             var alerts = grouped.Select(g => {
                 var wId = subIdToWorkspaceId.TryGetValue(g.SubscriptionId, out var id) ? id : Guid.Empty;
-                return new UsageAlertDto(
-                    WorkspaceId: wId,
-                    WorkspaceName: workspaceNames.TryGetValue(wId, out var name) ? name : BillingMessageConstants.AnalyticsMessages.UnknownWorkspace,
-                    ConsumedCreditsIn24h: g.ConsumedCredits,
-                    Reason: string.Format(BillingMessageConstants.AnalyticsMessages.HighConsumptionAlertTemplate, g.ConsumedCredits)
-                );
+                var workspaceName = workspaceNames.TryGetValue(wId, out var name)
+                    ? name
+                    : BillingMessageConstants.AnalyticsMessages.UnknownWorkspace;
+
+                return BillingAnalyticsMapper.ToUsageAlertDto(wId, workspaceName, g.ConsumedCredits);
             });
 
             return Result.Success(alerts);

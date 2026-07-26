@@ -114,3 +114,27 @@ public record SimulatedPaymentCreationRequest(
     decimal Amount,
     string Currency
 );
+
+public record BillingCyclePaymentCreationRequest(
+    Domain.Entities.Subscription Subscription,
+    decimal Subtotal,
+    decimal Tax,
+    decimal Total,
+    int OverageCredits,
+    DateTime Now
+);
+
+public record BillingCycleInvoiceCreationRequest(
+    Domain.Entities.Subscription Subscription,
+    Domain.Entities.Plan Plan,
+    Guid PaymentId,
+    decimal ContractPrice,
+    int OverageCredits,
+    decimal OveragePricePerCredit,
+    decimal OverageAmount,
+    decimal Subtotal,
+    decimal Tax,
+    decimal Total,
+    int InvoiceTermsDays,
+    DateTime Now
+);
