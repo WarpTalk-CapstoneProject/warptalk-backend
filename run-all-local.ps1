@@ -23,6 +23,7 @@ $PGContainer = "warptalk-postgres"
 $RedisContainer = "warptalk-redis"
 $RabbitContainer = "warptalk-rabbitmq"
 $LiveKitContainer = "warptalk-livekit"
+$UseSelfHostedLiveKit = $env:WARPTALK_LIVEKIT_MODE -eq "selfhost"
 $PidFile = Join-Path $LogDir "pids.json"
 
 # ANSI Colors
@@ -250,6 +251,13 @@ function Start-RabbitMQ {
 }
 
 function Start-LiveKit {
+    if (-not $UseSelfHostedLiveKit) {
+        Write-Host ($CYAN + "[LIVEKIT] Using LiveKit Cloud from LIVEKIT_URL; local SFU skipped." + $NC)
+        return
+    }
+    if (-not $env:LIVEKIT_API_KEY -or -not $env:LIVEKIT_API_SECRET) {
+        throw "LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required for self-host fallback."
+    }
     Write-Host ($CYAN + "[LIVEKIT] Starting LiveKit..." + $NC)
     Remove-ConflictingContainer $LiveKitContainer
     $running = docker ps --filter "name=^/$LiveKitContainer$" --format "{{.Names}}"
@@ -264,7 +272,7 @@ function Start-LiveKit {
         docker run -d `
             --name $LiveKitContainer `
             -p 7880:7880 -p 7881:7881 -p 7882:7882/udp `
-            -e LIVEKIT_KEYS="APIBVnfFo9PzzoQ: wbB6j98H2jfF5nLTZYhaiYXQM8hM6nB3KoVoXfMNTPA" `
+            -e LIVEKIT_KEYS="$($env:LIVEKIT_API_KEY): $($env:LIVEKIT_API_SECRET)" `
             livekit/livekit-server:latest --dev --bind 0.0.0.0 | Out-Null
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
@@ -412,11 +420,15 @@ function Show-Status {
     }
 
     # LiveKit
-    $livekitStatus = docker ps --filter "name=^/$LiveKitContainer$" --format "{{.Status}}"
-    if ($livekitStatus) {
-        Write-Host ("   " + $GREEN + "[OK] LiveKit (Docker: $LiveKitContainer) - $livekitStatus" + $NC)
+    if (-not $UseSelfHostedLiveKit) {
+        Write-Host ("   " + $GREEN + "[OK] LiveKit Cloud - " + $env:LIVEKIT_URL + $NC)
     } else {
-        Write-Host ("   " + $RED + "[FAIL] LiveKit (Docker: $LiveKitContainer) - stopped" + $NC)
+        $livekitStatus = docker ps --filter "name=^/$LiveKitContainer$" --format "{{.Status}}"
+        if ($livekitStatus) {
+            Write-Host ("   " + $GREEN + "[OK] LiveKit (Docker: $LiveKitContainer) - $livekitStatus" + $NC)
+        } else {
+            Write-Host ("   " + $RED + "[FAIL] LiveKit (Docker: $LiveKitContainer) - stopped" + $NC)
+        }
     }
 
     # microservices

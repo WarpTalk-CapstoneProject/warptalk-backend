@@ -41,14 +41,15 @@ public class MeetingWebhookService : IMeetingWebhookService
                 IssuerSigningKey = securityKey,
                 ValidateIssuer = false,
                 ValidateAudience = false,
-                ValidateLifetime = false // Sometimes webhooks are slightly delayed
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.FromMinutes(2)
             }, out _);
 
             // Read the token to verify the body hash (sha256 of body mapped to 'sha256' claim)
             var jwtToken = handler.ReadJwtToken(token);
             var sha256Claim = jwtToken.Claims.FirstOrDefault(c => c.Type == "sha256")?.Value;
 
-            if (string.IsNullOrEmpty(sha256Claim)) return true; // Some older LiveKit versions omit this
+            if (string.IsNullOrEmpty(sha256Claim)) return false;
 
             using var sha256 = SHA256.Create();
             var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(bodyText));

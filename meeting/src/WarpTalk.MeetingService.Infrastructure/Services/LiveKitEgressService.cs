@@ -25,6 +25,7 @@ public class LiveKitEgressService : ILiveKitEgressService
     private readonly string _apiKey;
     private readonly string _apiSecret;
     private readonly string _host;
+    private readonly object? _s3Output;
     private readonly ILogger<LiveKitEgressService> _logger;
 
     public LiveKitEgressService(HttpClient httpClient, IConfiguration configuration, ILogger<LiveKitEgressService> logger)
@@ -32,7 +33,10 @@ public class LiveKitEgressService : ILiveKitEgressService
         _httpClient = httpClient;
         _apiKey = configuration["LiveKit:ApiKey"] ?? throw new ArgumentNullException("LiveKit:ApiKey");
         _apiSecret = configuration["LiveKit:ApiSecret"] ?? throw new ArgumentNullException("LiveKit:ApiSecret");
-        _host = (configuration["LiveKit:Host"] ?? "http://localhost:7880").TrimEnd('/');
+        var configuredUrl = configuration["LiveKit:Url"] ?? configuration["LiveKit:Host"]
+            ?? throw new InvalidOperationException("LiveKit:Url is required.");
+        _host = ToHttpApiUrl(configuredUrl);
+        _s3Output = BuildS3Output(configuration);
         _logger = logger;
     }
 
@@ -46,7 +50,7 @@ public class LiveKitEgressService : ILiveKitEgressService
                 room_name = roomName,
                 layout = "grid",
                 audio_only = false,
-                file_outputs = new[] { new { filepath } }
+                file_outputs = new[] { new { filepath, s3 = _s3Output } }
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_host}/twirp/livekit.Egress/StartRoomCompositeEgress")
@@ -109,6 +113,48 @@ public class LiveKitEgressService : ILiveKitEgressService
 
     private static string? TryGetProperty(JsonElement root, string propertyName) =>
         root.TryGetProperty(propertyName, out var value) ? value.GetString() : null;
+
+    private static string ToHttpApiUrl(string configuredUrl)
+    {
+        var normalized = configuredUrl.Trim().TrimEnd('/');
+        if (normalized.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            return $"https://{normalized[6..]}";
+        if (normalized.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+            return $"http://{normalized[5..]}";
+        if (normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            return normalized;
+
+        throw new InvalidOperationException("LiveKit:Url must use ws, wss, http, or https.");
+    }
+
+    private static object? BuildS3Output(IConfiguration configuration)
+    {
+        var bucket = configuration["LiveKit:Egress:S3:Bucket"];
+        if (string.IsNullOrWhiteSpace(bucket))
+            return null;
+
+        var accessKey = configuration["LiveKit:Egress:S3:AccessKey"]
+            ?? throw new InvalidOperationException("LiveKit:Egress:S3:AccessKey is required when recording is enabled.");
+        var secret = configuration["LiveKit:Egress:S3:Secret"]
+            ?? throw new InvalidOperationException("LiveKit:Egress:S3:Secret is required when recording is enabled.");
+        var endpoint = configuration["LiveKit:Egress:S3:Endpoint"];
+        if (!string.IsNullOrWhiteSpace(endpoint) &&
+            !endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("LiveKit Cloud Egress S3 endpoint must use HTTPS.");
+        }
+
+        return new
+        {
+            access_key = accessKey,
+            secret,
+            bucket,
+            region = configuration["LiveKit:Egress:S3:Region"],
+            endpoint,
+            force_path_style = !string.IsNullOrWhiteSpace(endpoint)
+        };
+    }
 
     /// <summary>
     /// Server-API access token — a "roomRecord" video grant, distinct from the per-participant
