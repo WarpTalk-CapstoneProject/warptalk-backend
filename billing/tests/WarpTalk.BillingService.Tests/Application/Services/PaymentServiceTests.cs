@@ -260,6 +260,9 @@ public class PaymentServiceTests
         var result = await _paymentService.CreatePaymentAsync(request);
 
         result.IsSuccess.Should().BeTrue();
+        result.Value!.Amount.Should().Be(10m);
+        result.Value.TaxAmount.Should().Be(1m);
+        result.Value.TotalAmount.Should().Be(11m);
         _mockPaymentRepo.Verify(r => r.AddAsync(It.IsAny<Payment>(), default), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
     }

@@ -50,6 +50,11 @@ public class BillingCycleMapperTests
             OverageCredits: 100,
             OveragePricePerCredit: 4m,
             OverageAmount: 400m,
+            UsageBreakdown: new[]
+            {
+                new BillingCycleUsageBreakdownItem("STT", "second", 120m, 198),
+                new BillingCycleUsageBreakdownItem("AI_ASSISTANT", "token_out", 500m, 66)
+            },
             Subtotal: 100_400m,
             Tax: 10_040m,
             Total: 110_440m,
@@ -61,6 +66,9 @@ public class BillingCycleMapperTests
         invoice.InvoiceNumber.Should().StartWith(InvoiceConstants.Formats.InvoiceNumberPrefix);
         invoice.LineItems.Should().Contain(InvoiceConstants.LineItemTypes.Subscription);
         invoice.LineItems.Should().Contain(InvoiceConstants.LineItemTypes.Overage);
+        invoice.LineItems.Should().Contain(InvoiceConstants.LineItemTypes.UsageBreakdown);
+        invoice.LineItems.Should().Contain("STT");
+        invoice.LineItems.Should().Contain("AI_ASSISTANT");
         invoice.LineItems.Should().Contain(InvoiceConstants.LineItemDescriptions.UsageOverCommittedCredits);
         invoice.DueAt.Should().Be(now.AddDays(15));
     }
@@ -87,6 +95,7 @@ public class BillingCycleMapperTests
             0,
             4m,
             0m,
+            Array.Empty<BillingCycleUsageBreakdownItem>(),
             100m,
             10m,
             110m,

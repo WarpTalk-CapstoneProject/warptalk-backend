@@ -55,6 +55,7 @@ public static class SubscriptionConstants
 
     public static class PlanDefaults
     {
+        public const decimal PriceFloorPerCredit = 2.60m;
         public const decimal OveragePricePerCredit = 4.0000m;
         public const int InvoiceTermsDays = 15;
         public const int InvoiceGraceHours = 360;

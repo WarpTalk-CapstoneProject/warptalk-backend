@@ -22,7 +22,52 @@ public static class SubscriptionMapper
         sub.AutoRenew,
         !sub.AutoRenew,
         sub.CreatedAt,
-        sub.CancelledAt
+        sub.CancelledAt,
+        CreditsPerCycleOverride: sub.CreditsPerCycleOverride,
+        ContractPriceVnd: sub.ContractPriceVnd,
+        OverageCapCreditsOverride: sub.OverageCapCreditsOverride,
+        OveragePricePerCreditOverride: sub.OveragePricePerCreditOverride,
+        InvoiceTermsDaysOverride: sub.InvoiceTermsDaysOverride,
+        BillingContactEmail: sub.BillingContactEmail,
+        OverageCreditsThisCycle: sub.OverageCreditsThisCycle,
+        OverageStartedAt: sub.OverageStartedAt,
+        ServiceState: sub.ServiceState,
+        SuspendedReason: sub.SuspendedReason,
+        TrialEndsAt: sub.TrialEndsAt
+    );
+
+    public static SubscriptionDto ToDto(this Subscription sub, Plan plan) => new(
+        sub.Id,
+        sub.UserId,
+        sub.WorkspaceId,
+        sub.PlanId,
+        plan.Name,
+        plan.Price,
+        sub.Status.ToLowerInvariant(),
+        sub.CreditsRemaining,
+        sub.CreditsUsedThisCycle,
+        sub.CurrentPeriodStart,
+        sub.CurrentPeriodEnd,
+        sub.AutoRenew,
+        !sub.AutoRenew,
+        sub.CreatedAt,
+        sub.CancelledAt,
+        CreditsPerCycleOverride: sub.CreditsPerCycleOverride,
+        ContractPriceVnd: sub.ContractPriceVnd,
+        OverageCapCreditsOverride: sub.OverageCapCreditsOverride,
+        OveragePricePerCreditOverride: sub.OveragePricePerCreditOverride,
+        InvoiceTermsDaysOverride: sub.InvoiceTermsDaysOverride,
+        BillingContactEmail: sub.BillingContactEmail,
+        EffectiveCreditsPerCycle: sub.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
+        EffectiveContractPriceVnd: sub.ContractPriceVnd ?? plan.Price,
+        EffectiveOverageCapCredits: sub.OverageCapCreditsOverride ?? plan.OverageCapCredits,
+        EffectiveOveragePricePerCredit: sub.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit,
+        EffectiveInvoiceTermsDays: sub.InvoiceTermsDaysOverride ?? plan.InvoiceTermsDays,
+        OverageCreditsThisCycle: sub.OverageCreditsThisCycle,
+        OverageStartedAt: sub.OverageStartedAt,
+        ServiceState: sub.ServiceState,
+        SuspendedReason: sub.SuspendedReason,
+        TrialEndsAt: sub.TrialEndsAt
     );
 
     public static Subscription ToEntity(this SubscriptionRequest request, Plan plan)
@@ -92,6 +137,19 @@ public static class SubscriptionMapper
         sub.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
         sub.SuspendedReason = null;
         sub.OverageStartedAt = null;
+        sub.UpdatedAt = DateTime.UtcNow;
+    }
+
+    public static void ApplyContractTerms(this Subscription sub, UpdateSubscriptionContractTermsRequest request)
+    {
+        sub.CreditsPerCycleOverride = request.CreditsPerCycleOverride;
+        sub.ContractPriceVnd = request.ContractPriceVnd;
+        sub.OverageCapCreditsOverride = request.OverageCapCreditsOverride;
+        sub.OveragePricePerCreditOverride = request.OveragePricePerCreditOverride;
+        sub.InvoiceTermsDaysOverride = request.InvoiceTermsDaysOverride;
+        sub.BillingContactEmail = string.IsNullOrWhiteSpace(request.BillingContactEmail)
+            ? null
+            : request.BillingContactEmail.Trim();
         sub.UpdatedAt = DateTime.UtcNow;
     }
 

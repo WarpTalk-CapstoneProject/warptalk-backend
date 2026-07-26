@@ -315,6 +315,9 @@ public static class BillingMessageConstants
         public const string BillingAiServiceNotSuspended = "Workspace AI service is not suspended.";
         public const string BillingAiServiceResumed = "Workspace AI service has been resumed.";
         public const string BillingWorkspaceMeetingQuotaExceeded = "Workspace has exceeded its active meeting quota.";
+        public const string BillingContractTermsInvalid = "Subscription contract terms are invalid.";
+        public const string BillingContractPriceBelowFloor = "Effective contract price per credit is below the billing floor.";
+        public const string BillingCannotReduceCommitmentDuringOverage = "Cannot reduce contract commitment while subscription is in overage.";
     }
 
     public static class Validation

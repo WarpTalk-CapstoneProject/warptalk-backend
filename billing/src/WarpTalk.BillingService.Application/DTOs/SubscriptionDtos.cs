@@ -23,7 +23,23 @@ public record SubscriptionDto(
     bool CancelAtPeriodEnd,
     DateTime CreatedAt,
     DateTime? CancelledAt,
-    string? WorkspaceName = null
+    string? WorkspaceName = null,
+    int? CreditsPerCycleOverride = null,
+    decimal? ContractPriceVnd = null,
+    int? OverageCapCreditsOverride = null,
+    decimal? OveragePricePerCreditOverride = null,
+    int? InvoiceTermsDaysOverride = null,
+    string? BillingContactEmail = null,
+    int EffectiveCreditsPerCycle = 0,
+    decimal EffectiveContractPriceVnd = 0,
+    int EffectiveOverageCapCredits = 0,
+    decimal EffectiveOveragePricePerCredit = 0,
+    int EffectiveInvoiceTermsDays = 0,
+    int OverageCreditsThisCycle = 0,
+    DateTime? OverageStartedAt = null,
+    string ServiceState = SubscriptionConstants.ServiceStates.Healthy,
+    string? SuspendedReason = null,
+    DateTime? TrialEndsAt = null
 )
 {
     public int CurrentCredits => CreditsRemaining;
@@ -62,6 +78,14 @@ public record TrialSubscriptionRequest(
 
 public record ResumeSubscriptionRequest(
     string? Reason = null);
+
+public record UpdateSubscriptionContractTermsRequest(
+    int? CreditsPerCycleOverride = null,
+    decimal? ContractPriceVnd = null,
+    int? OverageCapCreditsOverride = null,
+    decimal? OveragePricePerCreditOverride = null,
+    int? InvoiceTermsDaysOverride = null,
+    string? BillingContactEmail = null);
 
 
 public record CreateSubscriptionRequest(

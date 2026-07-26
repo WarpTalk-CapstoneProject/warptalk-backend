@@ -56,7 +56,9 @@ public class SubscriptionService : ISubscriptionService
                     ErrorCodes.BillingSubscriptionNotFound);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            return Result.Success(sub.ToDto(plan?.Name ?? BillingMessageConstants.Subscription.UnknownPlan, plan?.Price ?? 0m));
+            return Result.Success(plan is null
+                ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
+                : sub.ToDto(plan));
         }
         catch (Exception ex)
         {
@@ -78,7 +80,9 @@ public class SubscriptionService : ISubscriptionService
             foreach (var sub in page.Items)
             {
                 var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-                items.Add(sub.ToDto(plan?.Name ?? BillingMessageConstants.PlanAuditMessages.UnknownPlan, plan?.Price ?? 0m));
+                items.Add(plan is null
+                    ? sub.ToDto(BillingMessageConstants.PlanAuditMessages.UnknownPlan, 0m)
+                    : sub.ToDto(plan));
             }
 
             // Resolve workspace names cross-schema
@@ -142,7 +146,7 @@ public class SubscriptionService : ISubscriptionService
                 plan.Name,
                 cancellationToken);
 
-            return Result.Success(subscription.ToDto(plan.Name, plan.Price));
+            return Result.Success(subscription.ToDto(plan));
         }
         catch (Exception ex)
         {
@@ -202,7 +206,7 @@ public class SubscriptionService : ISubscriptionService
                 plan.Name,
                 cancellationToken);
 
-            return Result.Success(subscription.ToDto(plan.Name, plan.Price));
+            return Result.Success(subscription.ToDto(plan));
         }
         catch (Exception ex)
         {
@@ -308,11 +312,62 @@ public class SubscriptionService : ISubscriptionService
                 request.Reason);
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            return Result.Success(sub.ToDto(plan?.Name ?? BillingMessageConstants.Subscription.UnknownPlan, plan?.Price ?? 0m));
+            return Result.Success(plan is null
+                ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
+                : sub.ToDto(plan));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to resume billing AI service. WorkspaceId={WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<SubscriptionDto>> UpdateContractTermsAsync(
+        Guid workspaceId,
+        UpdateSubscriptionContractTermsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            if (plan is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                    ErrorCodes.BillingPlanNotFound);
+
+            var validation = ValidateContractTerms(sub, plan, request);
+            if (!validation.IsSuccess)
+                return Result.Failure<SubscriptionDto>(
+                    validation.Error ?? BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
+                    validation.ErrorCode);
+
+            sub.ApplyContractTerms(request);
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                sub.UserId,
+                BillingMessageConstants.Notifications.ActionChanged,
+                plan.Name,
+                cancellationToken);
+
+            return Result.Success(sub.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating contract terms for WorkspaceId {WorkspaceId}", workspaceId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -375,7 +430,7 @@ public class SubscriptionService : ISubscriptionService
             var pendingSub = request.ToEntity(oldSub, newPlan);
             pendingSub.Status = SubscriptionConstants.SubscriptionStatuses.Pending;
             
-            return Result.Success(pendingSub.ToDto(newPlan.Name, newPlan.Price));
+            return Result.Success(pendingSub.ToDto(newPlan));
         }
         catch (Exception ex)
         {
@@ -427,6 +482,49 @@ public class SubscriptionService : ISubscriptionService
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorActivatingSubscription, workspaceId);
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
+    }
+
+    private static Result ValidateContractTerms(
+        Subscription subscription,
+        Plan plan,
+        UpdateSubscriptionContractTermsRequest request)
+    {
+        if (request.CreditsPerCycleOverride is <= 0 ||
+            request.ContractPriceVnd is < 0 ||
+            request.OverageCapCreditsOverride is < 0 ||
+            request.OveragePricePerCreditOverride is < 0 ||
+            request.InvoiceTermsDaysOverride is <= 0)
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
+                ErrorCodes.ValidationError);
+        }
+
+        var currentCreditsPerCycle = subscription.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
+        var currentOverageCap = subscription.OverageCapCreditsOverride ?? plan.OverageCapCredits;
+        var nextCreditsPerCycle = request.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
+        var nextContractPrice = request.ContractPriceVnd ?? plan.Price;
+        var nextOverageCap = request.OverageCapCreditsOverride ?? plan.OverageCapCredits;
+
+        if (nextCreditsPerCycle > 0 &&
+            nextContractPrice / nextCreditsPerCycle < SubscriptionConstants.PlanDefaults.PriceFloorPerCredit)
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingContractPriceBelowFloor,
+                ErrorCodes.ValidationError);
+        }
+
+        if (subscription.OverageStartedAt is not null &&
+            (nextCreditsPerCycle < currentCreditsPerCycle ||
+             nextOverageCap < currentOverageCap ||
+             nextOverageCap < subscription.OverageCreditsThisCycle))
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingCannotReduceCommitmentDuringOverage,
+                ErrorCodes.BillingSubscriptionConflict);
+        }
+
+        return Result.Success();
     }
 
 }

@@ -54,6 +54,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         var subtotal = contractPrice + overageAmount;
         var tax = Math.Round(subtotal * InvoiceConstants.Defaults.VatRate, 2, MidpointRounding.AwayFromZero);
         var total = subtotal + tax;
+        var usageBreakdown = await GetUsageBreakdownAsync(subscription, cancellationToken);
 
         var payment = PaymentMapper.CreateBillingCyclePayment(new BillingCyclePaymentCreationRequest(
             subscription,
@@ -72,6 +73,7 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
             overageCredits,
             overagePricePerCredit,
             overageAmount,
+            usageBreakdown,
             subtotal,
             tax,
             total,
@@ -100,5 +102,27 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         renewalTx.ReferenceId = invoice.Id;
         renewalTx.ReferenceType = TransactionConstants.ReferenceTypes.Payment;
         await _unitOfWork.CreditTransactionRepository.AddAsync(renewalTx, cancellationToken);
+    }
+
+    private async Task<IReadOnlyCollection<BillingCycleUsageBreakdownItem>> GetUsageBreakdownAsync(
+        Subscription subscription,
+        CancellationToken cancellationToken)
+    {
+        var usageRecords = await _unitOfWork.UsageRecordRepository.FindAsync(
+            u => u.SubscriptionId == subscription.Id &&
+                 u.RecordedAt >= subscription.CurrentPeriodStart &&
+                 u.RecordedAt < subscription.CurrentPeriodEnd,
+            cancellationToken);
+
+        return usageRecords
+            .GroupBy(u => new { ChargeType = u.UsageType, u.Unit })
+            .Select(g => new BillingCycleUsageBreakdownItem(
+                g.Key.ChargeType,
+                g.Key.Unit,
+                g.Sum(u => u.Quantity),
+                g.Sum(u => u.CreditsConsumed)))
+            .OrderBy(i => i.ChargeType)
+            .ThenBy(i => i.Unit)
+            .ToArray();
     }
 }

@@ -132,9 +132,16 @@ public record BillingCycleInvoiceCreationRequest(
     int OverageCredits,
     decimal OveragePricePerCredit,
     decimal OverageAmount,
+    IReadOnlyCollection<BillingCycleUsageBreakdownItem> UsageBreakdown,
     decimal Subtotal,
     decimal Tax,
     decimal Total,
     int InvoiceTermsDays,
     DateTime Now
 );
+
+public record BillingCycleUsageBreakdownItem(
+    string ChargeType,
+    string Unit,
+    decimal Quantity,
+    int CreditsConsumed);

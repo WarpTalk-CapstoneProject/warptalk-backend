@@ -33,6 +33,7 @@ public static class InvoiceConstants
     {
         public const string Subscription = "subscription";
         public const string Overage = "overage";
+        public const string UsageBreakdown = "usage_breakdown";
     }
 
     public static class LineItemDescriptions

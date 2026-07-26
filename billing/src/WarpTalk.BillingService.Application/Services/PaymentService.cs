@@ -115,7 +115,11 @@ public class PaymentService : IPaymentService
             if (finalAmount <= 0)
                 return Result.Failure<PaymentTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount);
 
-            var payment = request.ToEntity(finalAmount, plan.Currency);
+            var taxAmount = Math.Round(
+                finalAmount * InvoiceConstants.Defaults.VatRate,
+                2,
+                MidpointRounding.AwayFromZero);
+            var payment = request.ToEntity(finalAmount, plan.Currency, taxAmount);
 
             await _unitOfWork.PaymentRepository.AddAsync(payment, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);

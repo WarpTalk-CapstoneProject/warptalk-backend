@@ -1,5 +1,6 @@
 using WarpTalk.BillingService.Domain.Constants;
 using System;
+using System.Collections.Generic;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Domain.Entities;
 
@@ -118,28 +119,47 @@ public static class InvoiceMapper
             Total = request.Total,
             Currency = request.Plan.Currency,
             Status = InvoiceConstants.InvoiceStatuses.Open,
-            LineItems = System.Text.Json.JsonSerializer.Serialize(new object[]
-            {
-                new
-                {
-                    type = InvoiceConstants.LineItemTypes.Subscription,
-                    description = request.Plan.Name,
-                    quantity = 1,
-                    unitPrice = (decimal?)null,
-                    amount = request.ContractPrice
-                },
-                new
-                {
-                    type = InvoiceConstants.LineItemTypes.Overage,
-                    description = InvoiceConstants.LineItemDescriptions.UsageOverCommittedCredits,
-                    quantity = request.OverageCredits,
-                    unitPrice = request.OveragePricePerCredit,
-                    amount = request.OverageAmount
-                }
-            }),
+            LineItems = CreateBillingCycleLineItems(request),
             IssuedAt = request.Now,
             DueAt = request.Now.AddDays(request.InvoiceTermsDays),
             CreatedAt = request.Now
         };
+    }
+
+    private static string CreateBillingCycleLineItems(BillingCycleInvoiceCreationRequest request)
+    {
+        var lineItems = new List<object>
+        {
+            new
+            {
+                type = InvoiceConstants.LineItemTypes.Subscription,
+                description = request.Plan.Name,
+                quantity = 1,
+                unitPrice = (decimal?)null,
+                amount = request.ContractPrice
+            },
+            new
+            {
+                type = InvoiceConstants.LineItemTypes.Overage,
+                description = InvoiceConstants.LineItemDescriptions.UsageOverCommittedCredits,
+                quantity = request.OverageCredits,
+                unitPrice = request.OveragePricePerCredit,
+                amount = request.OverageAmount
+            }
+        };
+
+        foreach (var item in request.UsageBreakdown)
+        {
+            lineItems.Add(new
+            {
+                type = InvoiceConstants.LineItemTypes.UsageBreakdown,
+                chargeType = item.ChargeType,
+                unit = item.Unit,
+                quantity = item.Quantity,
+                creditsConsumed = item.CreditsConsumed
+            });
+        }
+
+        return System.Text.Json.JsonSerializer.Serialize(lineItems);
     }
 }

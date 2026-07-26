@@ -16,4 +16,5 @@ public interface ISubscriptionService
     Task<Result<SubscriptionDto>> ChangeSubscriptionAsync(SubscriptionRequest request, CancellationToken cancellationToken = default);
     Task<Result<bool>> ActivateSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken = default);
     Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(Guid workspaceId, ResumeSubscriptionRequest request, CancellationToken cancellationToken = default);
+    Task<Result<SubscriptionDto>> UpdateContractTermsAsync(Guid workspaceId, UpdateSubscriptionContractTermsRequest request, CancellationToken cancellationToken = default);
 }

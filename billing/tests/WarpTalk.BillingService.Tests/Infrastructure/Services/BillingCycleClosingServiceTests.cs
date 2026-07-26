@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Moq;
+using System.Linq.Expressions;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
@@ -68,11 +69,39 @@ public class BillingCycleClosingServiceTests
             .Callback<CreditTransaction, CancellationToken>((transaction, _) => capturedRenewal = transaction)
             .Returns(Task.CompletedTask);
 
+        var usageRecordRepository = new Mock<IGenericRepository<UsageRecord>>();
+        usageRecordRepository
+            .Setup(r => r.FindAsync(
+                It.IsAny<Expression<Func<UsageRecord, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[]
+            {
+                new UsageRecord
+                {
+                    SubscriptionId = subscription.Id,
+                    UsageType = "STT",
+                    Unit = "second",
+                    Quantity = 120m,
+                    CreditsConsumed = 198,
+                    RecordedAt = now.AddDays(-2)
+                },
+                new UsageRecord
+                {
+                    SubscriptionId = subscription.Id,
+                    UsageType = "TRANSLATION",
+                    Unit = "token_out",
+                    Quantity = 1_000m,
+                    CreditsConsumed = 27,
+                    RecordedAt = now.AddDays(-1)
+                }
+            });
+
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.SubscriptionRepository).Returns(subscriptionRepository.Object);
         unitOfWork.Setup(u => u.PaymentRepository).Returns(paymentRepository.Object);
         unitOfWork.Setup(u => u.InvoiceRepository).Returns(invoiceRepository.Object);
         unitOfWork.Setup(u => u.CreditTransactionRepository).Returns(creditTransactionRepository.Object);
+        unitOfWork.Setup(u => u.UsageRecordRepository).Returns(usageRecordRepository.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
         var service = new BillingCycleClosingService(unitOfWork.Object);
@@ -90,6 +119,9 @@ public class BillingCycleClosingServiceTests
         capturedInvoice!.Subtotal.Should().Be(1_150_000m);
         capturedInvoice.Total.Should().Be(1_265_000m);
         capturedInvoice.DueAt.Should().Be(now.AddDays(15));
+        capturedInvoice.LineItems.Should().Contain(InvoiceConstants.LineItemTypes.UsageBreakdown);
+        capturedInvoice.LineItems.Should().Contain("STT");
+        capturedInvoice.LineItems.Should().Contain("TRANSLATION");
         capturedRenewal!.Amount.Should().Be(104_000);
         capturedRenewal.ReferenceId.Should().Be(capturedInvoice.Id);
         subscription.CreditsRemaining.Should().Be(104_000);
