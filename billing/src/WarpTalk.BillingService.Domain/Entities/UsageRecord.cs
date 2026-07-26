@@ -8,7 +8,7 @@ public partial class UsageRecord
 
     public Guid SubscriptionId { get; set; }
 
-    public Guid UserId { get; set; }
+    public Guid? UserId { get; set; }
 
     public Guid WorkspaceId { get; set; }
 

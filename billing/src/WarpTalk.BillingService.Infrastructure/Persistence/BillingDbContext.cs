@@ -202,6 +202,9 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.UserId)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("user_id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
             entity.Property(e => e.Amount).HasColumnName("amount");
             entity.Property(e => e.Type)
                 .HasMaxLength(20)
@@ -214,6 +217,25 @@ public partial class BillingDbContext : DbContext
                 .HasMaxLength(30)
                 .HasColumnName("reference_type");
             entity.Property(e => e.BalanceAfter).HasColumnName("balance_after");
+            entity.Property(e => e.ChargeType)
+                .HasMaxLength(50)
+                .HasColumnName("charge_type");
+            entity.Property(e => e.PricingRateCardId).HasColumnName("pricing_rate_card_id");
+            entity.Property(e => e.UsageRecordId).HasColumnName("usage_record_id");
+            entity.Property(e => e.UnitPriceSnapshot)
+                .HasPrecision(18, 6)
+                .HasColumnName("unit_price_snapshot");
+            entity.Property(e => e.InvoiceId).HasColumnName("invoice_id");
+            entity.Property(e => e.ReversalOfTransactionId).HasColumnName("reversal_of_transaction_id");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(3)
+                .HasDefaultValue("VND")
+                .HasColumnName("currency");
+            entity.Property(e => e.IdempotencyKey)
+                .HasMaxLength(255)
+                .HasColumnName("idempotency_key");
+            entity.Property(e => e.TriggeredByParticipantId).HasColumnName("triggered_by_participant_id");
+            entity.Property(e => e.TranscriptSegmentId).HasColumnName("transcript_segment_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
@@ -222,6 +244,12 @@ public partial class BillingDbContext : DbContext
                 .HasForeignKey(d => d.SubscriptionId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("credit_transactions_subscription_id_fkey");
+
+            entity.HasOne<UsageRecord>()
+                .WithMany()
+                .HasForeignKey(e => e.UsageRecordId)
+                .OnDelete(DeleteBehavior.ClientSetNull)
+                .HasConstraintName("credit_transactions_usage_record_id_fkey");
         });
 
         modelBuilder.Entity<CreditBalanceSnapshot>(entity =>

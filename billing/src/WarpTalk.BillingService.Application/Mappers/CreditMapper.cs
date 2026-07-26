@@ -156,14 +156,15 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction CreateAggregatedTransaction(Guid subscriptionId, int amount, string type, string description) => new()
+    public static CreditTransaction CreateAggregatedTransaction(Guid subscriptionId, int amount, string chargeType, string description) => new()
     {
         Id = Guid.NewGuid(),
         SubscriptionId = subscriptionId,
         UserId = Guid.Empty, // Aggregated transactions do not belong to a specific user
         WorkspaceId = Guid.Empty, // Or could pass workspaceId if needed
         Amount = amount,
-        Type = type,
+        Type = TransactionConstants.TransactionTypes.Consume,
+        ChargeType = chargeType,
         Description = description,
         CreatedAt = DateTime.UtcNow
     };

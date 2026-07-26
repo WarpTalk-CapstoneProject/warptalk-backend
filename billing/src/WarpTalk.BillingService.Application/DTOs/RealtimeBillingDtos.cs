@@ -42,7 +42,11 @@ public record CreateTempUsageLogRequest(
     string IdempotencyKey,
     string Details,
     string? TranslationRoomId = null,
-    Guid? TranscriptSegmentId = null
+    Guid? TranscriptSegmentId = null,
+    Guid? PricingRateCardId = null,
+    decimal? UnitPriceSnapshot = null,
+    string? Provider = null,
+    string? Model = null
 );
 
 public record CreateAggregatedUsageRecordRequest(

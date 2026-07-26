@@ -130,6 +130,10 @@ public static class UsageMapper
         Details = request.Details,
         TranslationRoomId = request.TranslationRoomId,
         TranscriptSegmentId = request.TranscriptSegmentId,
+        PricingRateCardId = request.PricingRateCardId,
+        UnitPriceSnapshot = request.UnitPriceSnapshot,
+        Provider = request.Provider,
+        Model = request.Model,
         CreatedAt = DateTime.UtcNow
     };
 
@@ -137,7 +141,7 @@ public static class UsageMapper
     {
         Id = Guid.NewGuid(),
         SubscriptionId = request.SubscriptionId,
-        UserId = Guid.Empty, // Aggregated records do not belong to a specific user
+        UserId = null, // Aggregated records do not belong to a specific user
         WorkspaceId = request.WorkspaceId,
         UsageType = request.UsageType,
         Quantity = request.Quantity,

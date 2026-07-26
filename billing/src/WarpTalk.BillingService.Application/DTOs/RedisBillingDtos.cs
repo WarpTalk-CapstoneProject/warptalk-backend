@@ -23,6 +23,10 @@ public class TempUsageLogDto
     public double Quantity { get; set; }
     public string Unit { get; set; } = null!;
     public int CreditsConsumed { get; set; }
+    public Guid? PricingRateCardId { get; set; }
+    public decimal? UnitPriceSnapshot { get; set; }
+    public string? Provider { get; set; }
+    public string? Model { get; set; }
     public Guid? TranscriptSegmentId { get; set; }
     public string IdempotencyKey { get; set; } = null!;
     public string? Details { get; set; }
