@@ -111,8 +111,16 @@ public class GlossaryService : IGlossaryService
             if (glossary == null)
                 return Result.Failure($"Glossary with ID {id} not found.", "NOT_FOUND");
 
+            var terms = await _unitOfWork.GlossaryTerms.FindAsync(t => t.GlossaryId == id, cancellationToken);
+            var termIds = terms.Select(t => t.Id).ToList();
+
             _unitOfWork.Glossaries.Remove(glossary);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            foreach (var termId in termIds)
+            {
+                await TryPublishEmbeddingDeleteRequestAsync(glossary.WorkspaceId, termId, cancellationToken);
+            }
 
             return Result.Success();
         }
@@ -229,6 +237,17 @@ public class GlossaryService : IGlossaryService
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
+            // Removes the term's vector from workspace_{id} so semantic search stops
+            // surfacing it — the hard Remove() above only deletes the Postgres row; without
+            // this the vector indexed by TryPublishEmbeddingIndexRequestAsync (on create/
+            // update) would otherwise stay in Qdrant forever. Only possible when the
+            // glossary itself still exists (need its WorkspaceId for the collection id) —
+            // if it's already gone there's no collection to clean up anyway.
+            if (glossary != null)
+            {
+                await TryPublishEmbeddingDeleteRequestAsync(glossary.WorkspaceId, termId, cancellationToken);
+            }
+
             return Result.Success();
         }
         catch (Exception ex)
@@ -290,6 +309,43 @@ public class GlossaryService : IGlossaryService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to publish embedding index request for term {TermId}", term.Id);
+        }
+    }
+
+    /// <summary>
+    /// Removes a term's vector from "workspace_{workspaceId}" via EmbeddingWorker.process's
+    /// explicit deletion_state="deleted" path (warptalk-ai/embedding_worker/worker.py). Safe
+    /// to call for a term that was never actually indexed — Qdrant delete-by-id and a missing
+    /// collection are both treated as a no-op on that side. A publish failure must not fail
+    /// the delete it rides along with, so it's swallowed here (logged only).
+    /// </summary>
+    private async Task TryPublishEmbeddingDeleteRequestAsync(Guid workspaceId, Guid termId, CancellationToken ct)
+    {
+        try
+        {
+            var chunk = new { id = termId.ToString(), text = "", metadata = new { } };
+
+            var entries = new NameValueEntry[]
+            {
+                new("job_id", Guid.NewGuid().ToString()),
+                new("workspace_id", workspaceId.ToString()),
+                new("collection_id", $"workspace_{workspaceId}"),
+                new("source_type", "glossary_term"),
+                new("source_id", termId.ToString()),
+                new("chunks_json", JsonSerializer.Serialize(new[] { chunk })),
+                new("external_llm_allowed", "true"),
+                new("ai_retrieval_allowed", "true"),
+                new("retention_state", "active"),
+                new("deletion_state", "deleted"),
+                new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)),
+            };
+
+            var db = _redis.GetDatabase();
+            await db.StreamAddAsync("embedding:index_requests", entries, maxLength: 10000, useApproximateMaxLength: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish embedding delete request for term {TermId}", termId);
         }
     }
 }

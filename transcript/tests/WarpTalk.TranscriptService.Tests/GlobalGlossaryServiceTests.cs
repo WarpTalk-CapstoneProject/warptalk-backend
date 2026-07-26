@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,7 @@ public class GlobalGlossaryServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IGenericRepository<GlobalGlossaryTerm> _termsRepo;
     private readonly IGenericRepository<GlobalGlossaryAudit> _auditsRepo;
+    private readonly IDatabase _redisDatabase;
     private readonly GlobalGlossaryService _service;
 
     public GlobalGlossaryServiceTests()
@@ -28,15 +30,22 @@ public class GlobalGlossaryServiceTests
         _unitOfWork.GlobalGlossaryTerms.Returns(_termsRepo);
         _unitOfWork.GlobalGlossaryAudits.Returns(_auditsRepo);
 
-        // TryPublishEmbeddingIndexRequestAsync swallows every exception internally (logged
-        // only, never propagated — see GlobalGlossaryService.cs), so an unstubbed
-        // IConnectionMultiplexer (GetDatabase() returns null) is safe here: it never fails the
-        // assertions below, it just means the Redis publish silently no-ops in this test.
+        // TryPublishEmbeddingIndexRequestAsync/TryPublishEmbeddingDeleteRequestAsync swallow
+        // every exception internally (logged only, never propagated — see
+        // GlobalGlossaryService.cs), so a stubbed IDatabase lets the assertions below verify
+        // exactly what gets published instead of just tolerating a silent no-op.
+        var redis = Substitute.For<IConnectionMultiplexer>();
+        _redisDatabase = Substitute.For<IDatabase>();
+        redis.GetDatabase().ReturnsForAnyArgs(_redisDatabase);
+
         _service = new GlobalGlossaryService(
             _unitOfWork,
             Substitute.For<ILogger<GlobalGlossaryService>>(),
-            Substitute.For<IConnectionMultiplexer>());
+            redis);
     }
+
+    private static string? FieldValue(NameValueEntry[] entries, string name) =>
+        entries.FirstOrDefault(e => e.Name == name).Value.ToString();
 
     private static CreateGlobalGlossaryTermDto NewCreateDto(string term = "architect") =>
         new(term, term, null, null, null, "A design role.", null, Priority: 5);
@@ -167,6 +176,66 @@ public class GlobalGlossaryServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal("archived", term.Status);
         _termsRepo.Received(1).Update(Arg.Is<GlobalGlossaryTerm>(t => t.Status == "archived"));
+    }
+
+    [Fact]
+    public async Task ArchiveTermAsync_PublishesEmbeddingDeleteRequest_SoSearchStopsSurfacingIt()
+    {
+        // Archiving a published term must remove its vector from Qdrant — otherwise it keeps
+        // showing up in semantic search results forever even though it's no longer "published".
+        var termId = Guid.NewGuid();
+        var term = new GlobalGlossaryTerm
+        {
+            Id = termId,
+            Term = "architect",
+            PreferredTranslation = "architect",
+            Status = "published",
+        };
+        _termsRepo.GetByIdAsync(termId, Arg.Any<CancellationToken>()).Returns(term);
+
+        await _service.ArchiveTermAsync(termId, Guid.NewGuid());
+
+        await _redisDatabase.Received(1).StreamAddAsync(
+            "embedding:index_requests",
+            Arg.Is<NameValueEntry[]>(entries =>
+                FieldValue(entries, "deletion_state") == "deleted" &&
+                FieldValue(entries, "source_id") == termId.ToString() &&
+                FieldValue(entries, "collection_id") == "global_glossary"),
+            Arg.Any<RedisValue?>(),
+            Arg.Any<long?>(),
+            Arg.Any<bool>(),
+            Arg.Any<long?>(),
+            Arg.Any<StreamTrimMode>(),
+            Arg.Any<CommandFlags>());
+    }
+
+    [Fact]
+    public async Task DeleteTermAsync_PublishesEmbeddingDeleteRequest_SoSearchStopsSurfacingIt()
+    {
+        var termId = Guid.NewGuid();
+        var term = new GlobalGlossaryTerm
+        {
+            Id = termId,
+            Term = "architect",
+            PreferredTranslation = "architect",
+            Status = "published",
+            DeletedAt = null,
+        };
+        _termsRepo.GetByIdAsync(termId, Arg.Any<CancellationToken>()).Returns(term);
+
+        await _service.DeleteTermAsync(termId, Guid.NewGuid());
+
+        await _redisDatabase.Received(1).StreamAddAsync(
+            "embedding:index_requests",
+            Arg.Is<NameValueEntry[]>(entries =>
+                FieldValue(entries, "deletion_state") == "deleted" &&
+                FieldValue(entries, "source_id") == termId.ToString()),
+            Arg.Any<RedisValue?>(),
+            Arg.Any<long?>(),
+            Arg.Any<bool>(),
+            Arg.Any<long?>(),
+            Arg.Any<StreamTrimMode>(),
+            Arg.Any<CommandFlags>());
     }
 
     [Fact]
