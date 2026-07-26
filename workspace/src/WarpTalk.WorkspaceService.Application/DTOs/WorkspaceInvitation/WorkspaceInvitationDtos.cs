@@ -6,7 +6,7 @@ namespace WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
 public record InviteMemberRequest(
     [Required][EmailAddress] string Email,
     [Required] string RoleName,
-    [Required] string MembershipType
+    string? MembershipType = null
 );
 
 public record AcceptInvitationRequest(

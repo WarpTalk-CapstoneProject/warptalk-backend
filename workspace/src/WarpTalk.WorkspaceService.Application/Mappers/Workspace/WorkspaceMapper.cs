@@ -23,7 +23,8 @@ public static class WorkspaceMapper
             role,
             workspace.CreatedAt,
             membershipType,
-            config.DefaultLanguage
+            config.DefaultLanguage,
+            role.IsOwnerOrAdmin()
         );
     }
 

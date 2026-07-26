@@ -128,8 +128,9 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
@@ -164,8 +165,9 @@ public class WorkspacesControllerTests
         var result = await _controller.SelectWorkspace(workspaceId, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
@@ -255,8 +257,9 @@ public class WorkspacesControllerTests
         var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 }

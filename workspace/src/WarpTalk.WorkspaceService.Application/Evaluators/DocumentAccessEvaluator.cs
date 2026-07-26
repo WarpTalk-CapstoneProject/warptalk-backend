@@ -312,17 +312,8 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             _logger.LogWarning(ex, "Failed to fetch role from identity service for RoleId: {RoleId} in workspace {WorkspaceId}. Falling back to default role: {DefaultRole}", member.RoleId, workspaceId, WorkspaceMemberRole.Member.ToRoleName());
         }
 
-        if (roleName.IsOwnerOrAdmin())
-        {
-            return true;
-        }
-
-        if (document.OwnerId == userId || document.UploadedBy == userId)
-        {
-            return true;
-        }
-
-        return false;
+        // Strictly Workspace Owner or Admin only (excluding regular uploaders)
+        return roleName.IsOwnerOrAdmin();
     }
 
     private static bool IsPublishedDocumentStatus(string? status)

@@ -16,6 +16,7 @@ using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Interfaces;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -29,6 +30,7 @@ public class WorkspaceInvitationServiceTests
     private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IWorkspaceInvitationEmailComposer _emailComposer;
     private readonly WorkspaceInvitationService _workspaceInvitationService;
 
     public WorkspaceInvitationServiceTests()
@@ -40,19 +42,27 @@ public class WorkspaceInvitationServiceTests
         _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
+        _emailComposer = Substitute.For<IWorkspaceInvitationEmailComposer>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _emailComposer.SendInvitationEmailAsync(
+                Arg.Any<WorkspaceInvitation>(),
+                Arg.Any<Workspace>(),
+                Arg.Any<string>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "message-id", null));
 
         _workspaceInvitationService = new WorkspaceInvitationService(
             _unitOfWork, 
             Substitute.For<ILogger<WorkspaceInvitationService>>(), 
             _authIdentity,
             _translationRoomClient,
-            Substitute.For<IWorkspaceInvitationEmailComposer>());
+            _emailComposer);
     }
 
     private void StubRoleName(Guid roleId, string roleName)
@@ -82,7 +92,7 @@ public class WorkspaceInvitationServiceTests
         var workspaceId = Guid.NewGuid();
         var inviterUserId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" };
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, RequireVerifiedDomainForInternal = true };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
@@ -92,8 +102,20 @@ public class WorkspaceInvitationServiceTests
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
 
-        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new()
+                {
+                    WorkspaceId = workspaceId,
+                    Domain = "warptalk.vn",
+                    Status = "verified",
+                    VerifiedAt = DateTime.UtcNow
+                }
+            });
 
         var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
@@ -107,13 +129,13 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
-    public async Task InviteMemberAsync_ShouldReplaceOldPendingInvitation_WhenResendingToSameEmail()
+    public async Task InviteMemberAsync_ShouldReturnConflict_WhenActivePendingInvitationExists()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
         var inviterUserId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" };
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, RequireVerifiedDomainForInternal = true };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
         
         var oldInvitation = new WorkspaceInvitation 
@@ -135,8 +157,20 @@ public class WorkspaceInvitationServiceTests
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
 
-        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new()
+                {
+                    WorkspaceId = workspaceId,
+                    Domain = "warptalk.vn",
+                    Status = "verified",
+                    VerifiedAt = DateTime.UtcNow
+                }
+            });
 
         var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
 
@@ -144,10 +178,10 @@ public class WorkspaceInvitationServiceTests
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
 
         // Assert
-        Assert.True(result.IsSuccess);
-        Assert.Equal(InvitationStatus.REPLACED.ToString(), oldInvitation.Status);
-        _workspaceInvitationRepository.Received(1).Update(oldInvitation);
-        await _workspaceInvitationRepository.Received(1).AddAsync(Arg.Any<WorkspaceInvitation>(), Arg.Any<CancellationToken>());
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Conflict, result.ErrorCode);
+        _workspaceInvitationRepository.DidNotReceive().Update(oldInvitation);
+        await _workspaceInvitationRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceInvitation>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -160,7 +194,7 @@ public class WorkspaceInvitationServiceTests
         {
             Id = workspaceId,
             AllowExternalCollaboration = false,
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"AllowExternalCollaboration\":false}"
+            RequireVerifiedDomainForInternal = true
         };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
 
@@ -168,6 +202,11 @@ public class WorkspaceInvitationServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
         
         StubRoleName(inviterMember.RoleId, "Owner");
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
         var request = new InviteMemberRequest("external@gmail.com", "Member", "External");
 
@@ -189,7 +228,7 @@ public class WorkspaceInvitationServiceTests
         {
             Id = workspaceId,
             AllowExternalCollaboration = true,
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"AllowExternalCollaboration\":true}"
+            RequireVerifiedDomainForInternal = true
         };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
 
@@ -197,6 +236,11 @@ public class WorkspaceInvitationServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
         
         StubRoleName(inviterMember.RoleId, "Owner");
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
         // Try to invite as Admin under External membership type
         var request = new InviteMemberRequest("external@gmail.com", "Admin", "External");

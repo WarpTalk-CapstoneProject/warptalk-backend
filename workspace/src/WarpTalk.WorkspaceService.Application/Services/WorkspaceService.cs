@@ -18,6 +18,8 @@ using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
 using WarpTalk.WorkspaceService.Domain.ValueObjects;
 using WarpTalk.Shared;
+using MassTransit;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
 
@@ -142,6 +144,7 @@ public class WorkspaceService : IWorkspaceService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishWorkspaceCreatedAsync(workspace.Id, workspace.Name, workspace.Slug, userId, ct);
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
         }

@@ -35,6 +35,8 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly IDocumentSecurityScanner _securityScanner;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+    private readonly IEmbeddingIndexPublisher _embeddingPublisher;
+    private readonly IAiPolicyResolver _policyResolver;
     private readonly IDatabase _database;
     private readonly DocumentSecurityGuardrailConsumerService _service;
 
@@ -51,6 +53,9 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _textExtractor = Substitute.For<IDocumentTextExtractor>();
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
+        _embeddingPublisher = Substitute.For<IEmbeddingIndexPublisher>();
+        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver(
+            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver>>());
         _database = Substitute.For<IDatabase>();
 
         _redis.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(_database);
@@ -62,6 +67,11 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _serviceProvider.GetService(typeof(IDocumentTextExtractor)).Returns(_textExtractor);
         _serviceProvider.GetService(typeof(IDocumentSecurityScanner)).Returns(_securityScanner);
         _serviceProvider.GetService(typeof(IWorkspaceDocumentEventPublisher)).Returns(_eventPublisher);
+        _serviceProvider.GetService(typeof(IAiPolicyResolver)).Returns(_policyResolver);
+        _serviceProvider.GetService(typeof(IEmbeddingIndexPublisher)).Returns(_embeddingPublisher);
+        _embeddingPublisher.PublishEmbeddingIndexRequestAsync(
+                Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns("embedding-job");
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceDocumentRepository.Returns(_workspaceDocumentRepository);
 
@@ -70,6 +80,35 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             Substitute.For<ILogger<DocumentSecurityGuardrailConsumerService>>(),
             _serviceProvider
         );
+    }
+
+    [Fact]
+    public async Task ProcessDocumentUploadAsync_ShouldSkipDisallowedDocumentBeforeReadingStorage()
+    {
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = Guid.NewGuid(),
+            FileName = "administrative.txt",
+            FileExtension = ".txt",
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = false,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
+            IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString()
+        };
+
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
+
+        Assert.False(document.AiEligible);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+        await _textExtractor.DidNotReceiveWithAnyArgs().ExtractTextAsync(default!, default!, default);
+        await _securityScanner.DidNotReceiveWithAnyArgs().ScanAsync(default!, default, default, default, default);
+        await _embeddingPublisher.DidNotReceiveWithAnyArgs().PublishEmbeddingIndexRequestAsync(default!, default!, default, default);
     }
 
     [Fact]
@@ -87,6 +126,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             ConfidentialityLevel = "internal",
             IsAiAllowed = true,
             Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -131,6 +171,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             ConfidentialityLevel = "internal",
             IsAiAllowed = true,
             Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -174,6 +215,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             ConfidentialityLevel = "internal",
             IsAiAllowed = true,
             Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = null // No document policy
         };
@@ -215,7 +257,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     }
 
     [Fact]
-    public async Task ProcessDocumentUploadAsync_ShouldCompleteSuccessfullyAndMarkEligible_WhenEligible()
+    public async Task ProcessDocumentUploadAsync_ShouldKeepAiIneligibleUntilIndexResult_WhenEligible()
     {
         // Arrange
         var documentId = Guid.NewGuid();
@@ -229,6 +271,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             ConfidentialityLevel = "internal",
             IsAiAllowed = true,
             Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -260,12 +303,9 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         // Assert
         Assert.Equal(WorkspaceDocumentIngestionStatus.processing.ToString(), document.IngestionStatus);
-        Assert.True(document.AiEligible);
-        await _database.Received(1).StreamAddAsync(
-            "embedding:index_requests",
-            Arg.Any<NameValueEntry[]>(),
-            maxLength: 10000,
-            useApproximateMaxLength: true);
+        Assert.False(document.AiEligible);
+        await _embeddingPublisher.Received(1).PublishEmbeddingIndexRequestAsync(
+            document, rawText, true, Arg.Any<CancellationToken>());
         _workspaceDocumentRepository.Received().Update(document);
     }
 

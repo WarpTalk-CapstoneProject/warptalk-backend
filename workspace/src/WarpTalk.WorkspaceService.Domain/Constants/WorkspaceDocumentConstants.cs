@@ -84,4 +84,19 @@ public static class WorkspaceDocumentConstants
         public const string EmbeddingFailed = "EmbeddingFailed";
         public const string EmbeddingBlocked = "EmbeddingBlocked";
     }
+
+    public static class LifecycleEvents
+    {
+        public const string Created = "DocumentCreated";
+        public const string PendingApproval = "DocumentPendingApproval";
+        public const string Updated = "DocumentUpdated";
+        public const string Approved = "DocumentApproved";
+        public const string Rejected = "DocumentRejected";
+        public const string Processing = "DocumentProcessing";
+        public const string Completed = "DocumentCompleted";
+        public const string Failed = "DocumentFailed";
+        public const string Archived = "DocumentArchived";
+        public const string Restored = "DocumentRestored";
+        public const string Deleted = "DocumentDeleted";
+    }
 }

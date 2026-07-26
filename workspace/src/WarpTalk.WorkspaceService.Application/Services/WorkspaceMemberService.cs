@@ -15,6 +15,8 @@ using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.Shared;
+using MassTransit;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
 
@@ -23,15 +25,18 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<WorkspaceMemberService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceMemberService> logger,
-        IAuthIdentityClient authIdentity)
+        IAuthIdentityClient authIdentity,
+        IWorkspaceEventPublisher eventPublisher)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
+        _eventPublisher = eventPublisher;
     }
 
 
@@ -230,6 +235,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _unitOfWork.SaveChangesAsync(ct);
                 await _unitOfWork.CommitTransactionAsync(ct);
+                await _eventPublisher.PublishMemberRemovedAsync(workspaceId, executingUserId, executingUserId, ct);
+
                 return Result.Success();
             }
 
@@ -262,6 +269,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _unitOfWork.SaveChangesAsync(ct);
             await _unitOfWork.CommitTransactionAsync(ct);
+            await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);
+
             return Result.Success();
         }
         catch (Exception ex)

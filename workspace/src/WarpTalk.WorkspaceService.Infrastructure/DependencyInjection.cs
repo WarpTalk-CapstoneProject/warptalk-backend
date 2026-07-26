@@ -44,6 +44,8 @@ public static class DependencyInjection
         services.AddScoped<IAiPolicyResolver, Services.AiPolicyResolver>();
         services.AddScoped<IEmbeddingIndexPublisher, Services.RedisEmbeddingIndexPublisher>();
         services.AddScoped<IDocumentEmbeddingResultProcessor, Services.DocumentEmbeddingResultProcessor>();
+        services.AddScoped<IWorkspaceDocumentEventPublisher, Clients.RedisDocumentEventPublisher>();
+        services.AddScoped<IWorkspaceEventPublisher, Clients.HybridWorkspaceEventPublisher>();
 
         return services;
     }

@@ -66,7 +66,9 @@ public class HybridWorkspaceDocumentEventPublisherTests
                 Contains(entries, "document_id", documentId.ToString()) &&
                 Contains(entries, "workspace_id", workspaceId.ToString()) &&
                 Contains(entries, "storage_key", "workspace/doc.pdf") &&
-                Contains(entries, "confidentiality_level", "restricted")));
+                Contains(entries, "confidentiality_level", "restricted")),
+            maxLength: 10000,
+            useApproximateMaxLength: true);
     }
 
     [Fact]
@@ -89,7 +91,9 @@ public class HybridWorkspaceDocumentEventPublisherTests
             Arg.Is<NameValueEntry[]>(entries =>
                 Contains(entries, "event_type", "DocumentDeleted") &&
                 Contains(entries, "document_id", documentId.ToString()) &&
-                Contains(entries, "workspace_id", workspaceId.ToString())));
+                Contains(entries, "workspace_id", workspaceId.ToString())),
+            maxLength: 10000,
+            useApproximateMaxLength: true);
     }
 
     private static bool Contains(NameValueEntry[] entries, string name, string value)

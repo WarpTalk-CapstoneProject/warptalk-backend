@@ -13,10 +13,12 @@ public class NotificationHubTests
     private readonly Mock<IConnectionManager> _mockConnectionManager;
     private readonly Mock<ILogger<NotificationHub>> _mockLogger;
     private readonly Mock<NotificationGrpcService.NotificationGrpcServiceClient> _mockGrpcClient;
+    private readonly Mock<WorkspaceService.WorkspaceServiceClient> _mockWorkspaceGrpcClient;
     private readonly Mock<IHubCallerClients> _mockClients;
     private readonly Mock<IClientProxy> _mockClientProxy;
     private readonly Mock<HubCallerContext> _mockContext;
     private readonly Mock<ISingleClientProxy> _mockSingleClientProxy;
+    private readonly Mock<IGroupManager> _mockGroups;
     private readonly NotificationHub _hub;
 
     private readonly Guid _userId = Guid.NewGuid();
@@ -30,10 +32,12 @@ public class NotificationHubTests
         // Mock gRPC Client
         var mockCallInvoker = new Mock<CallInvoker>();
         _mockGrpcClient = new Mock<NotificationGrpcService.NotificationGrpcServiceClient>(mockCallInvoker.Object);
+        _mockWorkspaceGrpcClient = new Mock<WorkspaceService.WorkspaceServiceClient>(mockCallInvoker.Object);
 
         _mockClients = new Mock<IHubCallerClients>();
         _mockClientProxy = new Mock<IClientProxy>();
         _mockSingleClientProxy = new Mock<ISingleClientProxy>();
+        _mockGroups = new Mock<IGroupManager>();
         _mockContext = new Mock<HubCallerContext>();
 
         // Setup Hub Caller Context
@@ -51,11 +55,12 @@ public class NotificationHubTests
         _hub = new NotificationHub(
             _mockConnectionManager.Object,
             _mockLogger.Object,
-            _mockGrpcClient.Object)
+            _mockGrpcClient.Object,
+            _mockWorkspaceGrpcClient.Object)
         {
             Context = _mockContext.Object,
             Clients = _mockClients.Object,
-            Groups = new Mock<IGroupManager>().Object
+            Groups = _mockGroups.Object
         };
     }
 
@@ -176,5 +181,72 @@ public class NotificationHubTests
         _mockSingleClientProxy.Verify(
             p => p.SendCoreAsync("NotificationError", new object[] { "An error occurred while marking all as read." }, default),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task SubscribeWorkspace_AddsConnection_WhenUserIsActiveMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var response = new GetWorkspaceMemberResponse
+        {
+            IsMember = true,
+            IsActive = true
+        };
+        _mockWorkspaceGrpcClient
+            .Setup(c => c.GetWorkspaceMemberDetailsAsync(
+                It.Is<GetWorkspaceMemberRequest>(request =>
+                    request.WorkspaceId == workspaceId.ToString() &&
+                    request.UserId == _userId.ToString()),
+                null,
+                null,
+                default))
+            .Returns(new AsyncUnaryCall<GetWorkspaceMemberResponse>(
+                Task.FromResult(response),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        await _hub.SubscribeWorkspace(workspaceId.ToString());
+
+        _mockGroups.Verify(
+            groups => groups.AddToGroupAsync(
+                _connectionId,
+                $"workspace:{workspaceId}",
+                default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SubscribeWorkspace_RejectsConnection_WhenUserIsNotMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        _mockWorkspaceGrpcClient
+            .Setup(c => c.GetWorkspaceMemberDetailsAsync(
+                It.IsAny<GetWorkspaceMemberRequest>(),
+                null,
+                null,
+                default))
+            .Returns(new AsyncUnaryCall<GetWorkspaceMemberResponse>(
+                Task.FromResult(new GetWorkspaceMemberResponse
+                {
+                    IsMember = false,
+                    IsActive = false
+                }),
+                Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess,
+                () => new Metadata(),
+                () => { }));
+
+        var exception = await Assert.ThrowsAsync<HubException>(
+            () => _hub.SubscribeWorkspace(workspaceId.ToString()));
+
+        Assert.Equal("Workspace access denied.", exception.Message);
+        _mockGroups.Verify(
+            groups => groups.AddToGroupAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

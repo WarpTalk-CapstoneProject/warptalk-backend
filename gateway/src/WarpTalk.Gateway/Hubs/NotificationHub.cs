@@ -1,3 +1,4 @@
+using Grpc.Core;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
@@ -15,15 +16,18 @@ public class NotificationHub : Hub
     private readonly IConnectionManager _connectionManager;
     private readonly ILogger<NotificationHub> _logger;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
+    private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceGrpcClient;
 
     public NotificationHub(
         IConnectionManager connectionManager, 
         ILogger<NotificationHub> logger,
-        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient,
+        WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceGrpcClient)
     {
         _connectionManager = connectionManager;
         _logger = logger;
         _grpcClient = grpcClient;
+        _workspaceGrpcClient = workspaceGrpcClient;
     }
 
     // ── Lifecycle ─────────────────────────────────────────
@@ -133,7 +137,37 @@ public class NotificationHub : Hub
 
     public async Task SubscribeWorkspace(string workspaceId)
     {
-        if (string.IsNullOrWhiteSpace(workspaceId)) return;
+        if (!Guid.TryParse(workspaceId, out var parsedWorkspaceId))
+        {
+            throw new HubException("Invalid workspace identifier.");
+        }
+
+        var userId = GetUserId();
+        try
+        {
+            var member = await _workspaceGrpcClient.GetWorkspaceMemberDetailsAsync(
+                new WarpTalk.Shared.Protos.GetWorkspaceMemberRequest
+                {
+                    WorkspaceId = parsedWorkspaceId.ToString(),
+                    UserId = userId
+                },
+                cancellationToken: Context.ConnectionAborted);
+
+            if (!member.IsMember || !member.IsActive)
+            {
+                throw new HubException("Workspace access denied.");
+            }
+        }
+        catch (RpcException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "NotificationHub: Failed to verify workspace subscription for user {UserId} and workspace {WorkspaceId}",
+                userId,
+                parsedWorkspaceId);
+            throw new HubException("Unable to verify workspace access.");
+        }
+
         await Groups.AddToGroupAsync(Context.ConnectionId, WorkspaceGroupName(workspaceId));
         _logger.LogDebug("NotificationHub: Connection {ConnectionId} joined group {GroupName}", Context.ConnectionId, WorkspaceGroupName(workspaceId));
     }

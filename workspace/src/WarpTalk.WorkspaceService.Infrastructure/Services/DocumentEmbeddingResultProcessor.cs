@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Constants;
+using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
@@ -16,13 +17,16 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Services;
 public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcessor
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly ILogger<DocumentEmbeddingResultProcessor> _logger;
 
     public DocumentEmbeddingResultProcessor(
         IUnitOfWork unitOfWork,
+        IWorkspaceDocumentEventPublisher eventPublisher,
         ILogger<DocumentEmbeddingResultProcessor> logger)
     {
         _unitOfWork = unitOfWork;
+        _eventPublisher = eventPublisher;
         _logger = logger;
     }
 
@@ -55,9 +59,17 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
             document.LastIndexedAt = DateTime.UtcNow;
             document.IndexVersion = BuildIndexVersion(provider, model, dimensions);
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
-            document.AiEligible = document.IsAiAllowed && !document.IsRestricted();
+            document.AiEligible =
+                document.IsAiAllowed &&
+                !document.IsRestricted() &&
+                string.Equals(
+                    document.Status,
+                    WorkspaceDocumentStatus.@public.ToString(),
+                    StringComparison.OrdinalIgnoreCase);
+            document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishLifecycleAsync(document, WorkspaceDocumentConstants.LifecycleEvents.Completed, ct);
 
             await _unitOfWork.AuditAsync(
                 document.Id,
@@ -72,8 +84,10 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishLifecycleAsync(document, WorkspaceDocumentConstants.LifecycleEvents.Updated, ct);
 
             await _unitOfWork.AuditAsync(
                 document.Id,
@@ -88,8 +102,10 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+            document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishLifecycleAsync(document, WorkspaceDocumentConstants.LifecycleEvents.Failed, ct);
 
             await _unitOfWork.AuditAsync(
                 document.Id,
@@ -104,6 +120,22 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             _logger.LogWarning("Unknown embedding result status. DocumentId: {DocumentId}, Status: {Status}, JobId: {JobId}", document.Id, status, jobId);
         }
+    }
+
+    private Task PublishLifecycleAsync(
+        WorkspaceDocument document,
+        string eventType,
+        CancellationToken ct)
+    {
+        return _eventPublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            document.WorkspaceId,
+            document.Status,
+            document.IngestionStatus,
+            eventType,
+            document.UpdatedAt,
+            document.UploadedBy,
+            ct);
     }
 
     private static int ParseInt(string? value)

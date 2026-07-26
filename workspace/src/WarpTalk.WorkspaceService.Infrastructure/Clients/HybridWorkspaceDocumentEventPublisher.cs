@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using MassTransit;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
@@ -13,6 +14,8 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Clients;
 public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPublisher
 {
     private const string RedisStreamName = "workspace-document-events";
+    private const string RealtimeChannel = "warptalk:documents:events";
+    private const int StreamMaxLength = 10000;
 
     private readonly IConnectionMultiplexer _redis;
     private readonly IPublishEndpoint _publishEndpoint;
@@ -71,6 +74,40 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
         await PublishInvalidationAsync(documentId, workspaceId, "archived", "DocumentArchived", ct);
     }
 
+    public async Task PublishDocumentLifecycleAsync(
+        Guid documentId,
+        Guid workspaceId,
+        string status,
+        string ingestionStatus,
+        string eventType,
+        DateTime updatedAt,
+        Guid? userId = null,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                eventType,
+                workspaceId = workspaceId.ToString(),
+                documentId = documentId.ToString(),
+                status,
+                ingestionStatus,
+                updatedAt = updatedAt.ToUniversalTime(),
+                userId = userId?.ToString()
+            });
+            await _redis.GetSubscriber().PublishAsync(RedisChannel.Literal(RealtimeChannel), payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to publish document lifecycle event {EventType}. DocumentId: {DocumentId}",
+                eventType,
+                documentId);
+        }
+    }
+
     public async Task PublishEmbeddingIndexRequestAsync(
         Guid documentId,
         Guid workspaceId,
@@ -124,7 +161,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
                 new NameValueEntry("retention_state", "active"),
                 new NameValueEntry("deletion_state", "active"),
                 new NameValueEntry("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString())
-            });
+            }, maxLength: StreamMaxLength, useApproximateMaxLength: true);
 
             _logger.LogInformation("Published EmbeddingIndexRequest to Redis Stream embedding:index_requests for DocumentId: {DocumentId}, Chunks: {ChunkCount}", documentId, chunkIdx);
         }
@@ -191,7 +228,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             configure?.Invoke(entries);
 
             var db = _redis.GetDatabase();
-            await db.StreamAddAsync(RedisStreamName, entries.ToArray());
+            await db.StreamAddAsync(RedisStreamName, entries.ToArray(), maxLength: StreamMaxLength, useApproximateMaxLength: true);
         }
         catch (Exception ex)
         {

@@ -32,7 +32,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return Ok(result.Value);
     }
@@ -47,7 +47,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.GetWorkspacesAsync(query, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return Ok(result.Value);
     }
@@ -62,7 +62,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return Ok(result.Value);
     }
@@ -77,7 +77,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.SelectWorkspaceAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return Ok(result.Value);
     }
@@ -92,7 +92,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.GetWorkspaceSettingsAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return Ok(result.Value);
     }
@@ -107,7 +107,7 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(id, settings, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return NoContent();
     }
@@ -122,8 +122,22 @@ public class WorkspacesController : ControllerBase
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return ToErrorResult(result);
         }
         return NoContent();
+    }
+
+    private IActionResult ToErrorResult(Result result)
+    {
+        var response = new ApiErrorResponse(result.Error, result.ErrorCode);
+        return result.ErrorCode switch
+        {
+            ErrorCodes.NotFound => NotFound(response),
+            ErrorCodes.Forbidden => StatusCode(403, response),
+            ErrorCodes.Unauthorized => Unauthorized(response),
+            ErrorCodes.Conflict => Conflict(response),
+            ErrorCodes.InternalServerError => StatusCode(500, response),
+            _ => BadRequest(response)
+        };
     }
 }

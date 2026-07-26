@@ -149,7 +149,7 @@ public class NotificationRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(userGroup).SendAsync(RealtimeConstants.ClientMethods.WorkspaceEvent, root, stoppingToken);
                     if (!string.IsNullOrEmpty(eventType))
                     {
-                        await _hubContext.Clients.Group(eventType).SendAsync(eventType, root, stoppingToken);
+                        await _hubContext.Clients.Group(userGroup).SendAsync(eventType, root, stoppingToken);
                     }
                     _logger.LogDebug("RedisSubscriber: Broadcasted {EventType} to {GroupName}", eventType, userGroup);
                 }

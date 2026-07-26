@@ -32,7 +32,8 @@ public record WorkspaceDto(
     string Role,
     DateTime CreatedAt,
     string MembershipType = "Internal",
-    string DefaultLanguage = "en"
+    string DefaultLanguage = "en",
+    bool CanApproveDocuments = false
 );
 
 public record PagedResult<T>(

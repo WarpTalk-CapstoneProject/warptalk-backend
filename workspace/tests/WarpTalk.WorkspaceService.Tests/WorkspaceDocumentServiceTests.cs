@@ -120,8 +120,8 @@ public class WorkspaceDocumentServiceTests
         
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
-        await _eventPublisher.Received(1).PublishDocumentUploadedAsync(
-            Arg.Any<Guid>(), workspaceId, Arg.Any<string>(), "file.pdf", ".pdf", userId, Arg.Any<string?>(), Arg.Any<CancellationToken>());
+        await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(
+            default, default, default!, default!, default!, default, default, default);
     }
 
     [Fact]
@@ -309,7 +309,7 @@ public class WorkspaceDocumentServiceTests
         Assert.True(result.IsSuccess);
         Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), document.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), document.IngestionStatus);
-        Assert.True(document.AiEligible);
+        Assert.False(document.AiEligible);
 
         _workspaceDocumentRepository.Received(1).Update(document);
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());

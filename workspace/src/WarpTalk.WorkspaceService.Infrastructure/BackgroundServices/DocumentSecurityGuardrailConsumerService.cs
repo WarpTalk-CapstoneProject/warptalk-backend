@@ -85,7 +85,14 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                         var documentIdStr = values.GetValueOrDefault("document_id");
                         if (Guid.TryParse(documentIdStr, out var documentId))
                         {
-                            await ProcessDocumentUploadAsync(documentId, values, stoppingToken);
+                            var handled = await ProcessDocumentUploadAsync(documentId, values, stoppingToken);
+                            if (!handled)
+                            {
+                                _logger.LogWarning(
+                                    "Document event {MessageId} remains pending because processing and fail-safe persistence did not complete.",
+                                    message.Id);
+                                continue;
+                            }
                         }
                     }
 
@@ -105,7 +112,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         }
     }
 
-    public async Task ProcessDocumentUploadAsync(Guid documentId, Dictionary<string, string> eventValues, CancellationToken ct)
+    public async Task<bool> ProcessDocumentUploadAsync(Guid documentId, Dictionary<string, string> eventValues, CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -114,6 +121,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         var securityScanner = scope.ServiceProvider.GetRequiredService<IDocumentSecurityScanner>();
         var policyResolver = scope.ServiceProvider.GetRequiredService<IAiPolicyResolver>();
         var embeddingPublisher = scope.ServiceProvider.GetRequiredService<IEmbeddingIndexPublisher>();
+        var lifecyclePublisher = scope.ServiceProvider.GetRequiredService<IWorkspaceDocumentEventPublisher>();
 
         WorkspaceDocument? document = null;
         try
@@ -122,13 +130,40 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             if (document == null || document.DeletedAt != null)
             {
                 _logger.LogWarning("Document {DocumentId} not found or soft-deleted. Skipping guardrails & ingestion.", documentId);
-                return;
+                return true;
+            }
+
+            // These conditions are definitive before content processing. Do not
+            // decrypt, extract, scan, or publish more lifecycle traffic for a
+            // document that can never enter AI ingestion. AiEligible is not used
+            // here because false is also the valid initial state of an approved
+            // document waiting for security/indexing to complete.
+            if (!HasBasicIndexEligibility(document))
+            {
+                await MarkSkippedAsync(document, unitOfWork, lifecyclePublisher, ct);
+                _logger.LogInformation(
+                    "Skipped document before content processing. DocumentId: {DocumentId}, Status: {Status}, IsAiAllowed: {IsAiAllowed}, RetentionState: {RetentionState}",
+                    document.Id,
+                    document.Status,
+                    document.IsAiAllowed,
+                    document.RetentionState);
+                return true;
             }
 
             // Set ingestion status to processing
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
+            document.UpdatedAt = DateTime.UtcNow;
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
+            await lifecyclePublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                document.WorkspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Processing,
+                document.UpdatedAt,
+                document.UploadedBy,
+                ct);
 
             // 1. Resolve Effective AI Usage Policy via IAiPolicyResolver
             var policy = await policyResolver.ResolvePolicySettingsAsync(unitOfWork, document, ct);
@@ -183,14 +218,23 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             }
 
             var isApproved = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
-            document.AiEligible = document.IsAiAllowed && !document.IsRestricted() && isApproved;
+            var canIndex = document.IsAiAllowed
+                && !document.IsRestricted()
+                && isApproved
+                && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
+                && !scanResult.ViolationFound;
+
+            // AiEligible means retrieval is ready, not merely that indexing may
+            // start. It is enabled only by DocumentEmbeddingResultProcessor after
+            // the embedding worker reports a successful Qdrant upsert.
+            document.AiEligible = false;
 
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
             // 4. Wire into the RAG pipeline via IEmbeddingIndexPublisher
-            if (document.AiEligible)
+            if (canIndex)
             {
                 try
                 {
@@ -218,11 +262,24 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
             }
 
+            document.UpdatedAt = DateTime.UtcNow;
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
+            await lifecyclePublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                document.WorkspaceId,
+                document.Status,
+                document.IngestionStatus,
+                string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.failed.ToString(), StringComparison.OrdinalIgnoreCase)
+                    ? WorkspaceDocumentConstants.LifecycleEvents.Failed
+                    : WorkspaceDocumentConstants.LifecycleEvents.Updated,
+                document.UpdatedAt,
+                document.UploadedBy,
+                ct);
 
             _logger.LogInformation("Completed security guardrails for document {DocumentId}. ConfidentialityLevel: {ConfidentialityLevel}, AiEligible: {AiEligible}, IngestionStatus: {IngestionStatus}",
                 documentId, document.ConfidentialityLevel, document.AiEligible, document.IngestionStatus);
+            return true;
         }
         catch (Exception ex)
         {
@@ -236,15 +293,60 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
                     document.AiEligible = false;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+                    document.UpdatedAt = DateTime.UtcNow;
 
                     unitOfWork.WorkspaceDocumentRepository.Update(document);
                     await unitOfWork.SaveChangesAsync(ct);
+                    await lifecyclePublisher.PublishDocumentLifecycleAsync(
+                        document.Id,
+                        document.WorkspaceId,
+                        document.Status,
+                        document.IngestionStatus,
+                        WorkspaceDocumentConstants.LifecycleEvents.Failed,
+                        document.UpdatedAt,
+                        document.UploadedBy,
+                        ct);
                 }
                 catch (Exception dbEx)
                 {
                     _logger.LogError(dbEx, "Failed to apply fail-safe DB fallback for document {DocumentId}", documentId);
+                    return false;
                 }
+
+                return true;
             }
+
+            return false;
         }
+    }
+
+    private static bool HasBasicIndexEligibility(WorkspaceDocument document)
+    {
+        return document.IsAiAllowed
+            && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
+            && !document.IsRestricted();
+    }
+
+    private static async Task MarkSkippedAsync(
+        WorkspaceDocument document,
+        IUnitOfWork unitOfWork,
+        IWorkspaceDocumentEventPublisher lifecyclePublisher,
+        CancellationToken ct)
+    {
+        document.AiEligible = false;
+        document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+        document.UpdatedAt = DateTime.UtcNow;
+        unitOfWork.WorkspaceDocumentRepository.Update(document);
+        await unitOfWork.SaveChangesAsync(ct);
+        await lifecyclePublisher.PublishDocumentLifecycleAsync(
+            document.Id,
+            document.WorkspaceId,
+            document.Status,
+            document.IngestionStatus,
+            WorkspaceDocumentConstants.LifecycleEvents.Updated,
+            document.UpdatedAt,
+            document.UploadedBy,
+            ct);
     }
 }

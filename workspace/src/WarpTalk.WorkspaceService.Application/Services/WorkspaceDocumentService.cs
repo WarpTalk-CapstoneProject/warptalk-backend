@@ -134,7 +134,19 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 throw;
             }
 
-            if (effectiveIsAiAllowed)
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                status == WorkspaceDocumentStatus.pending_approval
+                    ? WorkspaceDocumentConstants.LifecycleEvents.PendingApproval
+                    : WorkspaceDocumentConstants.LifecycleEvents.Created,
+                document.UpdatedAt,
+                userId,
+                ct);
+
+            if (isOwnerOrAdmin && effectiveIsAiAllowed)
             {
                 await _eventPublisher.PublishDocumentUploadedAsync(
                     document.Id,
@@ -367,6 +379,15 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Updated,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.PatchDocumentMetadata, request, _logger, ct);
 
@@ -387,23 +408,80 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure("Forbidden. Only owner or admin can manage document access policies.", ErrorCodes.Forbidden);
+                return Result.Failure("Forbidden. Only workspace Owner/Admin or the document owner can manage document access policies.", ErrorCodes.Forbidden);
             }
 
-            if (string.IsNullOrWhiteSpace(request.SubjectType))
+            var normalizedSubjectType = NormalizePolicySubjectType(request.SubjectType);
+            var normalizedPermission = request.Permission?.Trim().ToLowerInvariant();
+            var normalizedEffect = request.Effect?.Trim().ToUpperInvariant();
+            var normalizedSubjectKey = request.SubjectKey?.Trim();
+
+            if (normalizedSubjectType == null)
             {
-                return Result.Failure("SubjectType is required for Add action.");
+                return Result.Failure("SubjectType must be User, Role, or MembershipType.", ErrorCodes.ValidationError);
             }
-            if (string.IsNullOrWhiteSpace(request.Permission))
+            if (!IsSupportedPolicyPermission(normalizedPermission))
             {
-                return Result.Failure("Permission is required for Add action.");
+                return Result.Failure("Permission must be view, download, or ai_retrieval.", ErrorCodes.ValidationError);
             }
-            if (string.IsNullOrWhiteSpace(request.Effect))
+            if (normalizedEffect is not WorkspacePolicyConstants.EffectAllow and not WorkspacePolicyConstants.EffectDeny)
             {
-                return Result.Failure("Effect is required for Add action.");
+                return Result.Failure("Effect must be ALLOW or DENY.", ErrorCodes.ValidationError);
             }
 
-            var policy = request.ToEntity(documentId, workspaceId, userId);
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeUser && !request.SubjectId.HasValue)
+            {
+                return Result.Failure("SubjectId is required for a User policy.", ErrorCodes.ValidationError);
+            }
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeRole
+                && (normalizedSubjectKey == null
+                    || (!normalizedSubjectKey.IsOwner()
+                        && !normalizedSubjectKey.IsAdmin()
+                        && !normalizedSubjectKey.IsMember())))
+            {
+                return Result.Failure("Role policy SubjectKey must be Owner, Admin, or Member.", ErrorCodes.ValidationError);
+            }
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeMembershipType
+                && !Enum.TryParse<MembershipType>(normalizedSubjectKey, true, out _))
+            {
+                return Result.Failure("MembershipType policy SubjectKey must be Internal or External.", ErrorCodes.ValidationError);
+            }
+
+            normalizedSubjectKey = normalizedSubjectType switch
+            {
+                WorkspacePolicyConstants.SubjectTypeRole => normalizedSubjectKey!.ToWorkspaceMemberRole().ToRoleName(),
+                WorkspacePolicyConstants.SubjectTypeMembershipType => Enum.Parse<MembershipType>(normalizedSubjectKey!, true).ToString(),
+                _ => null
+            };
+            var normalizedSubjectId = normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeUser
+                ? request.SubjectId
+                : null;
+
+            var existingPolicy = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FirstOrDefaultAsync(
+                policy => policy.DocumentId == documentId
+                          && policy.WorkspaceId == workspaceId
+                          && policy.SubjectType == normalizedSubjectType
+                          && policy.SubjectId == normalizedSubjectId
+                          && policy.SubjectKey == normalizedSubjectKey
+                          && policy.Permission == normalizedPermission,
+                "",
+                ct);
+            if (existingPolicy != null)
+            {
+                return Result.Failure(
+                    "A policy already exists for this subject and permission. Remove it before changing the effect.",
+                    ErrorCodes.Conflict);
+            }
+
+            var normalizedRequest = request with
+            {
+                SubjectType = normalizedSubjectType,
+                SubjectId = normalizedSubjectId,
+                SubjectKey = normalizedSubjectKey,
+                Permission = normalizedPermission,
+                Effect = normalizedEffect
+            };
+            var policy = normalizedRequest.ToEntity(documentId, workspaceId, userId);
 
             await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.AddAsync(policy, ct);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -426,11 +504,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure("Forbidden. Only owner or admin can manage document access policies.", ErrorCodes.Forbidden);
+                return Result.Failure("Forbidden. Only workspace Owner/Admin or the document owner can manage document access policies.", ErrorCodes.Forbidden);
             }
 
             var policy = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.GetByIdAsync(policyId, ct);
-            if (policy == null || policy.DocumentId != documentId)
+            if (policy == null || policy.DocumentId != documentId || policy.WorkspaceId != workspaceId)
             {
                 return Result.Failure("Policy not found or does not belong to this document.", ErrorCodes.NotFound);
             }
@@ -456,7 +534,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>("Forbidden. Only owner or admin can view access policies.", ErrorCodes.Forbidden);
+                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>("Forbidden. Only workspace Owner/Admin or the document owner can view access policies.", ErrorCodes.Forbidden);
             }
 
             var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
@@ -475,6 +553,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while fetching document access policies. DocumentId: {DocumentId}", documentId);
             return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    private static string? NormalizePolicySubjectType(string? subjectType)
+    {
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeUser;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeRole;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeMembershipType;
+        return null;
+    }
+
+    private static bool IsSupportedPolicyPermission(string? permission)
+    {
+        return string.Equals(permission, WorkspaceDocumentPermissions.View, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.Download, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.Ordinal);
     }
 
     public async Task<Result> ApproveDocumentAsync(Guid workspaceId, Guid documentId, ApproveDocumentRequest request, Guid userId, CancellationToken ct = default)
@@ -508,15 +604,25 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             if (request.Approve)
             {
                 document.Status = WorkspaceDocumentStatus.@public.ToString();
-                document.AiEligible = document.IsAiAllowed && !document.IsRestricted();
-                document.IngestionStatus = document.AiEligible 
+                document.AiEligible = false;
+                document.IngestionStatus = document.IsAiAllowed
                     ? WorkspaceDocumentIngestionStatus.pending.ToString() 
                     : WorkspaceDocumentIngestionStatus.skipped.ToString();
+                document.UpdatedAt = DateTime.UtcNow;
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
                 await _unitOfWork.SaveChangesAsync(ct);
+                await _eventPublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    workspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Approved,
+                    document.UpdatedAt,
+                    userId,
+                    ct);
 
-                if (document.AiEligible)
+                if (document.IsAiAllowed)
                 {
                     // Publish event to Redis Stream for AI Ingestion
                     await _eventPublisher.PublishDocumentUploadedAsync(
@@ -536,9 +642,20 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 document.Status = WorkspaceDocumentStatus.rejected.ToString();
                 document.AiEligible = false;
+                document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+                document.UpdatedAt = DateTime.UtcNow;
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
                 await _unitOfWork.SaveChangesAsync(ct);
+                await _eventPublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    workspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Rejected,
+                    document.UpdatedAt,
+                    userId,
+                    ct);
 
                 await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RejectDocument, logger: _logger, ct: ct);
             }
@@ -611,12 +728,22 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.DeletedAt = DateTime.UtcNow;
             document.DeletedBy = userId;
             document.AiEligible = false;
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Publish deletion event to Redis Stream to invalidate embeddings
             await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                "deleted",
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Deleted,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DeleteDocument, logger: _logger, ct: ct);
 
@@ -657,12 +784,22 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             document.Status = WorkspaceDocumentStatus.archived.ToString();
             document.AiEligible = false;
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Publish archived event to Redis Stream to clean up embeddings from Qdrant
             await _eventPublisher.PublishDocumentArchivedAsync(documentId, workspaceId, ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Archived,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ArchiveDocument, logger: _logger, ct: ct);
 
@@ -715,20 +852,34 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.Status = WorkspaceDocumentStatus.@public.ToString();
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
             document.AiEligible = false; // Scanner will re-evaluate on background security scan
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
-
-            // Re-publish upload event to trigger security scan and Qdrant index refresh
-            await _eventPublisher.PublishDocumentUploadedAsync(
+            await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
-                document.StorageKey,
-                document.FileName,
-                document.FileExtension,
-                document.UploadedBy ?? userId,
-                document.ConfidentialityLevel,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Restored,
+                document.UpdatedAt,
+                userId,
                 ct);
+
+            // Administrative documents never enter the AI ingestion pipeline.
+            if (document.IsAiAllowed)
+            {
+                // Re-publish upload event to trigger security scan and Qdrant index refresh.
+                await _eventPublisher.PublishDocumentUploadedAsync(
+                    document.Id,
+                    workspaceId,
+                    document.StorageKey,
+                    document.FileName,
+                    document.FileExtension,
+                    document.UploadedBy ?? userId,
+                    document.ConfidentialityLevel,
+                    ct);
+            }
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RestoreDocument, logger: _logger, ct: ct);
 
@@ -829,7 +980,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var jsonContent = JsonSerializer.Serialize(content);
             await _storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
-            if (document.IsAiAllowed)
+            if (document.IsAiAllowed &&
+                string.Equals(
+                    document.Status,
+                    WorkspaceDocumentStatus.@public.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
             {
                 await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
             }
