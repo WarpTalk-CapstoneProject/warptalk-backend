@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Logging;
 using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -60,6 +61,9 @@ public sealed class BillingCycleWorker : BackgroundService
         }
 
         if (result.Value > 0)
-            _logger.LogInformation("BillingCycleWorker closed {Count} billing cycle(s).", result.Value);
+            _logger.LogInformation(
+                BillingOperationalEventIds.BillingCycleClosed,
+                "billing_cycle_closed Count={Count}",
+                result.Value);
     }
 }

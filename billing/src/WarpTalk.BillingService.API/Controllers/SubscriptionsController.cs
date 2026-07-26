@@ -87,4 +87,15 @@ public class SubscriptionsController : ControllerBase
         var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
         return result.ToActionResult(this);
     }
+
+    [HttpPost("workspace/{workspaceId}/resume")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
+        Guid workspaceId,
+        [FromBody] ResumeSubscriptionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, request, cancellationToken);
+        return result.ToActionResult(this);
+    }
 }

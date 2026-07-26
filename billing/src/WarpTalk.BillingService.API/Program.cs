@@ -28,6 +28,20 @@ try
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
 
+    if (!builder.Environment.IsDevelopment())
+    {
+        var billingDb = builder.Configuration.GetConnectionString("BillingDb") ?? string.Empty;
+        var stripeSecretKey = builder.Configuration["Stripe:SecretKey"] ?? string.Empty;
+        var jwtSecret = builder.Configuration["Jwt:Secret"] ?? string.Empty;
+
+        if (billingDb.Contains(BillingMessageConstants.ConfigurationSecurity.LocalPostgresPasswordToken, StringComparison.OrdinalIgnoreCase) ||
+            stripeSecretKey.Contains(BillingMessageConstants.ConfigurationSecurity.PlaceholderToken, StringComparison.OrdinalIgnoreCase) ||
+            jwtSecret.Contains(BillingMessageConstants.ConfigurationSecurity.ChangeMeToken, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(BillingMessageConstants.ConfigurationSecurity.ProductionPlaceholderSecrets);
+        }
+    }
+
     builder.WebHost.ConfigureKestrel(options =>
     {
         // HTTP 1.1 for Swagger/REST
@@ -62,7 +76,6 @@ try
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
     builder.Services.AddScoped<IStripeWebhookService, StripeWebhookService>();
-    builder.Services.AddTransient<Stripe.SubscriptionService>();
     builder.Services.AddScoped<INotificationClient, WarpTalk.BillingService.Infrastructure.Clients.NotificationClient>();
     builder.Services.AddScoped<IWorkspaceClient, WarpTalk.BillingService.Infrastructure.Clients.WorkspaceClient>();
 

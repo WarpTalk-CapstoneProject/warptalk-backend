@@ -8,6 +8,7 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Helpers;
+using WarpTalk.BillingService.Infrastructure.Logging;
 using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -88,7 +89,10 @@ public sealed class InvoiceOverdueSweeper : BackgroundService
         if (suspended > 0)
         {
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            _logger.LogWarning("InvoiceOverdueSweeper: suspended {Count} subscription(s) for overdue invoices.", suspended);
+            _logger.LogWarning(
+                BillingOperationalEventIds.InvoiceOverdueSuspend,
+                "invoice_overdue_suspend Count={Count}",
+                suspended);
         }
     }
 

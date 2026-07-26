@@ -60,6 +60,9 @@ public record TrialSubscriptionRequest(
     Guid UserId,
     string OwnerEmail);
 
+public record ResumeSubscriptionRequest(
+    string? Reason = null);
+
 
 public record CreateSubscriptionRequest(
     [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.PlanIdRequired)]

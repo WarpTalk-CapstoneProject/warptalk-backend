@@ -23,19 +23,22 @@ public class SubscriptionService : ISubscriptionService
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IStripePaymentService _stripePaymentService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IRedisBillingStore? _redisBillingStore;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionService> logger,
         IBillingMessagePublisher messagePublisher,
         IStripePaymentService stripePaymentService,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        IRedisBillingStore? redisBillingStore = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _stripePaymentService = stripePaymentService;
         _workspaceClient = workspaceClient;
+        _redisBillingStore = redisBillingStore;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -255,6 +258,62 @@ public class SubscriptionService : ISubscriptionService
         {
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCancellingSubscription, workspaceId);
             return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(
+        Guid workspaceId,
+        ResumeSubscriptionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (sub.ServiceState != SubscriptionConstants.ServiceStates.Suspended)
+                return Result.Failure<SubscriptionDto>(
+                    BillingMessageConstants.ApiErrorMessages.BillingAiServiceNotSuspended,
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            sub.ResumeAiService();
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            if (_redisBillingStore is not null)
+            {
+                var redisResult = await _redisBillingStore.SetAiServiceStateAsync(
+                    workspaceId,
+                    sub.ServiceState,
+                    sub.SuspendedReason,
+                    cancellationToken);
+
+                if (!redisResult.IsSuccess)
+                    _logger.LogWarning(
+                        "Failed to sync resumed AI service state to Redis. WorkspaceId={WorkspaceId}, Error={Error}",
+                        workspaceId,
+                        redisResult.Error);
+            }
+
+            _logger.LogInformation(
+                "Billing AI service resumed. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}, Reason={Reason}",
+                workspaceId,
+                sub.Id,
+                request.Reason);
+
+            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            return Result.Success(sub.ToDto(plan?.Name ?? BillingMessageConstants.Subscription.UnknownPlan, plan?.Price ?? 0m));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to resume billing AI service. WorkspaceId={WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
 

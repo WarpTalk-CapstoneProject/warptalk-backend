@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Infrastructure.Logging;
 using WarpTalk.BillingService.Infrastructure.Options;
 
 namespace WarpTalk.BillingService.Infrastructure.Workers;
@@ -55,6 +56,7 @@ public class BillingAggregationWorker : BackgroundService
         using var scope = _serviceProvider.CreateScope();
         var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
         var settlementService = scope.ServiceProvider.GetRequiredService<IUsageSettlementService>();
+        var alertService = scope.ServiceProvider.GetService<IBillingOperationalAlertService>();
 
         var tempLogsResult = await redisStore.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
         if (!tempLogsResult.IsSuccess)
@@ -71,7 +73,7 @@ public class BillingAggregationWorker : BackgroundService
         }
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
-        await AggregateTempLogsAsync(tempLogs, settlementService, redisStore, _logger, stoppingToken);
+        await AggregateTempLogsAsync(tempLogs, settlementService, redisStore, _logger, alertService, stoppingToken);
         var trimResult = await redisStore.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
         if (!trimResult.IsSuccess)
         {
@@ -87,6 +89,7 @@ public class BillingAggregationWorker : BackgroundService
         IUsageSettlementService settlementService,
         IRedisBillingStore? redisStore,
         ILogger? logger,
+        IBillingOperationalAlertService? alertService,
         CancellationToken stoppingToken)
     {
         var groupedLogs = tempLogs
@@ -123,16 +126,21 @@ public class BillingAggregationWorker : BackgroundService
                 if (!settlement.IsSuccess)
                 {
                     logger?.LogError(
+                        BillingOperationalEventIds.SettlementFailed,
                         "Failed to settle aggregated billing group. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}, Error={Error}",
                         group.Key.SubscriptionId,
                         group.Key.ChargeType,
                         settlement.Error);
+                    if (alertService is not null)
+                        await alertService.AlertSettlementFailedAsync(settlementRequest, settlement.Error, stoppingToken);
+
                     continue;
                 }
 
                 if (settlement.Value?.ServiceState == SubscriptionConstants.ServiceStates.Suspended)
                 {
                     logger?.LogWarning(
+                        BillingOperationalEventIds.AiServiceSuspended,
                         "Billing settlement suspended AI service. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}, Reason={Reason}",
                         group.Key.WorkspaceId,
                         group.Key.SubscriptionId,

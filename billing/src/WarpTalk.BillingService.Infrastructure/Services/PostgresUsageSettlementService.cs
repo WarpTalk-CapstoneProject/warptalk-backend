@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Logging;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
@@ -13,13 +14,16 @@ public sealed class PostgresUsageSettlementService : IUsageSettlementService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<PostgresUsageSettlementService> _logger;
+    private readonly IBillingOperationalAlertService? _alertService;
 
     public PostgresUsageSettlementService(
         IUnitOfWork unitOfWork,
-        ILogger<PostgresUsageSettlementService> logger)
+        ILogger<PostgresUsageSettlementService> logger,
+        IBillingOperationalAlertService? alertService = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _alertService = alertService;
     }
 
     public async Task<Result<SettleUsageChargeResult>> SettleUsageChargeAsync(
@@ -97,11 +101,15 @@ public sealed class PostgresUsageSettlementService : IUsageSettlementService
         catch (Exception ex)
         {
             _logger.LogError(
+                BillingOperationalEventIds.SettlementFailed,
                 ex,
                 "Failed to settle usage charge. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}, IdempotencyKey={IdempotencyKey}",
                 request.SubscriptionId,
                 request.ChargeType,
                 request.IdempotencyKey);
+            if (_alertService is not null)
+                await _alertService.AlertSettlementFailedAsync(request, ex.Message, cancellationToken);
+
             return Result.Failure<SettleUsageChargeResult>(ex.Message, ErrorCodes.InternalServerError);
         }
     }

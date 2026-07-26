@@ -74,6 +74,7 @@ public class BillingAggregationWorkerTests
             settlementService.Object,
             null,
             null,
+            null,
             CancellationToken.None);
 
         settlementRequests.Should().HaveCount(2);
@@ -87,5 +88,51 @@ public class BillingAggregationWorkerTests
             t.UnitPriceSnapshot == 0.025000m &&
             t.ChargeType == "AI_ASSISTANT" &&
             t.Currency == PaymentConstants.Currencies.VndAccounting);
+    }
+
+    [Fact]
+    public async Task AggregateTempLogsAsync_Should_Alert_When_Settlement_Fails()
+    {
+        var settlementService = new Mock<IUsageSettlementService>();
+        settlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<SettleUsageChargeResult>("database unavailable", ErrorCodes.InternalServerError));
+
+        var alertService = new Mock<IBillingOperationalAlertService>();
+        alertService
+            .Setup(a => a.AlertSettlementFailedAsync(It.IsAny<SettleUsageChargeRequest>(), "database unavailable", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
+        var logs = new List<TempUsageLogDto>
+        {
+            new()
+            {
+                SubscriptionId = Guid.NewGuid(),
+                WorkspaceId = Guid.NewGuid(),
+                UsageType = "AI_ASSISTANT",
+                ChargeType = "AI_ASSISTANT",
+                Quantity = 100,
+                Unit = "token_out",
+                CreditsConsumed = 10,
+                Provider = "openai",
+                Model = "gpt-4.1",
+                ReferenceType = "billing_accumulator",
+                IdempotencyKey = "AI_ASSISTANT:token_out:openai:gpt-4.1:room:failure",
+                CreatedAt = DateTime.UtcNow
+            }
+        };
+
+        await BillingAggregationWorker.AggregateTempLogsAsync(
+            logs,
+            settlementService.Object,
+            null,
+            null,
+            alertService.Object,
+            CancellationToken.None);
+
+        alertService.Verify(a => a.AlertSettlementFailedAsync(
+            It.Is<SettleUsageChargeRequest>(r => r.ChargeType == "AI_ASSISTANT"),
+            "database unavailable",
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }

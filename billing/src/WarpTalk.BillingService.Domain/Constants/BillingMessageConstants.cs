@@ -312,6 +312,8 @@ public static class BillingMessageConstants
         public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
         public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";
         public const string BillingAiServiceSuspended = "Workspace AI service is suspended.";
+        public const string BillingAiServiceNotSuspended = "Workspace AI service is not suspended.";
+        public const string BillingAiServiceResumed = "Workspace AI service has been resumed.";
         public const string BillingWorkspaceMeetingQuotaExceeded = "Workspace has exceeded its active meeting quota.";
     }
 
@@ -321,5 +323,13 @@ public static class BillingMessageConstants
         {
             public const string SlugPattern = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
         }
+    }
+
+    public static class ConfigurationSecurity
+    {
+        public const string LocalPostgresPasswordToken = "Password=postgres";
+        public const string PlaceholderToken = "placeholder";
+        public const string ChangeMeToken = "CHANGE_ME";
+        public const string ProductionPlaceholderSecrets = "Billing service production configuration contains local placeholder secrets.";
     }
 }

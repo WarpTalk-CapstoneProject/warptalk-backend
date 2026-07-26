@@ -87,6 +87,14 @@ public static class SubscriptionMapper
         sub.UpdatedAt = now;
     }
 
+    public static void ResumeAiService(this Subscription sub)
+    {
+        sub.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
+        sub.SuspendedReason = null;
+        sub.OverageStartedAt = null;
+        sub.UpdatedAt = DateTime.UtcNow;
+    }
+
     public static Subscription CreateNewStripeSubscription(Guid workspaceId, Guid userId, Plan plan, DateTime periodEnd)
     {
         var now = DateTime.UtcNow;
