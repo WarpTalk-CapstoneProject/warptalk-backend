@@ -83,15 +83,20 @@ public static class ApiMessageConstants
         public const string PlanBillingCycleRequired = "Billing cycle is required.";
         public const string PlanBillingCycleInvalid = "Billing cycle must be 'monthly', 'semiannual', or 'yearly'.";
         public const string PlanMinPrice = "Price for {0} must be at least {1} due to Stripe payment constraints.";
-        public const string PlanCreditsPerCycleInvalid = "Credits per cycle must be non-negative.";
+        public const string PlanCreditsPerCycleInvalid = "Credits per cycle must be greater than 0.";
         public const string PlanMaxParticipantsInvalid = "Max participants must be at least 2.";
         public const string PlanMaxLanguagesInvalid = "Max languages must be at least 1.";
         public const string PlanSortOrderInvalid = "Sort order must be non-negative.";
         public const string PlanFeaturesInvalid = "Features must be a valid JSON string.";
         public const string PlanOverageCapInvalid = "Overage cap credits must be non-negative.";
+        public const string PlanOverageCapTooHigh = "Overage cap credits must not exceed credits per cycle.";
         public const string PlanOveragePriceInvalid = "Overage price per credit must be non-negative.";
+        public const string PlanOveragePriceRequired = "Overage price per credit must be greater than 0 when overage is enabled.";
         public const string PlanLowBalanceThresholdInvalid = "Low balance threshold must be greater than overage cap when overage is enabled.";
+        public const string PlanLowBalanceThresholdTooHigh = "Low balance threshold must be lower than credits per cycle.";
         public const string PlanRolloverCapInvalid = "Rollover cap credits must be non-negative.";
+        public const string PlanRolloverCapTooHigh = "Rollover cap credits must not exceed credits per cycle.";
+        public const string PlanEffectivePriceFloorInvalid = "Effective price per credit must be at least 2.60 VND.";
         public const string PlanInvoiceTermsInvalid = "Invoice terms days must be greater than 0.";
         public const string PlanInvoiceGraceInvalid = "Invoice grace hours must be greater than 0.";
     }

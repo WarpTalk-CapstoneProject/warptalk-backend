@@ -192,6 +192,7 @@ public static class SubscriptionMapper
             ContractPriceVnd = null,
             TrialEndsAt = trialEnd,
             OwnerEmailDomain = ownerDomain,
+            BillingContactEmail = request.OwnerEmail.Trim(),
             CurrentPeriodStart = now,
             CurrentPeriodEnd = trialEnd,
             AutoRenew = false,

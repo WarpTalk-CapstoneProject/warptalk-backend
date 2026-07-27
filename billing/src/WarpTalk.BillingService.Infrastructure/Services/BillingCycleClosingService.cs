@@ -39,6 +39,34 @@ public sealed class BillingCycleClosingService : IBillingCycleClosingService
         return Result.Success(dueSubscriptions.Count);
     }
 
+    public async Task<Result<int>> CloseWorkspaceCycleAsync(
+        Guid workspaceId,
+        DateTime now,
+        CancellationToken cancellationToken = default)
+    {
+        var subscription = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId &&
+                 s.IsActive &&
+                 s.DeletedAt == null &&
+                 s.AutoRenew &&
+                 s.Status == SubscriptionConstants.SubscriptionStatuses.Active,
+            "Plan",
+            cancellationToken);
+
+        if (subscription is null)
+        {
+            return Result.Failure<int>(
+                ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                ErrorCodes.BillingSubscriptionNotFound);
+        }
+
+        subscription.CurrentPeriodEnd = now.AddMinutes(-1);
+        await CloseOneCycleAsync(subscription, now, cancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return Result.Success(1);
+    }
+
     private async Task CloseOneCycleAsync(
         Subscription subscription,
         DateTime now,

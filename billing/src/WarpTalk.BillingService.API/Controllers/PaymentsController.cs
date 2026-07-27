@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -40,7 +40,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
     public async Task<ActionResult<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -51,7 +51,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
@@ -77,7 +77,7 @@ public class PaymentsController : ControllerBase
     }
 
     [HttpPost("checkout")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
         try
@@ -126,7 +126,8 @@ public class PaymentsController : ControllerBase
                 workspaceId,
                 userId.Value,
                 WorkspaceRoleConstants.Owner,
-                WorkspaceRoleConstants.Admin);
+                WorkspaceRoleConstants.Admin,
+                WorkspaceRoleConstants.SystemAdmin);
             if (!accessResult.IsSuccess || !accessResult.Value)
             {
                 return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
@@ -199,3 +200,4 @@ public class PaymentsController : ControllerBase
         }
     }
 }
+

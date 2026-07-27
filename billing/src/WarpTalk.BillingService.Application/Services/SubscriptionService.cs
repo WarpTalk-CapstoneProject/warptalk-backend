@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Mail;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -151,6 +152,76 @@ public class SubscriptionService : ISubscriptionService
         catch (Exception ex)
         {
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingSubscription, request.WorkspaceId, request.PlanId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(
+        CreateWorkspaceContractSubscriptionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+                p => p.Id == request.PlanId && p.IsActive && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                    ErrorCodes.BillingPlanNotFound);
+
+            var existing = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (existing is not null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
+                    ErrorCodes.BillingSubscriptionAlreadyActive);
+
+            var now = DateTime.UtcNow;
+            var subscription = new Subscription
+            {
+                Id = Guid.NewGuid(),
+                UserId = request.UserId ?? Guid.Empty,
+                WorkspaceId = request.WorkspaceId,
+                PlanId = request.PlanId,
+                Status = SubscriptionConstants.SubscriptionStatuses.Active,
+                CreditsRemaining = request.ContractTerms.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
+                CreditsUsedThisCycle = 0,
+                CurrentPeriodStart = now,
+                CurrentPeriodEnd = now.AddDays(30),
+                AutoRenew = true,
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            var validation = ValidateContractTerms(subscription, plan, request.ContractTerms);
+            if (!validation.IsSuccess)
+                return Result.Failure<SubscriptionDto>(
+                    validation.Error ?? BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
+                    validation.ErrorCode);
+
+            subscription.ApplyContractTerms(request.ContractTerms);
+
+            await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
+                _messagePublisher,
+                _logger,
+                subscription.UserId,
+                BillingMessageConstants.Notifications.ActionCreated,
+                plan.Name,
+                cancellationToken);
+
+            return Result.Success(subscription.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating workspace contract subscription for WorkspaceId {WorkspaceId}", request.WorkspaceId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }
@@ -505,12 +576,28 @@ public class SubscriptionService : ISubscriptionService
         var nextCreditsPerCycle = request.CreditsPerCycleOverride ?? plan.CreditsPerCycle;
         var nextContractPrice = request.ContractPriceVnd ?? plan.Price;
         var nextOverageCap = request.OverageCapCreditsOverride ?? plan.OverageCapCredits;
+        var nextOveragePrice = request.OveragePricePerCreditOverride ?? plan.OveragePricePerCredit;
+
+        if (!string.IsNullOrWhiteSpace(request.BillingContactEmail) && !IsValidEmail(request.BillingContactEmail))
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
+                ErrorCodes.ValidationError);
+        }
 
         if (nextCreditsPerCycle > 0 &&
             nextContractPrice / nextCreditsPerCycle < SubscriptionConstants.PlanDefaults.PriceFloorPerCredit)
         {
             return Result.Failure(
                 BillingMessageConstants.ApiErrorMessages.BillingContractPriceBelowFloor,
+                ErrorCodes.ValidationError);
+        }
+
+        if (nextOverageCap > nextCreditsPerCycle ||
+            (nextOverageCap > 0 && nextOveragePrice < plan.OveragePricePerCredit))
+        {
+            return Result.Failure(
+                BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
                 ErrorCodes.ValidationError);
         }
 
@@ -525,6 +612,19 @@ public class SubscriptionService : ISubscriptionService
         }
 
         return Result.Success();
+    }
+
+    private static bool IsValidEmail(string email)
+    {
+        try
+        {
+            var address = new MailAddress(email.Trim());
+            return string.Equals(address.Address, email.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
 }

@@ -8,9 +8,6 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 
-
-
-
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
@@ -26,7 +23,7 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetWorkspaceInvoices(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -37,12 +34,42 @@ public class InvoicesController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetGlobalInvoices(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
         return result.ToActionResult(this);
+    }
+
+    [HttpPost("{invoiceId}/checkout")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<ActionResult<object>> CreateInvoiceCheckout(
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _invoiceService.CreateInvoiceCheckoutSessionAsync(invoiceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
+
+        return Ok(new { url = result.Value });
+    }
+
+    [HttpPost("{invoiceId}/mark-paid")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<InvoiceDto>> MarkInvoicePaid(
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _invoiceService.MarkInvoicePaidAsync(invoiceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
+
+        return Ok(result.Value);
     }
 }

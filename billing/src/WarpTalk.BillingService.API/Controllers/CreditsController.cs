@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,7 +33,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
@@ -67,7 +67,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
@@ -92,7 +92,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpPost("manual-adjust")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<CreditTransactionDto>> ManualAdjustCredits([FromBody] ManualAdjustCreditsRequest request, CancellationToken cancellationToken)
     {
         var adminUserId = User.GetUserId()?.ToString() ?? Guid.Empty.ToString();
@@ -103,7 +103,7 @@ public class CreditsController : ControllerBase
     }
 
     [HttpGet("history/global")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
@@ -114,3 +114,4 @@ public class CreditsController : ControllerBase
         return Ok(result.Value);
     }
 }
+

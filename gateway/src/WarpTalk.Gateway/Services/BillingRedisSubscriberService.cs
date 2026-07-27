@@ -49,10 +49,17 @@ public class BillingRedisSubscriberService : BackgroundService
                 if (string.IsNullOrEmpty(payload.Type) || !payload.Type.StartsWith(GatewayBillingConstants.NotificationTypePrefix, StringComparison.OrdinalIgnoreCase))
                     return;
 
-                var groupName = BillingHub.UserGroupName(payload.UserId);
-                await _hubContext.Clients.Group(groupName).SendAsync(GatewayBillingConstants.BillingNotificationEvent, payload, stoppingToken);
-
-                _logger.LogDebug(GatewayBillingConstants.BroadcastLogTemplate, GatewayBillingConstants.BillingNotificationEvent, payload.Type, groupName);
+                if (payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase) || payload.UserId.Equals("*", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _hubContext.Clients.All.SendAsync(GatewayBillingConstants.BillingNotificationEvent, payload, stoppingToken);
+                    _logger.LogDebug(GatewayBillingConstants.BroadcastLogTemplate, GatewayBillingConstants.BillingNotificationEvent, payload.Type, "ALL clients");
+                }
+                else
+                {
+                    var groupName = BillingHub.UserGroupName(payload.UserId);
+                    await _hubContext.Clients.Group(groupName).SendAsync(GatewayBillingConstants.BillingNotificationEvent, payload, stoppingToken);
+                    _logger.LogDebug(GatewayBillingConstants.BroadcastLogTemplate, GatewayBillingConstants.BillingNotificationEvent, payload.Type, groupName);
+                }
             }
             catch (Exception ex)
             {

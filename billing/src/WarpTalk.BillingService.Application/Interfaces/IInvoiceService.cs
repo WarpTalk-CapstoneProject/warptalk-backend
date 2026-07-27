@@ -10,4 +10,6 @@ public interface IInvoiceService
 {
     Task<Result<PaginatedResponse<InvoiceDto>>> GetInvoicesAsync(Guid workspaceId, PaginationQuery query, CancellationToken cancellationToken = default);
     Task<Result<PaginatedResponse<InvoiceDto>>> GetGlobalInvoicesAsync(PaginationQuery query, CancellationToken cancellationToken = default);
+    Task<Result<string>> CreateInvoiceCheckoutSessionAsync(Guid invoiceId, CancellationToken cancellationToken = default);
+    Task<Result<InvoiceDto>> MarkInvoicePaidAsync(Guid invoiceId, CancellationToken cancellationToken = default);
 }

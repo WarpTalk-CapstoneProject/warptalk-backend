@@ -191,6 +191,19 @@ public class PaymentAppService : IPaymentAppService
             return;
         }
 
+        var existingInvoice = await _unitOfWork.InvoiceRepository.FirstOrDefaultAsync(
+            i => i.PaymentId == context.ExistingPayment.Id);
+
+        if (existingInvoice is not null)
+        {
+            existingInvoice.Status = InvoiceConstants.InvoiceStatuses.Paid;
+            existingInvoice.PaidAt = DateTime.UtcNow;
+            existingInvoice.PdfUrl = string.IsNullOrWhiteSpace(context.Request.InvoicePdf)
+                ? existingInvoice.PdfUrl
+                : context.Request.InvoicePdf;
+            return;
+        }
+
         var invoice = InvoiceMapper.CreateStripeInvoice(new StripeInvoiceCreationRequest(
             PaymentId: context.ExistingPayment.Id,
             UserId: context.UserId,

@@ -36,9 +36,44 @@ public class PlanService : IPlanService
     {
         try
         {
-            var plans = await _unitOfWork.PlanRepository.FindAsync(
+            var plans = (await _unitOfWork.PlanRepository.FindAsync(
                 p => p.DeletedAt == null,
-                cancellationToken);
+                cancellationToken)).ToList();
+
+            if (!plans.Any())
+            {
+                var defaultEnterprisePlan = new Plan
+                {
+                    Name = "Enterprise",
+                    Slug = "enterprise",
+                    Tier = "enterprise",
+                    Price = 1900000m,
+                    Currency = "VND",
+                    BillingCycle = "monthly",
+                    CreditsPerCycle = 700000,
+                    OverageCapCredits = 105000,
+                    OveragePricePerCredit = 4m,
+                    LowBalanceThresholdCredits = 140000,
+                    RolloverCapCredits = 700000,
+                    InvoiceTermsDays = 15,
+                    InvoiceGraceHours = 360,
+                    MaxParticipants = 500,
+                    MaxLanguages = 3,
+                    VoiceCloneEnabled = true,
+                    AiAssistantEnabled = true,
+                    GlossaryEnabled = true,
+                    DedicatedGpu = false,
+                    Features = "[\"Real-time translation\", \"AI summaries\", \"Voice cloning\", \"Glossary access\"]",
+                    SortOrder = 1,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+
+                await _unitOfWork.PlanRepository.AddAsync(defaultEnterprisePlan, cancellationToken);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                plans.Add(defaultEnterprisePlan);
+            }
 
             return Result.Success(plans.Select(p => p.ToDto()));
         }
@@ -131,7 +166,7 @@ public class PlanService : IPlanService
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingPlan);
             return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
-     }
+    }
 
     public async Task<Result<PlanDto>> UpdatePlanAsync(
         Guid id, PlanRequest request, CancellationToken cancellationToken = default)

@@ -145,6 +145,146 @@ public class PlanServiceTests
     }
 
     [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenVndPricePerCreditIsBelowFloor()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_700_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            OveragePricePerCredit: 4.0000m,
+            LowBalanceThresholdCredits: 140_000,
+            RolloverCapCredits: 700_000,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanEffectivePriceFloorInvalid);
+    }
+
+    [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenLowBalanceThresholdReachesCommitment()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            OveragePricePerCredit: 4.0000m,
+            LowBalanceThresholdCredits: 700_000,
+            RolloverCapCredits: 700_000,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanLowBalanceThresholdTooHigh);
+    }
+
+    [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenOverageCapExceedsCommitment()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 700_001,
+            OveragePricePerCredit: 4.0000m,
+            LowBalanceThresholdCredits: 700_002,
+            RolloverCapCredits: 700_000,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanOverageCapTooHigh);
+    }
+
+    [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenRolloverCapExceedsCommitment()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            OveragePricePerCredit: 4.0000m,
+            LowBalanceThresholdCredits: 140_000,
+            RolloverCapCredits: 700_001,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanRolloverCapTooHigh);
+    }
+
+    [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenOveragePriceIsZeroForEnabledOverage()
+    {
+        var request = new PlanRequest(
+            "Enterprise",
+            "enterprise",
+            "Enterprise",
+            1_900_000m,
+            "VND",
+            "monthly",
+            700_000,
+            500,
+            "{}",
+            1,
+            OverageCapCredits: 105_000,
+            OveragePricePerCredit: 0m,
+            LowBalanceThresholdCredits: 140_000,
+            RolloverCapCredits: 700_000,
+            InvoiceTermsDays: 15,
+            InvoiceGraceHours: 360);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanOveragePriceRequired);
+    }
+
+    [Fact]
     public async Task DeactivatePlanAsync_ShouldDeactivatePlan_WhenFound()
     {
         var planId = Guid.NewGuid();

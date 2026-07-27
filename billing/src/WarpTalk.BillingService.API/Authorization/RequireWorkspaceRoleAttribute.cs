@@ -35,6 +35,14 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
+        if (_allowedRoles.Contains(WorkspaceRoleConstants.SystemAdmin) &&
+            (context.HttpContext.User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
+             context.HttpContext.User.IsInRole(WorkspaceRoleConstants.Admin)))
+        {
+            await next();
+            return;
+        }
+
         var userId = context.HttpContext.User.GetUserId();
         if (userId == null)
         {

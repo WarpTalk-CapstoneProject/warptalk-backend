@@ -71,6 +71,12 @@ public record SubscriptionRequest(
     Guid PlanId,
     Guid? UserId = null);
 
+public record CreateWorkspaceContractSubscriptionRequest(
+    Guid WorkspaceId,
+    Guid PlanId,
+    UpdateSubscriptionContractTermsRequest ContractTerms,
+    Guid? UserId = null);
+
 public record TrialSubscriptionRequest(
     Guid WorkspaceId,
     Guid UserId,
@@ -86,7 +92,6 @@ public record UpdateSubscriptionContractTermsRequest(
     decimal? OveragePricePerCreditOverride = null,
     int? InvoiceTermsDaysOverride = null,
     string? BillingContactEmail = null);
-
 
 public record CreateSubscriptionRequest(
     [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.PlanIdRequired)]

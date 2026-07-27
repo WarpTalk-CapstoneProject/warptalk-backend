@@ -35,21 +35,25 @@ public class NotificationRedisSubscriberServiceTests
         // Setup Redis
         _mockRedis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(_mockSubscriber.Object);
         
-        // Capture the SubscribeAsync callback
+        // Capture the SubscribeAsync callback specifically for notifications channel
         _mockSubscriber.Setup(s => s.SubscribeAsync(
             It.IsAny<RedisChannel>(),
             It.IsAny<Action<RedisChannel, RedisValue>>(),
             It.IsAny<CommandFlags>()))
         .Callback<RedisChannel, Action<RedisChannel, RedisValue>, CommandFlags>((c, h, f) =>
         {
-            _subscribedChannel = c;
-            _messageHandler = h;
+            if (c.ToString() == "warptalk:notifications:new")
+            {
+                _subscribedChannel = c;
+                _messageHandler = h;
+            }
         })
         .Returns(Task.CompletedTask);
 
         // Setup HubContext
         _mockHubContext.Setup(c => c.Clients).Returns(_mockClients.Object);
         _mockClients.Setup(c => c.Group(It.IsAny<string>())).Returns(_mockClientProxy.Object);
+        _mockClients.Setup(c => c.All).Returns(_mockClientProxy.Object);
 
         _service = new NotificationRedisSubscriberService(
             _mockRedis.Object,
@@ -65,7 +69,7 @@ public class NotificationRedisSubscriberServiceTests
 
         // Assert
         _mockSubscriber.Verify(s => s.SubscribeAsync(
-            It.IsAny<RedisChannel>(),
+            RedisChannel.Literal("warptalk:notifications:new"),
             It.IsAny<Action<RedisChannel, RedisValue>>(),
             It.IsAny<CommandFlags>()), Times.Once);
             
@@ -99,6 +103,35 @@ public class NotificationRedisSubscriberServiceTests
                 args.Length > 0 && 
                 args[0] is RealtimeNotificationMessage &&
                 ((RealtimeNotificationMessage)args[0]).UserId == "user-123"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RedisMessageHandler_WithAllUserId_BroadcastsToAllClients()
+    {
+        // Arrange
+        await _service.StartAsync(CancellationToken.None);
+        var message = new RealtimeNotificationMessage
+        {
+            Id = Guid.NewGuid().ToString(),
+            UserId = "all",
+            Type = "billing.plan_changed",
+            Title = "System Plan Update",
+            Content = "Plan updated"
+        };
+        var json = JsonSerializer.Serialize(message);
+
+        // Act
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(json));
+
+        // Assert
+        _mockClients.Verify(c => c.All, Times.Once);
+        _mockClientProxy.Verify(p => p.SendCoreAsync(
+            "NewNotification",
+            It.Is<object[]>(args => 
+                args.Length > 0 && 
+                args[0] is RealtimeNotificationMessage &&
+                ((RealtimeNotificationMessage)args[0]).UserId == "all"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

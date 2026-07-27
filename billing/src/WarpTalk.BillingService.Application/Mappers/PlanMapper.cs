@@ -23,7 +23,12 @@ public static class PlanMapper
         plan.MaxParticipants,
         plan.Features,
         plan.SortOrder,
-        plan.IsActive
+        plan.IsActive,
+        plan.MaxLanguages,
+        plan.VoiceCloneEnabled,
+        plan.AiAssistantEnabled,
+        plan.GlossaryEnabled,
+        plan.DedicatedGpu
     );
 
     public static Plan ToEntity(this PlanRequest request) => new()
@@ -43,6 +48,11 @@ public static class PlanMapper
         InvoiceTermsDays = request.InvoiceTermsDays,
         InvoiceGraceHours = request.InvoiceGraceHours,
         MaxParticipants = request.MaxParticipants,
+        MaxLanguages = request.MaxLanguages,
+        VoiceCloneEnabled = request.VoiceCloneEnabled,
+        AiAssistantEnabled = request.AiAssistantEnabled,
+        GlossaryEnabled = request.GlossaryEnabled,
+        DedicatedGpu = request.DedicatedGpu,
         Features = request.Features,
         SortOrder = request.SortOrder,
         IsActive = request.IsActive,
@@ -66,6 +76,11 @@ public static class PlanMapper
         plan.InvoiceTermsDays = request.InvoiceTermsDays;
         plan.InvoiceGraceHours = request.InvoiceGraceHours;
         plan.MaxParticipants = request.MaxParticipants;
+        plan.MaxLanguages = request.MaxLanguages;
+        plan.VoiceCloneEnabled = request.VoiceCloneEnabled;
+        plan.AiAssistantEnabled = request.AiAssistantEnabled;
+        plan.GlossaryEnabled = request.GlossaryEnabled;
+        plan.DedicatedGpu = request.DedicatedGpu;
         plan.Features = request.Features;
         plan.SortOrder = request.SortOrder;
         plan.IsActive = request.IsActive;

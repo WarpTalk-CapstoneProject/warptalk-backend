@@ -22,7 +22,12 @@ public record PlanDto(
     int MaxParticipants,
     string Features,       // JSON blob
     int SortOrder,
-    bool IsActive
+    bool IsActive,
+    int MaxLanguages = SubscriptionConstants.PlanDefaults.MaxLanguages,
+    bool VoiceCloneEnabled = false,
+    bool AiAssistantEnabled = false,
+    bool GlossaryEnabled = false,
+    bool DedicatedGpu = false
 )
 {
     public PlanDto(Guid id, string name, decimal price, int creditsPerMonth, bool isActive, string? features)
@@ -44,7 +49,12 @@ public record PlanDto(
             0,
             features ?? SubscriptionConstants.FeatureAccess.EmptyFeaturesJson,
             0,
-            isActive)
+            isActive,
+            SubscriptionConstants.PlanDefaults.MaxLanguages,
+            false,
+            false,
+            false,
+            false)
     {
     }
 }
@@ -66,5 +76,10 @@ public record PlanRequest(
     int RolloverCapCredits = 0,
     int InvoiceTermsDays = 15,
     int InvoiceGraceHours = 360,
-    bool IsActive = true
+    bool IsActive = true,
+    int MaxLanguages = SubscriptionConstants.PlanDefaults.MaxLanguages,
+    bool VoiceCloneEnabled = false,
+    bool AiAssistantEnabled = false,
+    bool GlossaryEnabled = false,
+    bool DedicatedGpu = false
 );

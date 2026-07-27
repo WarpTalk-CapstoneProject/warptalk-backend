@@ -40,6 +40,7 @@ public class BillingMapperTests
         subscription.IsActive.Should().BeTrue();
         subscription.AutoRenew.Should().BeFalse();
         subscription.OwnerEmailDomain.Should().Be("example.com");
+        subscription.BillingContactEmail.Should().Be("owner@example.com");
         subscription.CreditsRemaining.Should().Be(SubscriptionConstants.TrialDefaults.Credits);
         subscription.CreditsPerCycleOverride.Should().Be(SubscriptionConstants.TrialDefaults.Credits);
         subscription.OverageCapCreditsOverride.Should().Be(SubscriptionConstants.TrialDefaults.OverageCapCredits);

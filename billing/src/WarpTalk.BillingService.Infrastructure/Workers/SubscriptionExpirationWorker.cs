@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Options;
 
@@ -36,7 +37,7 @@ public class SubscriptionExpirationWorker : BackgroundService
         {
             try
             {
-                await ExpireSubscriptionsAsync(stoppingToken);
+                await SweepAsync(stoppingToken);
             }
             catch (Exception ex)
             {
@@ -49,10 +50,11 @@ public class SubscriptionExpirationWorker : BackgroundService
         _logger.LogInformation("SubscriptionExpirationWorker is stopping.");
     }
 
-    private async Task ExpireSubscriptionsAsync(CancellationToken cancellationToken)
+    public async Task SweepAsync(CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var redisStore = scope.ServiceProvider.GetService<IRedisBillingStore>();
 
         var now = DateTime.UtcNow;
 
@@ -60,15 +62,44 @@ public class SubscriptionExpirationWorker : BackgroundService
 
         if (expiredSubscriptions.Count > 0)
         {
+            var expiredCount = 0;
+            var suspendedTrials = 0;
+
             foreach (var sub in expiredSubscriptions)
             {
-                sub.IsActive = false;
-                sub.Status = SubscriptionConstants.SubscriptionStatuses.Expired;
+                if (sub.TrialEndsAt is not null && sub.TrialEndsAt <= now)
+                {
+                    sub.ServiceState = SubscriptionConstants.ServiceStates.Suspended;
+                    sub.SuspendedReason = SubscriptionConstants.SuspendedReasons.TrialEnded;
+                    sub.Status = SubscriptionConstants.SubscriptionStatuses.Active;
+                    sub.IsActive = true;
+                    suspendedTrials++;
+
+                    if (redisStore is not null)
+                    {
+                        await redisStore.SetAiServiceStateAsync(
+                            sub.WorkspaceId,
+                            sub.ServiceState,
+                            sub.SuspendedReason,
+                            cancellationToken);
+                    }
+                }
+                else
+                {
+                    sub.IsActive = false;
+                    sub.Status = SubscriptionConstants.SubscriptionStatuses.Expired;
+                    expiredCount++;
+                }
+
                 sub.UpdatedAt = now;
+                unitOfWork.SubscriptionRepository.Update(sub);
             }
 
             await unitOfWork.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation("Expired {Count} subscriptions.", expiredSubscriptions.Count);
+            _logger.LogInformation(
+                "Processed expired subscriptions. Expired={ExpiredCount}, SuspendedTrials={SuspendedTrials}.",
+                expiredCount,
+                suspendedTrials);
         }
     }
 }

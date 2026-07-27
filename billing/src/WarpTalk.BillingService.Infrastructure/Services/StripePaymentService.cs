@@ -80,7 +80,11 @@ public class StripePaymentService : IStripePaymentService
                             Currency = request.Currency,
                             ProductData = new SessionLineItemPriceDataProductDataOptions
                             {
-                                Name = request.PaymentType == PaymentConstants.PaymentTypes.CreditTopUp ? PaymentConstants.ProductNames.CreditTopUp : PaymentConstants.ProductNames.SubscriptionPlan,
+                                Name = request.PaymentType == PaymentConstants.PaymentTypes.CreditTopUp
+                                    ? PaymentConstants.ProductNames.CreditTopUp
+                                    : request.PaymentType == PaymentConstants.PaymentTypes.InvoicePayment
+                                        ? PaymentConstants.ProductNames.InvoicePayment
+                                        : PaymentConstants.ProductNames.SubscriptionPlan,
                             },
                             Recurring = isSubscription ? new SessionLineItemPriceDataRecurringOptions
                             {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -24,7 +24,7 @@ public class RefundsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<RefundDto>> RefundPayment([FromBody] RefundPaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _refundService.RefundPaymentAsync(
@@ -35,3 +35,4 @@ public class RefundsController : ControllerBase
         return result.ToActionResult(this);
     }
 }
+

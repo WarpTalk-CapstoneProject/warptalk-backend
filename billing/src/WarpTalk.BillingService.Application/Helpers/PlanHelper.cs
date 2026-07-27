@@ -17,8 +17,21 @@ public static class PlanHelper
         var minPrice = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase)
             ? 15000m
             : 0.50m;
+        var hasCommittedCredits = request.CreditsPerCycle > 0;
+        var isVndPlan = string.Equals(currency, PaymentConstants.Currencies.Vnd, System.StringComparison.OrdinalIgnoreCase);
+        var isBelowPriceFloor = isVndPlan &&
+                                hasCommittedCredits &&
+                                request.Price / request.CreditsPerCycle < SubscriptionConstants.PlanDefaults.PriceFloorPerCredit;
+        var isOverageCapAboveCommitment = hasCommittedCredits &&
+                                          request.OverageCapCredits > request.CreditsPerCycle;
+        var isLowBalanceAtOrAboveCommitment = hasCommittedCredits &&
+                                              request.LowBalanceThresholdCredits >= request.CreditsPerCycle;
+        var isRolloverCapAboveCommitment = hasCommittedCredits &&
+                                           request.RolloverCapCredits > request.CreditsPerCycle;
         var shouldWarnBeforeOverage = request.OverageCapCredits > 0 &&
                                       request.LowBalanceThresholdCredits <= request.OverageCapCredits;
+        var isMissingOveragePrice = request.OverageCapCredits > 0 &&
+                                    request.OveragePricePerCredit <= 0;
         var isInvalidCycle = cycle is not (SubscriptionConstants.BillingCycles.Monthly or
                                           SubscriptionConstants.BillingCycles.Semiannual or
                                           SubscriptionConstants.BillingCycles.Yearly);
@@ -40,14 +53,20 @@ public static class PlanHelper
             (string.IsNullOrWhiteSpace(request.BillingCycle), ApiMessageConstants.ValidationMessages.PlanBillingCycleRequired),
             (!string.IsNullOrWhiteSpace(request.BillingCycle) && isInvalidCycle, ApiMessageConstants.ValidationMessages.PlanBillingCycleInvalid),
             (request.Price < minPrice, string.Format(ApiMessageConstants.ValidationMessages.PlanMinPrice, currency, minPrice)),
-            (request.CreditsPerCycle < 0, ApiMessageConstants.ValidationMessages.PlanCreditsPerCycleInvalid),
+            (request.CreditsPerCycle <= 0, ApiMessageConstants.ValidationMessages.PlanCreditsPerCycleInvalid),
+            (isBelowPriceFloor, ApiMessageConstants.ValidationMessages.PlanEffectivePriceFloorInvalid),
             (request.OverageCapCredits < 0, ApiMessageConstants.ValidationMessages.PlanOverageCapInvalid),
+            (isOverageCapAboveCommitment, ApiMessageConstants.ValidationMessages.PlanOverageCapTooHigh),
             (request.OveragePricePerCredit < 0, ApiMessageConstants.ValidationMessages.PlanOveragePriceInvalid),
+            (isMissingOveragePrice, ApiMessageConstants.ValidationMessages.PlanOveragePriceRequired),
             (shouldWarnBeforeOverage, ApiMessageConstants.ValidationMessages.PlanLowBalanceThresholdInvalid),
+            (isLowBalanceAtOrAboveCommitment, ApiMessageConstants.ValidationMessages.PlanLowBalanceThresholdTooHigh),
             (request.RolloverCapCredits < 0, ApiMessageConstants.ValidationMessages.PlanRolloverCapInvalid),
+            (isRolloverCapAboveCommitment, ApiMessageConstants.ValidationMessages.PlanRolloverCapTooHigh),
             (request.InvoiceTermsDays <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceTermsInvalid),
             (request.InvoiceGraceHours <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceGraceInvalid),
             (request.MaxParticipants < 2, ApiMessageConstants.ValidationMessages.PlanMaxParticipantsInvalid),
+            (request.MaxLanguages < 1 || request.MaxLanguages > 3, "Max languages must be between 1 and 3."),
             (request.SortOrder < 0, ApiMessageConstants.ValidationMessages.PlanSortOrderInvalid),
             (isInvalidFeatures, ApiMessageConstants.ValidationMessages.PlanFeaturesInvalid)
         };

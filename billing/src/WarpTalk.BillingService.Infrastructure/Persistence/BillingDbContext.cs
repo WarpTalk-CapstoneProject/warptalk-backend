@@ -608,4 +608,3 @@ public partial class BillingDbContext : DbContext
         });
     }
 }
-

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
@@ -7,7 +7,7 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
-// Plans are public — no [Authorize] required.
+// Plans are public â€” no [Authorize] required.
 [ApiController]
 [Route("api/v1/[controller]")]
 public class PlansController : ControllerBase
@@ -41,7 +41,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.CreatePlanAsync(request, cancellationToken);
@@ -54,7 +54,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {
         var result = await _planService.UpdatePlanAsync(id, request, cancellationToken);
@@ -62,7 +62,7 @@ public class PlansController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult> DeactivatePlan(Guid id, CancellationToken cancellationToken)
     {
         var result = await _planService.DeactivatePlanAsync(id, cancellationToken);
@@ -74,3 +74,4 @@ public class PlansController : ControllerBase
         return NoContent();
     }
 }
+

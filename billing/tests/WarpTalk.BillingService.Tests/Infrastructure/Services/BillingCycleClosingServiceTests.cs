@@ -131,4 +131,92 @@ public class BillingCycleClosingServiceTests
         subscription.SuspendedReason.Should().BeNull();
         unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task CloseWorkspaceCycleAsync_Should_Close_Target_Workspace_Immediately()
+    {
+        var now = new DateTime(2026, 7, 26, 12, 0, 0, DateTimeKind.Utc);
+        var workspaceId = Guid.NewGuid();
+        var plan = new Plan
+        {
+            Id = Guid.NewGuid(),
+            Name = "Enterprise",
+            Price = 1_900_000m,
+            CreditsPerCycle = 700_000,
+            RolloverCapCredits = 700_000,
+            OveragePricePerCredit = 4m,
+            InvoiceTermsDays = 15,
+            BillingCycle = SubscriptionConstants.BillingCycles.Monthly
+        };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            Plan = plan,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            IsActive = true,
+            AutoRenew = true,
+            CurrentPeriodStart = now.AddDays(-1),
+            CurrentPeriodEnd = now.AddDays(30),
+            CreditsRemaining = 710_000,
+            CreditsUsedThisCycle = 0
+        };
+
+        Invoice? capturedInvoice = null;
+
+        var subscriptionRepository = new Mock<ISubscriptionRepository>();
+        subscriptionRepository
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<Subscription, bool>>>(),
+                "Plan",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+
+        var paymentRepository = new Mock<IPaymentRepository>();
+        paymentRepository
+            .Setup(r => r.AddAsync(It.IsAny<Payment>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var invoiceRepository = new Mock<IInvoiceRepository>();
+        invoiceRepository
+            .Setup(r => r.AddAsync(It.IsAny<Invoice>(), It.IsAny<CancellationToken>()))
+            .Callback<Invoice, CancellationToken>((invoice, _) => capturedInvoice = invoice)
+            .Returns(Task.CompletedTask);
+
+        var creditTransactionRepository = new Mock<ICreditTransactionRepository>();
+        creditTransactionRepository
+            .Setup(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var usageRecordRepository = new Mock<IGenericRepository<UsageRecord>>();
+        usageRecordRepository
+            .Setup(r => r.FindAsync(
+                It.IsAny<Expression<Func<UsageRecord, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<UsageRecord>());
+
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(u => u.SubscriptionRepository).Returns(subscriptionRepository.Object);
+        unitOfWork.Setup(u => u.PaymentRepository).Returns(paymentRepository.Object);
+        unitOfWork.Setup(u => u.InvoiceRepository).Returns(invoiceRepository.Object);
+        unitOfWork.Setup(u => u.CreditTransactionRepository).Returns(creditTransactionRepository.Object);
+        unitOfWork.Setup(u => u.UsageRecordRepository).Returns(usageRecordRepository.Object);
+        unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+
+        var service = new BillingCycleClosingService(unitOfWork.Object);
+
+        var result = await service.CloseWorkspaceCycleAsync(workspaceId, now, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(1);
+        capturedInvoice.Should().NotBeNull();
+        capturedInvoice!.Subtotal.Should().Be(1_900_000m);
+        capturedInvoice.Total.Should().Be(2_090_000m);
+        subscription.CurrentPeriodStart.Should().Be(now.AddMinutes(-1));
+        subscription.CurrentPeriodEnd.Should().Be(now.AddMinutes(-1).AddMonths(1));
+        subscription.CreditsRemaining.Should().Be(1_400_000);
+        unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

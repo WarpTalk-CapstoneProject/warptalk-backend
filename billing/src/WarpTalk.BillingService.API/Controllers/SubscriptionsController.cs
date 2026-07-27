@@ -1,12 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
-
-
-
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -16,10 +14,14 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
+    private readonly IBillingCycleClosingService _billingCycleClosingService;
 
-    public SubscriptionsController(ISubscriptionService subscriptionService)
+    public SubscriptionsController(
+        ISubscriptionService subscriptionService,
+        IBillingCycleClosingService billingCycleClosingService)
     {
         _subscriptionService = subscriptionService;
+        _billingCycleClosingService = billingCycleClosingService;
     }
 
     [HttpPost]
@@ -34,7 +36,23 @@ public class SubscriptionsController : ControllerBase
         return StatusCode(201, result.Value);
     }
 
+    [HttpPost("contract")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<SubscriptionDto>> CreateWorkspaceContractSubscription(
+        [FromBody] CreateWorkspaceContractSubscriptionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
+
+        return StatusCode(201, result.Value);
+    }
+
     [HttpPost("trial")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> CreateTrialSubscription([FromBody] TrialSubscriptionRequest request, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CreateTrialSubscriptionAsync(request, cancellationToken);
@@ -47,7 +65,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("workspace/{workspaceId}")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
@@ -55,7 +73,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpGet("global")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
@@ -65,7 +83,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("workspace/{workspaceId}")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
@@ -78,7 +96,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPut("workspace/{workspaceId}/change-plan")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(Guid workspaceId, [FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         if (workspaceId != request.WorkspaceId)
@@ -89,7 +107,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost("workspace/{workspaceId}/resume")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdmin)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
         Guid workspaceId,
         [FromBody] ResumeSubscriptionRequest request,
@@ -99,8 +117,27 @@ public class SubscriptionsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    [HttpPost("workspace/{workspaceId}/simulate-cycle-close")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<object>> SimulateCycleClose(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _billingCycleClosingService.CloseWorkspaceCycleAsync(
+            workspaceId,
+            DateTime.UtcNow,
+            cancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
+
+        return Ok(new { closedCycles = result.Value });
+    }
+
     [HttpPut("workspace/{workspaceId}/contract-terms")]
-    [Authorize(Roles = WorkspaceRoleConstants.Admin)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<SubscriptionDto>> UpdateContractTerms(
         Guid workspaceId,
         [FromBody] UpdateSubscriptionContractTermsRequest request,
