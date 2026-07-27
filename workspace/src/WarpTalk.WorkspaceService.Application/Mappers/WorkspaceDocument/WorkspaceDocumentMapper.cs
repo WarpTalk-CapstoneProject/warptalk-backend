@@ -26,7 +26,8 @@ public static class WorkspaceDocumentMapper
             doc.SourceType,
             doc.SourceId,
             doc.IngestionStatus,
-            doc.IsSensitive,
+            doc.AiEligible,
+            doc.IsAiAllowed,
             doc.ConfidentialityLevel,
             doc.RetentionState,
             doc.Status,
@@ -42,13 +43,14 @@ public static class WorkspaceDocumentMapper
         Guid workspaceId,
         Guid userId,
         string storageKey,
+        string storageProvider,
         WorkspaceDocumentStatus status,
         WorkspaceDocumentIngestionStatus ingestionStatus,
         bool aiEligible,
         DateTime? utcNow = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
-        var extension = System.IO.Path.GetExtension(request.File.FileName);
+        var extension = WorkspaceDocumentHelper.NormalizeExtension(System.IO.Path.GetExtension(request.File.FileName));
         return new WorkspaceDocument
         {
             Id = docId,
@@ -58,17 +60,17 @@ public static class WorkspaceDocumentMapper
             Name = request.Name,
             FileName = request.File.FileName,
             FileExtension = extension,
-            MimeType = request.File.ContentType,
+            MimeType = WorkspaceDocumentHelper.GetSafeContentType(extension),
             SizeBytes = request.File.Length,
-            StorageProvider = WorkspaceDocumentConstants.LocalStorageProvider,
+            StorageProvider = storageProvider,
             StorageKey = storageKey,
             SourceType = request.SourceType,
             SourceId = request.SourceId,
             DocumentType = extension.TrimStart('.').ToUpper(),
             AiEligible = aiEligible,
+            IsAiAllowed = request.IsAiAllowed,
             IngestionStatus = ingestionStatus.ToString(),
-            IsSensitive = request.IsSensitive,
-            ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(request.IsSensitive),
+            ConfidentialityLevel = string.IsNullOrWhiteSpace(request.ConfidentialityLevel) ? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel : request.ConfidentialityLevel,
             RetentionState = WorkspaceDocumentConstants.RetentionStateActive,
             Status = status.ToString(),
             CreatedAt = now,

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -45,6 +45,8 @@ public partial class WorkspaceDocument
 
     public bool AiEligible { get; set; }
 
+    public bool IsAiAllowed { get; set; } = true;
+
     public string? AiUsagePolicy { get; set; }
 
     public string IngestionStatus { get; set; } = null!;
@@ -52,8 +54,6 @@ public partial class WorkspaceDocument
     public DateTime? LastIndexedAt { get; set; }
 
     public string? IndexVersion { get; set; }
-
-    public bool IsSensitive { get; set; }
 
     public string ConfidentialityLevel { get; set; } = null!;
 

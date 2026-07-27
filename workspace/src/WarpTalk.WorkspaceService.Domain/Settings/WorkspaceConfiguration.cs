@@ -10,6 +10,7 @@ public class WorkspaceConfiguration
     private List<string> _allowedTargetLanguages = new();
     private int _maxActiveRooms = WorkspaceConstants.DefaultWorkspaceMaxActiveRooms;
     private int _artifactRetentionDays = WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays;
+    private AiUsagePolicyConfiguration? _aiUsagePolicy = NormalizeAiUsagePolicy(null);
 
     // 1. Localization & General
     public string DefaultLanguage
@@ -51,12 +52,31 @@ public class WorkspaceConfiguration
     // 4. Enterprise & External Collaboration
     public List<string> VerifiedDomains { get; set; } = new();
     public bool AllowExternalCollaboration { get; set; } = true;
-    public bool RequireVerifiedDomainForInternal { get; set; } = true;
+    public bool RequireVerifiedDomainForInternal { get; set; } = false;
     public int? ExternalGracePeriodHours { get; set; }
 
     // 5. AI Ingestion & Security Guardrails
-    public AiUsagePolicyConfiguration? AiUsagePolicy { get; set; }
+    public AiUsagePolicyConfiguration? AiUsagePolicy
+    {
+        get => _aiUsagePolicy;
+        set => _aiUsagePolicy = NormalizeAiUsagePolicy(value);
+    }
     
     // 6. Content Filtering
     public bool IsProfanityFilterEnabled { get; set; } = false;
+
+    private static AiUsagePolicyConfiguration NormalizeAiUsagePolicy(AiUsagePolicyConfiguration? value)
+    {
+        return value == null
+            ? new AiUsagePolicyConfiguration(
+                AllowExternalLlm: true,
+                RedactPii: new PiiRedactionConfiguration(Enabled: true),
+                Dlp: new DlpConfiguration(Enabled: false, KeywordsBlacklist: new List<string>()),
+                TranslationProfile: new TranslationProfileConfiguration(
+                    TranslationTone: "professional",
+                    LanguageSpecificRules: new LanguageSpecificRules(
+                        VietnameseHonorificStyle: "formal_hierarchical",
+                        JapaneseHonorificStyle: "keigo_teineigo")))
+            : value with { AllowExternalLlm = true };
+    }
 }

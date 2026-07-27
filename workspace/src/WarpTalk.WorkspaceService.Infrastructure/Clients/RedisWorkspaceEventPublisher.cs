@@ -18,6 +18,27 @@ public class RedisWorkspaceEventPublisher : IWorkspaceEventPublisher
         _logger = logger;
     }
 
+    public async Task PublishWorkspaceCreatedAsync(Guid workspaceId, string name, string slug, Guid ownerUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            await db.StreamAddAsync("workspace-events", new NameValueEntry[]
+            {
+                new("event_type", "WorkspaceCreated"),
+                new("workspace_id", workspaceId.ToString()),
+                new("name", name),
+                new("slug", slug),
+                new("owner_user_id", ownerUserId.ToString()),
+                new("created_at", DateTime.UtcNow.ToString("o"))
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish workspace created event to Redis Stream. WorkspaceId: {WorkspaceId}", workspaceId);
+        }
+    }
+
     public async Task PublishWorkspaceDeletedAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try
@@ -25,15 +46,35 @@ public class RedisWorkspaceEventPublisher : IWorkspaceEventPublisher
             var db = _redis.GetDatabase();
             await db.StreamAddAsync("workspace-events", new NameValueEntry[]
             {
-                new NameValueEntry("event_type", "WorkspaceDeleted"),
-                new NameValueEntry("workspace_id", workspaceId.ToString()),
-                new NameValueEntry("deleted_by", userId.ToString()),
-                new NameValueEntry("deleted_at", DateTime.UtcNow.ToString("o"))
+                new("event_type", "WorkspaceDeleted"),
+                new("workspace_id", workspaceId.ToString()),
+                new("deleted_by", userId.ToString()),
+                new("deleted_at", DateTime.UtcNow.ToString("o"))
             });
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to publish workspace delete event to Redis Stream. WorkspaceId: {WorkspaceId}", workspaceId);
+        }
+    }
+
+    public async Task PublishMemberRemovedAsync(Guid workspaceId, Guid memberUserId, Guid removedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            await db.StreamAddAsync("workspace-events", new NameValueEntry[]
+            {
+                new("event_type", "MemberRemoved"),
+                new("workspace_id", workspaceId.ToString()),
+                new("user_id", memberUserId.ToString()),
+                new("removed_by", removedByUserId.ToString()),
+                new("removed_at", DateTime.UtcNow.ToString("o"))
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish member removed event to Redis Stream. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, memberUserId);
         }
     }
 }

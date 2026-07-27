@@ -113,6 +113,9 @@ public partial class WorkspaceDbContext : DbContext
             entity.Property(e => e.AiEligible)
                 .HasDefaultValue(true)
                 .HasColumnName("ai_eligible");
+            entity.Property(e => e.IsAiAllowed)
+                .HasDefaultValue(true)
+                .HasColumnName("is_ai_allowed");
             entity.Property(e => e.AiUsagePolicy)
                 .HasColumnType("jsonb")
                 .HasColumnName("ai_usage_policy");
@@ -147,7 +150,6 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(30)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("ingestion_status");
-            entity.Property(e => e.IsSensitive).HasColumnName("is_sensitive");
             entity.Property(e => e.Keywords)
                 .HasColumnType("jsonb")
                 .HasColumnName("keywords");
@@ -295,7 +297,7 @@ public partial class WorkspaceDbContext : DbContext
 
             entity.HasIndex(e => e.WorkspaceId, "IX_workspace_invitations_workspace_id");
 
-            entity.HasIndex(e => e.TokenHash, "workspace_invitations_token_hash_key").IsUnique();
+            entity.HasIndex(e => new { e.WorkspaceId, e.Email }, "IX_workspace_invitations_workspace_id_email");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")
@@ -319,6 +321,17 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'pending'::character varying")
                 .HasColumnName("status");
+            entity.Property(e => e.DeliveryStatus)
+                .HasMaxLength(50)
+                .HasDefaultValueSql("'NotSent'::character varying")
+                .HasColumnName("delivery_status");
+            entity.Property(e => e.ProviderMessageId)
+                .HasMaxLength(255)
+                .HasColumnName("provider_message_id");
+            entity.Property(e => e.LastSentAt).HasColumnName("last_sent_at");
+            entity.Property(e => e.SentCount)
+                .HasDefaultValue(0)
+                .HasColumnName("sent_count");
             entity.Property(e => e.TokenHash)
                 .HasMaxLength(255)
                 .HasColumnName("token_hash");
