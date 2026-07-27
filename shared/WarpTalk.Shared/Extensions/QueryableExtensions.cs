@@ -15,11 +15,14 @@ public static class QueryableExtensions
         int pageSize,
         CancellationToken ct = default)
     {
+        var safePage = page <= 0 ? 1 : page;
+        var safePageSize = pageSize <= 0 ? 10 : pageSize;
+
         var totalCount = await query.CountAsync(ct);
-        
+
         var items = await query
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
             .ToListAsync(ct);
 
         return (items, totalCount);

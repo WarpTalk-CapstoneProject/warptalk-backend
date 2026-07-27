@@ -7,7 +7,7 @@ services:
     volumes:
       - .:/src
     working_dir: /src/auth/src/WarpTalk.AuthService.API
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
@@ -18,7 +18,7 @@ services:
     volumes:
       - .:/src
     working_dir: /src/translation-room/src/WarpTalk.TranslationRoomService.API
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
@@ -29,7 +29,7 @@ services:
     volumes:
       - .:/src
     working_dir: /src/transcript/src/WarpTalk.TranscriptService.API
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
@@ -40,7 +40,7 @@ services:
     volumes:
       - .:/src
     working_dir: /src/notification/src/WarpTalk.NotificationService.API
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
@@ -51,7 +51,7 @@ services:
     volumes:
       - .:/src
     working_dir: /src/gateway/src/WarpTalk.Gateway
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
@@ -62,7 +62,17 @@ services:
     volumes:
       - .:/src
     working_dir: /src/workspace/src/WarpTalk.WorkspaceService.API
-    command: ["dotnet", "watch", "run", "--no-launch-profile"]
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - DOTNET_USE_POLLING_FILE_WATCHER=1
+  assistant-service:
+    build:
+      target: build
+    volumes:
+      - .:/src
+    working_dir: /src/assistant/src/WarpTalk.AssistantService.API
+    command: [ "dotnet", "watch", "run", "--no-launch-profile" ]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1

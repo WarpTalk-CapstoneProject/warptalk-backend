@@ -34,8 +34,29 @@ public class MeetingChatHub : Hub
         var participant = await _unitOfWork.MeetingParticipantRepository
             .FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId);
 
-        if (participant == null || !participant.IsActive)
-            throw new HubException("Forbidden: You are not an active participant in this room.");
+        if (participant == null)
+        {
+            participant = new WarpTalk.MeetingService.Domain.Entities.MeetingParticipant
+            {
+                Id = Guid.CreateVersion7(),
+                MeetingRoomId = room.Id,
+                UserId = userId,
+                ProviderIdentity = userIdString,
+                JoinedAt = DateTime.UtcNow,
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+            await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
+            await _unitOfWork.SaveChangesAsync();
+        }
+        else if (!participant.IsActive)
+        {
+            participant.IsActive = true;
+            participant.LeftAt = null;
+            _unitOfWork.MeetingParticipantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync();
+        }
 
         var groupName = GetRoomGroupName(roomId);
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);

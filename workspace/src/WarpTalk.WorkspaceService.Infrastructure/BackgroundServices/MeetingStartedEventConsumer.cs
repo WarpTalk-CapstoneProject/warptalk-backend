@@ -65,7 +65,7 @@ public class MeetingStartedEventConsumer : BackgroundService
 
         // 1. Get all AiEligible documents for this workspace
         var documents = await unitOfWork.WorkspaceDocumentRepository.FindAsync(
-            d => d.WorkspaceId == workspaceId && d.AiEligible && d.DeletedAt == null && d.IngestionStatus == "completed",
+            d => d.WorkspaceId == workspaceId && d.AiEligible && d.DeletedAt == null && d.IngestionStatus == "completed" && d.LastIndexedAt != null,
             ct: ct);
 
         if (!documents.Any())
