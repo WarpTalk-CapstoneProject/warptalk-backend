@@ -56,6 +56,7 @@ public class WorkspaceDocumentServiceTests
         _urlProvider = Substitute.For<IWorkspaceUrlProvider>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
+        _storage.StorageProviderName.Returns(WorkspaceDocumentConstants.LocalStorageProvider);
         _storageOptions = Options.Create(new ObjectStorageOptions
         {
             Provider = WorkspaceDocumentConstants.LocalStorageProvider
@@ -79,7 +80,6 @@ public class WorkspaceDocumentServiceTests
             _translationRoomClient,
             _storage,
             Substitute.For<IDocumentTextExtractor>(),
-            _storageOptions,
             Substitute.For<ILogger<WorkspaceDocumentService>>()
         );
     }

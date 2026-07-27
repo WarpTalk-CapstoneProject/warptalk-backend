@@ -9,7 +9,6 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
-using WarpTalk.Shared.Configuration;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
 using WarpTalk.WorkspaceService.Application.Helpers;
@@ -36,7 +35,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly ILogger<WorkspaceDocumentService> _logger;
-    private readonly string _storageProvider;
 
     public WorkspaceDocumentService(
         IUnitOfWork unitOfWork,
@@ -47,7 +45,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         ITranslationRoomClient translationRoomClient,
         IWorkspaceDocumentStorage storage,
         IDocumentTextExtractor textExtractor,
-        IOptions<ObjectStorageOptions> storageOptions,
         ILogger<WorkspaceDocumentService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -58,7 +55,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         _translationRoomClient = translationRoomClient;
         _storage = storage;
         _textExtractor = textExtractor;
-        _storageProvider = storageOptions.Value.Provider ?? WorkspaceDocumentConstants.LocalStorageProvider;
         _logger = logger;
     }
 
@@ -112,7 +108,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var aiEligible = false; // Initial state: false until ingestion completes or if IsAiAllowed == false
 
-            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storageProvider, status, ingestionStatus, aiEligible);
+            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible);
             document.IsAiAllowed = effectiveIsAiAllowed;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
@@ -197,7 +193,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
                 d => d.WorkspaceId == workspaceId && d.DeletedAt == null, "", ct);
 
-            var filteredDocs = documents.AsEnumerable();
+            var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
                 var search = query.Search.Trim();

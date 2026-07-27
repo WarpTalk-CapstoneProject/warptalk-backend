@@ -167,7 +167,7 @@ public class WorkspaceService : IWorkspaceService
                 var member = ws.WorkspaceMembers.FirstOrDefault();
                 var defaultRoleName = WorkspaceMemberRole.Member.ToRoleName();
                 var roleName = defaultRoleName;
-                var membershipType = "Internal";
+                var membershipType = MembershipType.Internal.ToString();
                 if (member != null)
                 {
                     roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);

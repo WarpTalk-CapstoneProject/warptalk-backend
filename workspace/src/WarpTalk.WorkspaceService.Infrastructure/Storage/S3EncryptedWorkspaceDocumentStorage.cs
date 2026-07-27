@@ -43,6 +43,8 @@ public class S3EncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
         _ensureBucketExists = _storageOptions.S3.EnsureBucketExists;
     }
 
+    public string StorageProviderName => _storageOptions.Provider ?? StorageProviders.S3;
+
     public async Task<string> ReadDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default)
     {
         using var stream = await GetDecryptedStreamAsync(document, ct);

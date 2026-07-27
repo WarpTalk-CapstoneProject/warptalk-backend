@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -43,7 +42,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -61,7 +64,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.ListDocumentsAsync(workspaceId, query, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -79,7 +86,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.GetDocumentByIdAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -98,7 +109,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.PatchDocumentMetadataAsync(workspaceId, documentId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -117,7 +132,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.ApproveDocumentAsync(workspaceId, documentId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -135,7 +154,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess || result.Value == null)
         {
-            return ToErrorResult(result, "Download failed.");
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
         }
 
         var dto = result.Value;
@@ -156,7 +179,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.GetExtractedTextAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -175,7 +202,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.UpdateExtractedTextAsync(workspaceId, documentId, request.Text, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -193,7 +224,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.DeleteDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -212,7 +247,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.AddAccessPolicyAsync(workspaceId, documentId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -231,7 +270,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.RemoveAccessPolicyAsync(workspaceId, documentId, policyId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -250,7 +293,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, query, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }
@@ -268,7 +315,11 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.ArchiveDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
     }
@@ -286,22 +337,12 @@ public class WorkspaceDocumentsController : ControllerBase
         var result = await _documentService.RestoreDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess)
         {
-            return ToErrorResult(result);
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
-    }
-
-    private IActionResult ToErrorResult(Result result, string fallbackMessage = "Request failed.")
-    {
-        var response = new ApiErrorResponse(result.Error ?? fallbackMessage, result.ErrorCode);
-        return result.ErrorCode switch
-        {
-            ErrorCodes.NotFound => NotFound(response),
-            ErrorCodes.Forbidden => StatusCode(403, response),
-            ErrorCodes.Unauthorized => Unauthorized(response),
-            ErrorCodes.Conflict => Conflict(response),
-            ErrorCodes.InternalServerError => StatusCode(500, response),
-            _ => BadRequest(response)
-        };
     }
 }

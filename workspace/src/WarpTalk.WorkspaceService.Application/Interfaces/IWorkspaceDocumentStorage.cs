@@ -13,6 +13,11 @@ namespace WarpTalk.WorkspaceService.Application.Interfaces;
 public interface IWorkspaceDocumentStorage
 {
     /// <summary>
+    /// The name of the underlying storage provider (e.g., Local, MinIO, S3).
+    /// </summary>
+    string StorageProviderName { get; }
+
+    /// <summary>
     /// Reads the decrypted content of a document as a UTF-8 string (useful for plain text/md files).
     /// </summary>
     Task<string> ReadDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default);

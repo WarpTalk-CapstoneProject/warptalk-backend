@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared.Configuration;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Storage;
@@ -19,8 +20,8 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Storage;
 /// </summary>
 public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
 {
-    private const int IvSize = 16; // AES IV size in bytes
-    private const int SignatureSize = 64; // HMAC-SHA512 signature size in bytes
+    private static int IvSize => WorkspaceDocumentConstants.StorageEncryption.IvSize;
+    private static int SignatureSize => WorkspaceDocumentConstants.StorageEncryption.SignatureSize;
 
     private readonly ObjectStorageOptions _storageOptions;
     private readonly ILogger<LocalEncryptedWorkspaceDocumentStorage> _logger;
@@ -32,6 +33,8 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
         _storageOptions = storageOptions.Value;
         _logger = logger;
     }
+
+    public string StorageProviderName => _storageOptions.Provider ?? StorageProviders.Local;
 
     public async Task<string> ReadDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default)
     {
