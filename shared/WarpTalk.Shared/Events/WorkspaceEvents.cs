@@ -1,6 +1,21 @@
 namespace WarpTalk.Shared.Events;
 
 /// <summary>
+/// Event published to RabbitMQ when a new Enterprise Workspace is created.
+/// Triggers initial provisioning across microservices.
+/// </summary>
+public record WorkspaceCreatedEvent
+{
+    public Guid EventId { get; init; } = Guid.NewGuid();
+    public int SchemaVersion { get; init; } = 1;
+    public required string WorkspaceId { get; init; }
+    public required string Name { get; init; }
+    public required string Slug { get; init; }
+    public required string OwnerUserId { get; init; }
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// Event published when an entire Enterprise Workspace is soft-deleted or suspended.
 /// Triggers cascading actions like force-terminating active meetings and revoking active streams.
 /// </summary>
