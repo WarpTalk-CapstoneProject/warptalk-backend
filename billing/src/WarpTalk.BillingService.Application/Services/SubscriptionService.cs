@@ -9,8 +9,6 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.Shared.Protos;
-using PaymentClient = WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -19,18 +17,15 @@ public class SubscriptionService : ISubscriptionService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
-    private readonly PaymentClient _paymentServiceClient;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionService> logger,
-        IBillingMessagePublisher messagePublisher,
-        PaymentClient paymentServiceClient)
+        IBillingMessagePublisher messagePublisher)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
-        _paymentServiceClient = paymentServiceClient;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -191,19 +186,6 @@ public class SubscriptionService : ISubscriptionService
 
             var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
 
-            // Call Payment Service to cancel Stripe Subscription
-            try
-            {
-                await _paymentServiceClient.CancelStripeSubscriptionAsync(new WarpTalk.Shared.Protos.CancelStripeSubscriptionRequest
-                {
-                    WorkspaceId = workspaceId.ToString()
-                }, cancellationToken: cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to cancel subscription on Stripe for WorkspaceId {WorkspaceId}", workspaceId);
-            }
-
             await PublishRealtimeUpdateAsync(sub.UserId, "cancelled", plan?.Name ?? "Unknown Plan", cancellationToken);
 
             return Result.Success(true);
@@ -246,40 +228,6 @@ public class SubscriptionService : ISubscriptionService
             oldSub.CancelImmediately("upgraded/downgraded");
             _unitOfWork.SubscriptionRepository.Update(oldSub);
 
-            // Try to update the Stripe subscription directly with proration
-            bool stripeUpdated = false;
-            try
-            {
-                var updateResponse = await _paymentServiceClient.UpdateStripeSubscriptionAsync(new WarpTalk.Shared.Protos.UpdateStripeSubscriptionRequest
-                {
-                    WorkspaceId = request.WorkspaceId.ToString(),
-                    NewAmount = (double)newPlan.Price,
-                    Currency = newPlan.Currency,
-                    NewPlanName = newPlan.Name
-                }, cancellationToken: cancellationToken);
-
-                stripeUpdated = updateResponse.Success;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to update subscription on Stripe for WorkspaceId {WorkspaceId} during change plan.", request.WorkspaceId);
-            }
-
-            if (!stripeUpdated)
-            {
-                try
-                {
-                    await _paymentServiceClient.CancelStripeSubscriptionAsync(new WarpTalk.Shared.Protos.CancelStripeSubscriptionRequest
-                    {
-                        WorkspaceId = request.WorkspaceId.ToString()
-                    }, cancellationToken: cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to cancel old subscription on Stripe for WorkspaceId {WorkspaceId} during change plan.", request.WorkspaceId);
-                }
-            }
-
             // Create new subscription with carry-over credits
             var newSub = request.ToEntity(oldSub, newPlan);
 
@@ -304,7 +252,7 @@ public class SubscriptionService : ISubscriptionService
                 UserId = newSub.UserId,
                 Amount = newPlan.CreditsPerCycle,
                 Type = "top_up",
-                Description = stripeUpdated ? $"Plan upgrade to {newPlan.Name} (Stripe Direct)" : $"Plan upgrade to {newPlan.Name} (Simulation)",
+                Description = $"Plan upgrade to {newPlan.Name} (Simulation)",
                 ReferenceId = Guid.NewGuid(),
                 ReferenceType = "stripe_payment",
                 BalanceAfter = newSub.CreditsRemaining,
@@ -321,7 +269,7 @@ public class SubscriptionService : ISubscriptionService
                 TaxAmount = 0m,
                 TotalAmount = newPlan.Price,
                 Currency = newPlan.Currency,
-                PaymentMethod = stripeUpdated ? "Stripe Upgrade (Direct)" : "Stripe Upgrade (Simulation)",
+                PaymentMethod = "Stripe Upgrade (Simulation)",
                 Provider = "stripe",
                 ProviderTransactionId = $"ch_{randomSuffix}",
                 Status = "paid",

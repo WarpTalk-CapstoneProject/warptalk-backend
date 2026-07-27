@@ -33,7 +33,6 @@
     <Protobuf Include="Protos\transcript.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\notification.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\billing.proto" GrpcServices="Both" />
-    <Protobuf Include="Protos\payment.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\workspace_invitation.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\meeting.proto" GrpcServices="Both" />
     <Protobuf Include="Protos\workspace.proto" GrpcServices="Both" />

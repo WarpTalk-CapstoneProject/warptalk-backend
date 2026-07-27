@@ -43,7 +43,6 @@ $Services = @(
     [PSCustomObject]@{ Name = "notification";     Cwd = "notification/src/WarpTalk.NotificationService.API";     Port = 5104 },
     [PSCustomObject]@{ Name = "meeting";          Cwd = "meeting/src/WarpTalk.MeetingService.API";          Port = 5105 },
     [PSCustomObject]@{ Name = "billing";          Cwd = "billing/src/WarpTalk.BillingService.API";          Port = 5107 },
-    [PSCustomObject]@{ Name = "payment";          Cwd = "payment/src/WarpTalk.PaymentService.API";          Port = 5047 },
     [PSCustomObject]@{ Name = "assistant";        Cwd = "assistant/src/WarpTalk.AssistantService.API";      Port = 5108 },
     [PSCustomObject]@{ Name = "gateway";          Cwd = "gateway/src/WarpTalk.Gateway";                  Port = 5200 }
 )
@@ -89,7 +88,7 @@ function Show-Banner {
 
 function Stop-Ports {
     Write-Host ($YELLOW + "[CLEAN] Cleaning up occupied ports..." + $NC)
-    $ports = @(5101, 5102, 5103, 5104, 5105, 5106, 5107, 5108, 5047, 5200, 50051, 50052, 50053, 50054, 50055, 50056, 50057, 50058)
+    $ports = @(5101, 5102, 5103, 5104, 5105, 5106, 5107, 5108, 5200, 50051, 50052, 50053, 50054, 50055, 50056, 50057)
     foreach ($port in $ports) {
         $nets = netstat -ano | Select-String ":$port\s+"
         foreach ($line in $nets) {

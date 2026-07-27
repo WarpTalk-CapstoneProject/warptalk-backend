@@ -22,7 +22,6 @@ public class SubscriptionServiceTests
     private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
-    private readonly Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient> _mockPaymentClient;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
@@ -31,7 +30,6 @@ public class SubscriptionServiceTests
         _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
         _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
-        _mockPaymentClient = new Mock<WarpTalk.Shared.Protos.PaymentService.PaymentServiceClient>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
@@ -40,8 +38,7 @@ public class SubscriptionServiceTests
         _subscriptionService = new SubscriptionService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<SubscriptionService>>().Object,
-            new Mock<IBillingMessagePublisher>().Object,
-            _mockPaymentClient.Object);
+            new Mock<IBillingMessagePublisher>().Object);
     }
 
     // ─────────────────────────────────────────────
@@ -143,20 +140,6 @@ public class SubscriptionServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(oldSub);
         _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(newPlan);
-
-        var mockCall = new Grpc.Core.AsyncUnaryCall<WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse>(
-            Task.FromResult(new WarpTalk.Shared.Protos.UpdateStripeSubscriptionResponse { Success = false }),
-            Task.FromResult(new Grpc.Core.Metadata()),
-            () => Grpc.Core.Status.DefaultSuccess,
-            () => new Grpc.Core.Metadata(),
-            () => { });
-
-        _mockPaymentClient.Setup(x => x.UpdateStripeSubscriptionAsync(
-            It.IsAny<WarpTalk.Shared.Protos.UpdateStripeSubscriptionRequest>(),
-            null,
-            null,
-            It.IsAny<CancellationToken>()))
-            .Returns(mockCall);
 
         var result = await _subscriptionService.ChangeSubscriptionAsync(new SubscriptionRequest(workspaceId, newPlanId));
 
