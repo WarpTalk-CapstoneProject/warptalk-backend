@@ -9,5 +9,6 @@ public enum InvitationStatus
     ACCEPTED,
     REVOKED,
     EXPIRED,
-    REPLACED
+    REPLACED,
+    REQUESTED
 }
