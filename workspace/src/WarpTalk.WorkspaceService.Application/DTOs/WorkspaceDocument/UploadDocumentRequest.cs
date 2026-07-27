@@ -10,5 +10,6 @@ public record UploadDocumentRequest(
     long SizeBytes,
     string SourceType,
     Guid? SourceId,
-    bool IsSensitive
+    string? ConfidentialityLevel = null,
+    bool IsAiAllowed = true
 );

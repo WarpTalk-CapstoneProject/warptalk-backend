@@ -86,8 +86,26 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         Dictionary<Guid, List<TranslationRoomParticipantDto>>? participantsCache = null,
         CancellationToken ct = default)
     {
-        // Archived check: only Owner/Admin or Document Owner can view/download archived documents.
+        var isPublishedDocument = IsPublishedDocumentStatus(document.Status);
+
+        // Archived check: only Owner/Admin, Document Owner, or the Archiver can view/download archived documents.
         if (string.Equals(document.Status, WorkspaceDocumentStatus.archived.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+            var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+            if (!isOwnerOrAdmin && !isDocOwner)
+            {
+                var audit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                    a => a.DocumentId == document.Id && a.Action == WorkspaceDocumentConstants.AuditActions.ArchiveDocument, "", ct);
+                var isArchiver = audit != null && audit.ActorId == userId;
+                if (!isArchiver)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+                }
+            }
+        }
+
+        if (IsApprovalRestrictedStatus(document.Status))
         {
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
             var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
@@ -99,17 +117,22 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
 
         if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.Download, StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase))
+            if (!isPublishedDocument)
             {
-                // Download requires active status, unless allowed by archived check above
-                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+                var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
+                var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
+                if (!isOwnerOrAdmin && !isDocOwner)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.AccessDeniedDefault);
+                }
             }
         }
         else if (string.Equals(requiredPermission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(document.Status, WorkspaceDocumentStatus.active.ToString(), StringComparison.OrdinalIgnoreCase) ||
+            if (!string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(document.IngestionStatus, WorkspaceDocumentIngestionStatus.completed.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                document.LastIndexedAt == null ||
                 !document.AiEligible)
             {
                 return Result.Failure("Document is not eligible for AI retrieval.");
@@ -195,7 +218,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         }
 
         // 3. Fallback to default action
-        if (document.IsSensitive)
+        if (document.IsRestricted())
         {
             return Result.Failure(WorkspaceConstants.Errors.AccessDeniedSensitive);
         }
@@ -289,16 +312,19 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             _logger.LogWarning(ex, "Failed to fetch role from identity service for RoleId: {RoleId} in workspace {WorkspaceId}. Falling back to default role: {DefaultRole}", member.RoleId, workspaceId, WorkspaceMemberRole.Member.ToRoleName());
         }
 
-        if (roleName.IsOwnerOrAdmin())
-        {
-            return true;
-        }
+        // Strictly Workspace Owner or Admin only (excluding regular uploaders)
+        return roleName.IsOwnerOrAdmin();
+    }
 
-        if (document.OwnerId == userId || document.UploadedBy == userId)
-        {
-            return true;
-        }
+    private static bool IsPublishedDocumentStatus(string? status)
+    {
+        return string.Equals(status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
+    }
 
-        return false;
+    private static bool IsApprovalRestrictedStatus(string? status)
+    {
+        return string.Equals(status, WorkspaceDocumentStatus.pending_approval.ToString(), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, WorkspaceDocumentStatus.rejected.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 }
