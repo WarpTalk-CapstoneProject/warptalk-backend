@@ -212,7 +212,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
-            if (scanResult.ViolationFound)
+            if (scanResult.DlpDetected)
             {
                 document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
             }
@@ -222,7 +222,10 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 && !document.IsRestricted()
                 && isApproved
                 && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-                && !scanResult.ViolationFound;
+                && !scanResult.DlpDetected;
+
+            // Use masked text for Qdrant indexing when PII is present to ensure zero raw PII exposure
+            var textToIngest = !string.IsNullOrWhiteSpace(scanResult.MaskedContent) ? scanResult.MaskedContent : content.FullText;
 
             // AiEligible means retrieval is ready, not merely that indexing may
             // start. It is enabled only by DocumentEmbeddingResultProcessor after
@@ -233,14 +236,14 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
-            // 4. Wire into the RAG pipeline via IEmbeddingIndexPublisher
+            // 4. Wire into the RAG pipeline via IEmbeddingIndexPublisher using Masked Text
             if (canIndex)
             {
                 try
                 {
                     var embeddingJobId = await embeddingPublisher.PublishEmbeddingIndexRequestAsync(
                         document,
-                        content.FullText,
+                        textToIngest,
                         policy.AllowExternalLlm,
                         ct);
 

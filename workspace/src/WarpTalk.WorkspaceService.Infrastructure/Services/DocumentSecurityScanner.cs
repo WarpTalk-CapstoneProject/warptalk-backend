@@ -11,7 +11,7 @@ using WarpTalk.WorkspaceService.Application.Interfaces;
 namespace WarpTalk.WorkspaceService.Infrastructure.Services;
 
 /// <summary>
-/// Infrastructure service performing OpenAI-based PII scans and DLP checks on raw text via Redis Streams.
+/// Infrastructure service performing OpenAI-based PII scans, multi-language PII masking, and DLP checks on raw text via Redis Streams.
 /// </summary>
 public class DocumentSecurityScanner : IDocumentSecurityScanner
 {
@@ -30,7 +30,7 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
     {
         if (!piiEnabled && !dlpEnabled)
         {
-            return new DocumentSecurityScanResult(false, false, false);
+            return new DocumentSecurityScanResult(false, false, false, content);
         }
 
         var db = _redis.GetDatabase();
@@ -53,10 +53,8 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
 
         try
         {
-            // Publish to Redis Stream security:scan_requests
             await db.StreamAddAsync(streamKey, entries);
 
-            // Poll the result key in Redis
             var timeoutToken = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutToken.CancelAfter(TimeSpan.FromSeconds(30));
 
@@ -68,7 +66,6 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
                     _logger.LogInformation("Security scan result received for ScanId: {ScanId}", scanId);
                     var result = JsonSerializer.Deserialize<ScanResponse>((string)value!);
                     
-                    // Clean up the key
                     await db.KeyDeleteAsync(resultKey);
 
                     if (result == null)
@@ -76,7 +73,8 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
                         throw new InvalidOperationException("Failed to deserialize security scan response from Redis.");
                     }
 
-                    return new DocumentSecurityScanResult(result.ViolationFound, result.PiiDetected, result.DlpDetected);
+                    var maskedContent = !string.IsNullOrWhiteSpace(result.MaskedContent) ? result.MaskedContent : content;
+                    return new DocumentSecurityScanResult(result.ViolationFound, result.PiiDetected, result.DlpDetected, maskedContent);
                 }
 
                 await Task.Delay(500, ct);
@@ -101,5 +99,8 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
 
         [JsonPropertyName("violation_found")]
         public bool ViolationFound { get; set; }
+
+        [JsonPropertyName("masked_content")]
+        public string? MaskedContent { get; set; }
     }
 }
