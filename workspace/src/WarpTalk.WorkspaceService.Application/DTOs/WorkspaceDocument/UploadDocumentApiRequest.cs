@@ -10,6 +10,7 @@ public record UploadDocumentApiRequest(
     string Name,
     string SourceType,
     Guid? SourceId,
-    bool IsSensitive,
-    IFormFile File
+    string? ConfidentialityLevel,
+    IFormFile File,
+    bool IsAiAllowed = true
 );

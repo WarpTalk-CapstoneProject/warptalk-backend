@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceDocument;
@@ -76,20 +79,37 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
 
             var docId = Guid.NewGuid();
-            var extension = System.IO.Path.GetExtension(request.File.FileName);
+            var extension = WorkspaceDocumentHelper.NormalizeExtension(System.IO.Path.GetExtension(request.File.FileName));
+            if (!WorkspaceDocumentHelper.IsSupportedUploadExtension(extension))
+            {
+                var allowed = string.Join(", ", WorkspaceDocumentConstants.SupportedUploadExtensions);
+                return Result.Failure<WorkspaceDocumentDto>($"Unsupported file type. Allowed file types are: {allowed}.", ErrorCodes.ValidationError);
+            }
+
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
             var status = isOwnerOrAdmin 
-                ? WorkspaceDocumentStatus.active 
+                ? WorkspaceDocumentStatus.@public 
                 : WorkspaceDocumentStatus.pending_approval;
 
-            var ingestionStatus = isOwnerOrAdmin 
-                ? WorkspaceDocumentIngestionStatus.pending 
-                : WorkspaceDocumentIngestionStatus.awaiting_approval;
+            var effectiveIsAiAllowed = request.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
 
-            var aiEligible = isOwnerOrAdmin;
+            WorkspaceDocumentIngestionStatus ingestionStatus;
+            if (!effectiveIsAiAllowed)
+            {
+                ingestionStatus = WorkspaceDocumentIngestionStatus.skipped;
+            }
+            else
+            {
+                ingestionStatus = isOwnerOrAdmin 
+                    ? WorkspaceDocumentIngestionStatus.pending 
+                    : WorkspaceDocumentIngestionStatus.awaiting_approval;
+            }
 
-            var document = request.ToEntity(docId, workspaceId, userId, storageKey, status, ingestionStatus, aiEligible);
+            var aiEligible = false; // Initial state: false until ingestion completes or if IsAiAllowed == false
+
+            var document = request.ToEntity(docId, workspaceId, userId, storageKey, _storage.StorageProviderName, status, ingestionStatus, aiEligible);
+            document.IsAiAllowed = effectiveIsAiAllowed;
 
             // Save the document content securely to physical storage (AES-256 + HMAC-SHA512) before DB transaction
             using (var stream = request.File.OpenReadStream())
@@ -110,9 +130,20 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 throw;
             }
 
-            if (isOwnerOrAdmin)
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                status == WorkspaceDocumentStatus.pending_approval
+                    ? WorkspaceDocumentConstants.LifecycleEvents.PendingApproval
+                    : WorkspaceDocumentConstants.LifecycleEvents.Created,
+                document.UpdatedAt,
+                userId,
+                ct);
+
+            if (isOwnerOrAdmin && effectiveIsAiAllowed)
             {
-                // Publish upload event to trigger Pre-Ingestion security scan and eventual Qdrant sync
                 await _eventPublisher.PublishDocumentUploadedAsync(
                     document.Id,
                     workspaceId,
@@ -120,11 +151,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     document.FileName,
                     document.FileExtension,
                     userId,
-                    document.IsSensitive,
+                    document.ConfidentialityLevel,
                     ct);
             }
 
-            await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.IsSensitive }, _logger, ct);
+            await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.ConfidentialityLevel }, _logger, ct);
 
             var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
             return Result.Success(document.ToDto(downloadUrl));
@@ -162,7 +193,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
                 d => d.WorkspaceId == workspaceId && d.DeletedAt == null, "", ct);
 
-            var filteredDocs = documents.AsEnumerable();
+            var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
             {
                 var search = query.Search.Trim();
@@ -303,15 +334,56 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.Name = request.Name;
             }
 
-            if (request.IsSensitive.HasValue)
+            if (!string.IsNullOrWhiteSpace(request.ConfidentialityLevel))
             {
-                document.IsSensitive = request.IsSensitive.Value;
-                document.ConfidentialityLevel = WorkspaceDocumentHelper.GetConfidentialityLevel(request.IsSensitive.Value);
+                document.ConfidentialityLevel = request.ConfidentialityLevel;
+            }
+
+            if (request.IsAiAllowed.HasValue && request.IsAiAllowed.Value != document.IsAiAllowed)
+            {
+                var wasAllowed = document.IsAiAllowed;
+                document.IsAiAllowed = request.IsAiAllowed.Value;
+
+                if (!document.IsAiAllowed)
+                {
+                    // Toggled to Administrative Document (IsAiAllowed = false)
+                    document.AiEligible = false;
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+                    
+                    // Invalidate and delete existing vectors in Qdrant Vector DB
+                    await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+                }
+                else
+                {
+                    // Toggled back to AI Context Document (IsAiAllowed = true)
+                    document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
+                    if (string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        await _eventPublisher.PublishDocumentUploadedAsync(
+                            document.Id,
+                            workspaceId,
+                            document.StorageKey,
+                            document.FileName,
+                            document.FileExtension,
+                            userId,
+                            document.ConfidentialityLevel,
+                            ct);
+                    }
+                }
             }
 
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Updated,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.PatchDocumentMetadata, request, _logger, ct);
 
@@ -332,23 +404,80 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure("Forbidden. Only owner or admin can manage document access policies.", ErrorCodes.Forbidden);
+                return Result.Failure("Forbidden. Only workspace Owner/Admin or the document owner can manage document access policies.", ErrorCodes.Forbidden);
             }
 
-            if (string.IsNullOrWhiteSpace(request.SubjectType))
+            var normalizedSubjectType = NormalizePolicySubjectType(request.SubjectType);
+            var normalizedPermission = request.Permission?.Trim().ToLowerInvariant();
+            var normalizedEffect = request.Effect?.Trim().ToUpperInvariant();
+            var normalizedSubjectKey = request.SubjectKey?.Trim();
+
+            if (normalizedSubjectType == null)
             {
-                return Result.Failure("SubjectType is required for Add action.");
+                return Result.Failure("SubjectType must be User, Role, or MembershipType.", ErrorCodes.ValidationError);
             }
-            if (string.IsNullOrWhiteSpace(request.Permission))
+            if (!IsSupportedPolicyPermission(normalizedPermission))
             {
-                return Result.Failure("Permission is required for Add action.");
+                return Result.Failure("Permission must be view, download, or ai_retrieval.", ErrorCodes.ValidationError);
             }
-            if (string.IsNullOrWhiteSpace(request.Effect))
+            if (normalizedEffect is not WorkspacePolicyConstants.EffectAllow and not WorkspacePolicyConstants.EffectDeny)
             {
-                return Result.Failure("Effect is required for Add action.");
+                return Result.Failure("Effect must be ALLOW or DENY.", ErrorCodes.ValidationError);
             }
 
-            var policy = request.ToEntity(documentId, workspaceId, userId);
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeUser && !request.SubjectId.HasValue)
+            {
+                return Result.Failure("SubjectId is required for a User policy.", ErrorCodes.ValidationError);
+            }
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeRole
+                && (normalizedSubjectKey == null
+                    || (!normalizedSubjectKey.IsOwner()
+                        && !normalizedSubjectKey.IsAdmin()
+                        && !normalizedSubjectKey.IsMember())))
+            {
+                return Result.Failure("Role policy SubjectKey must be Owner, Admin, or Member.", ErrorCodes.ValidationError);
+            }
+            if (normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeMembershipType
+                && !Enum.TryParse<MembershipType>(normalizedSubjectKey, true, out _))
+            {
+                return Result.Failure("MembershipType policy SubjectKey must be Internal or External.", ErrorCodes.ValidationError);
+            }
+
+            normalizedSubjectKey = normalizedSubjectType switch
+            {
+                WorkspacePolicyConstants.SubjectTypeRole => normalizedSubjectKey!.ToWorkspaceMemberRole().ToRoleName(),
+                WorkspacePolicyConstants.SubjectTypeMembershipType => Enum.Parse<MembershipType>(normalizedSubjectKey!, true).ToString(),
+                _ => null
+            };
+            var normalizedSubjectId = normalizedSubjectType == WorkspacePolicyConstants.SubjectTypeUser
+                ? request.SubjectId
+                : null;
+
+            var existingPolicy = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FirstOrDefaultAsync(
+                policy => policy.DocumentId == documentId
+                          && policy.WorkspaceId == workspaceId
+                          && policy.SubjectType == normalizedSubjectType
+                          && policy.SubjectId == normalizedSubjectId
+                          && policy.SubjectKey == normalizedSubjectKey
+                          && policy.Permission == normalizedPermission,
+                "",
+                ct);
+            if (existingPolicy != null)
+            {
+                return Result.Failure(
+                    "A policy already exists for this subject and permission. Remove it before changing the effect.",
+                    ErrorCodes.Conflict);
+            }
+
+            var normalizedRequest = request with
+            {
+                SubjectType = normalizedSubjectType,
+                SubjectId = normalizedSubjectId,
+                SubjectKey = normalizedSubjectKey,
+                Permission = normalizedPermission,
+                Effect = normalizedEffect
+            };
+            var policy = normalizedRequest.ToEntity(documentId, workspaceId, userId);
 
             await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.AddAsync(policy, ct);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -371,11 +500,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure("Forbidden. Only owner or admin can manage document access policies.", ErrorCodes.Forbidden);
+                return Result.Failure("Forbidden. Only workspace Owner/Admin or the document owner can manage document access policies.", ErrorCodes.Forbidden);
             }
 
             var policy = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository.GetByIdAsync(policyId, ct);
-            if (policy == null || policy.DocumentId != documentId)
+            if (policy == null || policy.DocumentId != documentId || policy.WorkspaceId != workspaceId)
             {
                 return Result.Failure("Policy not found or does not belong to this document.", ErrorCodes.NotFound);
             }
@@ -401,7 +530,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             var canManage = await _accessEvaluator.CanManagePoliciesAsync(userId, workspaceId, documentId, ct);
             if (!canManage)
             {
-                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>("Forbidden. Only owner or admin can view access policies.", ErrorCodes.Forbidden);
+                return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>("Forbidden. Only workspace Owner/Admin or the document owner can view access policies.", ErrorCodes.Forbidden);
             }
 
             var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
@@ -420,6 +549,24 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while fetching document access policies. DocumentId: {DocumentId}", documentId);
             return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    private static string? NormalizePolicySubjectType(string? subjectType)
+    {
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeUser;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeRole;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeMembershipType;
+        return null;
+    }
+
+    private static bool IsSupportedPolicyPermission(string? permission)
+    {
+        return string.Equals(permission, WorkspaceDocumentPermissions.View, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.Download, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.Ordinal);
     }
 
     public async Task<Result> ApproveDocumentAsync(Guid workspaceId, Guid documentId, ApproveDocumentRequest request, Guid userId, CancellationToken ct = default)
@@ -452,23 +599,38 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (request.Approve)
             {
-                document.Status = WorkspaceDocumentStatus.active.ToString();
-                document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
-                document.AiEligible = true;
+                document.Status = WorkspaceDocumentStatus.@public.ToString();
+                document.AiEligible = false;
+                document.IngestionStatus = document.IsAiAllowed
+                    ? WorkspaceDocumentIngestionStatus.pending.ToString() 
+                    : WorkspaceDocumentIngestionStatus.skipped.ToString();
+                document.UpdatedAt = DateTime.UtcNow;
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
                 await _unitOfWork.SaveChangesAsync(ct);
-
-                // Publish event to Redis Stream for AI Ingestion
-                await _eventPublisher.PublishDocumentUploadedAsync(
+                await _eventPublisher.PublishDocumentLifecycleAsync(
                     document.Id,
                     workspaceId,
-                    document.StorageKey,
-                    document.FileName,
-                    document.FileExtension,
-                    document.UploadedBy ?? userId,
-                    document.IsSensitive,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Approved,
+                    document.UpdatedAt,
+                    userId,
                     ct);
+
+                if (document.IsAiAllowed)
+                {
+                    // Publish event to Redis Stream for AI Ingestion
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        document.UploadedBy ?? userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
 
                 await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ApproveDocument, logger: _logger, ct: ct);
             }
@@ -476,9 +638,20 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 document.Status = WorkspaceDocumentStatus.rejected.ToString();
                 document.AiEligible = false;
+                document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+                document.UpdatedAt = DateTime.UtcNow;
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
                 await _unitOfWork.SaveChangesAsync(ct);
+                await _eventPublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    workspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Rejected,
+                    document.UpdatedAt,
+                    userId,
+                    ct);
 
                 await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RejectDocument, logger: _logger, ct: ct);
             }
@@ -492,31 +665,32 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         }
     }
 
-    public async Task<Result<WorkspaceDocumentDto>> DownloadDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<DocumentDownloadStreamDto>> DownloadDocumentAsync(Guid workspaceId, Guid documentId, Guid userId, CancellationToken ct = default)
     {
         try
         {
             var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download, ct);
             if (!accessResult.IsSuccess)
             {
-                return Result.Failure<WorkspaceDocumentDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+                return Result.Failure<DocumentDownloadStreamDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
             }
 
             var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
             if (document == null)
             {
-                return Result.Failure<WorkspaceDocumentDto>("Document not found.", ErrorCodes.NotFound);
+                return Result.Failure<DocumentDownloadStreamDto>("Document not found.", ErrorCodes.NotFound);
             }
+
+            var stream = await _storage.GetDecryptedStreamAsync(document, ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DownloadDocument, logger: _logger, ct: ct);
 
-            var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
-            return Result.Success(document.ToDto(downloadUrl));
+            return Result.Success(new DocumentDownloadStreamDto(stream, WorkspaceDocumentHelper.GetSafeContentType(document.FileExtension), document.FileName));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while downloading document. DocumentId: {DocumentId}", documentId);
-            return Result.Failure<WorkspaceDocumentDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+            return Result.Failure<DocumentDownloadStreamDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -550,12 +724,22 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.DeletedAt = DateTime.UtcNow;
             document.DeletedBy = userId;
             document.AiEligible = false;
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Publish deletion event to Redis Stream to invalidate embeddings
             await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                "deleted",
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Deleted,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.DeleteDocument, logger: _logger, ct: ct);
 
@@ -596,12 +780,22 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             document.Status = WorkspaceDocumentStatus.archived.ToString();
             document.AiEligible = false;
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Publish archived event to Redis Stream to clean up embeddings from Qdrant
             await _eventPublisher.PublishDocumentArchivedAsync(documentId, workspaceId, ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Archived,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ArchiveDocument, logger: _logger, ct: ct);
 
@@ -637,7 +831,13 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             if (!isOwnerOrAdmin && !isDocOwner)
             {
-                return Result.Failure("Forbidden. Only owner, admin, or document owner can restore.", ErrorCodes.Forbidden);
+                var audit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                    a => a.DocumentId == document.Id && a.Action == WorkspaceDocumentConstants.AuditActions.ArchiveDocument, "", ct);
+                var isArchiver = audit != null && audit.ActorId == userId;
+                if (!isArchiver)
+                {
+                    return Result.Failure("Forbidden. Only owner, admin, document owner, or archiver can restore.", ErrorCodes.Forbidden);
+                }
             }
 
             if (document.Status != WorkspaceDocumentStatus.archived.ToString())
@@ -645,23 +845,37 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure("Document is not archived.", ErrorCodes.ValidationError);
             }
 
-            document.Status = WorkspaceDocumentStatus.active.ToString();
+            document.Status = WorkspaceDocumentStatus.@public.ToString();
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString();
             document.AiEligible = false; // Scanner will re-evaluate on background security scan
+            document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
-
-            // Re-publish upload event to trigger security scan and Qdrant index refresh
-            await _eventPublisher.PublishDocumentUploadedAsync(
+            await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
-                document.StorageKey,
-                document.FileName,
-                document.FileExtension,
-                document.UploadedBy ?? userId,
-                document.IsSensitive,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Restored,
+                document.UpdatedAt,
+                userId,
                 ct);
+
+            // Administrative documents never enter the AI ingestion pipeline.
+            if (document.IsAiAllowed)
+            {
+                // Re-publish upload event to trigger security scan and Qdrant index refresh.
+                await _eventPublisher.PublishDocumentUploadedAsync(
+                    document.Id,
+                    workspaceId,
+                    document.StorageKey,
+                    document.FileName,
+                    document.FileExtension,
+                    document.UploadedBy ?? userId,
+                    document.ConfidentialityLevel,
+                    ct);
+            }
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RestoreDocument, logger: _logger, ct: ct);
 
@@ -690,17 +904,25 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
             }
 
-            var extractedText = await _storage.GetExtractedTextAsync(document, ct);
-            if (string.IsNullOrEmpty(extractedText))
+            string extractedText = string.Empty;
+            try
             {
-                ExtractedDocumentContent content;
-                using (var decryptedStream = await _storage.GetDecryptedStreamAsync(document, ct))
+                extractedText = await _storage.GetExtractedTextAsync(document, ct);
+                if (string.IsNullOrEmpty(extractedText))
                 {
-                    content = await _textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                    ExtractedDocumentContent content;
+                    using (var decryptedStream = await _storage.GetDecryptedStreamAsync(document, ct))
+                    {
+                        content = await _textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
+                    }
+                    extractedText = JsonSerializer.Serialize(content);
+                    await _storage.SaveExtractedTextAsync(document, extractedText, ct);
                 }
-                // Save it so that next time we don't have to extract it on-the-fly (serialized as JSON)
-                extractedText = JsonSerializer.Serialize(content);
-                await _storage.SaveExtractedTextAsync(document, extractedText, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not extract or load storage file for DocumentId: {DocumentId}", documentId);
+                extractedText = string.Empty;
             }
 
             ExtractedTextDto textDto;
@@ -730,6 +952,45 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while retrieving extracted text. DocumentId: {DocumentId}", documentId);
+            return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<ExtractedTextDto>> UpdateExtractedTextAsync(Guid workspaceId, Guid documentId, string text, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var accessResult = await _accessEvaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View, ct);
+            if (!accessResult.IsSuccess)
+            {
+                return Result.Failure<ExtractedTextDto>(accessResult.Error ?? "Access denied.", ErrorCodes.Forbidden);
+            }
+
+            var document = await _unitOfWork.WorkspaceDocumentRepository.GetByIdAsync(documentId, ct);
+            if (document == null || document.DeletedAt != null)
+            {
+                return Result.Failure<ExtractedTextDto>("Document not found.", ErrorCodes.NotFound);
+            }
+
+            var content = new ExtractedDocumentContent { FullText = text };
+            var jsonContent = JsonSerializer.Serialize(content);
+            await _storage.SaveExtractedTextAsync(document, jsonContent, ct);
+
+            if (document.IsAiAllowed &&
+                string.Equals(
+                    document.Status,
+                    WorkspaceDocumentStatus.@public.ToString(),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await _eventPublisher.PublishEmbeddingIndexRequestAsync(document.Id, document.WorkspaceId, text, true, ct);
+            }
+
+            var textDto = new ExtractedTextDto(text, new(), new());
+            return Result.Success(textDto);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while updating extracted text. DocumentId: {DocumentId}", documentId);
             return Result.Failure<ExtractedTextDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }

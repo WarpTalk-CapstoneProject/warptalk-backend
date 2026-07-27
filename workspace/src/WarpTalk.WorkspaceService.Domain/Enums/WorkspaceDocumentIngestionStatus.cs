@@ -9,5 +9,6 @@ public enum WorkspaceDocumentIngestionStatus
     pending,
     processing,
     completed,
-    failed
+    failed,
+    skipped
 }

@@ -36,14 +36,23 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                     {
                         var pageTextBuilder = new StringBuilder();
                         var contentBytes = reader.GetPageContent(page);
-                        var tokenizer = new PrTokeniser(new RandomAccessFileOrArray(contentBytes));
-                        while (tokenizer.NextToken())
+                        if (contentBytes != null && contentBytes.Length > 0)
                         {
-                            if (tokenizer.TokenType == PrTokeniser.TK_STRING)
+                            var tokenizer = new PrTokeniser(new RandomAccessFileOrArray(contentBytes));
+                            while (tokenizer.NextToken())
                             {
-                                pageTextBuilder.Append(tokenizer.StringValue).Append(' ');
+                                var tokenType = tokenizer.TokenType;
+                                var val = tokenizer.StringValue;
+                                if (tokenType == PrTokeniser.TK_STRING || tokenType == PrTokeniser.TK_OTHER)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(val) && val.Any(char.IsLetterOrDigit))
+                                    {
+                                        pageTextBuilder.Append(val).Append(' ');
+                                    }
+                                }
                             }
                         }
+
                         var pageText = pageTextBuilder.ToString().Trim();
                         result.Pages.Add(new ExtractedPage { PageNumber = page, Text = pageText });
                         fullTextBuilder.AppendLine(pageText);
@@ -139,14 +148,79 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                 return result;
             }, ct);
         }
+        else if (ext == "csv")
+        {
+            using var reader = new StreamReader(fileStream, Encoding.UTF8);
+            var fullTextBuilder = new StringBuilder();
+            var sheet = new ExtractedSheet { SheetName = "CSV Data" };
+
+            string? line;
+            while ((line = await reader.ReadLineAsync()) != null)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                fullTextBuilder.AppendLine(line);
+
+                var cells = ParseCsvRow(line);
+                if (cells.Count > 0)
+                {
+                    sheet.Rows.Add(cells);
+                }
+            }
+
+            var fullText = fullTextBuilder.ToString();
+            result.FullText = fullText;
+            if (sheet.Rows.Count > 0)
+            {
+                result.Sheets.Add(sheet);
+            }
+            result.Pages.Add(new ExtractedPage { PageNumber = 1, Text = fullText });
+            return result;
+        }
         else
         {
-            // Plain text (txt, md) UTF-8 fallback
+            // Plain text (txt, md, json) UTF-8 fallback
             using var reader = new StreamReader(fileStream, Encoding.UTF8);
             var fullText = await reader.ReadToEndAsync(ct);
             result.FullText = fullText;
             result.Pages.Add(new ExtractedPage { PageNumber = 1, Text = fullText });
             return result;
         }
+    }
+
+    private static List<string> ParseCsvRow(string row)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrEmpty(row)) return result;
+
+        var inQuotes = false;
+        var sb = new StringBuilder();
+
+        for (int i = 0; i < row.Length; i++)
+        {
+            char c = row[i];
+            if (c == '"')
+            {
+                if (inQuotes && i + 1 < row.Length && row[i + 1] == '"')
+                {
+                    sb.Append('"');
+                    i++;
+                }
+                else
+                {
+                    inQuotes = !inQuotes;
+                }
+            }
+            else if (c == ',' && !inQuotes)
+            {
+                result.Add(sb.ToString().Trim());
+                sb.Clear();
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        result.Add(sb.ToString().Trim());
+        return result;
     }
 }

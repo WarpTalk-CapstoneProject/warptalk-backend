@@ -7,7 +7,65 @@ public static class WorkspaceDocumentConstants
     public const string RetentionStateActive = "active";
     public const string SourceTypeMeeting = "meeting";
     public const string LocalStorageProvider = "local";
-    public const string DownloadUrlFormat = "/api/v1/workspaces/{0}/documents/{1}/download";
+
+    public static readonly string[] SupportedUploadExtensions =
+    [
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".md",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+        ".gif"
+    ];
+
+    public static readonly string[] AiReadableExtensions =
+    [
+        ".pdf",
+        ".docx",
+        ".xlsx",
+        ".md"
+    ];
+
+    public static readonly string[] ImageExtensions =
+    [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+        ".gif"
+    ];
+
+    public static readonly IReadOnlyDictionary<string, string> ContentTypesByExtension =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [".pdf"] = "application/pdf",
+            [".docx"] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            [".xlsx"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            [".md"] = "text/markdown",
+            [".png"] = "image/png",
+            [".jpg"] = "image/jpeg",
+            [".jpeg"] = "image/jpeg",
+            [".webp"] = "image/webp",
+            [".bmp"] = "image/bmp",
+            [".gif"] = "image/gif"
+        };
+
+    public static class StorageEncryption
+    {
+        public const int IvSize = 16;
+        public const int SignatureSize = 64;
+        public const string DefaultMasterKeyFallback = "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";
+        public const string DefaultS3ServiceUrl = "http://minio:9000";
+        public const string DefaultS3AccessKey = "warptalk-admin";
+        public const string DefaultS3SecretKey = "warptalk-s3-secretkey";
+        public const string DefaultS3BucketName = "warptalk-workspace-documents";
+    }
+
     public static class AuditActions
     {
         public const string UploadDocument = "UploadDocument";
@@ -21,5 +79,24 @@ public static class WorkspaceDocumentConstants
         public const string DeleteDocument = "DeleteDocument";
         public const string ArchiveDocument = "ArchiveDocument";
         public const string RestoreDocument = "RestoreDocument";
+        public const string SecurityScanCompleted = "SecurityScanCompleted";
+        public const string EmbeddingIndexed = "EmbeddingIndexed";
+        public const string EmbeddingFailed = "EmbeddingFailed";
+        public const string EmbeddingBlocked = "EmbeddingBlocked";
+    }
+
+    public static class LifecycleEvents
+    {
+        public const string Created = "DocumentCreated";
+        public const string PendingApproval = "DocumentPendingApproval";
+        public const string Updated = "DocumentUpdated";
+        public const string Approved = "DocumentApproved";
+        public const string Rejected = "DocumentRejected";
+        public const string Processing = "DocumentProcessing";
+        public const string Completed = "DocumentCompleted";
+        public const string Failed = "DocumentFailed";
+        public const string Archived = "DocumentArchived";
+        public const string Restored = "DocumentRestored";
+        public const string Deleted = "DocumentDeleted";
     }
 }

@@ -1,17 +1,21 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using MassTransit;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.Shared.Events;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Clients;
 
 public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPublisher
 {
     private const string RedisStreamName = "workspace-document-events";
+    private const string RealtimeChannel = "warptalk:documents:events";
+    private const int StreamMaxLength = 10000;
 
     private readonly IConnectionMultiplexer _redis;
     private readonly IPublishEndpoint _publishEndpoint;
@@ -34,9 +38,10 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
         string fileName,
         string fileExtension,
         Guid userId,
-        bool isSensitive,
+        string? confidentialityLevel = null,
         CancellationToken ct = default)
     {
+        var level = confidentialityLevel ?? WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
         var message = new WorkspaceDocumentIngestionRequestedEvent
         {
             DocumentId = documentId.ToString(),
@@ -45,7 +50,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             FileName = fileName,
             FileExtension = fileExtension,
             RequestedByUserId = userId.ToString(),
-            IsSensitive = isSensitive,
+            IsSensitive = string.Equals(level, WorkspaceDocumentConstants.SensitiveConfidentialityLevel, StringComparison.OrdinalIgnoreCase),
         };
 
         await PublishRabbitMqEventAsync(message, documentId, ct);
@@ -55,7 +60,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             entries.Add(new NameValueEntry("file_name", fileName));
             entries.Add(new NameValueEntry("file_extension", fileExtension));
             entries.Add(new NameValueEntry("uploaded_by", userId.ToString()));
-            entries.Add(new NameValueEntry("is_sensitive", isSensitive.ToString()));
+            entries.Add(new NameValueEntry("confidentiality_level", level));
         });
     }
 
@@ -67,6 +72,103 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
     public async Task PublishDocumentArchivedAsync(Guid documentId, Guid workspaceId, CancellationToken ct = default)
     {
         await PublishInvalidationAsync(documentId, workspaceId, "archived", "DocumentArchived", ct);
+    }
+
+    public async Task PublishDocumentLifecycleAsync(
+        Guid documentId,
+        Guid workspaceId,
+        string status,
+        string ingestionStatus,
+        string eventType,
+        DateTime updatedAt,
+        Guid? userId = null,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                eventType,
+                workspaceId = workspaceId.ToString(),
+                documentId = documentId.ToString(),
+                status,
+                ingestionStatus,
+                updatedAt = updatedAt.ToUniversalTime(),
+                userId = userId?.ToString()
+            });
+            await _redis.GetSubscriber().PublishAsync(RedisChannel.Literal(RealtimeChannel), payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to publish document lifecycle event {EventType}. DocumentId: {DocumentId}",
+                eventType,
+                documentId);
+        }
+    }
+
+    public async Task PublishEmbeddingIndexRequestAsync(
+        Guid documentId,
+        Guid workspaceId,
+        string fullText,
+        bool externalLlmAllowed,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var db = _redis.GetDatabase();
+            var jobId = Guid.NewGuid().ToString();
+
+            // Simple chunker (~1000 chars per chunk)
+            var chunks = new System.Collections.Generic.List<object>();
+            int chunkSize = 1000;
+            int offset = 0;
+            int chunkIdx = 0;
+            string text = fullText ?? string.Empty;
+
+            if (text.Length == 0)
+            {
+                text = "Empty Document";
+            }
+
+            while (offset < text.Length)
+            {
+                int len = Math.Min(chunkSize, text.Length - offset);
+                string chunkText = text.Substring(offset, len);
+                chunks.Add(new
+                {
+                    id = $"{documentId}_chunk_{chunkIdx}",
+                    text = chunkText,
+                    metadata = new { chunk_index = chunkIdx, document_id = documentId.ToString() }
+                });
+                offset += len;
+                chunkIdx++;
+            }
+
+            var chunksJson = System.Text.Json.JsonSerializer.Serialize(chunks);
+
+            await db.StreamAddAsync("embedding:index_requests", new NameValueEntry[]
+            {
+                new NameValueEntry("job_id", jobId),
+                new NameValueEntry("workspace_id", workspaceId.ToString()),
+                new NameValueEntry("collection_id", "warptalk_workspace_documents"),
+                new NameValueEntry("source_type", "workspace_document"),
+                new NameValueEntry("source_id", documentId.ToString()),
+                new NameValueEntry("chunks_json", chunksJson),
+                new NameValueEntry("external_llm_allowed", externalLlmAllowed ? "true" : "false"),
+                new NameValueEntry("ai_retrieval_allowed", "true"),
+                new NameValueEntry("retention_state", "active"),
+                new NameValueEntry("deletion_state", "active"),
+                new NameValueEntry("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString())
+            }, maxLength: StreamMaxLength, useApproximateMaxLength: true);
+
+            _logger.LogInformation("Published EmbeddingIndexRequest to Redis Stream embedding:index_requests for DocumentId: {DocumentId}, Chunks: {ChunkCount}", documentId, chunkIdx);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to publish EmbeddingIndexRequest to Redis Stream. DocumentId: {DocumentId}", documentId);
+        }
     }
 
     private async Task PublishInvalidationAsync(
@@ -126,7 +228,7 @@ public class HybridWorkspaceDocumentEventPublisher : IWorkspaceDocumentEventPubl
             configure?.Invoke(entries);
 
             var db = _redis.GetDatabase();
-            await db.StreamAddAsync(RedisStreamName, entries.ToArray());
+            await db.StreamAddAsync(RedisStreamName, entries.ToArray(), maxLength: StreamMaxLength, useApproximateMaxLength: true);
         }
         catch (Exception ex)
         {

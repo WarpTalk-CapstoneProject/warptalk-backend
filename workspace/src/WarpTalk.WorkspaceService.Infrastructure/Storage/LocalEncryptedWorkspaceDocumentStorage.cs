@@ -5,9 +5,11 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using WarpTalk.Shared.Configuration;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Storage;
@@ -18,19 +20,21 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Storage;
 /// </summary>
 public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
 {
-    private const int IvSize = 16; // AES IV size in bytes
-    private const int SignatureSize = 64; // HMAC-SHA512 signature size in bytes
+    private static int IvSize => WorkspaceDocumentConstants.StorageEncryption.IvSize;
+    private static int SignatureSize => WorkspaceDocumentConstants.StorageEncryption.SignatureSize;
 
-    private readonly IConfiguration _configuration;
+    private readonly ObjectStorageOptions _storageOptions;
     private readonly ILogger<LocalEncryptedWorkspaceDocumentStorage> _logger;
 
     public LocalEncryptedWorkspaceDocumentStorage(
-        IConfiguration configuration,
+        IOptions<ObjectStorageOptions> storageOptions,
         ILogger<LocalEncryptedWorkspaceDocumentStorage> logger)
     {
-        _configuration = configuration;
+        _storageOptions = storageOptions.Value;
         _logger = logger;
     }
+
+    public string StorageProviderName => _storageOptions.Provider ?? StorageProviders.Local;
 
     public async Task<string> ReadDocumentContentAsync(WorkspaceDocument document, CancellationToken ct = default)
     {
@@ -116,9 +120,12 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
         {
             baseDir = Path.Combine(Directory.GetCurrentDirectory(), "uploads");
         }
-        Directory.CreateDirectory(baseDir);
-
         var fullPath = Path.Combine(baseDir, document.StorageKey);
+        var dir = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
         var (aesKey, hmacKey) = DeriveKeys(document.WorkspaceId);
 
         // Step 1: Generate Cryptographically Secure Random IV (IvSize bytes)
@@ -229,7 +236,7 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
 
     private (byte[] AesKey, byte[] HmacKey) DeriveKeys(Guid workspaceId)
     {
-        var masterKeyStr = _configuration["Storage:MasterKey"] ?? "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";
+        var masterKeyStr = _storageOptions.MasterKey ?? "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";
         var masterKeyBytes = Encoding.UTF8.GetBytes(masterKeyStr);
 
         // Key Derivation using HMAC-SHA512
