@@ -1,114 +1,172 @@
-# Feature Specification: Workspace Document Upload Approval & AI Lifecycle Workflow (WT-158-Addendum)
+# Feature Specification: Workspace Document Approval & AI Ingestion Lifecycle Workflow (WT-158-Addendum)
 
 **Feature Branch**: `feat/workspace-document-approval-workflow`  
-**Created/Updated**: 2026-06-05  
-**Status**: Proposal  
+**Created/Updated**: 2026-07-26  
+**Status**: Approved & Formally Specified  
 
 ---
 
 ## 1. Problem Statement & Context
+
 Để tăng cường bảo mật thông tin nội bộ của doanh nghiệp (Enterprise), việc tải lên tài liệu mới cần được kiểm soát chặt chẽ thông qua luồng phê duyệt (**Approval Workflow**) và đồng bộ hóa vòng đời tài liệu với hệ thống AI (AI retrieval boundary, Vector DB embedding invalidation).
 
----
+### Điểm Kỹ Thuật Cốt Lõi (State Separation Architecture):
+Nếu gán trực tiếp `AiEligible = false` trước bước gửi request nạp vector sang AI Worker, Worker Python sẽ tự động **chặn (block)** request do đọc phải cờ `ai_retrieval_allowed = false`. 
 
-## 2. Quy tắc Nghiệp vụ (Business Rules)
-
-### 2.1. Phân quyền và Trạng thái Tài liệu (Document Status & Ingestion Status Enums)
-Tài liệu và quá trình xử lý AI sẽ có các tập trạng thái rõ ràng thay vì dùng chuỗi thô (hardcoded strings):
-
-#### A. Trạng thái Hoạt động của Tài liệu (`WorkspaceDocumentStatus`):
-* `active`: Tài liệu hoạt động bình thường, sẵn sàng sử dụng.
-* `pending_approval`: Tài liệu do Member tải lên, đang chờ duyệt từ Owner/Admin.
-* `rejected`: Đề xuất tài liệu bị từ chối (vẫn lưu lại để Member xem lịch sử, không tự động xóa mềm ngay lập tức).
-* `archived`: Tài liệu đã được đưa vào lưu trữ do hết thời hạn lưu giữ (Retention Policy).
-
-#### B. Trạng thái AI Ingestion (`WorkspaceDocumentIngestionStatus`):
-* `awaiting_approval`: Tài liệu chưa được duyệt, chưa gửi vào hàng đợi xử lý AI.
-* `pending`: Tài liệu đã được duyệt hoặc tải lên trực tiếp bởi Admin/Owner, đang nằm trong hàng đợi chờ xử lý.
-* `processing`: Dịch vụ AI đang phân tích dữ liệu, tách nhỏ nội dung (chunking) và sinh embeddings.
-* `completed`: AI đã xử lý và lưu vector embeddings thành công vào Vector DB.
-* `failed`: Quá trình xử lý AI gặp lỗi (ví dụ: lỗi định dạng, lỗi OCR, hoặc lỗi mạng).
+Do đó, kiến trúc bắt buộc phải **tách biệt làm 2 cờ riêng biệt**:
+1. **`canIndex` (Cờ Kiểm duyệt Nội bộ)**: Kiểm tra an toàn bảo mật (DLP/PII Pass, Approved status, Active retention state) để quyết định có phát tin nhắn `ai_retrieval_allowed = "true"` lên Redis Stream `embedding:index_requests` hay không.
+2. **`document.AiEligible` (Cờ Trạng thái RAG Công khai)**: Được giữ bằng `false` trong suốt quá trình xử lý, và **chỉ chính thức chuyển sang `true`** sau khi AI Worker đã tạo vector và upsert thành công vào Qdrant Vector DB (`status = "indexed"`).
 
 ---
 
-### 2.2. Quy trình Tải lên & Phê duyệt (Upload & Approval)
-1. **Quyền Upload**:
-   - Chỉ các thành viên hợp lệ (`Internal` hoặc `External` được cho phép) mới được upload.
-   - Khi **Owner / Admin** upload:
-     - `Status = WorkspaceDocumentStatus.active`
-     - `IngestionStatus = WorkspaceDocumentIngestionStatus.pending`
-     - `AiEligible = true`
-     - Gửi ngay sự kiện `PublishDocumentUploadedAsync` lên Redis Stream.
-   - Khi **Member** upload:
-     - `Status = WorkspaceDocumentStatus.pending_approval`
-     - `IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval`
-     - `AiEligible = false`
-     - **Không** gửi sự kiện lên Redis Stream.
-2. **Quy trình duyệt (Approve/Reject)**:
-   - **Nơi xử lý**: Được đảm nhận bởi API `POST /api/v1/workspaces/{workspaceId}/documents/{documentId}/approve` và phương thức `WorkspaceDocumentService.ApproveDocumentAsync(...)`.
-   - Chỉ **Owner / Admin** mới có quyền duyệt tài liệu.
-   - Khi **Approve**:
-     - `Status = WorkspaceDocumentStatus.active`
-     - `IngestionStatus = WorkspaceDocumentIngestionStatus.pending`
-     - `AiEligible = true`
-     - Gửi sự kiện `PublishDocumentUploadedAsync` lên Redis Stream để AI Ingestion xử lý.
-   - Khi **Reject**:
-     - `Status = WorkspaceDocumentStatus.rejected`
-     - `AiEligible = false`
-     - **Không thực hiện xóa mềm ngay**. Tài liệu vẫn tồn tại trong DB dưới trạng thái `rejected` để Member tải lên có thể biết đề xuất của mình bị từ chối.
-3. **Quy trình Xóa tài liệu**:
-   - Khi Member hoặc Admin gọi API `DELETE` tài liệu, tài liệu đó mới chính thức bị xóa mềm (`DeletedAt = DateTime.UtcNow`, `DeletedBy = actorId`).
+## 2. Quy trình 5 Giai đoạn Hoạt động Chi tiết (5-Phase Operational Flow)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Member as Member / Admin
+    participant Service as WorkspaceDocumentService
+    participant Guardrail as DocumentSecurityGuardrail
+    participant Redis as Redis Stream
+    participant AIWorker as AI Embedding Worker (Python)
+    participant Qdrant as Qdrant Vector DB
+    participant Processor as DocumentEmbeddingResultProcessor
+    actor Chatbot as AI Chatbot RAG
+
+    rect rgb(240, 248, 255)
+        note over Member, Service: Giai đoạn 1: Upload & Approval Gate
+        Member->>Service: Upload Document (isAiAllowed = true)
+        alt Member Upload
+            Service->>Service: Status = pending_approval, IngestionStatus = awaiting_approval, AiEligible = false (CHẶN BẮN EVENT)
+            Member->>Service: Admin bấm ApproveDocumentAsync()
+            Service->>Service: Cập nhật Status = public (@public), IngestionStatus = pending
+        else Owner / Admin Upload
+            Service->>Service: Cập nhật ngay Status = public (@public), IngestionStatus = pending
+        end
+        Service->>Redis: Bắn sự kiện DocumentUploaded
+    end
+
+    rect rgb(255, 245, 238)
+        note over Guardrail, Redis: Giai đoạn 2: Security Scan & Guardrail (canIndex Check)
+        Redis->>Guardrail: Consumer đọc DocumentUploaded event
+        Guardrail->>Guardrail: Tải file từ MinIO, giải mã & Quét PII/DLP
+        Guardrail->>Guardrail: Tính cờ canIndex (isApproved & !ViolationFound & IsAiAllowed & Active)
+        Guardrail->>Guardrail: Cập nhật IngestionStatus = processing, AiEligible = false
+        alt canIndex == true
+            Guardrail->>Redis: Đẩy sang embedding:index_requests (ai_retrieval_allowed = "true")
+        else canIndex == false
+            Guardrail->>Guardrail: Đổi IngestionStatus = skipped (Kết thúc)
+        end
+    end
+
+    rect rgb(240, 255, 240)
+        note over AIWorker, Qdrant: Giai đoạn 3: Vector Embedding & Qdrant Upsert
+        Redis->>AIWorker: Lắng nghe embedding:index_requests
+        AIWorker->>AIWorker: Kiểm tra ai_retrieval_allowed == "true" (PASS)
+        AIWorker->>AIWorker: Gọi OpenAI Embeddings API biến Text thành Vector
+        AIWorker->>Qdrant: Upsert Vectors + Payload (ai_retrieval = true)
+        AIWorker->>Redis: Bắn kết quả lên embedding:index_results (status = "indexed")
+    end
+
+    rect rgb(255, 250, 205)
+        note over Processor, Service: Giai đoạn 4: Khai mở Quyền RAG (AiEligible = true)
+        Redis->>Processor: Lắng nghe embedding:index_results
+        Processor->>Service: Cập nhật IngestionStatus = completed
+        Processor->>Service: CHÍNH THỨC BẬT document.AiEligible = true
+    end
+
+    rect rgb(245, 245, 255)
+        note over Chatbot, Qdrant: Giai đoạn 5: AI RAG Retrieval Filtering
+        Chatbot->>Qdrant: User hỏi Chatbot ➔ Query Qdrant (Filter: workspace_id & ai_retrieval=true)
+        Qdrant-->>Chatbot: Trả về nội dung Chunk chuẩn xác
+    end
+```
 
 ---
 
-### 2.3. Ranh giới AI Retrieval (AI Context Retrieval Boundary)
-Hệ thống AI (ví dụ: Chatbot, RAG, Translation Context) **chỉ được phép** lấy dữ liệu từ các tài liệu thỏa mãn đồng thời:
-* `DeletedAt == null` (Chưa bị xóa).
-* `Status == WorkspaceDocumentStatus.active` (Tài liệu đang hoạt động).
-* `RetentionState == "active"` (Chưa bị lưu trữ/archived).
-* `IngestionStatus == WorkspaceDocumentIngestionStatus.completed` (AI đã nạp thành công).
-* `AiEligible == true` (Đủ điều kiện AI).
-
-Quy tắc này sẽ được cấu hình chặt chẽ trong `DocumentAccessEvaluator` khi kiểm tra quyền truy cập với vai trò `"ai_retrieval"`.
-
----
-
-### 2.4. Thu hồi Embeddings trong Vector DB (Vector DB Invalidation)
-Khi một tài liệu bị **Xóa** (`DeletedAt != null`) hoặc chuyển sang trạng thái **Lưu trữ** (`Status = archived` hoặc `RetentionState = archived`):
-1. Hệ thống backend Workspace Service sẽ xuất bản một sự kiện `PublishDocumentDeletedAsync` / `PublishDocumentArchivedAsync` lên Redis Stream.
-2. AI Background Worker lắng nghe sự kiện và gọi API của Vector DB để xóa hoàn toàn các vector embeddings liên quan đến `documentId` đó, đảm bảo AI không sử dụng nội dung cũ.
-*(Lưu ý: Tài liệu bị Reject từ ban đầu không cần thu hồi embeddings vì chưa bao giờ được nạp vào Vector DB)*.
+### Giai đoạn 1: Upload & Phê duyệt (Approval Gate)
+- **Khi Member Upload**:
+  - Dữ liệu lưu mã hóa AES-256 vào MinIO.
+  - Cơ sở dữ liệu lưu: `Status = WorkspaceDocumentStatus.pending_approval`, `IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval`, `AiEligible = false`.
+  - **Chặn tuyệt đối việc phát sự kiện `DocumentUploaded` sang Redis Stream**. File nằm ở chế độ xem trước an toàn chờ Admin duyệt.
+- **Khi Admin/Owner Upload hoặc Bấm Phê duyệt (`ApproveDocumentAsync`)**:
+  - Cập nhật DB: `Status = WorkspaceDocumentStatus.@public` (active), `IngestionStatus = WorkspaceDocumentIngestionStatus.pending`, `AiEligible = false`.
+  - Phát sự kiện `DocumentUploaded` lên Redis Stream `workspace:document:uploaded`.
 
 ---
 
-### 2.5. Cơ chế Idempotency & Retry (Idempotency & Resilience)
-* **Idempotency**: Để tránh worker xử lý trùng lặp một sự kiện (ví dụ: khi Redis gửi lại tin nhắn do chưa xác nhận thành công), Worker khi nhận event phải kiểm tra `IngestionStatus` trong cơ sở dữ liệu. Nếu trạng thái là `processing` or `completed` thì bỏ qua xử lý.
-* **Retry & Dead-Letter (DLQ)**:
-  - Khi Ingestion thất bại, Worker được cấu hình tự động thử lại tối đa 3 lần (Exponential Backoff).
-  - Nếu sau 3 lần vẫn lỗi, cập nhật `IngestionStatus = WorkspaceDocumentIngestionStatus.failed` để quản trị viên có thể theo dõi và bấm yêu cầu xử lý lại (Retry) thủ công từ giao diện quản trị.
+### Giai đoạn 2: Quét An toàn Bảo mật & Đánh giá `canIndex` (Security Guardrail)
+- Worker `DocumentSecurityGuardrailConsumerService` tiêu thụ sự kiện `DocumentUploaded`.
+- Tải nội dung từ MinIO, giải mã và thực hiện quét PII (thông tin cá nhân) và DLP (từ khóa cấm).
+- Đánh giá cờ nội bộ `canIndex`:
+  ```csharp
+  var canIndex = document.IsAiAllowed
+      && !document.IsRestricted()
+      && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
+      && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
+      && !scanResult.ViolationFound;
+  ```
+- Cập nhật `document.IngestionStatus = processing`, `document.AiEligible = false`.
+- **Nếu `canIndex == true`**: Gọi `RedisEmbeddingIndexPublisher.PublishEmbeddingIndexRequestAsync(...)` để phát sự kiện sang Redis Stream `embedding:index_requests` với thuộc tính **`ai_retrieval_allowed = "true"`**.
+- **Nếu `canIndex == false`**: Cập nhật `document.IngestionStatus = skipped` và kết thúc luồng.
 
 ---
 
-### 2.6. Audit Trail (Nhật ký hành động)
-Mọi hành động nhạy cảm trên tài liệu phải được ghi lại thành công trong bảng `WorkspaceDocumentAudits`:
-* Tải lên tài liệu mật: `UploadDocument`.
-* Tải xuống tài liệu mật: `DownloadDocument`.
-* Đánh giá phê duyệt tài liệu: `ApproveDocument` hoặc `RejectDocument`.
-* Xóa tài liệu: `DeleteDocument`.
+### Giai đoạn 3: Phân đoạn Vector & Lưu Qdrant (AI Embedding Worker)
+- Worker Python (`warptalk-ai/embedding_worker`) tiêu thụ tin nhắn từ `embedding:index_requests`.
+- Phương thức `_block_reason` kiểm tra `ai_retrieval_allowed == "true"` ➔ Cho phép xử lý.
+- Tiến hành phân đoạn văn bản (text chunking), gọi OpenAI `text-embedding-3-small` tạo Vector 1536 chiều.
+- Thực hiện Upsert Vector cùng Metadata Payload vào Qdrant Collection `workspace_{workspaceId}`:
+  ```json
+  {
+    "document_id": "...",
+    "workspace_id": "...",
+    "chunk_id": "...",
+    "ai_retrieval": true,
+    "retention_state": "active"
+  }
+  ```
+- Phát thông điệp kết quả lên Redis Stream `embedding:index_results` với `status = "indexed"`.
 
 ---
 
-### 2.7. Kiểm tra quyền ở cả luồng Upload, Download và AI Retrieval
-Hệ thống kiểm tra bảo mật ở 3 tầng:
-1. **Upload API**: Chặn các vai trò không hợp lệ tải lên.
-2. **Download API**: Thêm endpoint `/download` và kiểm tra quyền thông qua `DocumentAccessEvaluator.EvaluateAccessAsync` với permission `"download"`.
-3. **AI Retrieval API**: Trước khi hệ thống AI thực hiện tìm kiếm ngữ cảnh, nó phải gửi danh sách Document ID qua bộ đánh giá quyền với permission `"ai_retrieval"`.
+### Giai đoạn 4: Khai mở Trạng thái RAG (`AiEligible = true`)
+- Background Service .NET (`DocumentEmbeddingIndexResultConsumerService`) tiêu thụ tin nhắn từ `embedding:index_results`.
+- Chuyển tiếp cho `DocumentEmbeddingResultProcessor.ProcessResultAsync`:
+  - Kiểm tra `status == "indexed"`.
+  - Cập nhật `document.IngestionStatus = completed`.
+  - **Chính thức bật `document.AiEligible = true`**.
+  - Đánh dấu mốc `document.LastIndexedAt = DateTime.UtcNow`.
 
 ---
 
-## 3. API Contract
+### Giai đoạn 5: Tìm kiếm Ngữ nghĩa RAG (AI Retrieval Boundary)
+- Chatbot RAG (`warptalk-ai/ai_assistant_worker/chat_tools.py`) khi thực hiện semantic search sẽ gửi câu hỏi kèm bộ lọc sang Qdrant:
+  ```json
+  {
+    "workspace_id": "workspace_uuid",
+    "ai_retrieval": true
+  }
+  ```
+- Qdrant chỉ trả về các vector chunks thuộc tài liệu có `ai_retrieval = true` (vốn đồng bộ với các tài liệu đã đạt `AiEligible = true` và `Status = @public`).
 
-### 3.1. Phê duyệt/Từ chối tài liệu
+---
+
+## 3. Quy tắc Nghiệp vụ (Business Rules Summary)
+
+| Trạng thái | Member Upload | Admin Upload | Sau khi Admin Approve | Sau khi Qdrant Index Xong |
+|---|---|---|---|---|
+| `Status` | `pending_approval` | `@public` | `@public` | `@public` |
+| `IngestionStatus` | `awaiting_approval` | `pending` | `pending` ➔ `processing` | `completed` |
+| `canIndex` (Internal) | `false` | `true` | `true` | `true` |
+| `ai_retrieval_allowed` (Redis) | *(Không gửi)* | `"true"` | `"true"` | `"true"` |
+| `document.AiEligible` (DB) | `false` | `false` | `false` | **`true`** |
+
+---
+
+## 4. API Contract & Nhật ký (Audit Trail)
+
+### 4.1. Phê duyệt/Từ chối tài liệu
 * **Endpoint**: `POST /api/v1/workspaces/{workspaceId}/documents/{documentId}/approve`
 * **Request Body**:
 ```json
@@ -117,6 +175,9 @@ Hệ thống kiểm tra bảo mật ở 3 tầng:
 }
 ```
 
-### 3.2. Tải xuống tài liệu
-* **Endpoint**: `GET /api/v1/workspaces/{workspaceId}/documents/{documentId}/download`
-* **Response**: Trả về File Stream (nếu lưu trữ cục bộ) hoặc Redirect đến S3/MinIO Storage Key.
+### 4.2. Audit Trail Actions
+Mọi thao tác thay đổi vòng đời tài liệu đều được ghi lại vào `WorkspaceDocumentAudits`:
+- `UploadDocument`: Tải lên tài liệu.
+- `ApproveDocument` / `RejectDocument`: Phê duyệt hoặc từ chối tài liệu.
+- `SecurityScanCompleted`: Hoàn tất quét DLP/PII.
+- `EmbeddingIndexed`: Hoàn tất nạp Vector vào Qdrant DB.
