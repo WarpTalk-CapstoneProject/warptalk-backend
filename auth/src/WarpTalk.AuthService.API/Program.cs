@@ -1,44 +1,41 @@
-using System.Text;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+using System;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
+using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
 using FluentValidation.AspNetCore;
+using WarpTalk.AuthService.API.Extensions;
+using WarpTalk.AuthService.API.GrpcServices;
+using WarpTalk.AuthService.API.Validators;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Interfaces.Security;
+using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.AuthService.Domain.Settings;
+using WarpTalk.AuthService.Infrastructure.Clients;
 using WarpTalk.AuthService.Infrastructure.Persistence;
 using WarpTalk.AuthService.Infrastructure.Repositories;
 using WarpTalk.AuthService.Infrastructure.Security;
-using WarpTalk.AuthService.API.GrpcServices;
-using WarpTalk.AuthService.Domain.Constants;
-using WarpTalk.AuthService.Domain.Settings;
-using WarpTalk.AuthService.API.Extensions;
-using WarpTalk.AuthService.API.Validators;
+using WarpTalk.AuthService.Infrastructure.Storage;
+using WarpTalk.Shared.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Kestrel Ports Configuration
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.ListenAnyIP(5101, listenOptions =>
-    {
-        listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1;
-    });
-    options.ListenAnyIP(50051, listenOptions =>
-    {
-        listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2;
-    });
+    options.ListenAnyIP(5101, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+    options.ListenAnyIP(50051, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
 });
 
-// --- DbContext ---
+// DbContext
 builder.Services.AddDbContext<AuthDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("AuthDb")));
 
-// --- Configuration ---
+// Configuration Options
 builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
 builder.Services.Configure<PasswordHasherSettings>(builder.Configuration.GetSection("PasswordHasherSettings"));
 
-// --- Repositories ---
+// Repositories & Unit of Work
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
@@ -48,57 +45,40 @@ builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
-// --- Application Services ---
+// Application Services & Memory Cache
 builder.Services.AddMemoryCache();
 builder.Services.AddDistributedMemoryCache();
-builder.Services.AddScoped<IAuthService, WarpTalk.AuthService.Application.Services.AuthService>();
-builder.Services.AddScoped<ITokenService, WarpTalk.AuthService.Application.Services.TokenService>();
-builder.Services.AddScoped<IProfileService, WarpTalk.AuthService.Application.Services.ProfileService>();
-builder.Services.AddScoped<IUserSettingsService, WarpTalk.AuthService.Application.Services.UserSettingsService>();
-builder.Services.AddScoped<IGoogleAuthService, WarpTalk.AuthService.Application.Services.GoogleAuthService>();
-builder.Services.AddScoped<IVoiceProfileService, WarpTalk.AuthService.Application.Services.VoiceProfileService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<IProfileService, ProfileService>();
+builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
+builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
+builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 
-// --- Infrastructure Services ---
+// Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
-builder.Services.AddSingleton<WarpTalk.AuthService.Application.Interfaces.IVoiceSampleStorage, WarpTalk.AuthService.Infrastructure.Storage.LocalVoiceSampleStorage>();
+builder.Services.AddSingleton<IVoiceSampleStorage, LocalVoiceSampleStorage>();
 
-// --- JWT Authentication ---
-var jwtSecret = builder.Configuration["Jwt:Secret"]
-    ?? throw new InvalidOperationException("Jwt:Secret is not configured");
+// Inter-Service gRPC Clients
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService.WorkspaceInvitationServiceClient>(o =>
+{
+    o.Address = new Uri(builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056");
+});
+builder.Services.AddScoped<IWorkspaceInvitationClient, WorkspaceInvitationGrpcClient>();
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-            ClockSkew = TimeSpan.FromSeconds(30)
-        };
-    });
-
+// Clean & Secure JWT Authentication
+builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration);
 builder.Services.AddAuthorization();
 
-// Register FluentValidation Validators
+// Validation & Custom API Behavior
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();
 builder.Services.AddFluentValidationAutoValidation();
 builder.Services.AddCustomApiBehavior();
 
 builder.Services.AddControllers();
 builder.Services.AddGrpc();
-
-builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService.WorkspaceInvitationServiceClient>(o =>
-{
-    o.Address = new Uri(builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056");
-});
-builder.Services.AddScoped<IWorkspaceInvitationClient, WarpTalk.AuthService.Infrastructure.Clients.WorkspaceInvitationGrpcClient>();
 
 var app = builder.Build();
 
@@ -108,3 +88,5 @@ app.MapControllers();
 app.MapGrpcService<UserServiceGrpc>();
 
 app.Run();
+
+public partial class Program { }
