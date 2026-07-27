@@ -34,6 +34,10 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly IDocumentSecurityScanner _securityScanner;
+    private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
+    private readonly IEmbeddingIndexPublisher _embeddingPublisher;
+    private readonly IAiPolicyResolver _policyResolver;
+    private readonly IDatabase _database;
     private readonly DocumentSecurityGuardrailConsumerService _service;
 
     public DocumentSecurityGuardrailConsumerServiceTests()
@@ -48,7 +52,13 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
         _textExtractor = Substitute.For<IDocumentTextExtractor>();
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();
+        _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
+        _embeddingPublisher = Substitute.For<IEmbeddingIndexPublisher>();
+        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver(
+            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver>>());
+        _database = Substitute.For<IDatabase>();
 
+        _redis.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(_database);
         _serviceProvider.GetService(typeof(IServiceScopeFactory)).Returns(serviceScopeFactory);
         serviceScopeFactory.CreateScope().Returns(_serviceScope);
         _serviceScope.ServiceProvider.Returns(_serviceProvider);
@@ -56,6 +66,12 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _serviceProvider.GetService(typeof(IWorkspaceDocumentStorage)).Returns(_storage);
         _serviceProvider.GetService(typeof(IDocumentTextExtractor)).Returns(_textExtractor);
         _serviceProvider.GetService(typeof(IDocumentSecurityScanner)).Returns(_securityScanner);
+        _serviceProvider.GetService(typeof(IWorkspaceDocumentEventPublisher)).Returns(_eventPublisher);
+        _serviceProvider.GetService(typeof(IAiPolicyResolver)).Returns(_policyResolver);
+        _serviceProvider.GetService(typeof(IEmbeddingIndexPublisher)).Returns(_embeddingPublisher);
+        _embeddingPublisher.PublishEmbeddingIndexRequestAsync(
+                Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns("embedding-job");
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceDocumentRepository.Returns(_workspaceDocumentRepository);
 
@@ -64,6 +80,35 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             Substitute.For<ILogger<DocumentSecurityGuardrailConsumerService>>(),
             _serviceProvider
         );
+    }
+
+    [Fact]
+    public async Task ProcessDocumentUploadAsync_ShouldSkipDisallowedDocumentBeforeReadingStorage()
+    {
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = Guid.NewGuid(),
+            FileName = "administrative.txt",
+            FileExtension = ".txt",
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = false,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
+            IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString()
+        };
+
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
+
+        Assert.False(document.AiEligible);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+        await _storage.DidNotReceiveWithAnyArgs().GetDecryptedStreamAsync(default!, default);
+        await _textExtractor.DidNotReceiveWithAnyArgs().ExtractTextAsync(default!, default!, default);
+        await _securityScanner.DidNotReceiveWithAnyArgs().ScanAsync(default!, default, default, default, default);
+        await _embeddingPublisher.DidNotReceiveWithAnyArgs().PublishEmbeddingIndexRequestAsync(default!, default!, default, default);
     }
 
     [Fact]
@@ -78,7 +123,10 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             WorkspaceId = workspaceId,
             FileName = "sensitive_test_pii.txt",
             FileExtension = ".txt",
-            IsSensitive = false,
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -96,16 +144,15 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Contact info: myemail@test.com and phone: 0912345678";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, true, false, null).Returns(new DocumentSecurityScanResult(true, true, false));
+        _securityScanner.ScanAsync(rawText, true, false, null, Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, true, false)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
 
         // Assert
-        Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
         _workspaceDocumentRepository.Received().Update(document);
     }
 
@@ -121,7 +168,10 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             WorkspaceId = workspaceId,
             FileName = "sensitive_test_dlp.txt",
             FileExtension = ".txt",
-            IsSensitive = false,
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -139,16 +189,15 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Báo cáo doanh thu quý 2 năm 2026.";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(true, false, true));
+        _securityScanner.ScanAsync(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, false, true)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
 
         // Assert
-        Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
     }
 
     [Fact]
@@ -163,7 +212,10 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             WorkspaceId = workspaceId,
             FileName = "sensitive_test_dlp.txt",
             FileExtension = ".txt",
-            IsSensitive = false,
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = null // No document policy
         };
@@ -193,20 +245,19 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "Nội dung báo cáo có chứa doanh thu";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(true, false, true));
+        _securityScanner.ScanAsync(rawText, false, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(true, false, true)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
 
         // Assert
-        Assert.True(document.IsSensitive);
         Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
         Assert.False(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
     }
 
     [Fact]
-    public async Task ProcessDocumentUploadAsync_ShouldCompleteSuccessfullyAndMarkEligible_WhenEligible()
+    public async Task ProcessDocumentUploadAsync_ShouldKeepAiIneligibleUntilIndexResult_WhenEligible()
     {
         // Arrange
         var documentId = Guid.NewGuid();
@@ -217,7 +268,10 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             WorkspaceId = workspaceId,
             FileName = "clean_file.txt",
             FileExtension = ".txt",
-            IsSensitive = false,
+            ConfidentialityLevel = "internal",
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
             IngestionStatus = "pending",
             AiUsagePolicy = JsonSerializer.Serialize(new AiUsagePolicyConfiguration(
                 AllowExternalLlm: true,
@@ -227,7 +281,14 @@ public class DocumentSecurityGuardrailConsumerServiceTests
             ))
         };
 
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = JsonSerializer.Serialize(new WorkspaceConfiguration { AiUsagePolicy = new AiUsagePolicyConfiguration(AllowExternalLlm: true, RedactPii: null, Dlp: null, TranslationProfile: null) })
+        };
+
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("This is clean content with no PII and no forbidden keywords."));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
@@ -235,15 +296,16 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var rawText = "This is clean content with no PII and no forbidden keywords.";
         var contentModel = new ExtractedDocumentContent { FullText = rawText };
         _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".txt", Arg.Any<CancellationToken>()).Returns(contentModel);
-        _securityScanner.Scan(rawText, true, true, Arg.Is<List<string>>(l => l.Contains("doanh thu"))).Returns(new DocumentSecurityScanResult(false, false, false));
+        _securityScanner.ScanAsync(rawText, true, true, Arg.Is<List<string>>(l => l.Contains("doanh thu")), Arg.Any<CancellationToken>()).Returns(Task.FromResult(new DocumentSecurityScanResult(false, false, false)));
 
         // Act
         await _service.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
 
         // Assert
-        Assert.False(document.IsSensitive);
-        Assert.True(document.AiEligible);
-        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.processing.ToString(), document.IngestionStatus);
+        Assert.False(document.AiEligible);
+        await _embeddingPublisher.Received(1).PublishEmbeddingIndexRequestAsync(
+            document, rawText, true, Arg.Any<CancellationToken>());
         _workspaceDocumentRepository.Received().Update(document);
     }
 

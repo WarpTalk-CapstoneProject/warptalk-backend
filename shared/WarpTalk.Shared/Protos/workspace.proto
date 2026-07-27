@@ -8,6 +8,7 @@ service WorkspaceService {
   rpc GetWorkspaceMemberDetails (GetWorkspaceMemberRequest) returns (GetWorkspaceMemberResponse);
   rpc ValidateMeetingCreation (ValidateMeetingCreationRequest) returns (ValidateMeetingCreationResponse);
   rpc GetWorkspaceSettings (GetWorkspaceSettingsRequest) returns (GetWorkspaceSettingsResponse);
+  rpc GetWorkspacePreflightDetails (GetWorkspacePreflightRequest) returns (GetWorkspacePreflightResponse);
 }
 
 message GetWorkspaceMemberRequest {
@@ -42,14 +43,25 @@ message GetWorkspaceSettingsResponse {
   int32 artifact_retention_days = 1;
   bool allow_external_collaboration = 2;
   bool is_profanity_filter_enabled = 3;
-  // Resolved AiUsagePolicy.AllowExternalLlm, opt-out semantics: unset ⇒ true. Callers
-  // outside WorkspaceService (e.g. TranscriptRedisConsumerService) that need to decide
-  // whether meeting content may be sent to an external embedding/LLM API must read this
-  // field instead of assuming true.
+  // Product invariant: always true because WarpTalk has no local model.
+  // Document approval and AiEligible remain separate authorization gates.
   bool allow_external_llm = 4;
   // Resolved AiUsagePolicy.UseGlobalGlossary, opt-out semantics: unset ⇒ true. Read by
   // GlossaryStartedEventConsumer (TranscriptService) to decide whether the system-managed
   // global glossary is merged into this workspace's STT/MT prompts. See
   // docs/global-glossary-plan.md §2.4.
   bool use_global_glossary = 5;
+}
+
+message GetWorkspacePreflightRequest {
+  string workspace_id = 1;
+  string user_email = 2;
+}
+
+message GetWorkspacePreflightResponse {
+  bool is_active = 1;
+  string workspace_name = 2;
+  string workspace_slug = 3;
+  bool is_domain_matched = 4;
+  bool allow_external_collaboration = 5;
 }
