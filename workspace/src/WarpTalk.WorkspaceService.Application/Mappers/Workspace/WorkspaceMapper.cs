@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
@@ -11,15 +12,19 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceMapper
 {
-    public static WorkspaceDto ToDto(this Workspace workspace, string role)
+    public static WorkspaceDto ToDto(this Workspace workspace, string role, string membershipType = "Internal")
     {
+        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
         return new WorkspaceDto(
             workspace.Id,
             workspace.Name,
             workspace.Slug,
             workspace.LogoUrl,
             role,
-            workspace.CreatedAt
+            workspace.CreatedAt,
+            membershipType,
+            config.DefaultLanguage,
+            role.IsOwnerOrAdmin()
         );
     }
 
@@ -105,7 +110,7 @@ public static class WorkspaceMapper
     public static AiUsagePolicyDto ToDto(this AiUsagePolicyConfiguration config)
     {
         return new AiUsagePolicyDto(
-            config.AllowExternalLlm,
+            true,
             config.RedactPii.ToDto(),
             config.Dlp.ToDto(),
             config.TranslationProfile.ToDto(),
@@ -116,7 +121,7 @@ public static class WorkspaceMapper
     public static AiUsagePolicyConfiguration ToConfiguration(this AiUsagePolicyDto dto)
     {
         return new AiUsagePolicyConfiguration(
-            dto.AllowExternalLlm,
+            true,
             dto.RedactPii.ToConfiguration(),
             dto.Dlp.ToConfiguration(),
             dto.TranslationProfile.ToConfiguration(),

@@ -39,7 +39,11 @@ public class WorkspaceMemberServiceTests
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
 
-        _workspaceMemberService = new WorkspaceMemberService(_unitOfWork, Substitute.For<ILogger<WorkspaceMemberService>>(), _authIdentity);
+        _workspaceMemberService = new WorkspaceMemberService(
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceMemberService>>(),
+            _authIdentity,
+            Substitute.For<IWorkspaceEventPublisher>());
     }
 
     private void StubRoleName(Guid roleId, string roleName)

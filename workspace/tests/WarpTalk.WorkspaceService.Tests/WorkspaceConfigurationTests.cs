@@ -21,6 +21,16 @@ public class WorkspaceConfigurationTests
         Assert.Empty(config.AllowedTargetLanguages);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceMaxActiveRooms, config.MaxActiveRooms);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
+        Assert.NotNull(config.AiUsagePolicy);
+        Assert.True(config.AiUsagePolicy.AllowExternalLlm);
+        Assert.NotNull(config.AiUsagePolicy.RedactPii);
+        Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
+        Assert.NotNull(config.AiUsagePolicy.Dlp);
+        Assert.False(config.AiUsagePolicy.Dlp.Enabled);
+        Assert.NotNull(config.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.Empty(config.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.NotNull(config.AiUsagePolicy.TranslationProfile);
+        Assert.Equal("professional", config.AiUsagePolicy.TranslationProfile.TranslationTone);
     }
 
     [Fact]
@@ -40,6 +50,10 @@ public class WorkspaceConfigurationTests
         Assert.Empty(config.AllowedTargetLanguages);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceMaxActiveRooms, config.MaxActiveRooms);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
+        Assert.NotNull(config.AiUsagePolicy);
+        Assert.True(config.AiUsagePolicy.AllowExternalLlm);
+        Assert.NotNull(config.AiUsagePolicy.RedactPii);
+        Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
     }
 
     [Fact]
@@ -107,5 +121,20 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules);
         Assert.Equal("formal_hierarchical", deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules.VietnameseHonorificStyle);
         Assert.Equal("keigo_teineigo", deserializedConfig.AiUsagePolicy.TranslationProfile.LanguageSpecificRules.JapaneseHonorificStyle);
+    }
+
+    [Fact]
+    public void WorkspaceConfiguration_ShouldNormalizeAllowExternalLlmToTrue_WhenDeserializedFromFalse()
+    {
+        // Arrange
+        var json = "{\"AiUsagePolicy\":{\"AllowExternalLlm\":false}}";
+
+        // Act
+        var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(json);
+
+        // Assert
+        Assert.NotNull(config);
+        Assert.NotNull(config.AiUsagePolicy);
+        Assert.True(config.AiUsagePolicy.AllowExternalLlm);
     }
 }

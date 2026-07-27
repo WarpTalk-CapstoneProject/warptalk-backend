@@ -30,7 +30,10 @@ public record WorkspaceDto(
     string Slug,
     string? LogoUrl,
     string Role,
-    DateTime CreatedAt
+    DateTime CreatedAt,
+    string MembershipType = "Internal",
+    string DefaultLanguage = "en",
+    bool CanApproveDocuments = false
 );
 
 public record PagedResult<T>(
@@ -43,5 +46,6 @@ public record PagedResult<T>(
 public record SelectWorkspaceResponse(
     Guid SelectedWorkspaceId,
     string Name,
-    string Slug
+    string Slug,
+    string DefaultLanguage = "en"
 );
