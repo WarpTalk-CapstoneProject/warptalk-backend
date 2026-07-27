@@ -217,6 +217,7 @@ public class WorkspaceGrpcServiceTests
         var workspace = new Workspace
         {
             Id = workspaceId,
+            AllowExternalCollaboration = true,
             Settings = "{\"ArtifactRetentionDays\":15,\"AllowExternalCollaboration\":true}"
         };
 
@@ -272,7 +273,7 @@ public class WorkspaceGrpcServiceTests
     }
 
     [Fact]
-    public async Task GetWorkspaceSettings_ShouldReturnAllowExternalLlmFalse_WhenWorkspaceDisabledIt()
+    public async Task GetWorkspaceSettings_ShouldNormalizeAllowExternalLlmToTrue_WhenPayloadSetsFalse()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
@@ -291,7 +292,7 @@ public class WorkspaceGrpcServiceTests
         var response = await _service.GetWorkspaceSettings(request, _context);
 
         // Assert
-        Assert.False(response.AllowExternalLlm);
+        Assert.True(response.AllowExternalLlm);
     }
 
     [Fact]
