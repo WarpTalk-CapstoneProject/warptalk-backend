@@ -70,6 +70,21 @@ public static class WorkspaceConstants
         public const string CannotInviteInternalWithoutVerifiedDomain = "Cannot invite as an Internal member because the email domain is not verified for this workspace.";
         public const string ExternalMemberMustHaveMemberRole = "External members can only be assigned the Member role.";
 
+        // Join Request Errors
+        public const string TranslationRoomNotFound = "Translation room not found.";
+        public const string RoomCodeOrWorkspaceSlugRequired = "Room code or workspace slug is required.";
+        public const string MemberRoleNotFound = "Default member role not found.";
+        public const string OnlyOwnerAdminCanApprove = "Only Owner or Admin can approve join requests.";
+        public const string OnlyRequestedCanBeApproved = "Only join requests in REQUESTED status can be approved.";
+        public const string OnlyOwnerAdminCanReject = "Only Owner or Admin can reject join requests.";
+        public const string OnlyRequestedCanBeRejected = "Only join requests in REQUESTED status can be rejected.";
+
+        // Verified domain errors
+        public const string VerifiedDomainNotFound = "Verified domain entry not found.";
+        public const string DomainAlreadyAddedToWorkspace = "This domain has already been added to this workspace.";
+        public const string CannotRevokeLastDomain = "Cannot revoke the last verified domain while the workspace requires domain verification for Internal members. Add another domain first or disable the requirement.";
+        public const string OnlyOwnerCanManageDomains = "Only the workspace Owner can add or revoke verified domains.";
+
         // Document specific errors
         public const string DocumentNotFound = "Document not found.";
         public const string AccessDeniedNotMember = "Access denied. User is not a active member of this workspace.";
@@ -82,5 +97,3 @@ public static class WorkspaceConstants
     // Configuration Keys
     public const string DefaultExternalGracePeriodHoursKey = "GracePeriodSettings:DefaultExternalGracePeriodHours";
 }
-
-

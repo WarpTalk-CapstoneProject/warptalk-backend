@@ -62,6 +62,8 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
                 // Fallback to default settings
             }
         }
+        settings.AllowExternalCollaboration = workspace.AllowExternalCollaboration;
+        settings.RequireVerifiedDomainForInternal = workspace.RequireVerifiedDomainForInternal;
         return settings;
     }
 
@@ -74,6 +76,8 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
         }
 
         workspace.Settings = JsonSerializer.Serialize(settings);
+        workspace.AllowExternalCollaboration = settings.AllowExternalCollaboration;
+        workspace.RequireVerifiedDomainForInternal = settings.RequireVerifiedDomainForInternal;
         workspace.UpdatedAt = DateTime.UtcNow;
         workspace.UpdatedBy = userId;
 
