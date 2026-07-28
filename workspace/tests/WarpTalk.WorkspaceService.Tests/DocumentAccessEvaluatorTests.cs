@@ -181,6 +181,36 @@ public class DocumentAccessEvaluatorTests
     }
 
     [Fact]
+    public async Task EvaluateAccessAsync_ShouldFail_WhenDocumentIsPendingApproval_AndUserIsNeitherOwnerNorDocOwner()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            Status = WorkspaceDocumentStatus.pending_approval.ToString(),
+            IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString(),
+            OwnerId = Guid.NewGuid(),
+            UploadedBy = Guid.NewGuid(),
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel
+        };
+
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = Guid.NewGuid(), MembershipType = "Internal" };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(member.RoleId, "Member");
+
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.View);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.AccessDeniedDefault, result.Error);
+    }
+
+    [Fact]
     public async Task EvaluateAccessAsync_ShouldDenyAccess_WhenAnyPolicyIsDeny_RegardlessOfAllowPolicies()
     {
         // Arrange
@@ -256,7 +286,7 @@ public class DocumentAccessEvaluatorTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", IsSensitive = true };
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", ConfidentialityLevel = "restricted", Status = WorkspaceDocumentStatus.@public.ToString() };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "Internal" };
 
         _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
@@ -284,7 +314,7 @@ public class DocumentAccessEvaluatorTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", IsSensitive = false };
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", ConfidentialityLevel = "general", Status = WorkspaceDocumentStatus.@public.ToString() };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "Internal" };
 
         _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
@@ -311,7 +341,7 @@ public class DocumentAccessEvaluatorTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", IsSensitive = false };
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", ConfidentialityLevel = "general", Status = WorkspaceDocumentStatus.@public.ToString() };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
 
         _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
@@ -345,7 +375,8 @@ public class DocumentAccessEvaluatorTests
             Id = documentId, 
             WorkspaceId = workspaceId, 
             IngestionStatus = "completed", 
-            IsSensitive = false,
+            ConfidentialityLevel = "general",
+            Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
             SourceId = meetingId
         };
@@ -391,7 +422,8 @@ public class DocumentAccessEvaluatorTests
             Id = documentId, 
             WorkspaceId = workspaceId, 
             IngestionStatus = "completed", 
-            IsSensitive = false,
+            ConfidentialityLevel = "general",
+            Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
             SourceId = meetingId
         };
@@ -499,7 +531,7 @@ public class DocumentAccessEvaluatorTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", Status = "active" };
+        var document = new WorkspaceDocument { Id = documentId, WorkspaceId = workspaceId, IngestionStatus = "completed", Status = WorkspaceDocumentStatus.@public.ToString() };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId, MembershipType = "External" };
 
         _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
@@ -543,6 +575,44 @@ public class DocumentAccessEvaluatorTests
 
         // Act
         var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, "view");
+
+        // Assert
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task EvaluateAccessAsync_ShouldAllowDownload_WhenLegacyActiveStatus_AndInternalMember()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            IngestionStatus = "completed",
+            Status = "active",
+            ConfidentialityLevel = "public_internal"
+        };
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = roleId,
+            MembershipType = "Internal"
+        };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Member");
+        _policyRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceDocumentAccessPolicy>());
+
+        // Act
+        var result = await _evaluator.EvaluateAccessAsync(userId, workspaceId, documentId, WorkspaceDocumentPermissions.Download);
 
         // Assert
         Assert.True(result.IsSuccess);

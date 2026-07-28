@@ -33,6 +33,31 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, userId.Value, ct);
         if (!result.IsSuccess)
         {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        // Return 201 Created as per API response semantics specification
+        return Created(string.Empty, result.Value);
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/invitations/{invitationId:guid}/retry-delivery")]
+    public async Task<IActionResult> RetryDelivery(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceInvitationService.RetryDeliveryAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
@@ -68,6 +93,24 @@ public class WorkspaceInvitationsController : ControllerBase
         return NoContent();
     }
 
+    [Authorize]
+    [HttpGet("invitations/pending")]
+    public async Task<IActionResult> GetPendingInvitations(CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized();
+
+        var result = await _workspaceInvitationService.GetPendingInvitationsForUserAsync(userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [AllowAnonymous]
     [HttpGet("invitations/preview")]
     public async Task<IActionResult> PreviewInvitation([FromQuery] string token, CancellationToken ct)
@@ -96,6 +139,84 @@ public class WorkspaceInvitationsController : ControllerBase
         var result = await _workspaceInvitationService.AcceptInvitationAsync(request, userId.Value, userEmail, ct);
         if (!result.IsSuccess)
         {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("invitations/{invitationId:guid}/accept")]
+    public async Task<IActionResult> AcceptInvitationById(Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized();
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitationId, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("join-requests")]
+    public async Task<IActionResult> CreateJoinRequest([FromBody] CreateJoinRequestCommand command, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized();
+
+        var result = await _workspaceInvitationService.CreateJoinRequestAsync(command, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/join-requests/{invitationId:guid}/approve")]
+    public async Task<IActionResult> ApproveJoinRequest(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/join-requests/{invitationId:guid}/reject")]
+    public async Task<IActionResult> RejectJoinRequest(Guid workspaceId, Guid invitationId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _workspaceInvitationService.RejectJoinRequestAsync(workspaceId, invitationId, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();

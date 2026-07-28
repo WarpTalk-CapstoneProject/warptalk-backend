@@ -168,4 +168,48 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             UseGlobalGlossary = config.AiUsagePolicy?.UseGlobalGlossary ?? true
         };
     }
+
+    public override async Task<GetWorkspacePreflightResponse> GetWorkspacePreflightDetails(
+        GetWorkspacePreflightRequest request, ServerCallContext context)
+    {
+        var ct = context.CancellationToken;
+
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid WorkspaceId format."));
+        }
+
+        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+        if (workspace == null)
+        {
+            throw new RpcException(new Status(StatusCode.NotFound, "Workspace not found."));
+        }
+
+        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+
+        bool isDomainMatched = false;
+        if (!string.IsNullOrWhiteSpace(request.UserEmail))
+        {
+            if (WarpTalk.WorkspaceService.Domain.ValueObjects.EmailAddress.TryParse(request.UserEmail, out var emailAddress) && emailAddress != null)
+            {
+                var domain = emailAddress.Domain;
+                isDomainMatched = await _unitOfWork.Repository<WarpTalk.WorkspaceService.Domain.Entities.WorkspaceVerifiedDomain>().AnyAsync(
+                    vd => vd.WorkspaceId == workspaceId 
+                          && vd.Domain.ToLower() == domain.ToLower() 
+                          && vd.Status == "verified" 
+                          && vd.VerifiedAt != null 
+                          && vd.RevokedAt == null, 
+                    ct);
+            }
+        }
+
+        return new GetWorkspacePreflightResponse
+        {
+            IsActive = workspace.IsActive && workspace.DeletedAt == null,
+            WorkspaceName = workspace.Name,
+            WorkspaceSlug = workspace.Slug,
+            IsDomainMatched = isDomainMatched,
+            AllowExternalCollaboration = config.AllowExternalCollaboration
+        };
+    }
 }

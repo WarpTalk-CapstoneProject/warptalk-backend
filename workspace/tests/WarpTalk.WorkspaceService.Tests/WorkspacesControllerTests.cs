@@ -42,7 +42,7 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png");
-        var expectedDto = new WorkspaceDto(Guid.NewGuid(), "DeepMind Team", "deepmind-team", "https://cdn.com/logo.png", "Owner", DateTime.UtcNow);
+        var expectedDto = new WorkspaceDto(Guid.NewGuid(), "DeepMind Team", "deepmind-team", "https://cdn.com/logo.png", "Owner", DateTime.UtcNow, "en");
         
         _workspaceService.CreateWorkspaceAsync(request, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedDto));
@@ -81,7 +81,7 @@ public class WorkspacesControllerTests
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: null);
         var expectedList = new System.Collections.Generic.List<WorkspaceDto>
         {
-            new(Guid.NewGuid(), "WS 1", "ws-1", null, "Member", DateTime.UtcNow)
+            new(Guid.NewGuid(), "WS 1", "ws-1", null, "Member", DateTime.UtcNow, "en")
         };
         var expectedPagedResult = new PagedResult<WorkspaceDto>(expectedList, 1, 10, 1);
 
@@ -102,7 +102,7 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var expectedDto = new WorkspaceDto(workspaceId, "DeepMind", "deepmind", null, "Owner", DateTime.UtcNow);
+        var expectedDto = new WorkspaceDto(workspaceId, "DeepMind", "deepmind", null, "Owner", DateTime.UtcNow, "en");
 
         _workspaceService.GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedDto));
@@ -128,8 +128,9 @@ public class WorkspacesControllerTests
         var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
@@ -138,7 +139,7 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var expectedResponse = new SelectWorkspaceResponse(workspaceId, "DeepMind", "deepmind");
+        var expectedResponse = new SelectWorkspaceResponse(workspaceId, "DeepMind", "deepmind", "en");
 
         _workspaceService.SelectWorkspaceAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedResponse));
@@ -164,8 +165,9 @@ public class WorkspacesControllerTests
         var result = await _controller.SelectWorkspace(workspaceId, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 
@@ -255,8 +257,9 @@ public class WorkspacesControllerTests
         var result = await _controller.UpdateWorkspaceSettings(workspaceId, newSettings, CancellationToken.None);
 
         // Assert
-        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
-        var value = Assert.IsType<ApiErrorResponse>(badRequestResult.Value);
+        var forbiddenResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
+        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
 }

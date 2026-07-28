@@ -24,15 +24,21 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<WorkspaceInvitationService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IWorkspaceInvitationEmailComposer _emailComposer;
 
     public WorkspaceInvitationService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceInvitationService> logger,
-        IAuthIdentityClient authIdentity)
+        IAuthIdentityClient authIdentity,
+        ITranslationRoomClient translationRoomClient,
+        IWorkspaceInvitationEmailComposer emailComposer)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
+        _translationRoomClient = translationRoomClient;
+        _emailComposer = emailComposer;
     }
 
     public async Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default)
@@ -59,39 +65,25 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite, ErrorCodes.Forbidden);
             }
 
-            if (inviterRoleName.IsAdmin() && request.RoleName.IsOwner())
+            if (request.RoleName.IsOwner())
             {
-                return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.AdminCannotAssignOwner, ErrorCodes.Forbidden);
+                return Result.Failure<InviteMemberResponse>(
+                    WorkspaceConstants.Errors.RoleMustBeAdminOrMember,
+                    ErrorCodes.ValidationError);
             }
 
             if (!EmailAddress.TryParse(request.Email, out var emailAddress) || emailAddress == null)
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidEmailFormat, ErrorCodes.ValidationError);
             }
-            var domain = emailAddress.Domain;
-
-            if (!Enum.TryParse<MembershipType>(request.MembershipType, true, out var membershipTypeEnum))
-            {
-                return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
-            }
-
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var isDomainVerified = await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-                vd => vd.WorkspaceId == workspaceId 
-                      && vd.Domain.ToLower() == domain.ToLower() 
-                      && vd.Status == "verified" 
-                      && vd.VerifiedAt != null 
-                      && vd.RevokedAt == null, 
+            var membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
+                _unitOfWork,
+                emailAddress.Value,
+                workspace,
                 ct);
 
-            if (membershipTypeEnum == MembershipType.Internal)
-            {
-                if (config.RequireVerifiedDomainForInternal && !isDomainVerified)
-                {
-                    return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
-                }
-            }
-            else if (membershipTypeEnum == MembershipType.External)
+            if (membershipTypeEnum == MembershipType.External)
             {
                 if (!config.AllowExternalCollaboration)
                 {
@@ -103,44 +95,73 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 }
             }
 
-            var finalRoleName = request.RoleName;
+            var finalRoleName = request.RoleName.IsAdmin()
+                ? WorkspaceMemberRole.Admin.ToRoleName()
+                : request.RoleName.IsMember()
+                    ? WorkspaceMemberRole.Member.ToRoleName()
+                    : string.Empty;
+            if (string.IsNullOrEmpty(finalRoleName))
+            {
+                return Result.Failure<InviteMemberResponse>(
+                    WorkspaceConstants.Errors.RoleMustBeAdminOrMember,
+                    ErrorCodes.ValidationError);
+            }
             var finalRoleId = await _authIdentity.GetRoleIdByNameAsync(finalRoleName, ct);
             if (!finalRoleId.HasValue)
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidRoleSpecified, ErrorCodes.ValidationError);
             }
 
-            var pendingInvite = await _unitOfWork.WorkspaceInvitationRepository.GetPendingByEmailAsync(workspaceId, request.Email, ct);
-            if (pendingInvite != null)
+            var existingPendingInvite = await _unitOfWork.WorkspaceInvitationRepository.GetPendingByEmailAsync(workspaceId, request.Email, ct);
+            if (existingPendingInvite != null)
             {
-                pendingInvite.Status = InvitationStatus.REPLACED.ToString();
-                _unitOfWork.WorkspaceInvitationRepository.Update(pendingInvite);
-            }
-
-            var rawToken = Guid.NewGuid().ToString("N");
-            var tokenHash = TokenHasher.Hash(rawToken);
-
-            var membershipType = membershipTypeEnum.ToString();
-            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(workspaceId, request, finalRoleId.Value, finalRoleName, inviterUserId, tokenHash, membershipType);
-
-            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
-            await _unitOfWork.SaveChangesAsync(ct);
-            string emailLanguage = WorkspaceConstants.DefaultWorkspaceLanguage;
-            var existingUser = await _authIdentity.GetUserByEmailAsync(request.Email, ct);
-            
-            if (existingUser != null && !string.IsNullOrWhiteSpace(existingUser.PreferredLanguage))
-            {
-                emailLanguage = existingUser.PreferredLanguage;
-            }
-            else
-            {
-                if (!string.IsNullOrWhiteSpace(config.DefaultLanguage))
+                if (existingPendingInvite.ExpiresAt < DateTime.UtcNow)
                 {
-                    emailLanguage = config.DefaultLanguage;
+                    existingPendingInvite.Status = InvitationStatus.EXPIRED.ToString();
+                    _unitOfWork.WorkspaceInvitationRepository.Update(existingPendingInvite);
+                    await _unitOfWork.SaveChangesAsync(ct);
+                }
+                else
+                {
+                    return Result.Failure<InviteMemberResponse>("An active pending invitation already exists for this email address.", ErrorCodes.Conflict);
                 }
             }
 
-            var response = new InviteMemberResponse(newInvitation.ToDto(finalRoleName), rawToken, emailLanguage);
+            var membershipType = membershipTypeEnum.ToString();
+            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(workspaceId, request, finalRoleId.Value, finalRoleName, inviterUserId, null, membershipType);
+
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Fetch inviter user profile name for email template
+            var inviterUser = await _authIdentity.GetUserByEmailAsync(request.Email, ct);
+            var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
+
+            // Attempt transactional email send via Resend
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(newInvitation, workspace, inviterName, finalRoleName, ct);
+
+            string? warning = null;
+            if (emailResult.IsSuccess)
+            {
+                newInvitation.DeliveryStatus = "Sent";
+                newInvitation.ProviderMessageId = emailResult.MessageId;
+                newInvitation.LastSentAt = DateTime.UtcNow;
+                newInvitation.SentCount = 1;
+            }
+            else
+            {
+                newInvitation.DeliveryStatus = "Failed";
+                newInvitation.LastSentAt = DateTime.UtcNow;
+                warning = $"Invitation created successfully, but Resend email delivery failed: {emailResult.ErrorMessage}";
+                _logger.LogWarning("Email delivery failed for invitation {InvitationId}: {Error}", newInvitation.Id, emailResult.ErrorMessage);
+            }
+
+            _unitOfWork.WorkspaceInvitationRepository.Update(newInvitation);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            string emailLanguage = config.DefaultLanguage ?? WorkspaceConstants.DefaultWorkspaceLanguage;
+            var response = new InviteMemberResponse(newInvitation.ToDto(finalRoleName), null, emailLanguage, warning);
+
             return Result.Success(response);
         }
         catch (Exception ex)
@@ -149,6 +170,76 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result<WorkspaceInvitationDto>> RetryDeliveryAsync(Guid workspaceId, Guid invitationId, Guid inviterUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var inviterMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == inviterUserId && m.RemovedAt == null, "", ct);
+
+            if (inviterMember == null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var inviterRoleName = await _authIdentity.GetRoleNameByIdAsync(inviterMember.RoleId, ct);
+            if (!inviterRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite, ErrorCodes.Forbidden);
+            }
+
+            var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(invitationId, ct);
+            if (invitation == null || invitation.WorkspaceId != workspaceId)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            if (invitation.Status != InvitationStatus.PENDING.ToString())
+            {
+                return Result.Failure<WorkspaceInvitationDto>("Only PENDING invitations can have email delivery retried.", ErrorCodes.InvalidState);
+            }
+
+            if (invitation.DeliveryStatus != "Failed")
+            {
+                return Result.Failure<WorkspaceInvitationDto>("Retry email is allowed only when delivery status is Failed.", ErrorCodes.InvalidState);
+            }
+
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(invitation, workspace, "A Workspace Admin", roleName, ct);
+
+            invitation.LastSentAt = DateTime.UtcNow;
+            invitation.SentCount++;
+
+            if (emailResult.IsSuccess)
+            {
+                invitation.DeliveryStatus = "Sent";
+                invitation.ProviderMessageId = emailResult.MessageId;
+            }
+            else
+            {
+                invitation.DeliveryStatus = "Failed";
+                _logger.LogWarning("Retry delivery failed for invitation {InvitationId}: {Error}", invitation.Id, emailResult.ErrorMessage);
+            }
+
+            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(invitation.ToDto(roleName));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while retrying invitation email delivery. InvitationId: {InvitationId}", invitationId);
+            return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<PagedResult<WorkspaceInvitationDto>>> ListInvitationsAsync(Guid workspaceId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default)
     {
         try
@@ -170,6 +261,23 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             var (items, totalCount) = await _unitOfWork.WorkspaceInvitationRepository.GetInvitationsByWorkspaceAsync(workspaceId, query.Page, query.PageSize, ct);
             
+            // Lazy expiration materialization
+            var hasChanges = false;
+            foreach (var invite in items)
+            {
+                if (invite.Status == InvitationStatus.PENDING.ToString() && invite.ExpiresAt < DateTime.UtcNow)
+                {
+                    invite.Status = InvitationStatus.EXPIRED.ToString();
+                    _unitOfWork.WorkspaceInvitationRepository.Update(invite);
+                    hasChanges = true;
+                }
+            }
+
+            if (hasChanges)
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+
             var dtos = new List<WorkspaceInvitationDto>();
             foreach (var invite in items)
             {
@@ -292,10 +400,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<VerifyInvitationInternalResponse>(string.Format(WorkspaceConstants.Errors.InvitationNoLongerValidFormat, invitation.Status), ErrorCodes.InvalidState);
             }
 
-            if (await invitation.CheckAndHandleExpirationAsync(_unitOfWork, ct))
+            if (invitation.ExpiresAt < DateTime.UtcNow)
             {
+                invitation.Status = InvitationStatus.EXPIRED.ToString();
+                _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+                await _unitOfWork.SaveChangesAsync(ct);
                 return Result.Failure<VerifyInvitationInternalResponse>(WorkspaceConstants.Errors.InvitationExpired, ErrorCodes.InvalidState);
             }
+
             var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
             var response = invitation.ToVerifyInternalResponse(roleName);
             return Result.Success(response);
@@ -307,31 +419,90 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         }
     }
 
-    public async Task<Result> AcceptInvitationAsync(AcceptInvitationRequest request, Guid userId, string userEmail, CancellationToken ct = default)
+    public async Task<Result<List<WorkspaceInvitationDto>>> GetPendingInvitationsForUserAsync(Guid userId, string userEmail, CancellationToken ct = default)
     {
         try
         {
-            var tokenHash = TokenHasher.Hash(request.Token);
-            var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByTokenHashAsync(tokenHash, ct);
-
-            if (invitation == null)
+            if (string.IsNullOrWhiteSpace(userEmail))
             {
-                return Result.Failure(WorkspaceConstants.Errors.InvalidOrExpiredToken, ErrorCodes.NotFound);
+                return Result.Failure<List<WorkspaceInvitationDto>>("User email is required.", ErrorCodes.ValidationError);
             }
 
-            if (invitation.Status != InvitationStatus.PENDING.ToString())
+            var invitations = await _unitOfWork.WorkspaceInvitationRepository.GetPendingInvitationsByEmailAsync(userEmail, ct);
+
+            var activeInvitations = new List<WorkspaceInvitationDto>();
+            var hasExpiredChanges = false;
+
+            foreach (var invite in invitations)
             {
-                return Result.Failure(string.Format(WorkspaceConstants.Errors.InvitationNoLongerValidFormat, invitation.Status), ErrorCodes.InvalidState);
+                if (invite.ExpiresAt < DateTime.UtcNow)
+                {
+                    invite.Status = InvitationStatus.EXPIRED.ToString();
+                    _unitOfWork.WorkspaceInvitationRepository.Update(invite);
+                    hasExpiredChanges = true;
+                }
+                else
+                {
+                    var roleName = await _authIdentity.GetRoleNameByIdAsync(invite.RoleId, ct);
+                    activeInvitations.Add(invite.ToDto(roleName));
+                }
             }
 
-            if (await invitation.CheckAndHandleExpirationAsync(_unitOfWork, ct))
+            if (hasExpiredChanges)
             {
-                return Result.Failure(WorkspaceConstants.Errors.InvitationExpired, ErrorCodes.InvalidState);
+                await _unitOfWork.SaveChangesAsync(ct);
             }
 
-            if (!string.Equals(invitation.Email, userEmail, StringComparison.OrdinalIgnoreCase))
+            return Result.Success(activeInvitations);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while getting pending invitations for user {UserEmail}", userEmail);
+            return Result.Failure<List<WorkspaceInvitationDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> AcceptInvitationAsync(AcceptInvitationRequest request, Guid userId, string userEmail, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Token))
+        {
+            var pendingInvites = await GetPendingInvitationsForUserAsync(userId, userEmail, ct);
+            if (!pendingInvites.IsSuccess || !pendingInvites.Value.Any())
             {
-                return Result.Failure(WorkspaceConstants.Errors.EmailMismatch, ErrorCodes.Forbidden);
+                return Result.Failure("No active pending invitations found for your verified email address.", ErrorCodes.NotFound);
+            }
+            return await AcceptInvitationByIdAsync(pendingInvites.Value.First().Id, userId, userEmail, ct);
+        }
+
+        var tokenHash = TokenHasher.Hash(request.Token);
+        var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByTokenHashAsync(tokenHash, ct);
+        if (invitation == null)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.InvalidOrExpiredToken, ErrorCodes.NotFound);
+        }
+
+        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
+    }
+
+    public async Task<Result> AcceptInvitationByIdAsync(Guid invitationId, Guid userId, string userEmail, CancellationToken ct = default)
+    {
+        var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(invitationId, ct);
+        if (invitation == null)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
+        }
+
+        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
+    }
+
+    private async Task<Result> ProcessAcceptInvitationAsync(WorkspaceInvitation invitation, Guid userId, string userEmail, CancellationToken ct = default)
+    {
+        try
+        {
+            var validationResult = await WorkspaceInvitationHelper.ValidateAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+            if (!validationResult.IsSuccess)
+            {
+                return validationResult;
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(invitation.WorkspaceId, ct);
@@ -340,48 +511,23 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            if (!EmailAddress.TryParse(userEmail, out var emailAddress) || emailAddress == null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
-            }
-            var userDomain = emailAddress.Domain;
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var isDomainVerified = await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AnyAsync(
-                vd => vd.WorkspaceId == invitation.WorkspaceId 
-                      && vd.Domain.ToLower() == userDomain.ToLower() 
-                      && vd.Status == "verified" 
-                      && vd.VerifiedAt != null 
-                      && vd.RevokedAt == null, 
+            var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
+                _unitOfWork,
+                userEmail,
+                workspace,
                 ct);
-            
-            if (string.Equals(invitation.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
+            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
             {
-                if (config.RequireVerifiedDomainForInternal && !isDomainVerified)
-                {
-                    return Result.Failure(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
-                }
-
-                // Joining as Internal Member — enforce single-workspace constraint if target workspace requires domain verification
-                if (config.RequireVerifiedDomainForInternal)
-                {
-                    var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
-                    if (isInternalElsewhere)
-                    {
-                        return Result.Failure(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.Forbidden);
-                    }
-                }
-            }
-            // Joining as External Partner — allowed even if internal member of another workspace
-
-            var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
-            
-            if (existingMember != null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
+                return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
             }
 
-            var newMember = WorkspaceMemberMapper.CreateInvitationMember(invitation.WorkspaceId, userId, invitation.RoleId, invitation.MembershipType);
+            invitation.MembershipType = membershipType.ToString();
+            var newMember = WorkspaceMemberMapper.CreateInvitationMember(
+                invitation.WorkspaceId,
+                userId,
+                invitation.RoleId,
+                invitation.MembershipType);
 
             invitation.Status = InvitationStatus.ACCEPTED.ToString();
             invitation.AcceptedAt = DateTime.UtcNow;
@@ -394,7 +540,185 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error occurred while accepting invitation.");
+            _logger.LogError(ex, "Error occurred while accepting invitation {InvitationId}.", invitation.Id);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<WorkspaceInvitationDto>> CreateJoinRequestAsync(CreateJoinRequestCommand command, Guid userId, string userEmail, CancellationToken ct = default)
+    {
+        try
+        {
+            Guid workspaceId = Guid.Empty;
+
+            if (!string.IsNullOrWhiteSpace(command.RoomCode))
+            {
+                var room = await _translationRoomClient.GetTranslationRoomByCodeAsync(command.RoomCode, ct);
+                if (room == null)
+                {
+                    return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.TranslationRoomNotFound, ErrorCodes.NotFound);
+                }
+                workspaceId = room.WorkspaceId;
+            }
+            else if (!string.IsNullOrWhiteSpace(command.WorkspaceSlug))
+            {
+                var workspace = await _unitOfWork.WorkspaceRepository.FirstOrDefaultAsync(w => w.Slug == command.WorkspaceSlug, "", ct);
+                if (workspace == null)
+                {
+                    return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+                }
+                workspaceId = workspace.Id;
+            }
+            else
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.RoomCodeOrWorkspaceSlugRequired, ErrorCodes.ValidationError);
+            }
+
+            var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+
+            if (existingMember != null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
+            }
+
+            var existingPendingRequest = await _unitOfWork.WorkspaceInvitationRepository.FirstOrDefaultAsync(
+                i => i.WorkspaceId == workspaceId && i.Email.ToLower() == userEmail.ToLower() && i.Status == InvitationStatus.REQUESTED.ToString(), "", ct);
+
+            if (existingPendingRequest != null)
+            {
+                var memberRoleName = await _authIdentity.GetRoleNameByIdAsync(existingPendingRequest.RoleId, ct);
+                return Result.Success(existingPendingRequest.ToDto(memberRoleName));
+            }
+
+            var defaultMemberRoleId = await _authIdentity.GetRoleIdByNameAsync("Member", ct);
+            if (!defaultMemberRoleId.HasValue)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.MemberRoleNotFound, ErrorCodes.InternalServerError);
+            }
+
+            var workspaceForClassification = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspaceForClassification == null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
+                _unitOfWork,
+                userEmail,
+                workspaceForClassification,
+                ct);
+            if (membershipType == MembershipType.External
+                && !WorkspaceHelper.GetWorkspaceConfig(workspaceForClassification).AllowExternalCollaboration)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(
+                    WorkspaceConstants.Errors.ExternalCollaborationNotAllowed,
+                    ErrorCodes.Forbidden);
+            }
+
+            var request = new InviteMemberRequest(userEmail, "Member", membershipType.ToString());
+            var joinRequest = WorkspaceInvitationMapper.CreateInvitation(
+                workspaceId,
+                request,
+                defaultMemberRoleId.Value,
+                "Member",
+                userId,
+                null,
+                membershipType.ToString());
+            joinRequest.Status = InvitationStatus.REQUESTED.ToString();
+
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(joinRequest, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(joinRequest.ToDto("Member"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while creating join request.");
+            return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ApproveJoinRequestAsync(Guid workspaceId, Guid invitationId, Guid adminUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanApprove, ErrorCodes.Forbidden);
+            }
+
+            var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(invitationId, ct);
+            if (invitation == null || invitation.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            if (invitation.Status != InvitationStatus.REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyRequestedCanBeApproved, ErrorCodes.InvalidState);
+            }
+
+            invitation.Status = InvitationStatus.PENDING.ToString();
+            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while approving join request.");
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> RejectJoinRequestAsync(Guid workspaceId, Guid invitationId, Guid adminUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanReject, ErrorCodes.Forbidden);
+            }
+
+            var invitation = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(invitationId, ct);
+            if (invitation == null || invitation.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            if (invitation.Status != InvitationStatus.REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyRequestedCanBeRejected, ErrorCodes.InvalidState);
+            }
+
+            invitation.Status = InvitationStatus.REVOKED.ToString();
+            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while rejecting join request.");
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }

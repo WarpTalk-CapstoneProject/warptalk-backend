@@ -29,17 +29,29 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
     public async Task<WorkspaceInvitation?> GetPendingByEmailAsync(Guid workspaceId, string email, CancellationToken ct = default)
     {
         return await _dbSet
+            .Include(i => i.Workspace)
             .FirstOrDefaultAsync(i => 
                 i.WorkspaceId == workspaceId && 
-                i.Email == email && 
-                i.Status == InvitationStatus.PENDING.ToString() && 
-                i.ExpiresAt > DateTime.UtcNow, 
+                i.Email.ToLower() == email.ToLower() && 
+                i.Status == InvitationStatus.PENDING.ToString(), 
                 ct);
+    }
+
+    public async Task<List<WorkspaceInvitation>> GetPendingInvitationsByEmailAsync(string email, CancellationToken ct = default)
+    {
+        return await _dbSet
+            .Include(i => i.Workspace)
+            .Where(i => 
+                i.Email.ToLower() == email.ToLower() && 
+                i.Status == InvitationStatus.PENDING.ToString())
+            .OrderByDescending(i => i.CreatedAt)
+            .ToListAsync(ct);
     }
 
     public async Task<(List<WorkspaceInvitation> Items, int TotalCount)> GetInvitationsByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken ct = default)
     {
         var query = _dbSet
+            .Include(i => i.Workspace)
             .Where(i => i.WorkspaceId == workspaceId)
             .OrderByDescending(i => i.CreatedAt);
 

@@ -52,6 +52,37 @@ public class TranslationRoomGrpcClient : ITranslationRoomClient
         }
     }
 
+    public async Task<TranslationRoomDto?> GetTranslationRoomByCodeAsync(string roomCode, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetTranslationRoomByCodeAsync(
+                new GetTranslationRoomByCodeRequest { RoomCode = roomCode },
+                cancellationToken: ct);
+
+            return new TranslationRoomDto
+            {
+                Id = Guid.TryParse(response.Id, out var id) ? id : Guid.Empty,
+                WorkspaceId = Guid.TryParse(response.WorkspaceId, out var wsId) ? wsId : Guid.Empty,
+                Title = response.Title,
+                HostId = Guid.TryParse(response.HostId, out var hostId) ? hostId : Guid.Empty,
+                Status = response.Status,
+                StartedAt = DateTime.TryParse(response.StartedAt, out var started) ? started : null,
+                EndedAt = DateTime.TryParse(response.EndedAt, out var ended) ? ended : null
+            };
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "gRPC GetTranslationRoomByCode failed. RoomCode: {RoomCode}", roomCode);
+            return null;
+        }
+    }
+
+
     public async Task<List<TranslationRoomParticipantDto>> GetParticipantsAsync(Guid roomId, CancellationToken ct = default)
     {
         try

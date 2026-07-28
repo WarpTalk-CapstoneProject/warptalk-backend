@@ -45,7 +45,13 @@ public class WorkspaceServiceTests
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
         _workspaceService = new AppWorkspaceService(_unitOfWork, _workspaceCache, Substitute.For<ILogger<AppWorkspaceService>>(), _authIdentity, _eventPublisher);
     }
@@ -507,7 +513,7 @@ public class WorkspaceServiceTests
     #region Workspace Settings Tests
 
     [Fact]
-    public async Task GetWorkspaceSettingsAsync_ShouldReturnParsedSettings_WhenUserIsMember()
+    public async Task GetWorkspaceSettingsAsync_ShouldReturnParsedSettings_WhenUserIsAdmin()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -522,6 +528,8 @@ public class WorkspaceServiceTests
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(member);
+        _authIdentity.GetRoleByIdAsync(member.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = member.RoleId, Name = "Admin" });
         
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
@@ -549,7 +557,7 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task GetWorkspaceSettingsAsync_ShouldReturnDefaultSettings_WhenSettingsColumnIsEmpty()
+    public async Task GetWorkspaceSettingsAsync_ShouldReturnDefaultSettings_WhenUserIsOwner()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -564,6 +572,8 @@ public class WorkspaceServiceTests
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(member);
+        _authIdentity.GetRoleByIdAsync(member.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = member.RoleId, Name = "Owner" });
         
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
@@ -603,6 +613,35 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
+    public async Task GetWorkspaceSettingsAsync_ShouldFail_WhenUserIsRegularMember()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = roleId
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(member);
+        _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = roleId, Name = "Member" });
+
+        var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive()
+            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsOwnerOrAdmin()
     {
         // Arrange
@@ -619,12 +658,18 @@ public class WorkspaceServiceTests
             new List<string>(),
             true,
             true,
-            null,
+            new AiUsagePolicyDto(
+                true,
+                new PiiRedactionDto(true),
+                new DlpDto(true, new List<string> { "confidential" }),
+                new TranslationProfileDto(
+                    "professional",
+                    new LanguageSpecificRulesDto("formal_hierarchical", "keigo_teineigo"))),
             false
         );
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace { Id = workspaceId });
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = userId, Email = "admin@warptalk.vn" });
 
@@ -634,7 +679,12 @@ public class WorkspaceServiceTests
             .Returns(member);
 
         _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = memberRoleId, Name = "Admin" });
+            .Returns(new Role { Id = memberRoleId, Name = "Owner" });
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { member });
 
         _workspaceRepository.UpdateSettingsAsync(workspaceId, Arg.Any<WorkspaceConfiguration>(), userId, Arg.Any<CancellationToken>())
             .Returns(true);
@@ -644,7 +694,19 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        await _workspaceRepository.Received(1).UpdateSettingsAsync(workspaceId, Arg.Is<WorkspaceConfiguration>(c => c.DefaultLanguage == "vi"), userId, Arg.Any<CancellationToken>());
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId,
+            Arg.Is<WorkspaceConfiguration>(c =>
+                c.DefaultLanguage == "vi"
+                && c.AiUsagePolicy != null
+                && c.AiUsagePolicy.RedactPii != null
+                && c.AiUsagePolicy.RedactPii.Enabled
+                && c.AiUsagePolicy.Dlp != null
+                && c.AiUsagePolicy.Dlp.Enabled
+                && c.AiUsagePolicy.Dlp.KeywordsBlacklist != null
+                && c.AiUsagePolicy.Dlp.KeywordsBlacklist.Contains("confidential")),
+            userId,
+            Arg.Any<CancellationToken>());
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
@@ -670,7 +732,7 @@ public class WorkspaceServiceTests
         );
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace { Id = workspaceId });
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = userId, Email = "user@warptalk.vn" });
 
@@ -723,7 +785,7 @@ public class WorkspaceServiceTests
             .Returns(member);
 
         _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = memberRoleId, Name = "Admin" });
+            .Returns(new Role { Id = memberRoleId, Name = "Owner" });
 
         // Act
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);

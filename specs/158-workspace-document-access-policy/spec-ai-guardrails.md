@@ -114,15 +114,16 @@ Hệ thống tích hợp các logic phân quyền kiểm tra bảo mật ở b�
 ---
 
 ### 2.4. Công nghệ triển khai Guardrails (PII & DLP Scanning)
-Tiến trình chạy nền `DocumentAiIngestionConsumerService` chịu trách nhiệm lắng nghe sự kiện tải lên và thực thi các bộ rào chắn an toàn trước khi nạp tài liệu:
+Tiến trình chạy nền `DocumentSecurityGuardrailConsumerService` chịu trách nhiệm lắng nghe sự kiện tải lên và thực thi các bộ rào chắn an toàn trước khi nạp tài liệu:
 
-1. **PII Redaction & Masking:**
-   * Quét và phát hiện các thông tin định danh cá nhân nhạy cảm trong tài liệu dựa trên Regular Expressions hoặc các thư viện chuyên dụng (như Microsoft Presidio).
-   * Các pattern bắt buộc nhận diện:
-     * `Email`: `[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`
-     * `Phone Number` (định dạng Việt Nam): `\b(?:\+?84|0)\d{9,10}\b`
-2. **DLP (Data Loss Prevention):**
-   * Quét và phát hiện sự tồn tại của các từ khóa nhạy cảm nằm trong `keywords_blacklist` được cấu hình từ chính sách hiệu dụng (Effective Policy).
+1. **Ủy nhiệm Quét Bảo mật sang Python AI Service (warptalk-ai):**
+   * Hệ thống loại bỏ hoàn toàn việc quét Regex nội bộ trong C#. Thay vào đó, bộ quét `DocumentSecurityScanner` ở C# sẽ đóng gói thông tin yêu cầu quét (nội dung tài liệu, cờ bật/tắt PII/DLP, danh sách từ khóa cấm) gửi lên Redis Stream `security:scan_requests`.
+   * C# chạy vòng lặp bất đồng bộ để lắng nghe kết quả quét tại key `security:scan_result:{scanId}` trên Redis với thời gian chờ tối đa (timeout) là 30 giây.
+   * Tiến trình Python `security_worker` lắng nghe stream `security:scan_requests`, thực hiện gọi sang OpenAI Chat Completions (`gpt-4o-mini`) bằng JSON mode để phát hiện các mối nguy hại:
+     * **PII Detection**: Tự động nhận diện Email, số điện thoại, số định danh cá nhân (SSN, ID), địa chỉ, tên riêng.
+     * **DLP Detection**: Phát hiện các từ khóa nhạy cảm trong `keywords_blacklist` (không phân biệt hoa thường).
+   * Sau khi quét xong, Python ghi kết quả dạng JSON `{ pii_detected, dlp_detected, violation_found }` vào key Redis `security:scan_result:{scanId}`.
+   * C# nhận được kết quả quét từ Redis, xóa key tạm đó và tiếp tục các bước phân loại bảo mật. Nếu quá trình quét bị lỗi hoặc quá thời gian chờ, C# kích hoạt cơ chế phòng ngừa sự cố (Fail-Closed).
 3. **Logic Cập nhật Trạng thái sau khi quét:**
    * Nếu phát hiện bất kỳ vi phạm PII hoặc DLP nào:
      * Tự động đánh dấu `IsSensitive = true` (hoặc giữ nguyên nếu đã là `true` từ trước).

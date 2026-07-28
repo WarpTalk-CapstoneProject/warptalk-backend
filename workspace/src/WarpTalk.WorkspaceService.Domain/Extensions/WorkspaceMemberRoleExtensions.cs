@@ -13,31 +13,32 @@ public static class WorkspaceMemberRoleExtensions
         _ => throw new ArgumentOutOfRangeException(nameof(role))
     };
 
-    public static WorkspaceMemberRole ToWorkspaceMemberRole(this string? roleName) => roleName switch
+    public static WorkspaceMemberRole ToWorkspaceMemberRole(this string? roleName)
     {
-        "Owner" => WorkspaceMemberRole.Owner,
-        "Admin" => WorkspaceMemberRole.Admin,
-        "Member" => WorkspaceMemberRole.Member,
-        _ => WorkspaceMemberRole.Member
-    };
+        if (string.Equals(roleName, WorkspaceMemberRole.Owner.ToRoleName(), StringComparison.OrdinalIgnoreCase))
+            return WorkspaceMemberRole.Owner;
+        if (string.Equals(roleName, WorkspaceMemberRole.Admin.ToRoleName(), StringComparison.OrdinalIgnoreCase))
+            return WorkspaceMemberRole.Admin;
+        return WorkspaceMemberRole.Member;
+    }
 
     public static bool IsOwner(this string? roleName)
     {
-        return roleName == WorkspaceMemberRole.Owner.ToRoleName();
+        return string.Equals(roleName, WorkspaceMemberRole.Owner.ToRoleName(), StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsAdmin(this string? roleName)
     {
-        return roleName == WorkspaceMemberRole.Admin.ToRoleName();
+        return string.Equals(roleName, WorkspaceMemberRole.Admin.ToRoleName(), StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsMember(this string? roleName)
     {
-        return roleName == WorkspaceMemberRole.Member.ToRoleName();
+        return string.Equals(roleName, WorkspaceMemberRole.Member.ToRoleName(), StringComparison.OrdinalIgnoreCase);
     }
 
     public static bool IsOwnerOrAdmin(this string? roleName)
     {
-        return roleName == WorkspaceMemberRole.Owner.ToRoleName() || roleName == WorkspaceMemberRole.Admin.ToRoleName();
+        return roleName.IsOwner() || roleName.IsAdmin();
     }
 }

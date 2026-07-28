@@ -209,16 +209,13 @@ public class GlossaryStartedEventConsumer : BackgroundService
             .OrderByDescending(t => t.Priority)
             .ToList();
 
-        var merged = new List<PromptTerm>(orderedWorkspace);
+        var merged = new List<PromptTerm>(orderedWorkspace.Take(maxTerms));
         var remainingBudget = Math.Max(0, maxTerms - merged.Count);
         merged.AddRange(eligibleGlobal.Take(remainingBudget));
 
-        var overBudgetCount = Math.Max(0, eligibleGlobal.Count - remainingBudget);
+        var overBudgetCount = Math.Max(0, eligibleGlobal.Count - remainingBudget)
+            + Math.Max(0, orderedWorkspace.Count - maxTerms);
 
-        // A single over-budget workspace glossary already trims workspace terms themselves
-        // (existing behavior) — merged can still exceed maxTerms only if workspaceTerms.Count
-        // itself already did, which this method doesn't attempt to fix (that's the caller's
-        // own glossary size, not this merge's job).
         return (merged, overriddenCount, overBudgetCount);
     }
 

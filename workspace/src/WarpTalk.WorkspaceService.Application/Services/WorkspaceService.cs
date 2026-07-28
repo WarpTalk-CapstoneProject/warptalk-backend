@@ -18,6 +18,8 @@ using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
 using WarpTalk.WorkspaceService.Domain.ValueObjects;
 using WarpTalk.Shared;
+using MassTransit;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
 
@@ -142,6 +144,7 @@ public class WorkspaceService : IWorkspaceService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishWorkspaceCreatedAsync(workspace.Id, workspace.Name, workspace.Slug, userId, ct);
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
         }
@@ -164,12 +167,14 @@ public class WorkspaceService : IWorkspaceService
                 var member = ws.WorkspaceMembers.FirstOrDefault();
                 var defaultRoleName = WorkspaceMemberRole.Member.ToRoleName();
                 var roleName = defaultRoleName;
+                var membershipType = MembershipType.Internal.ToString();
                 if (member != null)
                 {
                     roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+                    membershipType = member.MembershipType;
                 }
 
-                workspaceDtos.Add(ws.ToDto(roleName));
+                workspaceDtos.Add(ws.ToDto(roleName, membershipType));
             }
             var pagedResult = new PagedResult<WorkspaceDto>(workspaceDtos, query.Page, query.PageSize, totalCount);
             return Result.Success(pagedResult);
@@ -203,7 +208,7 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            return Result.Success(workspace.ToDto(roleName));
+            return Result.Success(workspace.ToDto(roleName, member.MembershipType));
         }
         catch (Exception ex)
         {
@@ -237,7 +242,8 @@ public class WorkspaceService : IWorkspaceService
 
             await _workspaceCache.SetActiveWorkspaceDetailsAsync(userId, workspaceId, role, membershipType, ct);
 
-            var response = new SelectWorkspaceResponse(workspaceId, workspace.Name, workspace.Slug);
+            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            var response = new SelectWorkspaceResponse(workspaceId, workspace.Name, workspace.Slug, config.DefaultLanguage);
             return Result.Success(response);
         }
         catch (Exception ex)
