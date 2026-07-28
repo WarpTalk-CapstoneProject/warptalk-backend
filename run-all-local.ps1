@@ -15,7 +15,7 @@ param(
     [switch]$Status
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $LogDir = Join-Path $ScriptDir "logs"
@@ -55,7 +55,7 @@ if (Test-Path $envFile) {
         $line = $_.Trim()
         if ($line -and -not $line.StartsWith("#") -and $line -match '=') {
             $key, $value = $line -split '=', 2
-            $env:$key = $value.Trim()
+            [System.Environment]::SetEnvironmentVariable($key.Trim(), $value.Trim(), "Process")
         }
     }
 }
@@ -65,6 +65,20 @@ if (-not $env:POSTGRES_USER) { $env:POSTGRES_USER = "postgres" }
 if (-not $env:POSTGRES_DB) { $env:POSTGRES_DB = "warptalk" }
 if (-not $env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD = "postgres" }
 if (-not $env:REDIS_PASSWORD) { $env:REDIS_PASSWORD = "CHANGE_ME_REDIS_PASSWORD" }
+
+# Override connection variables for local native run
+$env:Redis__ConnectionString = "localhost:6379,password=$($env:REDIS_PASSWORD)"
+$env:RabbitMQ__Host = "localhost"
+$env:RabbitMQ__Username = "warptalk"
+$env:RabbitMQ__Password = "warptalk-dev-rabbitmq"
+
+$env:ConnectionStrings__AuthDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
+$env:ConnectionStrings__WorkspaceDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
+$env:ConnectionStrings__TranslationRoomDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=translation_room,public"
+$env:ConnectionStrings__TranscriptDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=transcript,public"
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=public"
+$env:ConnectionStrings__BillingDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=subscription,workspace,public"
+
 
 function Show-Banner {
     Write-Host ($CYAN + "+------------------------------------------------------+" + $NC)
