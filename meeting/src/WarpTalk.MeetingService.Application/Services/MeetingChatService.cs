@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Globalization;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.MeetingService.Application.DTOs;
@@ -57,7 +59,7 @@ public class MeetingChatService : IMeetingChatService
         return Result.Success<IEnumerable<MeetingChatMessageDto>>(dtos);
     }
 
-    public async Task<Result<MeetingChatMessageDto>> SendMessageAsync(Guid roomId, Guid userId, SendMeetingChatMessageRequest request, CancellationToken ct = default)
+    public async Task<Result<MeetingChatMessageDto>> SendMessageAsync(Guid roomId, Guid userId, SendMeetingChatMessageRequest request, string? bearerToken = null, CancellationToken ct = default)
     {
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
@@ -103,15 +105,67 @@ public class MeetingChatService : IMeetingChatService
             await _unitOfWork.MeetingChatAssistantRequestRepository.AddAsync(assistantRequest, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            await _redisService.PublishEventAsync("meeting.chat.assistant_requested", new
+            var historyMessages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(
+                m => m.MeetingRoomId == room.Id && !m.IsHidden,
+                ct: ct) ?? Array.Empty<MeetingChatMessage>();
+            var historyJson = JsonSerializer.Serialize(
+                historyMessages
+                    .OrderBy(m => m.CreatedAt)
+                    .TakeLast(20)
+                    .Select(m => new
+                    {
+                        role = m.SenderType == "assistant" ? "assistant" : "user",
+                        content = m.OriginalText
+                    }));
+
+            var publishResult = await _redisService.PublishStreamMessageAsync(
+                "assistant:chat_requests",
+                new Dictionary<string, string>
+                {
+                    ["request_id"] = assistantRequest.Id.ToString(),
+                    ["conversation_id"] = room.Id.ToString(),
+                    ["workspace_id"] = workspaceId.ToString(),
+                    ["user_id"] = userId.ToString(),
+                    ["origin"] = "meeting_chat",
+                    ["bearer_token"] = bearerToken ?? string.Empty,
+                    ["history_json"] = historyJson,
+                    ["page_context_json"] = JsonSerializer.Serialize(new
+                    {
+                        pageType = "meeting_chat",
+                        entityId = roomId,
+                        workspaceId
+                    }),
+                    ["mentions_json"] = JsonSerializer.Serialize(agentMentions),
+                    ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        .ToString(CultureInfo.InvariantCulture)
+                });
+
+            if (publishResult?.IsSuccess != true)
             {
-                RequestId = assistantRequest.Id,
-                RoomId = room.Id,
-                MessageId = message.Id,
-                UserId = userId,
-                Prompt = assistantRequest.Prompt,
-                AgentIds = agentMentions.Select(m => m.Id).ToArray()
-            });
+                assistantRequest.Status = "failed";
+                assistantRequest.CompletedAt = DateTime.UtcNow;
+                _unitOfWork.MeetingChatAssistantRequestRepository.Update(assistantRequest);
+
+                var failureResponse = new MeetingChatMessage
+                {
+                    Id = Guid.NewGuid(),
+                    MeetingRoomId = room.Id,
+                    WorkspaceId = workspaceId,
+                    SenderDisplayName = "WarpBot",
+                    SenderType = "assistant",
+                    MessageType = "assistant_response",
+                    OriginalLanguage = request.OriginalLanguage,
+                    OriginalText = "WarpBot is temporarily unavailable. Please try again shortly.",
+                    TranslationEnabled = false,
+                    IsHidden = false,
+                    Mentions = "[]",
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await _unitOfWork.MeetingChatMessageRepository.AddAsync(failureResponse, ct);
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _chatNotifier.BroadcastMessageReceivedAsync(roomId, failureResponse.ToDto(), ct);
+            }
         }
 
         return Result.Success<MeetingChatMessageDto>(dto);
@@ -170,7 +224,9 @@ public class MeetingChatService : IMeetingChatService
             message.OriginalText, message.OriginalLanguage, request.TargetLanguage, ct);
 
         if (!translationResult.IsSuccess)
-            return Result.Failure<MeetingChatTranslationDto>(translationResult.Error, translationResult.ErrorCode);
+            return Result.Failure<MeetingChatTranslationDto>(
+                translationResult.Error ?? "Translation failed.",
+                translationResult.ErrorCode);
 
         var translation = new MeetingChatTranslation
         {

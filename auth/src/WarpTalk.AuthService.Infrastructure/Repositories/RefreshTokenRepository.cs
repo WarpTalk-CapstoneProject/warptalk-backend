@@ -26,4 +26,11 @@ public class RefreshTokenRepository : GenericRepository<RefreshToken>, IRefreshT
             .Where(t => t.FamilyId == familyId && t.RevokedAt == null)
             .ExecuteUpdateAsync(setters => setters.SetProperty(t => t.RevokedAt, DateTime.UtcNow), ct);
     }
+
+    public Task RevokeAllForUserAsync(Guid userId, CancellationToken ct = default)
+        => _dbSet
+            .Where(t => t.UserId == userId && t.RevokedAt == null)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(t => t.RevokedAt, DateTime.UtcNow),
+                ct);
 }

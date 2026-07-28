@@ -30,16 +30,26 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ILanguagePolicy _languagePolicy;
     private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
+    private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
 
-    public TranslationRoomService(IUnitOfWork unitOfWork, ILanguagePolicy languagePolicy, IAudioRouteEventProcessor audioRouteEventProcessor, ITranslationRoomAudioRouteService audioRouteService, WarpTalk.Shared.Interfaces.IEmailService emailService, ILogger<TranslationRoomService> logger, IOptions<AppSettings>? appSettings = null)
+    public TranslationRoomService(
+        IUnitOfWork unitOfWork,
+        ILanguagePolicy languagePolicy,
+        IAudioRouteEventProcessor audioRouteEventProcessor,
+        ITranslationRoomAudioRouteService audioRouteService,
+        IUserSettingsDirectory userSettingsDirectory,
+        WarpTalk.Shared.Interfaces.IEmailService emailService,
+        ILogger<TranslationRoomService> logger,
+        IOptions<AppSettings>? appSettings = null)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
         _audioRouteEventProcessor = audioRouteEventProcessor;
         _audioRouteService = audioRouteService;
+        _userSettingsDirectory = userSettingsDirectory;
         _emailService = emailService;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
@@ -57,13 +67,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (string.IsNullOrWhiteSpace(sourceLang) || targetLangs == null || !targetLangs.Any())
             {
-                var userDefaults = await _unitOfWork.UserSettingsRepository.GetDefaultsAsync(hostId, ct);
+                var userDefaults = await _userSettingsDirectory.GetDefaultsAsync(hostId, ct);
                 if (userDefaults != null)
                 {
-                    sourceLang ??= userDefaults.Value.DefaultSpeakLanguage;
+                    sourceLang ??= userDefaults.DefaultSpeakLanguage;
                     if (targetLangs == null || !targetLangs.Any())
                     {
-                        targetLangs = new List<string> { userDefaults.Value.DefaultListenLanguage };
+                        targetLangs = new List<string> { userDefaults.DefaultListenLanguage };
                     }
                 }
             }
@@ -264,11 +274,11 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (string.IsNullOrWhiteSpace(speakLang) || string.IsNullOrWhiteSpace(listenLang))
             {
-                var userDefaults = await _unitOfWork.UserSettingsRepository.GetDefaultsAsync(userId, ct);
+                var userDefaults = await _userSettingsDirectory.GetDefaultsAsync(userId, ct);
                 if (userDefaults != null)
                 {
-                    speakLang ??= userDefaults.Value.DefaultSpeakLanguage;
-                    listenLang ??= userDefaults.Value.DefaultListenLanguage;
+                    speakLang ??= userDefaults.DefaultSpeakLanguage;
+                    listenLang ??= userDefaults.DefaultListenLanguage;
                 }
             }
 

@@ -22,6 +22,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
+    private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
@@ -35,6 +36,7 @@ public class TranslationRoomServiceTests
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
+        _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
@@ -55,7 +57,14 @@ public class TranslationRoomServiceTests
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
-        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUow.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockAudioRouteService.Object, _mockEmailService.Object, _mockLogger.Object);
+        _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
+            _mockUow.Object,
+            _mockLanguagePolicy.Object,
+            _mockAudioRouteEventProcessor.Object,
+            _mockAudioRouteService.Object,
+            _mockUserSettingsDirectory.Object,
+            _mockEmailService.Object,
+            _mockLogger.Object);
     }
 
     [Fact]

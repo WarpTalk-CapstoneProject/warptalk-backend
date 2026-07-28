@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,6 +24,10 @@ public class AssistantChatResultConsumerService : BackgroundService
 {
     private const string StreamName = "assistant:chat_results";
     private const string GroupName = "assistant-service-consumers";
+    private const string DeadLetterStreamName = "assistant:chat_results:assistant-dead-letter";
+    private const string RetryHashName = "assistant:chat_results:assistant-retries";
+    private const long ReclaimIdleMilliseconds = 30_000;
+    private const long MaxAttempts = 5;
 
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -48,7 +53,23 @@ public class AssistantChatResultConsumerService : BackgroundService
         {
             try
             {
-                var entries = await db.StreamReadGroupAsync(StreamName, GroupName, _consumerName, count: 10);
+                var reclaimed = await db.StreamAutoClaimAsync(
+                    StreamName,
+                    GroupName,
+                    _consumerName,
+                    ReclaimIdleMilliseconds,
+                    "0-0",
+                    count: 10);
+                var entries = reclaimed.ClaimedEntries;
+                if (entries.Length == 0)
+                {
+                    entries = await db.StreamReadGroupAsync(
+                        StreamName,
+                        GroupName,
+                        _consumerName,
+                        position: ">",
+                        count: 10);
+                }
                 if (entries.Length == 0)
                 {
                     await Task.Delay(500, stoppingToken);
@@ -60,13 +81,25 @@ public class AssistantChatResultConsumerService : BackgroundService
                     try
                     {
                         await ProcessEntryAsync(entry, stoppingToken);
+                        await db.StreamAcknowledgeAsync(StreamName, GroupName, entry.Id);
+                        await db.HashDeleteAsync(RetryHashName, entry.Id);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "AssistantChatResultConsumerService: failed to process entry {EntryId}.", entry.Id);
-                    }
+                        var attempt = await db.HashIncrementAsync(RetryHashName, entry.Id);
+                        _logger.LogError(
+                            ex,
+                            "AssistantChatResultConsumerService: failed to process entry {EntryId} on attempt {Attempt}.",
+                            entry.Id,
+                            attempt);
 
-                    await db.StreamAcknowledgeAsync(StreamName, GroupName, entry.Id);
+                        if (attempt >= MaxAttempts)
+                        {
+                            await MoveToDeadLetterAsync(db, entry, ex, attempt);
+                            await db.StreamAcknowledgeAsync(StreamName, GroupName, entry.Id);
+                            await db.HashDeleteAsync(RetryHashName, entry.Id);
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -79,6 +112,27 @@ public class AssistantChatResultConsumerService : BackgroundService
                 await Task.Delay(2000, stoppingToken);
             }
         }
+    }
+
+    private static Task<RedisValue> MoveToDeadLetterAsync(
+        IDatabase db,
+        StreamEntry entry,
+        Exception exception,
+        long attempt)
+    {
+        var fields = new List<NameValueEntry>(entry.Values)
+        {
+            new("original_entry_id", entry.Id),
+            new("attempt_count", attempt.ToString(CultureInfo.InvariantCulture)),
+            new("failed_at", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
+            new("last_error", exception.Message)
+        };
+
+        return db.StreamAddAsync(
+            DeadLetterStreamName,
+            fields.ToArray(),
+            maxLength: 10_000,
+            useApproximateMaxLength: true);
     }
 
     private async Task EnsureConsumerGroupAsync(IDatabase db)
@@ -96,6 +150,11 @@ public class AssistantChatResultConsumerService : BackgroundService
     private async Task ProcessEntryAsync(StreamEntry entry, CancellationToken ct)
     {
         var fields = entry.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
+        if (!string.Equals(
+                fields.GetValueOrDefault("origin", "assistant"),
+                "assistant",
+                StringComparison.Ordinal))
+            return;
 
         if (!fields.TryGetValue("request_id", out var requestIdStr) || !Guid.TryParse(requestIdStr, out var requestId))
             return;

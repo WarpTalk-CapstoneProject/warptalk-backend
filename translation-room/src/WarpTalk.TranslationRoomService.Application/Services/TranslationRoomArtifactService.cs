@@ -22,11 +22,16 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<TranslationRoomArtifactService> _logger;
+    private readonly IArtifactUrlSigner _urlSigner;
 
-    public TranslationRoomArtifactService(IUnitOfWork unitOfWork, ILogger<TranslationRoomArtifactService> logger)
+    public TranslationRoomArtifactService(
+        IUnitOfWork unitOfWork,
+        ILogger<TranslationRoomArtifactService> logger,
+        IArtifactUrlSigner urlSigner)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _urlSigner = urlSigner;
     }
 
     public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default)
@@ -59,36 +64,75 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         }
     }
 
-    public async Task<Result<string>> GetArtifactDownloadUrlAsync(Guid artifactId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<ArtifactDownloadDto>> GetArtifactDownloadAsync(Guid artifactId, Guid userId, CancellationToken ct = default)
     {
         try
         {
             var artifact = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactWithRoomAsync(artifactId, ct);
 
-            if (artifact == null) return Result.Failure<string>("Artifact not found.", ErrorCodes.NotFound);
+            if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId)) 
-                return Result.Failure<string>("Unauthorized to download this artifact.", ErrorCodes.Unauthorized);
+                return Result.Failure<ArtifactDownloadDto>("Unauthorized to download this artifact.", ErrorCodes.Unauthorized);
 
             if (artifact.RetentionUntil.HasValue && DateTime.UtcNow > artifact.RetentionUntil.Value)
             {
                 artifact.Status = ArtifactStatus.Expired.ToString();
                 _unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
                 await _unitOfWork.SaveChangesAsync(ct);
-                return Result.Failure<string>("Artifact retention period has expired.", ErrorCodes.InvalidState);
+                return Result.Failure<ArtifactDownloadDto>("Artifact retention period has expired.", ErrorCodes.InvalidState);
             }
 
             if (artifact.ConsentRequired)
             {
-                return Result.Failure<string>("Consent is required before downloading this artifact.", ErrorCodes.Unauthorized);
+                return Result.Failure<ArtifactDownloadDto>("Consent is required before downloading this artifact.", ErrorCodes.Unauthorized);
             }
 
-            return Result<string>.Success(artifact.FileUrl ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(artifact.FileUrl) &&
+                string.IsNullOrWhiteSpace(artifact.Content))
+            {
+                return Result.Failure<ArtifactDownloadDto>(
+                    "Artifact content is not available yet.",
+                    ErrorCodes.InvalidState);
+            }
+
+            var extension = artifact.FileFormat?.ToLowerInvariant() switch
+            {
+                "markdown" => "md",
+                "json" => "json",
+                "text/plain" => "txt",
+                "mp4" => "mp4",
+                "webm" => "webm",
+                "wav" => "wav",
+                _ => artifact.ContainsRawAudio ? "bin" : "txt"
+            };
+            var contentType = artifact.FileFormat?.ToLowerInvariant() switch
+            {
+                "markdown" => "text/markdown",
+                "json" => "application/json",
+                "text/plain" => "text/plain",
+                "mp4" => "video/mp4",
+                "webm" => "video/webm",
+                "wav" => "audio/wav",
+                _ => artifact.ContainsRawAudio ? "application/octet-stream" : "text/plain"
+            };
+            var fileName = $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.{extension}";
+            var downloadUrl = string.IsNullOrWhiteSpace(artifact.FileUrl)
+                ? null
+                : await _urlSigner.CreateDownloadUrlAsync(
+                    artifact.FileUrl,
+                    TimeSpan.FromMinutes(15),
+                    ct);
+            return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
+                downloadUrl,
+                artifact.Content,
+                fileName,
+                contentType));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error getting download URL for artifact {ArtifactId}", artifactId);
-            return Result.Failure<string>("An unexpected error occurred.", ErrorCodes.InternalServerError);
+            return Result.Failure<ArtifactDownloadDto>("An unexpected error occurred.", ErrorCodes.InternalServerError);
         }
     }
 

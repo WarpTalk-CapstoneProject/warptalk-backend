@@ -90,6 +90,47 @@ public class SubscriptionServiceTests
         result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionAlreadyActive);
     }
 
+    [Fact]
+    public async Task GetGlobalSubscriptionsAsync_ResolvesWorkspaceNamesThroughDirectory()
+    {
+        var workspaceId = Guid.NewGuid();
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro", Price = 299000 };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            Status = "active"
+        };
+        _mockSubRepo.Setup(r => r.GetPagedAsync(
+                It.IsAny<Expression<Func<Subscription, bool>>>(),
+                0,
+                20,
+                It.IsAny<Func<IQueryable<Subscription>, IQueryable<Subscription>>>(),
+                It.IsAny<Func<IQueryable<Subscription>, IQueryable<Subscription>>?>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new[] { subscription });
+        _mockSubRepo.Setup(r => r.CountAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(1);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(plan);
+        var directory = new Mock<IWorkspaceDirectory>();
+        directory.Setup(x => x.GetNamesAsync(
+                It.Is<IEnumerable<Guid>>(ids => ids.Contains(workspaceId)),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Dictionary<Guid, string> { [workspaceId] = "WarpTalk Team" });
+        var service = new SubscriptionService(
+            _mockUnitOfWork.Object,
+            new Mock<ILogger<SubscriptionService>>().Object,
+            new Mock<IBillingMessagePublisher>().Object,
+            directory.Object);
+
+        var result = await service.GetGlobalSubscriptionsAsync(1, 20);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Items.Single().WorkspaceName.Should().Be("WarpTalk Team");
+    }
+
     // ─────────────────────────────────────────────
     //  CancelSubscriptionAsync
     // ─────────────────────────────────────────────

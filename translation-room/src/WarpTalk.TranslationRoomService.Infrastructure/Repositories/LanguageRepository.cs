@@ -18,10 +18,8 @@ public class LanguageRepository : ILanguageRepository
     {
         if (string.IsNullOrWhiteSpace(code)) return false;
 
-        var exists = await _dbContext.Database
-            .SqlQueryRaw<string>("SELECT code FROM platform.supported_languages WHERE code = {0} AND is_active = true", code)
-            .AnyAsync();
-
-        return exists;
+        return await _dbContext.SupportedLanguages
+            .AsNoTracking()
+            .AnyAsync(language => language.Code == code && language.IsActive);
     }
 }

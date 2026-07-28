@@ -57,6 +57,7 @@ public class NotificationPublishTests
         var result = await mockNotificationService.Object.CreateNotificationAsync(createDto, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
 
         var msg = new RealtimeNotificationMessage
         {

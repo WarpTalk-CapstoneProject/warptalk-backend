@@ -1,30 +1,30 @@
-using System;
-using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.NotificationService.Application.DTOs.AdminNotifications;
+using WarpTalk.NotificationService.Application.Mappers;
 using WarpTalk.NotificationService.Domain.Constants;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Domain.Interfaces;
-using WarpTalk.Shared.Models;
-using WarpTalk.NotificationService.Application.Mappers;
 
 namespace WarpTalk.NotificationService.API.HostedServices;
-//Background worker to connect to redis streams as a consumer group/
+
 public class NotificationStreamConsumerService : BackgroundService
 {
+    private const string StreamName = "admin-notifications-delivery";
+    private const string DeadLetterStreamName = "admin-notifications-delivery:dead-letter";
+    private const string ConsumerGroupName = "notification-worker-group";
+    private const string InboxConsumerName = "admin-notification-delivery@v1";
+    private const int MaxAttempts = 5;
+    private const long ReclaimIdleMilliseconds = 60_000;
+
     private readonly IConnectionMultiplexer _redis;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<NotificationStreamConsumerService> _logger;
-
-    private const string StreamName = "admin-notifications-delivery";
-    private const string ConsumerGroupName = "notification-worker-group";
-    private const string ConsumerName = "worker-1"; // In a real cluster, generate dynamically e.g. Environment.MachineName
+    private readonly string _consumerName =
+        $"notification-{Environment.MachineName}-{Environment.ProcessId}-{Guid.NewGuid():N}";
 
     public NotificationStreamConsumerService(
         IConnectionMultiplexer redis,
@@ -39,117 +39,209 @@ public class NotificationStreamConsumerService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var db = _redis.GetDatabase();
-
-       
         try
         {
-            await db.StreamCreateConsumerGroupAsync(StreamName, ConsumerGroupName, "0-0", createStream: true);
-            _logger.LogInformation("Created consumer group {ConsumerGroup} for stream {Stream}.", ConsumerGroupName, StreamName);
+            await db.StreamCreateConsumerGroupAsync(
+                StreamName,
+                ConsumerGroupName,
+                "0-0",
+                createStream: true);
         }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
+        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP", StringComparison.Ordinal))
         {
-            // Group already exists, ignore
+            // The group is shared by all replicas and is expected to exist after the first start.
         }
 
-        _logger.LogInformation("NotificationStreamConsumerService started processing chunks.");
+        _logger.LogInformation(
+            "Admin notification delivery worker started as {ConsumerName}.",
+            _consumerName);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // 2. Read new messages for the consumer group. ">" means read undelivered messages.
-                var messages = await db.StreamReadGroupAsync(
-                    StreamName, 
-                    ConsumerGroupName, 
-                    ConsumerName, 
-                    position: ">", 
-                    count: 1); // Process 1 chunk at a time
+                var reclaimed = await db.StreamAutoClaimAsync(
+                    StreamName,
+                    ConsumerGroupName,
+                    _consumerName,
+                    ReclaimIdleMilliseconds,
+                    "0-0",
+                    count: 10);
+                var messages = reclaimed.ClaimedEntries;
 
                 if (messages.Length == 0)
                 {
-                    await Task.Delay(1000, stoppingToken); // Backoff
+                    messages = await db.StreamReadGroupAsync(
+                        StreamName,
+                        ConsumerGroupName,
+                        _consumerName,
+                        position: ">",
+                        count: 10);
+                }
+
+                if (messages.Length == 0)
+                {
+                    await Task.Delay(1_000, stoppingToken);
                     continue;
                 }
 
                 foreach (var message in messages)
                 {
-                    var payloadValue = message.Values.FirstOrDefault(v => v.Name == "payload").Value;
-                    if (!payloadValue.HasValue) continue;
-
-                    var payload = JsonSerializer.Deserialize<DeliveryEventPayload>(payloadValue.ToString());
-                    if (payload == null) continue;
-
-                    await ProcessChunkAsync(payload, db, stoppingToken);
-
-                    // 3. Acknowledge the message
-                    await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, message.Id);
-                    _logger.LogInformation("Acknowledged message {MessageId}.", message.Id);
+                    await HandleMessageAsync(message, db, stoppingToken);
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing stream message.");
-                await Task.Delay(5000, stoppingToken); // Backoff on error
+                _logger.LogError(ex, "Admin notification stream poll failed.");
+                await Task.Delay(5_000, stoppingToken);
             }
         }
     }
 
-    private async Task ProcessChunkAsync(DeliveryEventPayload payload, IDatabase db, CancellationToken ct)
+    private async Task HandleMessageAsync(
+        StreamEntry message,
+        IDatabase db,
+        CancellationToken cancellationToken)
     {
+        var payloadValue = GetField(message, "payload");
+        var logicalEventId = GetField(message, "event_id") ?? message.Id.ToString();
+        var attempt = int.TryParse(GetField(message, "attempt"), out var parsedAttempt)
+            ? parsedAttempt
+            : 0;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(payloadValue))
+                throw new InvalidDataException("Delivery event payload is missing.");
+
+            var payload = JsonSerializer.Deserialize<DeliveryEventPayload>(payloadValue)
+                ?? throw new InvalidDataException("Delivery event payload is invalid.");
+
+            await ProcessChunkAsync(payload, logicalEventId, db, cancellationToken);
+            await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, message.Id);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await RetryOrDeadLetterAsync(
+                message,
+                payloadValue,
+                logicalEventId,
+                attempt,
+                ex,
+                db);
+        }
+    }
+
+    private async Task ProcessChunkAsync(
+        DeliveryEventPayload payload,
+        string logicalEventId,
+        IDatabase db,
+        CancellationToken cancellationToken)
+    {
+        if (payload.TargetAudienceMode != NotificationConstants.TargetModeSpecificUsers
+            || payload.SpecificUserIds is not { Length: > 0 })
+        {
+            throw new InvalidOperationException(
+                $"Unsupported admin notification audience mode '{payload.TargetAudienceMode}'.");
+        }
+
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-        // 1. Get the admin notification
-        var adminNotif = await unitOfWork.AdminNotificationRepository.GetByIdAsync(payload.NotificationId, ct);
-        if (adminNotif == null)
-        {
-            _logger.LogWarning("AdminNotification {Id} not found. Skipping delivery.", payload.NotificationId);
+        var inboxRepository = unitOfWork.Repository<NotificationInboxMessage>();
+        var eventId = StableEventId(logicalEventId);
+        var alreadyProcessed = (await inboxRepository.FindAsync(
+            item => item.EventId == eventId && item.Consumer == InboxConsumerName)).Any();
+        if (alreadyProcessed)
             return;
-        }
 
-        // 2. Resolve users
-        Guid[] targetUserIds = Array.Empty<Guid>();
+        var adminNotification = await unitOfWork.AdminNotificationRepository
+            .GetByIdAsync(payload.NotificationId, cancellationToken)
+            ?? throw new KeyNotFoundException(
+                $"Admin notification {payload.NotificationId} does not exist.");
 
-        if (payload.TargetAudienceMode == NotificationConstants.TargetModeSpecificUsers && payload.SpecificUserIds != null)
+        var targetUserIds = payload.SpecificUserIds.Distinct().ToArray();
+        var messages = targetUserIds
+            .Select(userId => NotificationMessageMapper.ToEntity(adminNotification, userId))
+            .ToArray();
+
+        await unitOfWork.NotificationMessageRepository.AddRangeAsync(messages);
+        await inboxRepository.AddAsync(new NotificationInboxMessage
         {
-            targetUserIds = payload.SpecificUserIds;
-        }
-        else if (payload.TargetAudienceMode == NotificationConstants.TargetModeBroadcast)
-        {
-            // For broadcast, ideally we query a User microservice to get all IDs.
-            // For now, since this is a capstone, we assume the specific user list is passed or we leave it empty.
-            // We'll simulate fetching all users (e.g., getting 10 users for testing).
-            // This would normally involve pagination.
-            _logger.LogWarning("Broadcast mode resolution is not fully implemented. Mocking empty list.");
-        }
-        else if (payload.TargetAudienceMode == NotificationConstants.TargetModeSegment)
-        {
-            _logger.LogWarning("Segment mode resolution is not fully implemented. Mocking empty list.");
-        }
-
-        if (!targetUserIds.Any()) return;
-
-        // 3. Create NotificationMessage entities
-        var messagesToInsert = targetUserIds.Select(userId => NotificationMessageMapper.ToEntity(adminNotif, userId)).ToList();
-
-        // 4. Bulk Insert
-        await unitOfWork.NotificationMessageRepository.AddRangeAsync(messagesToInsert);
+            EventId = eventId,
+            Consumer = InboxConsumerName,
+            EventType = "admin.notification.delivery@v1",
+            ProcessedAt = DateTime.UtcNow
+        });
         await unitOfWork.SaveChangesAsync();
-        
-        _logger.LogInformation("Saved {Count} notification messages to inbox for Notification {AdminNotifId}.", messagesToInsert.Count, adminNotif.Id);
 
-        // 5. Fan-out via Redis Pub/Sub for Realtime Delivery
-        foreach (var msg in messagesToInsert)
+        foreach (var notification in messages)
         {
-            var realtimeMsg = NotificationMessageMapper.ToRealtimeDto(msg);
-
-            await db.PublishAsync(RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel), JsonSerializer.Serialize(realtimeMsg));
+            var realtimeMessage = NotificationMessageMapper.ToRealtimeDto(notification);
+            await db.PublishAsync(
+                RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel),
+                JsonSerializer.Serialize(realtimeMessage));
         }
-        
-        _logger.LogInformation("Published {Count} realtime messages to Gateway.", messagesToInsert.Count);
+    }
+
+    private async Task RetryOrDeadLetterAsync(
+        StreamEntry source,
+        string? payload,
+        string logicalEventId,
+        int attempt,
+        Exception exception,
+        IDatabase db)
+    {
+        var nextAttempt = attempt + 1;
+        if (nextAttempt >= MaxAttempts)
+        {
+            await db.StreamAddAsync(
+                DeadLetterStreamName,
+                [
+                    new NameValueEntry("payload", payload ?? string.Empty),
+                    new NameValueEntry("event_id", logicalEventId),
+                    new NameValueEntry("source_id", source.Id),
+                    new NameValueEntry("attempt", nextAttempt),
+                    new NameValueEntry("error", exception.Message),
+                    new NameValueEntry("failed_at", DateTime.UtcNow.ToString("O"))
+                ]);
+            _logger.LogError(
+                exception,
+                "Admin notification delivery {EventId} moved to DLQ after {Attempts} attempts.",
+                logicalEventId,
+                nextAttempt);
+        }
+        else
+        {
+            await db.StreamAddAsync(
+                StreamName,
+                [
+                    new NameValueEntry("payload", payload ?? string.Empty),
+                    new NameValueEntry("event_id", logicalEventId),
+                    new NameValueEntry("attempt", nextAttempt)
+                ]);
+            _logger.LogWarning(
+                exception,
+                "Admin notification delivery {EventId} scheduled for retry {Attempt}.",
+                logicalEventId,
+                nextAttempt);
+        }
+
+        await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, source.Id);
+    }
+
+    private static string? GetField(StreamEntry entry, string name)
+    {
+        var value = entry.Values.FirstOrDefault(item => item.Name == name).Value;
+        return value.HasValue ? value.ToString() : null;
+    }
+
+    private static Guid StableEventId(string value)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return new Guid(hash.AsSpan(0, 16));
     }
 }

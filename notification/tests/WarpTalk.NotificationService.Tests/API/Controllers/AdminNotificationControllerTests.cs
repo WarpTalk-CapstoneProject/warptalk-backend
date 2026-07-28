@@ -10,6 +10,7 @@ using Xunit;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -25,9 +26,9 @@ namespace WarpTalk.NotificationService.Tests.API.Controllers;
 
 public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
-    public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, 
-        ILoggerFactory logger, UrlEncoder encoder, ISystemClock clock) 
-        : base(options, logger, encoder, clock)
+    public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, UrlEncoder encoder)
+        : base(options, logger, encoder)
     {
     }
 
@@ -53,6 +54,9 @@ public class AdminNotificationControllerTests : IClassFixture<WebApplicationFact
     {
         _client = factory.WithWebHostBuilder(builder =>
         {
+            builder.UseSetting(
+                "Grpc:InternalSecret",
+                "test-only-internal-grpc-secret-32-characters");
             builder.ConfigureTestServices(services =>
             {
                 services.RemoveAll<IHostedService>();

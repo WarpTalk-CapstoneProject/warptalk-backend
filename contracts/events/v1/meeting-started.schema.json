@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/meeting-started.schema.json",
+  "title": "Meeting started v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "meeting.started"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "meeting.started"
+        },
+        "producer": {
+          "const": "meeting-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "translation_room_id",
+            "workspace_id"
+          ],
+          "properties": {
+            "translation_room_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "workspace_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

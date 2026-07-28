@@ -1,7 +1,5 @@
-using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Context;
@@ -13,6 +11,7 @@ using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.AssistantService.Infrastructure.Persistence;
 using WarpTalk.AssistantService.Infrastructure.Repositories;
 using WarpTalk.AssistantService.Infrastructure.Services;
+using WarpTalk.Shared.Extensions;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -27,6 +26,10 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
+    builder.Services.AddWarpTalkObservability(
+        builder.Configuration,
+        builder.Environment,
+        "warptalk-assistant");
 
     builder.WebHost.ConfigureKestrel(options =>
     {
@@ -35,7 +38,8 @@ try
 
     builder.Services.AddDbContext<AssistantDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("AssistantDb"),
+            builder.Configuration.GetConnectionString("AssistantDb")
+                ?? throw new InvalidOperationException("ConnectionStrings:AssistantDb is required."),
             npgsqlOptions =>
             {
                 npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
@@ -56,31 +60,13 @@ try
         StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
-    var jwtSettings = builder.Configuration.GetSection("Jwt");
-    var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
-    if (string.IsNullOrWhiteSpace(secretKey))
-        throw new InvalidOperationException("JWT SecretKey is not configured. Set JWT__SecretKey environment variable in production.");
-
-    var issuer = Environment.GetEnvironmentVariable("JWT__Issuer") ?? jwtSettings["Issuer"] ?? "WarpTalk";
-    var audience = Environment.GetEnvironmentVariable("JWT__Audience") ?? jwtSettings["Audience"] ?? "WarpTalk.API";
-    var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options =>
+    builder.Services.AddWarpTalkJwtAuthentication(
+        builder.Configuration,
+        builder.Environment,
+        options =>
         {
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = signingKey,
-                ValidateIssuer = true,
-                ValidIssuer = issuer,
-                ValidateAudience = true,
-                ValidAudience = audience,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.FromSeconds(30),
-                NameClaimType = "email",
-                RoleClaimType = "role",
-            };
+            options.TokenValidationParameters.NameClaimType = "email";
+            options.TokenValidationParameters.RoleClaimType = "role";
 
             options.Events = new JwtBearerEvents
             {
@@ -142,11 +128,8 @@ try
         });
     });
 
-    builder.Services.AddHealthChecks()
-        .AddNpgSql(
-            builder.Configuration.GetConnectionString("AssistantDb"),
-            name: "Assistant DB",
-            tags: new[] { "db", "ready" });
+    builder.Services.AddWarpTalkServiceHealthChecks<AssistantDbContext>(
+        "assistant-database");
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
@@ -191,15 +174,7 @@ try
         app.UseHttpsRedirection();
     }
 
-    app.MapHealthChecks("/health");
-    app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-    {
-        Predicate = r => r.Tags.Contains("live"),
-    });
-    app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-    {
-        Predicate = r => r.Tags.Contains("ready"),
-    });
+    app.MapWarpTalkServiceHealthChecks();
 
     app.Use(async (context, next) =>
     {

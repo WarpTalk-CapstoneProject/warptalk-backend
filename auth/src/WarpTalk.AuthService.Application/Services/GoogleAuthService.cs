@@ -28,6 +28,7 @@ public class GoogleAuthService : IGoogleAuthService
     private readonly IDistributedCache _cache;
     private readonly AuthSettings _authSettings;
     private readonly ILogger<GoogleAuthService> _logger;
+    private readonly IAuthEmailSender _authEmailSender;
 
     public GoogleAuthService(
         IUnitOfWork unitOfWork,
@@ -35,7 +36,8 @@ public class GoogleAuthService : IGoogleAuthService
         IGoogleTokenVerifier googleTokenVerifier,
         IDistributedCache cache,
         IOptions<AuthSettings> authSettings,
-        ILogger<GoogleAuthService> logger)
+        ILogger<GoogleAuthService> logger,
+        IAuthEmailSender authEmailSender)
     {
         _unitOfWork = unitOfWork;
         _jwtGenerator = jwtGenerator;
@@ -43,6 +45,7 @@ public class GoogleAuthService : IGoogleAuthService
         _cache = cache;
         _authSettings = authSettings.Value;
         _logger = logger;
+        _authEmailSender = authEmailSender;
         _userRepository = _unitOfWork.UserRepository;
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
     }
@@ -231,8 +234,13 @@ public class GoogleAuthService : IGoogleAuthService
             var nextAttemptsString = $"{attemptsCount + 1}|{expiryTime:O}";
             await _cache.SetStringAsync(windowKey, nextAttemptsString, windowOptions, ct);
 
-            // Simulate dispatching a verification email
-            _logger.LogInformation("[Verification] Generated verification token and dispatched verification email for user: {Email}", user.Email);
+            var token = TokenHashing.GenerateToken();
+            user.EmailVerificationTokenHash = TokenHashing.Hash(token);
+            user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+                _authSettings.VerificationTokenLifetimeMinutes);
+            _userRepository.Update(user);
+            await _unitOfWork.SaveChangesAsync(ct);
+            await _authEmailSender.SendVerificationEmailAsync(user, token, ct);
         }
         catch (Exception ex)
         {

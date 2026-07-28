@@ -2,6 +2,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -27,26 +29,19 @@ public class ArtifactsFinalizationWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("ArtifactsFinalizationWorker starting...");
+        using var concurrency = new SemaphoreSlim(4, 4);
+        var running = new List<Task>();
 
         try
         {
             await foreach (var roomId in _queue.ReadAllAsync(stoppingToken))
             {
-                // Run finalization asynchronously on a thread pool thread to avoid blocking the queue reader
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        using var scope = _serviceProvider.CreateScope();
-                        var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
-                        await finalizationService.ProcessRoomFinalizationAsync(roomId, stoppingToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error processing finalization for room {RoomId}", roomId);
-                    }
-                }, stoppingToken);
+                await concurrency.WaitAsync(stoppingToken);
+                running.RemoveAll(static task => task.IsCompleted);
+                running.Add(ProcessRoomAsync(roomId, stoppingToken, concurrency));
             }
+
+            await Task.WhenAll(running);
         }
         catch (OperationCanceledException)
         {
@@ -57,5 +52,29 @@ public class ArtifactsFinalizationWorker : BackgroundService
         }
 
         _logger.LogInformation("ArtifactsFinalizationWorker stopping.");
+    }
+
+    private async Task ProcessRoomAsync(
+        Guid roomId,
+        CancellationToken stoppingToken,
+        SemaphoreSlim concurrency)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var finalizationService = scope.ServiceProvider.GetRequiredService<IArtifactsFinalizer>();
+            await finalizationService.ProcessRoomFinalizationAsync(roomId, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing finalization for room {RoomId}", roomId);
+        }
+        finally
+        {
+            concurrency.Release();
+        }
     }
 }

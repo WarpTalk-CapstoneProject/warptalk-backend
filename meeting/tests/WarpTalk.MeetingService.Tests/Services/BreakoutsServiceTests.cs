@@ -51,6 +51,9 @@ public class BreakoutsServiceTests
         roomRepoMock
             .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(meetingRoom);
+        roomRepoMock
+            .Setup(r => r.GetByIdAsync(meetingRoom.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(meetingRoom);
         _unitOfWorkMock.Setup(u => u.MeetingRoomRepository).Returns(roomRepoMock.Object);
         return meetingRoom;
     }
@@ -238,6 +241,49 @@ public class BreakoutsServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
         Assert.Null(session.EndedAt);
+    }
+
+    [Fact]
+    public async Task ExpireDueBreakoutsAsync_EndsOnlyElapsedSessionsAndRelaysToParentRoom()
+    {
+        var now = DateTime.UtcNow;
+        var translationRoomId = Guid.NewGuid();
+        var room = SetupRoom(translationRoomId);
+        var expired = new BreakoutSession
+        {
+            Id = Guid.NewGuid(),
+            ParentMeetingRoomId = room.Id,
+            ProviderRoomName = "expired",
+            Label = "Expired",
+            StartedAt = now.AddMinutes(-10),
+            DurationSeconds = 60,
+            CreatedAt = now.AddMinutes(-10)
+        };
+        var active = new BreakoutSession
+        {
+            Id = Guid.NewGuid(),
+            ParentMeetingRoomId = room.Id,
+            ProviderRoomName = "active",
+            Label = "Active",
+            StartedAt = now,
+            DurationSeconds = 300,
+            CreatedAt = now
+        };
+        _sessionRepo.Items.Add(expired);
+        _sessionRepo.Items.Add(active);
+
+        var result = await _sut.ExpireDueBreakoutsAsync(now);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.Value);
+        Assert.Equal(now, expired.EndedAt);
+        Assert.Null(active.EndedAt);
+        _redisServiceMock.Verify(
+            redis => redis.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<Dictionary<string, object?>>(payload =>
+                    HasProperty(payload, "Command", "BreakoutsEnded"))),
+            Times.Once);
     }
 
     [Fact]

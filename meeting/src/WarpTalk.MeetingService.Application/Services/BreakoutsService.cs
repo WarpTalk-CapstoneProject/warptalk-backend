@@ -20,7 +20,8 @@ namespace WarpTalk.MeetingService.Application.Services;
 /// coordination (ActiveTranslationRoomRegistry/STT/translation workers only know about the
 /// PARENT room — breakout audio is plain LiveKit A/V with no live captions/translation),
 /// cross-breakout broadcast messaging, per-breakout chat history, and breakout recording.
-/// Server-side auto-expiry is also intentionally not implemented — see EndBreakoutsAsync.
+/// Timed sessions are expired by the Meeting Service background worker through
+/// ExpireDueBreakoutsAsync.
 /// </summary>
 public class BreakoutsService : IBreakoutsService
 {
@@ -154,15 +155,7 @@ public class BreakoutsService : IBreakoutsService
     /// <summary>
     /// Ends every still-open breakout session for the room and relays BreakoutsEnded so every
     /// client (assigned or not) reconciles back to the main room.
-    ///
-    /// SCOPE CUT: no server-side scheduled job forcibly ends a session once its
-    /// duration elapses — the frontend computes "time remaining" from
-    /// StartedAt + DurationSeconds and shows a countdown / "returning soon" toast, but a
-    /// breakout with a duration set does NOT auto-end itself here if nobody calls this
-    /// endpoint. The host must click "End breakouts" (or the client could be extended to
-    /// call this endpoint itself when its own countdown hits zero — not implemented here to
-    /// avoid every client racing to be the one that ends it). Documented in the ticket as an
-    /// acceptable trade-off given time constraints.
+    /// Timed sessions are also ended independently by BreakoutExpiryWorker.
     /// </summary>
     public async Task<Result<bool>> EndBreakoutsAsync(Guid translationRoomId, Guid callerUserId, CancellationToken ct = default)
     {
@@ -191,6 +184,49 @@ public class BreakoutsService : IBreakoutsService
         await PublishRelayAsync("BreakoutsEnded", translationRoomId, new { });
 
         return Result.Success(true);
+    }
+
+    public async Task<Result<int>> ExpireDueBreakoutsAsync(
+        DateTime utcNow,
+        CancellationToken ct = default)
+    {
+        var candidates = await _unitOfWork.Repository<BreakoutSession>()
+            .FindAsync(
+                session => session.EndedAt == null &&
+                           session.StartedAt.HasValue &&
+                           session.DurationSeconds.HasValue,
+                ct: ct);
+        var dueSessions = candidates
+            .Where(session =>
+                session.StartedAt!.Value.AddSeconds(session.DurationSeconds!.Value) <= utcNow)
+            .ToList();
+        if (dueSessions.Count == 0)
+            return Result.Success(0);
+
+        foreach (var session in dueSessions)
+        {
+            session.EndedAt = utcNow;
+            _unitOfWork.Repository<BreakoutSession>().Update(session);
+        }
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        foreach (var parentMeetingRoomId in dueSessions
+                     .Select(session => session.ParentMeetingRoomId)
+                     .Distinct())
+        {
+            var meetingRoom = await _unitOfWork.MeetingRoomRepository.GetByIdAsync(
+                parentMeetingRoomId,
+                ct);
+            if (meetingRoom is not null)
+            {
+                await PublishRelayAsync(
+                    "BreakoutsEnded",
+                    meetingRoom.TranslationRoomId,
+                    new { reason = "duration_elapsed" });
+            }
+        }
+
+        return Result.Success(dueSessions.Count);
     }
 
     public async Task<Result<BreakoutJoinInfoDto>> GetMyAssignmentAsync(Guid translationRoomId, Guid callerUserId, CancellationToken ct = default)

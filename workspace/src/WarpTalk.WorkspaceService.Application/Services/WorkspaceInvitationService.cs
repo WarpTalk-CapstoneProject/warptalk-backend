@@ -467,11 +467,11 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         if (string.IsNullOrWhiteSpace(request.Token))
         {
             var pendingInvites = await GetPendingInvitationsForUserAsync(userId, userEmail, ct);
-            if (!pendingInvites.IsSuccess || !pendingInvites.Value.Any())
+            if (!pendingInvites.IsSuccess || pendingInvites.Value?.Any() != true)
             {
                 return Result.Failure("No active pending invitations found for your verified email address.", ErrorCodes.NotFound);
             }
-            return await AcceptInvitationByIdAsync(pendingInvites.Value.First().Id, userId, userEmail, ct);
+            return await AcceptInvitationByIdAsync(pendingInvites.Value!.First().Id, userId, userEmail, ct);
         }
 
         var tokenHash = TokenHasher.Hash(request.Token);

@@ -19,6 +19,7 @@ public class NotificationValidationHelperTests
 
         Assert.True(isValid);
         Assert.Null(errorMessage);
+        Assert.NotNull(result);
         Assert.Equal(2, result.Count);
         Assert.Contains(id1, result);
         Assert.Contains(id2, result);
@@ -46,6 +47,7 @@ public class NotificationValidationHelperTests
 
         Assert.True(isValid);
         Assert.Null(errorMessage);
+        Assert.NotNull(result);
         Assert.Equal(10000, result.Count);
     }
 
@@ -56,6 +58,7 @@ public class NotificationValidationHelperTests
         
         Assert.True(isValid);
         Assert.Null(errorMessage);
+        Assert.NotNull(result);
         Assert.Empty(result);
     }
 }

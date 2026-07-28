@@ -8,7 +8,6 @@ using WarpTalk.BillingService.API.Filters;
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
-[AllowAnonymous] // Added for FE testing
 [ApiController]
 [Route("api/v1/subscriptions")]
 public class SubscriptionsController : ControllerBase
@@ -24,6 +23,7 @@ public class SubscriptionsController : ControllerBase
     /// Provision a new subscription for a workspace.
     /// </summary>
     [HttpPost]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<SubscriptionDto>> CreateSubscription(
         [FromBody] SubscriptionRequest request,
         CancellationToken cancellationToken)
@@ -53,7 +53,7 @@ public class SubscriptionsController : ControllerBase
     /// Get paginated global subscriptions for admins.
     /// </summary>
     [HttpGet("global")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<PagedResult<SubscriptionDto>>> GetGlobalSubscriptions(
         [FromQuery] int pageNumber = 1,
         [FromQuery] int pageSize = 20,

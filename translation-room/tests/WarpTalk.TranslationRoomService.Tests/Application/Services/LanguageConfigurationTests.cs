@@ -26,6 +26,7 @@ public class LanguageConfigurationTests
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
+    private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
@@ -38,13 +39,52 @@ public class LanguageConfigurationTests
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
+        _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
-        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(_mockUnitOfWork.Object, _mockLanguagePolicy.Object, _mockAudioRouteEventProcessor.Object, _mockAudioRouteService.Object, _mockEmailService.Object, _mockLogger.Object);
+        _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
+            _mockUnitOfWork.Object,
+            _mockLanguagePolicy.Object,
+            _mockAudioRouteEventProcessor.Object,
+            _mockAudioRouteService.Object,
+            _mockUserSettingsDirectory.Object,
+            _mockEmailService.Object,
+            _mockLogger.Object);
+    }
+
+    [Fact]
+    public async Task CreateRoom_UsesAuthServiceLanguageDefaults_WhenRequestOmitsLanguages()
+    {
+        var userId = Guid.NewGuid();
+        _mockUserSettingsDirectory
+            .Setup(directory => directory.GetDefaultsAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new UserLanguageDefaults("vi-VN", "en-US"));
+        _mockLanguagePolicy
+            .Setup(policy => policy.IsSupportedAsync(It.IsAny<string>()))
+            .ReturnsAsync(true);
+        _mockRoomRepo
+            .Setup(repository => repository.ExistsByCodeAsync(
+                It.IsAny<string>(),
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var request = new CreateTranslationRoomRequest(
+            null, "Defaults", null, "INSTANT", 10,
+            null, null, null, null, null);
+
+        var result = await _roomService.CreateTranslationRoomAsync(request, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("vi-VN", result.Value!.SourceLanguage);
+        Assert.Contains("en-US", result.Value.TargetLanguages);
+        _mockUserSettingsDirectory.Verify(
+            directory => directory.GetDefaultsAsync(userId, It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

@@ -104,7 +104,7 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
             SpeakerName = s.SpeakerName ?? "Unknown",
             OriginalText = s.OriginalText ?? "",
             OriginalLanguage = s.OriginalLanguage ?? "unknown",
-            Confidence = (double)s.Confidence,
+            Confidence = (double)(s.Confidence ?? 0),
             StartTimeMs = s.StartTimeMs,
             EndTimeMs = s.EndTimeMs,
             SequenceOrder = s.SequenceOrder

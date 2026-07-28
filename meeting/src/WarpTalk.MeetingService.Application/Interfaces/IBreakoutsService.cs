@@ -10,5 +10,6 @@ public interface IBreakoutsService
 {
     Task<Result<CreateBreakoutsResponse>> StartBreakoutsAsync(Guid translationRoomId, Guid callerUserId, CreateBreakoutsRequest request, CancellationToken ct = default);
     Task<Result<bool>> EndBreakoutsAsync(Guid translationRoomId, Guid callerUserId, CancellationToken ct = default);
+    Task<Result<int>> ExpireDueBreakoutsAsync(DateTime utcNow, CancellationToken ct = default);
     Task<Result<BreakoutJoinInfoDto>> GetMyAssignmentAsync(Guid translationRoomId, Guid callerUserId, CancellationToken ct = default);
 }

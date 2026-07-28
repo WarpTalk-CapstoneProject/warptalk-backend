@@ -15,7 +15,9 @@ The service requires the following environment variables or `appsettings.json` c
 | `Auth:BypassValidation` | Dev only: Bypass gRPC auth checks | `true` (in Dev) |
 
 ## 3. Deployment & Migration
-- **Schema**: All tables reside in the `billing` schema.
+- **Schema**: Billing-owned tables reside in the `subscription` schema. The
+  service is intentionally named Billing while preserving the existing
+  subscription schema boundary.
 - **Migrations**: Manual SQL scripts are located in `src/WarpTalk.BillingService.Infrastructure/Persistence/Migrations/`.
 - **Initialization Order**:
     1. `20260506090000_billing_init_schema.sql`
@@ -27,9 +29,17 @@ The service requires the following environment variables or `appsettings.json` c
 - **Data Integrity**: The `CreditTransactions` table acts as a source of truth ledger. If a credit balance is suspect, it can be recalculated by summing the ledger for a specific `workspace_id`.
 
 ## 5. Known Limitations
-- **Concurrency**: EF Core `RowVersion` optimistic locking is currently disabled. High-frequency concurrent top-ups rely on PostgreSQL's atomic transaction isolation.
-- **Auth Integration**: Currently uses a mock `WorkspaceValidationService` for local testing. Needs actual gRPC client integration for production.
-- **Enums**: Database stores enums as strings (PascalCase). Manual DB edits must maintain this casing (e.g., `Active`, not `active`).
+- **Concurrency**: Credit reservation and ledger writes use PostgreSQL
+  transactions plus correlation/idempotency constraints. Subscription
+  `xmin` row-version metadata is mapped for optimistic concurrency where the
+  aggregate is updated through EF.
+- **Auth Integration**: Workspace authorization uses the real
+  `WorkspaceService.WorkspaceServiceClient` over internal gRPC with
+  fail-closed behavior on dependency errors. Development-only bypasses are
+  configuration-gated and are not available in Production.
+- **Enums**: Database stores the legacy string values used by the current
+  migration set. New code should use the domain constants and migrations
+  rather than manual edits.
 
 ## 6. Demo Evidence (Functional Endpoints)
 - `POST /api/v1/Billing/workspaces/{id}/credits/topup`: Successfully adds credits and returns 200 OK.

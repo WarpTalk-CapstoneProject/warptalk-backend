@@ -1,5 +1,12 @@
 # WarpTalk B2B Billing & Payment Implementation Report
 
+> **Historical report — do not use as deployment evidence.** This document
+> predates the removal of the standalone Payment microservice. Stripe checkout,
+> webhook settlement, subscription state and the payment ledger are now owned
+> by `WarpTalk.BillingService`; current acceptance evidence is maintained in
+> `../docs/production-full-scope-completion-matrix-2026-07-28.md`. Legacy paths
+> and prices below are retained only as an audit trail.
+
 Bản báo cáo này cung cấp thông tin đối chiếu chi tiết giữa tài liệu **WarpTalk B2B Billing Plan** với hiện trạng triển khai trong source code của hai phân hệ `WarpTalk.BillingService` và `WarpTalk.PaymentService` trong `warptalk-backend`.
 
 ---

@@ -291,6 +291,11 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             return false;
         }
 
+        if (document.OwnerId == userId)
+        {
+            return true;
+        }
+
         var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
         if (member == null)
