@@ -23,10 +23,7 @@ public static class BillingInfrastructureServiceCollectionExtensions
             .Bind(configuration.GetSection(BillingWorkerOptions.SectionName))
             .Validate(options =>
                 options.SessionMonitorIntervalSeconds > 0 &&
-                options.StaleReservationIntervalMinutes > 0 &&
                 options.SubscriptionExpirationIntervalMinutes > 0 &&
-                options.SubscriptionRenewalIntervalMinutes > 0 &&
-                options.SubscriptionRenewalWindowHours > 0 &&
                 options.SubscriptionRenewalLookbackHours > 0 &&
                 options.DailyAuditHourUtc is >= 0 and <= 23 &&
                 options.BillingAggregationIntervalMinutes > 0 &&

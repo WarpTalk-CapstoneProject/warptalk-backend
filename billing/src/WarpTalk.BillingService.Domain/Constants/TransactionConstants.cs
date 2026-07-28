@@ -22,7 +22,6 @@ public static class TransactionConstants
     public static class ReferenceTypes
     {
         public const string StripePayment = "stripe_payment";
-        public const string CreditReservation = "CreditReservation";
         public const string Payment = "payment";
         public const string ManualAdjustment = "manual_adjustment";
         public const string UsageRecord = "usage_record";

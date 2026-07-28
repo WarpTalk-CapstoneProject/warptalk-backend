@@ -56,7 +56,6 @@ try
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
     builder.Services.AddScoped<ICreditGrantService, CreditGrantService>();
-    builder.Services.AddScoped<IRealtimeSessionBillingService, RealtimeSessionBillingService>();
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
     builder.Services.AddScoped<IPaymentService, PaymentService>();

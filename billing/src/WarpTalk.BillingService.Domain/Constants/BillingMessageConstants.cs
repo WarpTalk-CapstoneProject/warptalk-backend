@@ -22,7 +22,6 @@ public static class BillingMessageConstants
         public const string ReasonUpgradedDowngraded = "upgraded/downgraded";
         public const string PlanUpgradeDirect = "Plan upgrade to {0} (Stripe Direct)";
         public const string PlanUpgradeSimulation = "Plan upgrade to {0} (Simulation)";
-        public const string StaleReservationRefund = "Auto-refund for stale reservation";
     }
 
     public static class InvoiceMessages
@@ -38,13 +37,6 @@ public static class BillingMessageConstants
         public const string DocumentTranslationTemplate = "Document Translation to {0}";
         public const string AggregatedBatchDescription = "Aggregated batch";
         public const string AggregatedChargeDescriptionTemplate = "Aggregated {0}";
-    }
-
-    public static class DisabledFeatureMessages
-    {
-        public const string CreditReservation = "Credit reservation is disabled. Usage is settled by atomic usage settlement.";
-        public const string CreditReservationConfirmation = "Credit reservation confirmation is disabled. Usage is settled by atomic usage settlement.";
-        public const string CreditReservationRefund = "Credit reservation refund is disabled. Usage is settled by atomic usage settlement.";
     }
 
     public static class AnalyticsMessages
@@ -140,9 +132,7 @@ public static class BillingMessageConstants
         public const string ErrorCreatingPlan = "Error creating plan";
         public const string ErrorUpdatingPlan = "Error updating plan";
         public const string ErrorDeactivatingPlan = "Error deactivating plan";
-        public const string ErrorReservingCredits = "Error reserving credits for {WorkspaceId}";
         public const string ErrorConsumingCredits = "Error consuming credits for {IdempotencyKey}";
-        public const string ErrorRefundingCredits = "Error refunding credits for {IdempotencyKey}";
         public const string ErrorProcessingRefund = "Error processing refund for PaymentId {PaymentId}";
         public const string ErrorFetchingActiveSubscription = "Error fetching active subscription for WorkspaceId {WorkspaceId}";
         public const string ErrorCancellingSubscription = "Error cancelling subscription for WorkspaceId {WorkspaceId}";
@@ -229,29 +219,6 @@ public static class BillingMessageConstants
             public const string RatesUpdatedBody = "WarpTalk has updated the AI service credit rates that apply to your workspace:\n\n{0}\n\nNew rates are effective immediately for all future sessions.";
         }
 
-        public static class Realtime
-        {
-            public const string CreditsReservedTitle = "Credits Reserved";
-            public const string CreditsReservedBodyTemplate = "Real-time translation session started. Reserved {0} credits.";
-            public const string ReservationStatus = "Reserved";
-
-            public const string CreditsConsumedTitle = "Credits Consumed";
-            public const string CreditsConsumedBody = "Real-time translation session finished.";
-            public const string ConsumedDescription = "AI Real-time consumption confirmed";
-
-            public const string CreditsRefundedTitle = "Credits Refunded";
-            public const string CreditsRefundedBodyTemplate = "Refunded {0} credits.";
-            public const string RefundedDescription = "AI Real-time session refunded";
-
-            public const string ReservationDescription = "AI Real-time session reservation";
-            public const string IdempotencyConfirmSuffix = "_confirm";
-            public const string IdempotencyRefundSuffix = "_refund";
-
-            public const string UsageTypeReservation = "RealtimeReservation";
-            public const string UsageTypeConfirm = "RealtimeConfirm";
-            public const string UsageTypeRefund = "RealtimeRefund";
-            public const string UnitSession = "session";
-        }
     }
     public static class Grpc
     {
@@ -287,7 +254,6 @@ public static class BillingMessageConstants
         public const string BillingRefundOnlyPaid = "Only paid transactions can be refunded.";
         public const string BillingRefundAmountInvalid = "Refund amount must be positive and cannot exceed original payment amount.";
         public const string BillingSessionInactive = "Session is inactive or expired.";
-        public const string BillingReservationNotFound = "Reservation not found or already processed.";
         public const string BillingSubscriptionInvalid = "Subscription invalid.";
         public const string BillingIdempotencyKeyReused = "Idempotency key was reused with a different request payload.";
         public const string BillingHostSubscriptionNotFound = "No active subscription found for the host workspace.";

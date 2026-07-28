@@ -23,40 +23,6 @@ public static class CreditRatesHelper
         if (string.IsNullOrEmpty(referenceType)) return UsageConstants.UsageTypes.VoiceTranslation;
         return UsageTypeMap.TryGetValue(referenceType, out var usageType) ? usageType : UsageConstants.UsageTypes.VoiceTranslation;
     }
-    //Calculate the cost of the reservation based on the audio duration and the rates
-    public static int CalculateReservationCost(ReservationCostRequest request)
-    {
-        double ratePerMinute = request.IsVoiceClone
-            ? request.VoiceCloneRateMin
-            : request.SttRateMin + request.TranslationRateMin + request.TtsRateMin;
-        return (int)Math.Max(1, Math.Ceiling((request.AudioSeconds / HelperConstants.CreditRates.Rates.SecondsPerMinute) * ratePerMinute));
-    }
-
-    public static int CalculateMeetingReservationCost(int participantCount, string mediaStreamType, double sttRateSec)
-    {
-        // 1. Resolve Rate Meeting (Credit / Part-Min) from Section 4:
-        // Opus Audio-Only: 0.2 Credit / Part-Min
-        // Video SD: 0.5 Credit / Part-Min
-        // Video HD: 1.0 Credit / Part-Min
-        double rateMeeting = mediaStreamType.ToLowerInvariant() switch
-        {
-            HelperConstants.CreditRates.MediaStreamTypes.Audio => HelperConstants.CreditRates.Rates.Audio,
-            HelperConstants.CreditRates.MediaStreamTypes.VideoSd => HelperConstants.CreditRates.Rates.VideoSd,
-            HelperConstants.CreditRates.MediaStreamTypes.VideoHd => HelperConstants.CreditRates.Rates.VideoHd,
-            _ => HelperConstants.CreditRates.Rates.DefaultVideoSd // Default to Video SD
-        };
-
-        // 2. STT basic rate per minute (Credit / Part-Min)
-        // From plan: 1.0 Credit / Second of audio = 60.0 Credits / Minute
-        double rateSttBasic = sttRateSec * HelperConstants.CreditRates.Rates.SecondsPerMinute;
-
-        // 3. Compute for 15 minutes block
-        double totalRatePerPartMin = rateMeeting + rateSttBasic;
-        double cost = participantCount * HelperConstants.CreditRates.Rates.BlockMinutes * totalRatePerPartMin;
-
-        return (int)Math.Max(1, Math.Ceiling(cost));
-    }
-
     /// <summary>
     /// Calculates the credit cost for a mixed-service usage event using configurable rates.
     /// </summary>

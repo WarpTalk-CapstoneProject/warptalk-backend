@@ -125,13 +125,6 @@ public static class PaymentConstants
         public const string Year = "year";
     }
 
-    public static class StripeSimulation
-    {
-        public const string SessionPrefix = "cs_test_";
-        public const string PaymentIntentPrefix = "pi_";
-        public const string EventPrefix = "evt_";
-    }
-
     public static class StripeLimits
     {
         public const int MinimumTopUpCredits = 1500;

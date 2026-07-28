@@ -1,32 +1,6 @@
 using System;
-using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
-
-public record ReserveCreditsRequest(
-    Guid HostWorkspaceId,
-    string IdempotencyKey,
-    int ParticipantCount = 2,
-    string MediaStreamType = HelperConstants.CreditRates.MediaStreamTypes.VideoSd
-);
-
-public record CreditReservationDto(
-    Guid Id,
-    Guid SubscriptionId,
-    string IdempotencyKey,
-    int Amount,
-    string Status,
-    DateTime ExpiresAt
-);
-
-public record ReservationCostRequest(
-    double AudioSeconds,
-    bool IsVoiceClone,
-    double SttRateMin,
-    double TranslationRateMin,
-    double TtsRateMin,
-    double VoiceCloneRateMin
-);
 
 public record CreateTempUsageLogRequest(
     Guid SubscriptionId,

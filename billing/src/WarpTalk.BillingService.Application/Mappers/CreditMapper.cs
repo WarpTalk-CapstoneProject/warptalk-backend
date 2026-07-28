@@ -143,19 +143,6 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction CreateStaleReservationRefundTransaction(Guid subscriptionId, Guid userId, int amount, int balanceAfter) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = subscriptionId,
-        UserId = userId,
-        Amount = amount,
-        Type = TransactionConstants.TransactionTypes.Refund,
-        Description = BillingMessageConstants.AdjustmentMessages.StaleReservationRefund,
-        ReferenceType = TransactionConstants.ReferenceTypes.CreditReservation,
-        BalanceAfter = balanceAfter,
-        CreatedAt = DateTime.UtcNow
-    };
-
     public static CreditTransaction CreateAggregatedTransaction(Guid subscriptionId, int amount, string chargeType, string description) => new()
     {
         Id = Guid.NewGuid(),

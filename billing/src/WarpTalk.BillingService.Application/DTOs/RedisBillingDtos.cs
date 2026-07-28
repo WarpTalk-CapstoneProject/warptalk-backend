@@ -2,14 +2,6 @@ using System;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
-public class RedisCreditReservationDto
-{
-    public string IdempotencyKey { get; set; } = null!;
-    public Guid SubscriptionId { get; set; }
-    public Guid WorkspaceId { get; set; }
-    public int Amount { get; set; }
-}
-
 public class TempUsageLogDto
 {
     public Guid SubscriptionId { get; set; }

@@ -9,11 +9,6 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IRedisBillingStore
 {
-    Task<Result> SetReservationAsync(RedisCreditReservationDto reservation, TimeSpan ttl, CancellationToken cancellationToken = default);
-    Task<Result<RedisCreditReservationDto?>> GetAndRemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default);
-    Task<Result<IEnumerable<RedisCreditReservationDto>>> GetExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
-    Task<Result> RemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default);
-
     Task<Result> SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default);
     Task<Result<bool>> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<Guid>>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
