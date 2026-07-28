@@ -2,14 +2,14 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Infrastructure.Models;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 /// <summary>
 /// Infrastructure service performing OpenAI-based PII scans, multi-language PII masking, and DLP checks on raw text via Redis Streams.
@@ -65,7 +65,7 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
                 if (!value.IsNull)
                 {
                     _logger.LogInformation("Security scan result received for ScanId: {ScanId}", scanId);
-                    var result = JsonSerializer.Deserialize<ScanResponse>((string)value!);
+                    var result = JsonSerializer.Deserialize<DocumentSecurityRedisScanResponse>((string)value!);
                     
                     await db.KeyDeleteAsync(resultKey);
 
@@ -88,20 +88,5 @@ public class DocumentSecurityScanner : IDocumentSecurityScanner
             _logger.LogError(ex, "Error executing remote security scan via Redis. ScanId: {ScanId}", scanId);
             throw; // Trigger fail-closed policy
         }
-    }
-
-    private class ScanResponse
-    {
-        [JsonPropertyName("pii_detected")]
-        public bool PiiDetected { get; set; }
-
-        [JsonPropertyName("dlp_detected")]
-        public bool DlpDetected { get; set; }
-
-        [JsonPropertyName("violation_found")]
-        public bool ViolationFound { get; set; }
-
-        [JsonPropertyName("masked_content")]
-        public string? MaskedContent { get; set; }
     }
 }

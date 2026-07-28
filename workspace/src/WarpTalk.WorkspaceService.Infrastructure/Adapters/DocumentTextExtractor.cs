@@ -12,7 +12,7 @@ using iTextSharp.text.pdf;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 /// <summary>
 /// Infrastructure service using iTextSharp PrTokeniser for PDF extraction and OpenXml for DOCX/XLSX extraction.

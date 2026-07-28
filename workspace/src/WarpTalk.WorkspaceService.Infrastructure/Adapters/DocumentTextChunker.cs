@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 public class DocumentTextChunker : IDocumentTextChunker
 {

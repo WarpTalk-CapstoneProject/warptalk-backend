@@ -9,7 +9,7 @@ using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
-using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;

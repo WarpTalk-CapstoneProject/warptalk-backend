@@ -17,7 +17,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Caching;
 using WarpTalk.WorkspaceService.Infrastructure.Clients;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
-using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using WarpTalk.WorkspaceService.Infrastructure.Storage;
 
 namespace WarpTalk.WorkspaceService.Infrastructure;
