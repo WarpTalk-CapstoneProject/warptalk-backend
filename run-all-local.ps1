@@ -27,12 +27,12 @@ $UseSelfHostedLiveKit = $env:WARPTALK_LIVEKIT_MODE -eq "selfhost"
 $PidFile = Join-Path $LogDir "pids.json"
 
 # ANSI Colors
-$ESC    = [char]27
-$RED    = "$ESC[0;31m"
-$GREEN  = "$ESC[0;32m"
+$ESC = [char]27
+$RED = "$ESC[0;31m"
+$GREEN = "$ESC[0;32m"
 $YELLOW = "$ESC[1;33m"
-$CYAN   = "$ESC[0;36m"
-$NC     = "$ESC[0m"
+$CYAN = "$ESC[0;36m"
+$NC = "$ESC[0m"
 
 # Service definitions: Name | Folder Cwd | Port
 $Services = @(
@@ -94,7 +94,6 @@ function Show-Banner {
     Write-Host ($CYAN + "|  Transcript  (REST+gRPC)      -> :5103 / :50053      |" + $NC)
     Write-Host ($CYAN + "|  Notification(REST+gRPC)      -> :5104 / :50054      |" + $NC)
     Write-Host ($CYAN + "|  Meeting     (REST+gRPC)      -> :5105 / :50055      |" + $NC)
-    Write-Host ($CYAN + "|  Assistant   (REST+SignalR)   -> :5108               |" + $NC)
     Write-Host ($CYAN + "|  Gateway     (YARP+SignalR)   -> :5200               |" + $NC)
     Write-Host ($CYAN + "+------------------------------------------------------+" + $NC)
     Write-Host ""
@@ -112,7 +111,8 @@ function Stop-Ports {
                     try {
                         Stop-Process -Id $pidVal -Force -ErrorAction SilentlyContinue
                         Write-Host "   Killed process $pidVal on port $port"
-                    } catch {}
+                    }
+                    catch {}
                 }
             }
         }
@@ -145,10 +145,12 @@ function Start-Postgres {
 
     if ($running) {
         Write-Host ($GREEN + "   Already running" + $NC)
-    } elseif ($exists) {
+    }
+    elseif ($exists) {
         docker start $PGContainer | Out-Null
         Write-Host ($GREEN + "   Started existing container" + $NC)
-    } else {
+    }
+    else {
         docker run -d `
             --name $PGContainer `
             -e POSTGRES_DB=$env:POSTGRES_DB `
@@ -186,10 +188,12 @@ function Start-Redis {
 
     if ($running) {
         Write-Host ($GREEN + "   Already running" + $NC)
-    } elseif ($exists) {
+    }
+    elseif ($exists) {
         docker start $RedisContainer | Out-Null
         Write-Host ($GREEN + "   Started existing container" + $NC)
-    } else {
+    }
+    else {
         docker run -d `
             --name $RedisContainer `
             -p 6379:6379 `
@@ -200,7 +204,10 @@ function Start-Redis {
     # Wait until healthy
     Write-Host -NoNewline "   Waiting for Redis to be ready"
     for ($i = 1; $i -le 30; $i++) {
-        $ping = docker exec $RedisContainer redis-cli -a $env:REDIS_PASSWORD ping 2>$null
+        $oldErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        $ping = docker exec $RedisContainer redis-cli -a $env:REDIS_PASSWORD ping 2>&1
+        $ErrorActionPreference = $oldErrorAction
         if ($ping -match "PONG") {
             Write-Host ($GREEN + " [OK]" + $NC)
             return
@@ -220,10 +227,12 @@ function Start-RabbitMQ {
 
     if ($running) {
         Write-Host ($GREEN + "   Already running" + $NC)
-    } elseif ($exists) {
+    }
+    elseif ($exists) {
         docker start $RabbitContainer | Out-Null
         Write-Host ($GREEN + "   Started existing container" + $NC)
-    } else {
+    }
+    else {
         docker run -d `
             --name $RabbitContainer `
             -p 5672:5672 -p 15672:15672 `
@@ -251,7 +260,7 @@ function Start-RabbitMQ {
             continue
         }
 
-        $ping = docker exec $RabbitContainer rabbitmq-diagnostics -q ping 2>$null
+        docker exec $RabbitContainer rabbitmq-diagnostics -q ping 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host ($GREEN + " [OK]" + $NC)
             return
@@ -278,10 +287,12 @@ function Start-LiveKit {
 
     if ($running) {
         Write-Host ($GREEN + "   Already running" + $NC)
-    } elseif ($exists) {
+    }
+    elseif ($exists) {
         docker start $LiveKitContainer | Out-Null
         Write-Host ($GREEN + "   Started existing container" + $NC)
-    } else {
+    }
+    else {
         docker run -d `
             --name $LiveKitContainer `
             -p 7880:7880 -p 7881:7881 -p 7882:7882/udp `
@@ -341,17 +352,19 @@ function Invoke-Migrations {
             if (Test-Path $filePath) {
                 # Check if already applied
                 $isApplied = docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -tAc "SELECT 1 FROM public.schema_migrations WHERE version='$f';" 2>$null
-                if ($isApplied -eq $null -or $isApplied.Trim() -ne "1") {
+                if ($null -eq $isApplied -or $isApplied.Trim() -ne "1") {
                     Write-Host "   Executing $f..."
                     Get-Content $filePath -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB | Out-Null
                     docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -c "INSERT INTO public.schema_migrations(version) VALUES ('$f');" | Out-Null
-                } else {
+                }
+                else {
                     # Skip
                 }
             }
         }
         Write-Host ($GREEN + "   [OK] Migrations completed" + $NC)
-    } else {
+    }
+    else {
         Write-Host ($YELLOW + "   [WARN] No migrations directory found at $MigrationsDir" + $NC)
     }
 }
@@ -362,7 +375,7 @@ function Invoke-Seeds {
     
     if (Test-Path $SeedDemo) {
         $userCount = docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -tAc "SELECT COUNT(*) FROM auth.users;" 2>$null
-        if ($userCount -eq $null -or $userCount.Trim() -eq "0") {
+        if ($null -eq $userCount -or $userCount.Trim() -eq "0") {
             Write-Host "   Applying seed-demo.sql..."
             Get-Content $SeedDemo -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB | Out-Null
 
@@ -371,10 +384,12 @@ function Invoke-Seeds {
             docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB -c $seedLangSql | Out-Null
             
             Write-Host ($GREEN + "   [OK] Seeding completed" + $NC)
-        } else {
+        }
+        else {
             Write-Host "   Database already has users ($($userCount.Trim()) rows). Skipping seeds."
         }
-    } else {
+    }
+    else {
         Write-Host ($YELLOW + "   [WARN] Seed data file seed-demo.sql not found" + $NC)
     }
 }
@@ -394,7 +409,8 @@ function Stop-Services {
                     }
                 }
             }
-        } catch {
+        }
+        catch {
             Write-Host ($RED + "   Failed to parse or stop from $PidFile" + $NC)
         }
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
@@ -412,7 +428,8 @@ function Show-Status {
     $pgStatus = docker ps --filter "name=^/$PGContainer$" --format "{{.Status}}"
     if ($pgStatus) {
         Write-Host ("   " + $GREEN + "[OK] PostgreSQL (Docker: $PGContainer) - $pgStatus" + $NC)
-    } else {
+    }
+    else {
         Write-Host ("   " + $RED + "[FAIL] PostgreSQL (Docker: $PGContainer) - stopped" + $NC)
     }
 
@@ -420,7 +437,8 @@ function Show-Status {
     $redisStatus = docker ps --filter "name=^/$RedisContainer$" --format "{{.Status}}"
     if ($redisStatus) {
         Write-Host ("   " + $GREEN + "[OK] Redis (Docker: $RedisContainer) - $redisStatus" + $NC)
-    } else {
+    }
+    else {
         Write-Host ("   " + $RED + "[FAIL] Redis (Docker: $RedisContainer) - stopped" + $NC)
     }
 
@@ -428,7 +446,8 @@ function Show-Status {
     $rabbitStatus = docker ps --filter "name=^/$RabbitContainer$" --format "{{.Status}}"
     if ($rabbitStatus) {
         Write-Host ("   " + $GREEN + "[OK] RabbitMQ (Docker: $RabbitContainer) - $rabbitStatus" + $NC)
-    } else {
+    }
+    else {
         Write-Host ("   " + $RED + "[FAIL] RabbitMQ (Docker: $RabbitContainer) - stopped" + $NC)
     }
 
@@ -457,17 +476,21 @@ function Show-Status {
                     $proc = Get-Process -Id $pidVal -ErrorAction SilentlyContinue
                     if ($proc) {
                         Write-Host ("   " + $GREEN + "[OK] $name (PID: $pidVal, port: $port)" + $NC)
-                    } else {
+                    }
+                    else {
                         Write-Host ("   " + $RED + "[FAIL] $name (dead PID: $pidVal, port: $port)" + $NC)
                     }
-                } else {
+                }
+                else {
                     Write-Host ("   " + $YELLOW + "[OFF] $name (no active PID, port: $port)" + $NC)
                 }
             }
-        } catch {
+        }
+        catch {
             Write-Host ($RED + "   Failed to read $PidFile" + $NC)
         }
-    } else {
+    }
+    else {
         Write-Host ($YELLOW + "   [OFF] No active .NET services tracking file found." + $NC)
     }
 }
@@ -490,7 +513,8 @@ function Wait-And-Test {
                 $proc = Get-Process -Id $pidVal -ErrorAction SilentlyContinue
                 if ($proc) {
                     Write-Host ("   " + $GREEN + "[OK] $name (PID: $pidVal, port: $port)" + $NC)
-                } else {
+                }
+                else {
                     Write-Host ("   " + $RED + "[FAIL] $name - process died! Check: logs/$name.err" + $NC)
                 }
             }
@@ -503,10 +527,12 @@ function Wait-And-Test {
         $resp = Invoke-WebRequest -Uri "http://localhost:5200/health" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue
         if ($resp.StatusCode -eq 200) {
             Write-Host ("   " + $GREEN + "[OK] Gateway /health -> 200 OK" + $NC)
-        } else {
+        }
+        else {
             Write-Host ("   " + $YELLOW + "[WARN] Gateway /health -> HTTP " + $resp.StatusCode + $NC)
         }
-    } catch {
+    }
+    catch {
         Write-Host ("   " + $RED + "[FAIL] Gateway is unreachable" + $NC)
     }
 
@@ -516,13 +542,16 @@ function Wait-And-Test {
             $hubResp = Invoke-WebRequest -Method Post -Uri "http://localhost:5200/hubs/$hub/negotiate?negotiateVersion=1" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue
             if ($hubResp.StatusCode -eq 401) {
                 Write-Host ("   " + $GREEN + "[OK] /hubs/$hub/negotiate -> 401 Unauthorized (JWT required, correct!)" + $NC)
-            } else {
+            }
+            else {
                 Write-Host ("   " + $YELLOW + "[WARN] /hubs/$hub/negotiate -> HTTP " + $hubResp.StatusCode + $NC)
             }
-        } catch {
+        }
+        catch {
             if ($_.Exception.Response.StatusCode -eq 401) {
                 Write-Host ("   " + $GREEN + "[OK] /hubs/$hub/negotiate -> 401 Unauthorized (JWT required, correct!)" + $NC)
-            } else {
+            }
+            else {
                 Write-Host ("   " + $RED + "[FAIL] Hub $hub check failed: " + $_.Exception.Message + $NC)
             }
         }
@@ -551,15 +580,21 @@ Show-Banner
 Stop-Ports
 
 Start-Postgres
-Invoke-Migrations
-Invoke-Seeds
+# Invoke-Migrations
+# Invoke-Seeds
 Start-Redis
 Start-RabbitMQ
 Start-LiveKit
 
 # Rebuild Solution
-Write-Host ($YELLOW + "[BUILD] Building all projects before starting..." + $NC)
-dotnet build "$ScriptDir\warptalk-backend.slnx" -v m
+Write-Host ($YELLOW + "[BUILD] Building required projects before starting..." + $NC)
+dotnet build "$ScriptDir\auth\src\WarpTalk.AuthService.API\WarpTalk.AuthService.API.csproj" -v m
+dotnet build "$ScriptDir\workspace\src\WarpTalk.WorkspaceService.API\WarpTalk.WorkspaceService.API.csproj" -v m
+dotnet build "$ScriptDir\translation-room\src\WarpTalk.TranslationRoomService.API\WarpTalk.TranslationRoomService.API.csproj" -v m
+dotnet build "$ScriptDir\transcript\src\WarpTalk.TranscriptService.API\WarpTalk.TranscriptService.API.csproj" -v m
+dotnet build "$ScriptDir\notification\src\WarpTalk.NotificationService.API\WarpTalk.NotificationService.API.csproj" -v m
+dotnet build "$ScriptDir\meeting\src\WarpTalk.MeetingService.API\WarpTalk.MeetingService.API.csproj" -v m
+dotnet build "$ScriptDir\gateway\src\WarpTalk.Gateway\WarpTalk.Gateway.csproj" -v m
 Write-Host ($GREEN + "[OK] Build completed." + $NC)
 Write-Host ""
 
@@ -576,62 +611,110 @@ foreach ($service in $Services) {
     $cwd = $service.Cwd
     $port = $service.Port
     $fullPath = Join-Path $ScriptDir $cwd
+}
+if (-not (Test-Path $fullPath)) {
+    Write-Host ($YELLOW + "   [WARN] Skip $name - folder not found" + $NC)
+    continue
+}
 
-    if (-not (Test-Path $fullPath)) {
-        Write-Host ($YELLOW + "   [WARN] Skip $name - folder not found" + $NC)
-        continue
-    }
+Write-Host ("[START] Starting " + $CYAN + $name + $NC + "...")
 
-    Write-Host ("[START] Starting " + $CYAN + $name + $NC + "...")
+$stdoutFile = Join-Path $LogDir "$name.log"
+$stderrFile = Join-Path $LogDir "$name.err"
 
-    $stdoutFile = Join-Path $LogDir "$name.log"
-    $stderrFile = Join-Path $LogDir "$name.err"
+# Temporarily set environmental variables for child processes to inherit
+$env:ASPNETCORE_ENVIRONMENT = "Development"
+$env:ConnectionStrings__AuthDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
+$env:ConnectionStrings__MeetingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=meeting,public"
+$env:ConnectionStrings__TranslationRoomDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=translation_room,public"
+$env:ConnectionStrings__TranscriptDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=transcript,public"
+$env:ConnectionStrings__WorkspaceDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
+$env:ConnectionStrings__BillingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=subscription,public"
+$env:ConnectionStrings__NotificationDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=platform,public"
 
-    # Temporarily set environmental variables for child processes to inherit
-    $env:ASPNETCORE_ENVIRONMENT = "Development"
-    $env:ConnectionStrings__AuthDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
-    $env:ConnectionStrings__MeetingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=meeting,public"
-    $env:ConnectionStrings__TranslationRoomDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=translation_room,public"
-    $env:ConnectionStrings__TranscriptDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=transcript,public"
-    $env:ConnectionStrings__WorkspaceDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
-    $env:ConnectionStrings__BillingDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=subscription,public"
-    $env:ConnectionStrings__NotificationDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=platform,public"
-    $env:ConnectionStrings__AssistantDb = "Host=localhost;Port=5432;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=assistant,public"
+if ($name -eq "meeting") {
+    $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__MeetingDb
+}
+elseif ($name -eq "notification") {
+    $env:ConnectionStrings__DefaultConnection = $env:ConnectionStrings__NotificationDb
+}
 
-    if ($name -eq "gateway") {
-        $env:ASPNETCORE_URLS = "http://localhost:5200"
-    }
+# Shared infra connection variables
+$env:Redis__ConnectionString = "localhost:6379,password=$env:REDIS_PASSWORD"
+$env:RabbitMQ__Host = "localhost"
+$env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
+$env:RabbitMQ__Password = if ($env:RABBITMQ_PASSWORD) { $env:RABBITMQ_PASSWORD } else { "warptalk-dev-rabbitmq" }
+$env:RabbitMQ__VirtualHost = if ($env:RABBITMQ_VHOST) { $env:RABBITMQ_VHOST } else { "/" }
+$env:Jwt__Secret = $env:JWT_SECRET
+$env:Jwt__Issuer = if ($env:JWT_ISSUER) { $env:JWT_ISSUER } else { "WarpTalk.AuthService" }
+$env:Jwt__Audience = if ($env:JWT_AUDIENCE) { $env:JWT_AUDIENCE } else { "WarpTalk" }
+$env:LiveKit__ApiKey = $env:LIVEKIT_API_KEY
+$env:LiveKit__ApiSecret = $env:LIVEKIT_API_SECRET
 
-    $proc = Start-Process `
-        -FilePath "dotnet" `
-        -ArgumentList "run --no-build --no-launch-profile" `
-        -WorkingDirectory $fullPath `
-        -NoNewWindow `
-        -RedirectStandardOutput $stdoutFile `
-        -RedirectStandardError $stderrFile `
-        -PassThru
+if ($name -eq "gateway") {
+    $env:ASPNETCORE_URLS = "http://localhost:5200"
+}
 
-    # Restore variables
-    Remove-Item env:ASPNETCORE_ENVIRONMENT
-    Remove-Item env:ConnectionStrings__AuthDb
-    Remove-Item env:ConnectionStrings__MeetingDb
-    Remove-Item env:ConnectionStrings__TranslationRoomDb
-    Remove-Item env:ConnectionStrings__TranscriptDb
-    Remove-Item env:ConnectionStrings__WorkspaceDb
-    Remove-Item env:ConnectionStrings__BillingDb
-    Remove-Item env:ConnectionStrings__NotificationDb
-    Remove-Item env:ConnectionStrings__AssistantDb
-    if ($name -eq "gateway") {
-        Remove-Item env:ASPNETCORE_URLS
-    }
+$startParams = @{
+    FilePath               = "dotnet"
+    ArgumentList           = "run --no-build --no-launch-profile"
+    WorkingDirectory       = $fullPath
+    NoNewWindow            = $true
+    RedirectStandardOutput = $stdoutFile
+    RedirectStandardError  = $stderrFile
+    PassThru               = $true
+}
+$proc = Start-Process @startParams
 
-    $PidStore[$name] = $proc.Id
-    Write-Host ("   " + $GREEN + "PID: " + $proc.Id + " -> logs in logs/$name.log" + $NC)
+# Restore variables
+Remove-Item env:ASPNETCORE_ENVIRONMENT
+Remove-Item env:ConnectionStrings__AuthDb
+Remove-Item env:ConnectionStrings__MeetingDb
+Remove-Item env:ConnectionStrings__TranslationRoomDb
+Remove-Item env:ConnectionStrings__TranscriptDb
+Remove-Item env:ConnectionStrings__WorkspaceDb
+Remove-Item env:ConnectionStrings__BillingDb
+Remove-Item env:ConnectionStrings__NotificationDb
+Remove-Item env:ConnectionStrings__DefaultConnection -ErrorAction SilentlyContinue
+Remove-Item env:Redis__ConnectionString
+Remove-Item env:RabbitMQ__Host
+Remove-Item env:RabbitMQ__Username
+Remove-Item env:RabbitMQ__Password
+Remove-Item env:RabbitMQ__VirtualHost
+Remove-Item env:Jwt__Secret
+Remove-Item env:Jwt__Issuer
+Remove-Item env:Jwt__Audience
+Remove-Item env:LiveKit__ApiKey
+Remove-Item env:LiveKit__ApiSecret
+if ($name -eq "gateway") {
+    Remove-Item env:ASPNETCORE_URLS
+}
 
-    # Delay for startup order sequence
+$PidStore[$name] = $proc.Id
+Write-Host ("   " + $GREEN + "PID: " + $proc.Id + " -> logs in logs/$name.log" + $NC)
+
+Remove-Item env:GrpcUrls__TranslationRoomService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__BillingService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__AuthService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__WorkspaceService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__TranscriptService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__NotificationService -ErrorAction SilentlyContinue
+Remove-Item env:GrpcUrls__MeetingService -ErrorAction SilentlyContinue
+# Delay for startup order sequence
+if ($name -eq "auth") {
+    Start-Sleep -Seconds 3
+}
+else {
     if ($name -eq "auth") {
         Start-Sleep -Seconds 3
-    } else {
+    }
+    else {
+        if ($name -eq "auth") {
+            Start-Sleep -Seconds 3
+ 
+        }   
+    }
+    else {
         Start-Sleep -Seconds 1
     }
 }
