@@ -34,6 +34,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpPost("record-usage")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<CreditBalanceDto>> RecordUsage([FromBody] RecordUsageRequest request, CancellationToken cancellationToken)
     {
         var result = await _usageService.RecordUsageAsync(request, cancellationToken);
@@ -143,4 +144,3 @@ public class UsagesController : ControllerBase
         return result.ToActionResult(this);
     }
 }
-

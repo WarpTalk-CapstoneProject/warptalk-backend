@@ -59,10 +59,6 @@ public static class WorkspaceDocumentConstants
     {
         public const int IvSize = 16;
         public const int SignatureSize = 64;
-        public const string DefaultMasterKeyFallback = "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";
-        public const string DefaultS3ServiceUrl = "http://minio:9000";
-        public const string DefaultS3AccessKey = "warptalk-admin";
-        public const string DefaultS3SecretKey = "warptalk-s3-secretkey";
         public const string DefaultS3BucketName = "warptalk-workspace-documents";
     }
 

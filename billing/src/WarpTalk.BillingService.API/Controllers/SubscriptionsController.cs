@@ -25,6 +25,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> CreateSubscription([FromBody] SubscriptionRequest request, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CreateSubscriptionAsync(request, cancellationToken);

@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -30,7 +31,8 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 public class ReminderNotificationWorker : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
-    private readonly NotificationClient? _notificationClient;
+    private readonly NotificationClient _notificationClient;
+    private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<ReminderNotificationWorker> _logger;
     private readonly string _frontendBaseUrl;
     private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(1);
@@ -40,13 +42,15 @@ public class ReminderNotificationWorker : BackgroundService
     public ReminderNotificationWorker(
         IServiceProvider serviceProvider,
         ILogger<ReminderNotificationWorker> logger,
-        IOptions<AppSettings>? appSettings = null,
-        NotificationClient? notificationClient = null)
+        IOptions<AppSettings> appSettings,
+        NotificationClient notificationClient,
+        IConnectionMultiplexer redis)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
-        _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl ?? "http://localhost:3000";
+        _frontendBaseUrl = appSettings.Value.FrontendBaseUrl;
         _notificationClient = notificationClient;
+        _redis = redis;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -90,36 +94,70 @@ public class ReminderNotificationWorker : BackgroundService
         {
             if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder10MinSentAt, ReminderWindowEvaluator.TenMinuteWindow))
             {
-                await SendReminderAsync(room, minutesUntilStart: 10, ct);
-                room.Reminder10MinSentAt = now;
-                roomRepo.Update(room);
+                await TrySendReminderOnceAsync(room, 10, now, roomRepo, unitOfWork, ct);
             }
 
             if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder1MinSentAt, ReminderWindowEvaluator.OneMinuteWindow))
             {
-                await SendReminderAsync(room, minutesUntilStart: 1, ct);
-                room.Reminder1MinSentAt = now;
-                roomRepo.Update(room);
+                await TrySendReminderOnceAsync(room, 1, now, roomRepo, unitOfWork, ct);
             }
         }
 
         await unitOfWork.SaveChangesAsync(ct);
     }
 
-    private async Task SendReminderAsync(TranslationRoom room, int minutesUntilStart, CancellationToken ct)
+    private async Task TrySendReminderOnceAsync(
+        TranslationRoom room,
+        int minutesUntilStart,
+        DateTime sentAt,
+        ITranslationRoomRepository roomRepo,
+        IUnitOfWork unitOfWork,
+        CancellationToken ct)
     {
-        if (_notificationClient == null)
+        var database = _redis.GetDatabase();
+        var lockKey = $"warptalk:reminder-lock:{room.Id}:{minutesUntilStart}";
+        var lockToken = Guid.NewGuid().ToString("N");
+        if (!await database.LockTakeAsync(lockKey, lockToken, TimeSpan.FromMinutes(2)))
         {
-            _logger.LogWarning("ReminderNotificationWorker: NotificationGrpcServiceClient is not configured; skipping reminder for room {RoomId}.", room.Id);
             return;
         }
 
+        try
+        {
+            if (!await SendReminderAsync(room, minutesUntilStart, ct))
+            {
+                return;
+            }
+
+            if (minutesUntilStart == 10)
+            {
+                room.Reminder10MinSentAt = sentAt;
+            }
+            else
+            {
+                room.Reminder1MinSentAt = sentAt;
+            }
+            roomRepo.Update(room);
+            await unitOfWork.SaveChangesAsync(ct);
+        }
+        finally
+        {
+            await database.LockReleaseAsync(lockKey, lockToken);
+        }
+    }
+
+    private async Task<bool> SendReminderAsync(
+        TranslationRoom room,
+        int minutesUntilStart,
+        CancellationToken ct)
+    {
         var recipientIds = ResolveRecipientIds(room);
         var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
         var title = minutesUntilStart == 1
             ? $"\"{room.Title}\" starts in 1 minute"
             : $"\"{room.Title}\" starts in {minutesUntilStart} minutes";
 
+        var allSent = true;
         foreach (var userId in recipientIds)
         {
             try
@@ -140,9 +178,12 @@ public class ReminderNotificationWorker : BackgroundService
             }
             catch (Exception ex)
             {
+                allSent = false;
                 _logger.LogError(ex, "ReminderNotificationWorker: failed to send T-{Minutes}min reminder for room {RoomId} to user {UserId}", minutesUntilStart, room.Id, userId);
             }
         }
+
+        return allSent;
     }
 
     /// <summary>

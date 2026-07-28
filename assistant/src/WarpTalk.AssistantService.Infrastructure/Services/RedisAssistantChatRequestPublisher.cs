@@ -47,6 +47,7 @@ public sealed class RedisAssistantChatRequestPublisher : IAssistantChatRequestPu
             new("conversation_id", conversationId.ToString()),
             new("workspace_id", workspaceId.ToString()),
             new("user_id", userId.ToString()),
+            new("origin", "assistant"),
             new("bearer_token", bearerToken ?? ""),
             new("history_json", historyJson),
             new("page_context_json", pageContextJson ?? ""),

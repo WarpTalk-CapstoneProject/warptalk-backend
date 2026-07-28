@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
@@ -89,5 +90,85 @@ public class UsageSettlementMapperTests
         settlement.UnitPriceSnapshot.Should().Be(0.1m);
         settlement.Currency.Should().Be(PaymentConstants.Currencies.VndAccounting);
         settlement.IdempotencyKey.Should().StartWith("AGG:");
+    }
+
+    [Fact]
+    public void TempUsageLogs_ToAggregatedSettlementRequest_Should_Merge_UnitBreakdown_Details()
+    {
+        var tokenInRateId = Guid.NewGuid();
+        var tokenOutRateId = Guid.NewGuid();
+        var subscriptionId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var logs = new[]
+        {
+            new TempUsageLogDto
+            {
+                SubscriptionId = subscriptionId,
+                WorkspaceId = workspaceId,
+                UsageType = "TRANSLATION",
+                ChargeType = "TRANSLATION",
+                ReferenceType = "billing_accumulator",
+                Quantity = 100,
+                Unit = "token_in",
+                CreditsConsumed = 3,
+                PricingScope = "vi:en",
+                PricingRateCardId = tokenInRateId,
+                UnitPriceSnapshot = 0.006575m,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                IdempotencyKey = "event-1",
+                Details = $$"""
+                {
+                  "unit_breakdown": [
+                    {
+                      "unit": "token_in",
+                      "quantity": "100",
+                      "pricing_rate_card_id": "{{tokenInRateId}}",
+                      "unit_price_snapshot": "0.006575",
+                      "provider": "openai",
+                      "model": "gpt-4.1-mini"
+                    },
+                    {
+                      "unit": "token_out",
+                      "quantity": "20",
+                      "pricing_rate_card_id": "{{tokenOutRateId}}",
+                      "unit_price_snapshot": "0.026300",
+                      "provider": "openai",
+                      "model": "gpt-4.1-mini"
+                    }
+                  ]
+                }
+                """
+            },
+            new TempUsageLogDto
+            {
+                SubscriptionId = subscriptionId,
+                WorkspaceId = workspaceId,
+                UsageType = "TRANSLATION",
+                ChargeType = "TRANSLATION",
+                ReferenceType = "billing_accumulator",
+                Quantity = 50,
+                Unit = "token_in",
+                CreditsConsumed = 2,
+                PricingScope = "vi:en",
+                PricingRateCardId = tokenInRateId,
+                UnitPriceSnapshot = 0.006575m,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                IdempotencyKey = "event-2"
+            }
+        };
+
+        var settlement = logs.ToAggregatedSettlementRequest();
+
+        using var details = JsonDocument.Parse(settlement.Details!);
+        var breakdown = details.RootElement.GetProperty("unit_breakdown");
+        breakdown.GetArrayLength().Should().Be(2);
+        breakdown.EnumerateArray().Should().Contain(item =>
+            item.GetProperty("unit").GetString() == "token_in" &&
+            item.GetProperty("quantity").GetString() == "150");
+        breakdown.EnumerateArray().Should().Contain(item =>
+            item.GetProperty("unit").GetString() == "token_out" &&
+            item.GetProperty("quantity").GetString() == "20");
     }
 }

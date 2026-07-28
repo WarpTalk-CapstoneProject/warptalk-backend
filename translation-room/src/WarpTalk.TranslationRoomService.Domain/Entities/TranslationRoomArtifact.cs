@@ -13,6 +13,11 @@ public partial class TranslationRoomArtifact
 
     public string? FileUrl { get; set; }
 
+    /// <summary>
+    /// Stable provider-side idempotency key, such as the LiveKit Egress id.
+    /// </summary>
+    public string? ProviderArtifactId { get; set; }
+
     public string? FileFormat { get; set; }
 
     public long? FileSizeBytes { get; set; }

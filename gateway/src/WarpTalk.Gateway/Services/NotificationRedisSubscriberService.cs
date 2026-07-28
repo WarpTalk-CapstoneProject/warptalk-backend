@@ -4,6 +4,7 @@ using System.Text.Json;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Shared.Models;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.Gateway.Services;
 
@@ -108,15 +109,23 @@ public class NotificationRedisSubscriberService : BackgroundService
             try
             {
                 if (message.IsNullOrEmpty) return;
-                using var doc = JsonDocument.Parse(message.ToString());
-                var root = doc.RootElement;
-                var workspaceId = root.TryGetProperty("workspaceId", out var ws) ? ws.GetString() : null;
-
-                if (!string.IsNullOrEmpty(workspaceId))
+                var envelope =
+                    JsonSerializer.Deserialize<EventEnvelope<MeetingStartedEventPayload>>(
+                        message.ToString());
+                if (envelope?.EventType == MeetingEventTypes.Started &&
+                    envelope.SchemaVersion == DomainEventEnvelope.CurrentSchemaVersion &&
+                    envelope.Payload.WorkspaceId != Guid.Empty)
                 {
+                    var workspaceId = envelope.Payload.WorkspaceId.ToString();
                     var wsGroup = RealtimeConstants.Groups.Workspace(workspaceId);
-                    await _hubContext.Clients.Group(wsGroup).SendAsync(RealtimeConstants.ClientMethods.MeetingStarted, root, stoppingToken);
-                    await _hubContext.Clients.Group(wsGroup).SendAsync(RealtimeConstants.ClientMethods.MeetingStatusChanged, root, stoppingToken);
+                    await _hubContext.Clients.Group(wsGroup).SendAsync(
+                        RealtimeConstants.ClientMethods.MeetingStarted,
+                        envelope.Payload,
+                        stoppingToken);
+                    await _hubContext.Clients.Group(wsGroup).SendAsync(
+                        RealtimeConstants.ClientMethods.MeetingStatusChanged,
+                        envelope.Payload,
+                        stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted MeetingStarted to {GroupName}", wsGroup);
                 }
             }

@@ -92,16 +92,17 @@ public record CreditTransactionDto(
 }
 
 public record ManualAdjustCreditsRequest(
-    [Required]
+    [property: Required]
     Guid WorkspaceId,
 
-    [Required]
+    [property: Required]
+    [property: Range(-1_000_000, 1_000_000)]
     int Amount,
 
-    [Required]
+    [property: Required]
     string Reason,
 
-    [Required]
+    [property: Required]
     string AdminUserId
 ) : IWorkspaceScopedRequest;
 

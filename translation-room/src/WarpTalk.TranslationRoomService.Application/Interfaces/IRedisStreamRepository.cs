@@ -14,6 +14,12 @@ public interface IRedisStreamRepository
 {
     Task EnsureConsumerGroupExistsAsync(string streamName, string groupName, string position = "0-0");
     Task<List<RedisStreamMessage>> ReadGroupAsync(string streamName, string groupName, string consumerName, string position = ">", int count = 10);
+    Task<List<RedisStreamMessage>> ClaimStaleAsync(
+        string streamName,
+        string groupName,
+        string consumerName,
+        TimeSpan minimumIdleTime,
+        int count = 10);
     Task AcknowledgeAsync(string streamName, string groupName, string messageId);
     Task AddAsync(string streamName, Dictionary<string, string> values);
 }

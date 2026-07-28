@@ -37,3 +37,14 @@ public record CheckoutSessionDto(
     string Status,
     string PaymentIntentId
 );
+
+public record ResolvedCheckout(
+    Guid UserId,
+    Guid WorkspaceId,
+    decimal Amount,
+    string Currency,
+    string PaymentType,
+    string PlanSlug,
+    string BillingCycle,
+    string ProductName
+);

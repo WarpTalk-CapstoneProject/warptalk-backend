@@ -73,7 +73,7 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                 var textBuilder = new StringBuilder();
                 using (var wordDoc = WordprocessingDocument.Open(fileStream, false))
                 {
-                    var body = wordDoc.MainDocumentPart?.Document.Body;
+                    var body = wordDoc.MainDocumentPart?.Document?.Body;
                     if (body != null)
                     {
                         foreach (var paragraph in body.Descendants<Paragraph>())
@@ -99,7 +99,7 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                     if (workbookPart != null)
                       {
                         var sharedStringTable = workbookPart.SharedStringTablePart?.SharedStringTable;
-                        var sheetsList = workbookPart.Workbook.Sheets?.Elements<Sheet>().ToList() ?? new List<Sheet>();
+                        var sheetsList = workbookPart.Workbook?.Sheets?.Elements<Sheet>().ToList() ?? new List<Sheet>();
 
                         foreach (var worksheetPart in workbookPart.WorksheetParts)
                         {

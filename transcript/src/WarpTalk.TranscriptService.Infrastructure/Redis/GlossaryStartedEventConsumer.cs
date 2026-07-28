@@ -10,6 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.TranscriptService.Domain.Interfaces;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.TranscriptService.Infrastructure.Redis;
 
@@ -64,17 +65,12 @@ public class GlossaryStartedEventConsumer : BackgroundService
         {
             try
             {
-                var payload = JsonSerializer.Deserialize<JsonElement>(message.ToString());
-                if (payload.TryGetProperty("TranslationRoomId", out var roomIdElement) &&
-                    payload.TryGetProperty("WorkspaceId", out var workspaceIdElement))
+                if (TryParseStartedEvent(message.ToString(), out var payload))
                 {
-                    var roomId = roomIdElement.GetString();
-                    var workspaceIdRaw = workspaceIdElement.GetString();
-
-                    if (!string.IsNullOrEmpty(roomId) && Guid.TryParse(workspaceIdRaw, out var workspaceId))
-                    {
-                        await PublishGlossaryPromptsAsync(roomId, workspaceId, stoppingToken);
-                    }
+                    await PublishGlossaryPromptsAsync(
+                        payload!.TranslationRoomId.ToString(),
+                        payload.WorkspaceId,
+                        stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -82,6 +78,33 @@ public class GlossaryStartedEventConsumer : BackgroundService
                 _logger.LogError(ex, "Error processing meeting.started event for glossary STT/MT prompt.");
             }
         });
+    }
+
+    internal static bool TryParseStartedEvent(
+        string serializedEvent,
+        out MeetingStartedEventPayload? payload)
+    {
+        payload = null;
+        try
+        {
+            var envelope = JsonSerializer.Deserialize<EventEnvelope<MeetingStartedEventPayload>>(
+                serializedEvent);
+            if (envelope == null ||
+                envelope.EventType != MeetingEventTypes.Started ||
+                envelope.SchemaVersion != DomainEventEnvelope.CurrentSchemaVersion ||
+                envelope.Payload.TranslationRoomId == Guid.Empty ||
+                envelope.Payload.WorkspaceId == Guid.Empty)
+            {
+                return false;
+            }
+
+            payload = envelope.Payload;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Uniform shape for a term regardless of whether it came from the workspace's

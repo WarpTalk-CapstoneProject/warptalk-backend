@@ -17,6 +17,8 @@ public interface IUnitOfWork : IDisposable
     IInvoiceRepository InvoiceRepository { get; }
     IRefundRepository RefundRepository { get; }
     IIdempotencyRepository IdempotencyRecords { get; }
+    IGenericRepository<OutboxMessage> OutboxMessages { get; }
+    IGenericRepository<InboxMessage> InboxMessages { get; }
 
     DbConnection GetDbConnection();
     void ClearTracking();

@@ -36,6 +36,26 @@ public static class EmailTemplateRenderer
         </html>
         """;
 
+    public static string RenderGenericNotification(string title, string content, string? actionUrl)
+    {
+        var safeTitle = System.Net.WebUtility.HtmlEncode(title);
+        var safeContent = System.Net.WebUtility.HtmlEncode(content)
+            .Replace("\r\n", "<br />", StringComparison.Ordinal)
+            .Replace("\n", "<br />", StringComparison.Ordinal);
+        var safeActionUrl = Uri.TryCreate(actionUrl, UriKind.Absolute, out var uri) &&
+                            (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
+            ? System.Net.WebUtility.HtmlEncode(uri.ToString())
+            : "https://warptalk.app";
+
+        return $"""
+            {BaseHtmlWrapperStart}
+            <h1>{safeTitle}</h1>
+            <div class="card"><p>{safeContent}</p></div>
+            <a href="{safeActionUrl}" class="btn">Open WarpTalk</a>
+            {BaseHtmlWrapperEnd}
+            """;
+    }
+
     public static string RenderWorkspaceInvite(string inviterName, string workspaceName, string roleName, string inviteUrl)
     {
         return $"""

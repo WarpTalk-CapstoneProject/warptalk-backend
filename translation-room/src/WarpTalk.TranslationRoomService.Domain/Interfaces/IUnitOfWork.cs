@@ -6,7 +6,6 @@ public interface IUnitOfWork : IDisposable
     ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
     ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
     ILanguageRepository LanguageRepository { get; }
-    IUserSettingsRepository UserSettingsRepository { get; }
     ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
     ITranslationRoomSessionRepository TranslationRoomSessionRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;

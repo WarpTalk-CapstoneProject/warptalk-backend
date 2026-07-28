@@ -113,31 +113,6 @@ public class NotificationsController : ControllerBase
 
         return NoContent();
     }
-//Temporary endpoint for seeding mock notifications to verify DB integration and testing.
-    [HttpPost("internal/seed")]
-    public async Task<IActionResult> SeedMockNotification(CancellationToken ct)
-    {
-        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
-            return Unauthorized();
-
-        var dto = new WarpTalk.NotificationService.Application.DTOs.CreateNotificationMessageDto(
-            userId,
-            "SYSTEM_ALERT",
-            "Mock Notification",
-            "This is a seeded notification for testing purposes.",
-            null,
-            "{}"
-        );
-
-        var result = await _notificationService.CreateNotificationAsync(dto, ct);
-
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        return Ok(new { id = result.Value.Id });
-    }
-
     [HttpPost("~/api/v1/admin/notifications")]
     [Authorize(Roles = "admin")]
     public async Task<IActionResult> CreateAdminNotification([FromBody] CreateAdminNotificationDto request, CancellationToken ct)

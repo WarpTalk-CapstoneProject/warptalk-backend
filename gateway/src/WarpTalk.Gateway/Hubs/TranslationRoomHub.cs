@@ -75,7 +75,7 @@ public class TranslationRoomHub : Hub
             // no cheap way to know host status itself (same trust-boundary gap as
             // SpotlightParticipant/MuteAll below) — the consumer re-derives that from the DB.
             var db = _redis.GetDatabase();
-            await db.PublishAsync("translationRoom:participant-offline", $"{roomIdStr}:{userId}");
+            await db.PublishAsync(RedisChannel.Literal("translationRoom:participant-offline"), $"{roomIdStr}:{userId}");
 
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);

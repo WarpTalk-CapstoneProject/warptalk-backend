@@ -16,7 +16,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     private const string FxRateConfigKey = "fx_rate_usd_vnd";
     private const string CreditValueConfigKey = "credit_value_vnd";
     private const string PricingFormula = "provider_unit_cost_usd * fx_rate_usd_vnd * markup_multiplier / credit_value_vnd";
-    private const string ResolverKey = "provider + model + charge_type + unit";
+    private const string ResolverKey = "provider + model + charge_type + unit + source_language_code + target_language_code";
 
     private readonly BillingDbContext _dbContext;
     private readonly ILogger<UsageRateCardAdminService> _logger;
@@ -44,6 +44,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                        COALESCE(unit, '') AS unit,
                        COALESCE(provider, '') AS provider,
                        COALESCE(model, '') AS model,
+                       source_language_code,
+                       target_language_code,
                        unit_price,
                        currency,
                        provider_unit_cost,
@@ -53,7 +55,7 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                        is_active
                 FROM subscription.usage_rate_card
                 WHERE effective_to IS NULL
-                ORDER BY charge_type, unit, provider, model
+                ORDER BY charge_type, unit, provider, model, source_language_code NULLS LAST, target_language_code NULLS LAST
                 """;
 
             var rows = new List<UsageRateCardDto>();
@@ -85,6 +87,19 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
+            var identityExists = await RateCardIdentityExistsAsync(
+                connection,
+                transaction,
+                request,
+                cancellationToken);
+            if (!identityExists)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure<UsageRateCardDto>(
+                    "Usage rate-card identity is not registered. Add new billing identities through a migration/backend release first.",
+                    ErrorCodes.ValidationError);
+            }
+
             await using (var deactivate = connection.CreateCommand())
             {
                 deactivate.Transaction = transaction;
@@ -99,6 +114,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                        AND currency = @currency
                        AND provider = @provider
                        AND model = @model
+                       AND source_language_code IS NOT DISTINCT FROM @source_language_code
+                       AND target_language_code IS NOT DISTINCT FROM @target_language_code
                     """;
 
                 AddParameter(deactivate, "charge_type", request.ChargeType.Trim());
@@ -106,6 +123,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 AddParameter(deactivate, "currency", NormalizeCurrency(request.Currency));
                 AddParameter(deactivate, "provider", request.Provider.Trim());
                 AddParameter(deactivate, "model", request.Model.Trim());
+                AddParameter(deactivate, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
+                AddParameter(deactivate, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
                 await deactivate.ExecuteNonQueryAsync(cancellationToken);
             }
 
@@ -121,6 +140,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                         currency,
                         provider,
                         model,
+                        source_language_code,
+                        target_language_code,
                         provider_unit_cost,
                         markup_multiplier,
                         unit_price,
@@ -135,6 +156,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                         @currency,
                         @provider,
                         @model,
+                        @source_language_code,
+                        @target_language_code,
                         @provider_unit_cost,
                         @markup_multiplier,
                         @unit_price,
@@ -147,6 +170,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                               unit,
                               provider,
                               model,
+                              source_language_code,
+                              target_language_code,
                               unit_price,
                               currency,
                               provider_unit_cost,
@@ -161,6 +186,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 AddParameter(insert, "currency", NormalizeCurrency(request.Currency));
                 AddParameter(insert, "provider", request.Provider.Trim());
                 AddParameter(insert, "model", request.Model.Trim());
+                AddParameter(insert, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
+                AddParameter(insert, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
                 AddParameter(insert, "provider_unit_cost", request.ProviderUnitCostUsd ?? (object)DBNull.Value);
                 AddParameter(insert, "markup_multiplier", request.MarkupMultiplier ?? (object)DBNull.Value);
                 AddParameter(insert, "unit_price", request.UnitPrice);
@@ -247,6 +274,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 currency VARCHAR(3) NOT NULL DEFAULT 'VND',
                 provider VARCHAR(50) NOT NULL,
                 model VARCHAR(50) NOT NULL,
+                source_language_code VARCHAR(10),
+                target_language_code VARCHAR(10),
                 provider_unit_cost NUMERIC(18, 12),
                 markup_multiplier NUMERIC(8, 4),
                 unit_price NUMERIC(18, 6) NOT NULL,
@@ -255,6 +284,10 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 notes TEXT
             );
+
+            ALTER TABLE subscription.usage_rate_card
+                ADD COLUMN IF NOT EXISTS source_language_code VARCHAR(10),
+                ADD COLUMN IF NOT EXISTS target_language_code VARCHAR(10);
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -278,6 +311,8 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             reader.GetString(reader.GetOrdinal("unit")),
             reader.GetString(reader.GetOrdinal("provider")),
             reader.GetString(reader.GetOrdinal("model")),
+            ReadNullableString(reader, "source_language_code"),
+            ReadNullableString(reader, "target_language_code"),
             reader.GetDecimal(reader.GetOrdinal("unit_price")),
             reader.GetString(reader.GetOrdinal("currency")),
             ReadNullableDecimal(reader, "provider_unit_cost"),
@@ -293,6 +328,12 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         return reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
     }
 
+    private static string? ReadNullableString(IDataRecord reader, string columnName)
+    {
+        var ordinal = reader.GetOrdinal(columnName);
+        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+    }
+
     private static bool IsValid(UpsertUsageRateCardRequest request)
     {
         return !string.IsNullOrWhiteSpace(request.ChargeType) &&
@@ -302,6 +343,47 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                request.UnitPrice >= 0 &&
                (request.ProviderUnitCostUsd is null or >= 0) &&
                (request.MarkupMultiplier is null or >= 0);
+    }
+
+    private static async Task<bool> RateCardIdentityExistsAsync(
+        System.Data.Common.DbConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        UpsertUsageRateCardRequest request,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM subscription.usage_rate_card
+                WHERE charge_type = @charge_type
+                  AND unit = @unit
+                  AND currency = @currency
+                  AND provider = @provider
+                  AND model = @model
+                  AND source_language_code IS NOT DISTINCT FROM @source_language_code
+                  AND target_language_code IS NOT DISTINCT FROM @target_language_code
+            )
+            """;
+
+        AddParameter(command, "charge_type", request.ChargeType.Trim());
+        AddParameter(command, "unit", request.Unit.Trim());
+        AddParameter(command, "currency", NormalizeCurrency(request.Currency));
+        AddParameter(command, "provider", request.Provider.Trim());
+        AddParameter(command, "model", request.Model.Trim());
+        AddParameter(command, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
+        AddParameter(command, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
+
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is bool exists && exists;
+    }
+
+    private static string? NormalizeLanguageCode(string? languageCode)
+    {
+        return string.IsNullOrWhiteSpace(languageCode)
+            ? null
+            : languageCode.Trim().ToLowerInvariant();
     }
 
     private static string NormalizeCurrency(string? currency)

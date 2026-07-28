@@ -77,4 +77,38 @@ public class AuthController : ControllerBase
         }
         return NoContent();
     }
+
+    [AllowAnonymous]
+    [HttpPost("verify-email")]
+    public async Task<IActionResult> VerifyEmail(
+        [FromBody] VerifyEmailRequest request,
+        CancellationToken ct)
+    {
+        var result = await _authService.VerifyEmailAsync(request, ct);
+        if (!result.IsSuccess)
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        return NoContent();
+    }
+
+    [AllowAnonymous]
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword(
+        [FromBody] ForgotPasswordRequest request,
+        CancellationToken ct)
+    {
+        await _authService.ForgotPasswordAsync(request, ct);
+        return NoContent();
+    }
+
+    [AllowAnonymous]
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword(
+        [FromBody] ResetPasswordRequest request,
+        CancellationToken ct)
+    {
+        var result = await _authService.ResetPasswordAsync(request, ct);
+        if (!result.IsSuccess)
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        return NoContent();
+    }
 }

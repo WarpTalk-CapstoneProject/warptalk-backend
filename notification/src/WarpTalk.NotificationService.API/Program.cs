@@ -11,8 +11,16 @@ using System.Text;
 using System.Text.Json.Serialization;
 using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
+using WarpTalk.NotificationService.API.Consumers;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
+using MassTransit;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddWarpTalkObservability(
+    builder.Configuration,
+    builder.Environment,
+    "warptalk-notification");
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -39,19 +47,35 @@ builder.Services.AddControllers()
 
 builder.Services.AddDbContext<NotificationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddWarpTalkServiceHealthChecks<NotificationDbContext>(
+    "notification-database");
 
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
+builder.Services.AddScoped<BillingNotificationEventHandler>();
+builder.Services.AddWarpTalkMassTransit(
+    builder.Configuration,
+    registration => registration.AddConsumer<
+        BillingNotificationEventConsumer,
+        BillingNotificationEventConsumerDefinition>());
 
 // Register official Resend .NET SDK
 builder.Services.AddOptions();
 builder.Services.AddHttpClient<Resend.ResendClient>();
+var resendApiToken = builder.Configuration["RESEND_API_KEY"]
+                     ?? builder.Configuration["Resend:ApiKey"]
+                     ?? Environment.GetEnvironmentVariable("RESEND_API_KEY");
+if (builder.Environment.IsProduction() &&
+    (string.IsNullOrWhiteSpace(resendApiToken)
+     || resendApiToken.Contains("placeholder", StringComparison.OrdinalIgnoreCase)
+     || resendApiToken.StartsWith("CHANGE_ME", StringComparison.OrdinalIgnoreCase)))
+{
+    throw new InvalidOperationException(
+        "CRITICAL SECURITY ERROR: a non-placeholder Resend API key is required in Production.");
+}
 builder.Services.Configure<Resend.ResendClientOptions>(o =>
 {
-    o.ApiToken = builder.Configuration["RESEND_API_KEY"] 
-                 ?? builder.Configuration["Resend:ApiKey"] 
-                 ?? Environment.GetEnvironmentVariable("RESEND_API_KEY") 
-                 ?? "re_placeholder_key";
+    o.ApiToken = resendApiToken ?? string.Empty;
 });
 builder.Services.AddTransient<Resend.IResend, Resend.ResendClient>();
 builder.Services.AddTransient<IEmailSender, WarpTalk.NotificationService.Infrastructure.Services.ResendEmailSender>();
@@ -60,45 +84,14 @@ builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IAdminNotificationService, AdminNotificationService>();
 builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationValidator>();
 
-var rawJwtSecret = builder.Configuration["Jwt:Secret"];
-var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawJwtSecret) || 
-                         rawJwtSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
-                         rawJwtSecret.Length < 32;
-
-// [Security] Prevent starting in Production with a weak or default JWT secret to avoid token forgery.
-if (builder.Environment.IsProduction() && isDefaultOrInvalid)
-{
-    throw new InvalidOperationException("CRITICAL SECURITY: JWT Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
-}
-
-// In non-production, fallback to default if invalid
-var validatedSecret = isDefaultOrInvalid 
-    ? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!" 
-    : rawJwtSecret;
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(validatedSecret!))
-        };
-    });
+builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-// [Security] Register global interceptor to enforce Zero-Trust Authentication for all incoming gRPC calls.
-builder.Services.AddGrpc(options => 
-{
-    options.Interceptors.Add<WarpTalk.NotificationService.API.Interceptors.InternalAuthInterceptor>();
-});
+builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
-    StackExchange.Redis.ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379"));
+    StackExchange.Redis.ConnectionMultiplexer.Connect(
+        builder.Configuration["Redis:ConnectionString"]
+        ?? throw new InvalidOperationException("Redis:ConnectionString is not configured.")));
 
 builder.Services.AddSingleton<WarpTalk.NotificationService.Domain.Interfaces.IMessagePublisher, WarpTalk.NotificationService.Infrastructure.Messaging.RedisMessagePublisher>();
 
@@ -115,6 +108,7 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapGrpcService<NotificationGrpcServiceImpl>();
+app.MapWarpTalkServiceHealthChecks();
 
 app.Run();
 

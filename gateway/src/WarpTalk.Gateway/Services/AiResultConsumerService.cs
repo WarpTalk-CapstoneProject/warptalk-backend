@@ -58,16 +58,15 @@ public sealed class AiResultConsumerService : BackgroundService
     {
         _logger.LogInformation("AiResultConsumerService starting, consumer={Consumer}", _consumerName);
 
-        // Start 4 parallel consumer loops for ALL translation rooms via unified streams
-        _ = Task.Run(() => ConsumeSTTResultsAsync(stoppingToken));
-        _ = Task.Run(() => ConsumeTranslationResultsAsync(stoppingToken));
-        _ = Task.Run(() => ConsumeTTSResultsAsync(stoppingToken));
-        _ = Task.Run(() => ConsumeAiAssistantResultsAsync(stoppingToken));
-
-        // Keep running until shutdown
         try
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            // Keep all consumer loops owned by the host so initialization/runtime failures are
+            // observed and shutdown awaits every loop instead of leaving unobserved tasks behind.
+            await Task.WhenAll(
+                ConsumeSTTResultsAsync(stoppingToken),
+                ConsumeTranslationResultsAsync(stoppingToken),
+                ConsumeTTSResultsAsync(stoppingToken),
+                ConsumeAiAssistantResultsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {

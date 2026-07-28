@@ -25,11 +25,6 @@ public class TranscriptRedisConsumerService : BackgroundService
     private const string ConsumerGroup = "transcript-persistence";
     private readonly string _consumerName = $"transcript-{Environment.MachineName}-{Guid.NewGuid():N}";
 
-    // Cache stream keys to avoid an expensive Redis SCAN on every 2-second poll iteration.
-    private List<string> _streamKeyCache = new();
-    private DateTime _streamKeyCachedAt = DateTime.MinValue;
-    private static readonly TimeSpan StreamKeyCacheDuration = TimeSpan.FromSeconds(30);
-
     // Cache the resolved AllowExternalLlm flag per workspace so PublishEmbeddingIndexRequestAsync
     // (called once per persisted segment — i.e. potentially many times a second across a busy
     // meeting) doesn't fire a gRPC call to WorkspaceService on every single segment. Mirrors the
@@ -57,23 +52,7 @@ public class TranscriptRedisConsumerService : BackgroundService
         {
             try
             {
-                // Refresh stream key list at most once per cache window (SCAN is O(N) over keyspace).
-                if (DateTime.UtcNow - _streamKeyCachedAt >= StreamKeyCacheDuration)
-                {
-                    var server = _redis.GetServer(_redis.GetEndPoints().First());
-                    _streamKeyCache = server.Keys(pattern: "stt:results:*").Select(k => (string)k)
-                        .Concat(server.Keys(pattern: "translate:results:*").Select(k => (string)k))
-                        .Concat(server.Keys(pattern: "tts:results:*").Select(k => (string)k))
-                        .ToList();
-                    _streamKeyCachedAt = DateTime.UtcNow;
-                }
-                var streamKeys = _streamKeyCache;
-
-                if (streamKeys.Count == 0)
-                {
-                    await Task.Delay(2000, stoppingToken);
-                    continue;
-                }
+                var streamKeys = TranscriptConsumerPollingPolicy.InputStreams;
 
                 // Ensure consumer group exists for all streams
                 foreach (var stream in streamKeys)
@@ -88,30 +67,31 @@ public class TranscriptRedisConsumerService : BackgroundService
                     }
                 }
 
+                var messagesRead = 0;
                 foreach (var stream in streamKeys)
                 {
                     var messages = await db.StreamReadGroupAsync(stream, ConsumerGroup, _consumerName, count: 10);
                     
                     if (messages.Length > 0)
                     {
+                        messagesRead += messages.Length;
                         foreach (var message in messages)
                         {
                             bool success;
-                            if (stream.StartsWith("stt:results:"))
+                            switch (TranscriptConsumerPollingPolicy.Classify(stream))
                             {
-                                success = await ProcessSttMessageAsync(stream, message, stoppingToken);
-                            }
-                            else if (stream.StartsWith("translate:results:"))
-                            {
-                                success = await ProcessTranslateMessageAsync(stream, message, stoppingToken);
-                            }
-                            else if (stream.StartsWith("tts:results:"))
-                            {
-                                success = await ProcessTtsMessageAsync(stream, message, stoppingToken);
-                            }
-                            else
-                            {
-                                success = true; // Unknown stream, acknowledge to ignore
+                                case TranscriptResultStreamKind.Stt:
+                                    success = await ProcessSttMessageAsync(stream, message, stoppingToken);
+                                    break;
+                                case TranscriptResultStreamKind.Translation:
+                                    success = await ProcessTranslateMessageAsync(stream, message, stoppingToken);
+                                    break;
+                                case TranscriptResultStreamKind.Tts:
+                                    success = await ProcessTtsMessageAsync(stream, message, stoppingToken);
+                                    break;
+                                default:
+                                    success = true;
+                                    break;
                             }
                             
                             if (success)
@@ -120,6 +100,12 @@ public class TranscriptRedisConsumerService : BackgroundService
                             }
                         }
                     }
+                }
+
+                var idleDelay = TranscriptConsumerPollingPolicy.DelayAfterPass(messagesRead);
+                if (idleDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(idleDelay, stoppingToken);
                 }
             }
             catch (OperationCanceledException)

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces.Security;
+using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Settings;
@@ -28,6 +29,7 @@ public class GoogleAuthServiceTests
     private readonly IGoogleTokenVerifier _googleTokenVerifier;
     private readonly IDistributedCache _cache;
     private readonly IOptions<AuthSettings> _authSettingsOptions;
+    private readonly IAuthEmailSender _authEmailSender;
     private readonly WarpTalk.AuthService.Application.Services.GoogleAuthService _googleAuthService;
 
     public GoogleAuthServiceTests()
@@ -39,6 +41,7 @@ public class GoogleAuthServiceTests
         _jwtGenerator = Substitute.For<IJwtTokenGenerator>();
         _googleTokenVerifier = Substitute.For<IGoogleTokenVerifier>();
         _cache = Substitute.For<IDistributedCache>();
+        _authEmailSender = Substitute.For<IAuthEmailSender>();
 
         _unitOfWork.UserRepository.Returns(_userRepository);
         _unitOfWork.UserSettingRepository.Returns(_userSettingRepository);
@@ -56,7 +59,8 @@ public class GoogleAuthServiceTests
             _googleTokenVerifier,
             _cache,
             _authSettingsOptions,
-            Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.GoogleAuthService>>()
+            Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.GoogleAuthService>>(),
+            _authEmailSender
         );
     }
 

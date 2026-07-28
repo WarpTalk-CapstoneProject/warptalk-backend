@@ -11,6 +11,7 @@ using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 using Xunit;
 
 namespace WarpTalk.MeetingService.Tests.Services;
@@ -22,6 +23,7 @@ public class MeetingRoomServiceTests
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
     private readonly Mock<IRedisService> _redisServiceMock = new();
     private readonly Mock<ILiveKitEgressService> _egressServiceMock = new();
+    private readonly Mock<ILiveKitRoomAdminService> _roomAdminServiceMock = new();
     private readonly MeetingRoomService _sut;
 
     public MeetingRoomServiceTests()
@@ -32,6 +34,15 @@ public class MeetingRoomServiceTests
         _redisServiceMock
             .Setup(r => r.PublishStreamMessageAsync(It.IsAny<string>(), It.IsAny<Dictionary<string, string>>()))
             .ReturnsAsync(Result.Success());
+        _roomAdminServiceMock
+            .Setup(r => r.RemoveParticipantAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(true));
+        _roomAdminServiceMock
+            .Setup(r => r.DeleteRoomAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(true));
 
         _sut = new MeetingRoomService(
             _tokenServiceMock.Object,
@@ -39,6 +50,7 @@ public class MeetingRoomServiceTests
             _unitOfWorkMock.Object,
             _redisServiceMock.Object,
             _egressServiceMock.Object,
+            _roomAdminServiceMock.Object,
             Mock.Of<ILogger<MeetingRoomService>>());
     }
 
@@ -326,11 +338,13 @@ public class MeetingRoomServiceTests
         Assert.True(result.IsSuccess);
         _redisServiceMock.Verify(
             r => r.PublishEventAsync(
-                "meeting.track_published",
-                It.Is<object>(payload =>
-                    HasProperty(payload, "RoomName", translationRoomId.ToString()) &&
-                    HasProperty(payload, "ParticipantIdentity", request.ParticipantIdentity) &&
-                    HasProperty(payload, "TrackId", "audio_track_1"))),
+                MeetingEventTypes.TrackPublished,
+                It.Is<EventEnvelope<MeetingTrackPublishedEventPayload>>(envelope =>
+                    envelope.EventType == MeetingEventTypes.TrackPublished &&
+                    envelope.SchemaVersion == 1 &&
+                    envelope.Payload.RoomName == translationRoomId.ToString() &&
+                    envelope.Payload.ParticipantIdentity == request.ParticipantIdentity &&
+                    envelope.Payload.TrackId == "audio_track_1")),
             Times.Once);
     }
 
@@ -338,7 +352,9 @@ public class MeetingRoomServiceTests
     public async Task TriggerAiAsync_ReturnsFailure_WhenPublishFails()
     {
         _redisServiceMock
-            .Setup(r => r.PublishEventAsync("meeting.track_published", It.IsAny<object>()))
+            .Setup(r => r.PublishEventAsync(
+                MeetingEventTypes.TrackPublished,
+                It.IsAny<EventEnvelope<MeetingTrackPublishedEventPayload>>()))
             .ReturnsAsync(Result.Failure("Redis unavailable", "REDIS_ERROR"));
 
         var result = await _sut.TriggerAiAsync(Guid.NewGuid(), new TriggerAiRequest
@@ -403,7 +419,7 @@ public class MeetingRoomServiceTests
     }
 
     [Fact]
-    public async Task EndMeetingAsync_PublishesMeetingEndedEvent_AndTriggersAiSummary()
+    public async Task EndMeetingAsync_TriggersAiSummary_WithoutUnusedMeetingEndedPubSub()
     {
         var translationRoomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
@@ -430,11 +446,16 @@ public class MeetingRoomServiceTests
         Assert.True(result.IsSuccess);
 
         _redisServiceMock.Verify(
-            r => r.PublishEventAsync(
-                "meeting.ended",
-                It.Is<object>(payload =>
-                    HasProperty(payload, "TranslationRoomId", translationRoomId.ToString()) &&
-                    HasProperty(payload, "WorkspaceId", workspaceId))),
+            r => r.PublishEventAsync("meeting.ended", It.IsAny<object>()),
+            Times.Never);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync("meeting.end_room", It.IsAny<object>()),
+            Times.Never);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync("meeting.billing.stop", It.IsAny<object>()),
+            Times.Never);
+        _roomAdminServiceMock.Verify(
+            r => r.DeleteRoomAsync(translationRoomId.ToString(), It.IsAny<CancellationToken>()),
             Times.Once);
 
         _redisServiceMock.Verify(
@@ -477,12 +498,76 @@ public class MeetingRoomServiceTests
         Assert.True(result.IsSuccess);
     }
 
+    [Fact]
+    public async Task KickParticipantAsync_RemovesParticipantFromLiveKit_WithoutDeadPubSub()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var participantUserId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ActiveHostId = hostId,
+            ProviderRoomName = "provider-room"
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    WorkspaceId = Guid.NewGuid().ToString()
+                }));
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingParticipant
+            {
+                MeetingRoomId = meetingRoom.Id,
+                UserId = participantUserId,
+                IsActive = true
+            });
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var invitationRepoMock = new Mock<IGenericRepository<MeetingInvitation>>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingInvitation?)null);
+        _unitOfWorkMock.Setup(u => u.Repository<MeetingInvitation>()).Returns(invitationRepoMock.Object);
+
+        var result = await _sut.KickParticipantAsync(translationRoomId, hostId, participantUserId);
+
+        Assert.True(result.IsSuccess);
+        _roomAdminServiceMock.Verify(
+            r => r.RemoveParticipantAsync(
+                "provider-room",
+                participantUserId.ToString(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync("meeting.kick_participant", It.IsAny<object>()),
+            Times.Never);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync("meeting.chat.participant_kicked", It.IsAny<object>()),
+            Times.Never);
+    }
+
     private static bool HasProperty(object payload, string propertyName, string expectedValue)
     {
         // PublishGatewayCommandAsync builds a Dictionary<string, object?> (see
         // MeetingRoomService) rather than an anonymous type for the Gateway commands
         // channel, unlike the plain anonymous-object payloads used elsewhere (e.g.
-        // "meeting.started"/"meeting.ended") — so this helper needs to check both shapes.
+        // versioned meeting events) — so this helper needs to check both shapes.
         if (payload is System.Collections.IDictionary dictionary)
         {
             return dictionary.Contains(propertyName) &&

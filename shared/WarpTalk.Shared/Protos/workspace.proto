@@ -9,6 +9,20 @@ service WorkspaceService {
   rpc ValidateMeetingCreation (ValidateMeetingCreationRequest) returns (ValidateMeetingCreationResponse);
   rpc GetWorkspaceSettings (GetWorkspaceSettingsRequest) returns (GetWorkspaceSettingsResponse);
   rpc GetWorkspacePreflightDetails (GetWorkspacePreflightRequest) returns (GetWorkspacePreflightResponse);
+  rpc GetWorkspaceNames (GetWorkspaceNamesRequest) returns (GetWorkspaceNamesResponse);
+}
+
+message GetWorkspaceNamesRequest {
+  repeated string workspace_ids = 1;
+}
+
+message WorkspaceNameItem {
+  string workspace_id = 1;
+  string workspace_name = 2;
+}
+
+message GetWorkspaceNamesResponse {
+  repeated WorkspaceNameItem workspaces = 1;
 }
 
 message GetWorkspaceMemberRequest {

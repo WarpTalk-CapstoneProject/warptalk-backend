@@ -10,6 +10,7 @@ public interface ITranslationRoomClient
     Task<TranslationRoomDto?> GetTranslationRoomAsync(Guid roomId, CancellationToken ct = default);
     Task<TranslationRoomDto?> GetTranslationRoomByCodeAsync(string roomCode, CancellationToken ct = default);
     Task<List<TranslationRoomParticipantDto>> GetParticipantsAsync(Guid roomId, CancellationToken ct = default);
+    Task<int> GetActiveRoomCountAsync(Guid workspaceId, CancellationToken ct = default);
 }
 
 public record TranslationRoomDto

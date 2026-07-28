@@ -40,6 +40,20 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
         return await query.Where(predicate).ToListAsync(ct);
     }
 
+    public async Task<IReadOnlyList<T>> GetPagedAsync(
+        Expression<Func<T, bool>> predicate,
+        int skip,
+        int take,
+        Func<IQueryable<T>, IQueryable<T>>? orderBy = null,
+        CancellationToken ct = default)
+    {
+        IQueryable<T> query = _dbSet.Where(predicate);
+        if (orderBy is not null)
+            query = orderBy(query);
+
+        return await query.Skip(skip).Take(take).ToListAsync(ct);
+    }
+
     public async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, string includeProperties = "", CancellationToken ct = default)
     {
         IQueryable<T> query = _dbSet;

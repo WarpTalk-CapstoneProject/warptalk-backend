@@ -52,6 +52,28 @@ public class UserServiceGrpc : UserService.UserServiceBase
         };
     }
 
+    public override async Task<GetUserSettingsResponse> GetUserSettings(
+        GetUserRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.Id, out var parsedId))
+            throw GrpcErrors.InvalidId("User");
+
+        var settings = await _unitOfWork.UserSettingRepository.GetByUserIdAsync(
+            parsedId,
+            context?.CancellationToken ?? CancellationToken.None);
+
+        if (settings is null)
+            return new GetUserSettingsResponse { Found = false };
+
+        return new GetUserSettingsResponse
+        {
+            Found = true,
+            DefaultSpeakLanguage = settings.DefaultSpeakLanguage ?? "vi-VN",
+            DefaultListenLanguage = settings.DefaultListenLanguage ?? "en-US"
+        };
+    }
+
     public override async Task<GetRoleResponse> GetRoleByName(GetRoleByNameRequest request, ServerCallContext context)
     {
         if (string.IsNullOrWhiteSpace(request.Name))

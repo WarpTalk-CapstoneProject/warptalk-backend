@@ -17,6 +17,10 @@ public class TempUsageLogDto
     public int CreditsConsumed { get; set; }
     public Guid? PricingRateCardId { get; set; }
     public decimal? UnitPriceSnapshot { get; set; }
+    public string? PricingScope { get; set; }
+    public long? MicroCredits { get; set; }
+    public string? SourceLanguageCode { get; set; }
+    public string? TargetLanguageCode { get; set; }
     public string? Provider { get; set; }
     public string? Model { get; set; }
     public Guid? TranscriptSegmentId { get; set; }

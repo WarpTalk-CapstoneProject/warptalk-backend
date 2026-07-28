@@ -606,5 +606,9 @@ public partial class BillingDbContext : DbContext
             entity.Property(e => e.Type)
                 .HasColumnName("type");
         });
+
+        OnModelCreatingPartial(modelBuilder);
     }
+
+    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
 }
