@@ -120,11 +120,3 @@ public record StripeSubscriptionTransactionRequest(
     Guid UserId,
     Guid ReferenceId
 );
-
-public record CreditCostRequest(
-    int AudioSeconds,
-    int TokenCount,
-    int GpuInferenceMs,
-    bool IsVoiceClone,
-    ServiceRatesDto Rates
-);

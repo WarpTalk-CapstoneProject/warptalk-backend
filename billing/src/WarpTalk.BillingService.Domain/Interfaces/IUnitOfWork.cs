@@ -16,6 +16,7 @@ public interface IUnitOfWork : IDisposable
     IPaymentRepository PaymentRepository { get; }
     IInvoiceRepository InvoiceRepository { get; }
     IRefundRepository RefundRepository { get; }
+    IGenericRepository<SalesInquiry> SalesInquiryRepository { get; }
     IIdempotencyRepository IdempotencyRecords { get; }
     IGenericRepository<OutboxMessage> OutboxMessages { get; }
     IGenericRepository<InboxMessage> InboxMessages { get; }

@@ -17,18 +17,15 @@ public class UsageService : IUsageService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<UsageService> _logger;
-    private readonly IBillingRateService _rateService;
     private readonly IUsageSettlementService _settlementService;
 
     public UsageService(
         IUnitOfWork unitOfWork,
         ILogger<UsageService> logger,
-        IBillingRateService rateService,
         IUsageSettlementService settlementService)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
-        _rateService = rateService;
         _settlementService = settlementService;
     }
 
@@ -100,28 +97,4 @@ public class UsageService : IUsageService
         }
     }
 
-    public Task<Result<CreditBalanceDto>> ChargeVoiceCloneAsync(ChargeVoiceCloneRequest request, CancellationToken cancellationToken = default)
-    {
-        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
-    }
-
-    public async Task<Result<CreditBalanceDto>> ChargeAiAssistantAsync(ChargeAiAssistantRequest request, CancellationToken cancellationToken = default)
-    {
-        // Fetch current Admin-configurable rates at call-time so rate changes take effect immediately
-        var ratesResult = await _rateService.GetServiceRatesAsync(cancellationToken);
-        if (!ratesResult.IsSuccess)
-            return Result.Failure<CreditBalanceDto>(ratesResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, ratesResult.ErrorCode);
-
-        var rates = ratesResult.Value!;
-        var recordRequest = request.ToRecordUsageRequest(
-            inputRatePer1KTokens: rates.AiAssistantInputPer1000Tokens,
-            outputRatePer1KTokens: rates.AiAssistantOutputPer1000Tokens
-        );
-        return await RecordUsageAsync(recordRequest, cancellationToken);
-    }
-
-    public Task<Result<CreditBalanceDto>> ChargeDocumentTranslationAsync(ChargeDocumentTranslationRequest request, CancellationToken cancellationToken = default)
-    {
-        return RecordUsageAsync(request.ToRecordUsageRequest(), cancellationToken);
-    }
 }

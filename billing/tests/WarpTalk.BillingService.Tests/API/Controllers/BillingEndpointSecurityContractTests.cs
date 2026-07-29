@@ -74,6 +74,19 @@ public class BillingEndpointSecurityContractTests
             nameof(SubscriptionsController.CreateSubscription));
     }
 
+    [Fact]
+    public void CreateWorkspaceSalesInquiry_RequiresAuthAndWorkspaceBillingRole()
+    {
+        var action = GetAction(
+            typeof(SalesInquiriesController),
+            nameof(SalesInquiriesController.CreateWorkspace));
+
+        Assert.NotNull(action.GetCustomAttribute<AuthorizeAttribute>());
+        AssertWorkspaceBillingRole(
+            typeof(SalesInquiriesController),
+            nameof(SalesInquiriesController.CreateWorkspace));
+    }
+
     private static void AssertAdminOnly(Type controller, string actionName)
     {
         var action = GetAction(controller, actionName);

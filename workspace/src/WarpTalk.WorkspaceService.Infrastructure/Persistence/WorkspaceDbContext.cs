@@ -33,7 +33,7 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceOutboxMessage> WorkspaceOutboxMessages { get; set; }
 
-    
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder

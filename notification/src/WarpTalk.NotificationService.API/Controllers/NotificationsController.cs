@@ -18,7 +18,7 @@ public class NotificationsController : ControllerBase
     private readonly ILogger<NotificationsController> _logger;
 
     public NotificationsController(
-        INotificationService notificationService, 
+        INotificationService notificationService,
         IAdminNotificationService adminNotificationService,
         ILogger<NotificationsController> logger)
     {
@@ -140,7 +140,7 @@ public class NotificationsController : ControllerBase
             return Unauthorized();
 
         var result = await _adminNotificationService.GetAdminNotificationsAsync(query, ct);
-        
+
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
@@ -156,10 +156,10 @@ public class NotificationsController : ControllerBase
             return Unauthorized();
 
         var result = await _adminNotificationService.GetAdminNotificationDetailAsync(id, ct);
-        
+
         if (!result.IsSuccess)
         {
-            if (result.ErrorCode == ErrorCodes.NotFound) 
+            if (result.ErrorCode == ErrorCodes.NotFound)
                 return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }

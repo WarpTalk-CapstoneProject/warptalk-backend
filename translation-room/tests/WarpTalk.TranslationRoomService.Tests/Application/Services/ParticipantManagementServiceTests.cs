@@ -47,7 +47,7 @@ public class ParticipantManagementServiceTests
         var requesterId = Guid.NewGuid();
 
         var room = new TranslationRoom { Id = roomId, HostId = hostId };
-        
+
         _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
 
@@ -69,7 +69,7 @@ public class ParticipantManagementServiceTests
         var participantId = Guid.NewGuid();
 
         var room = new TranslationRoom { Id = roomId, HostId = hostId };
-        
+
         _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
 
@@ -87,8 +87,8 @@ public class ParticipantManagementServiceTests
         var targetParticipantId = Guid.NewGuid();
 
         var room = new TranslationRoom { Id = roomId, HostId = hostId };
-        var participant = new TranslationRoomParticipant 
-        { 
+        var participant = new TranslationRoomParticipant
+        {
             Id = targetParticipantId,
             TranslationRoomId = roomId,
             Status = "CONNECTED",
@@ -115,9 +115,9 @@ public class ParticipantManagementServiceTests
         var participantId = Guid.NewGuid();
         var userId = Guid.NewGuid();
 
-        var participant = new TranslationRoomParticipant 
-        { 
-            Id = participantId, 
+        var participant = new TranslationRoomParticipant
+        {
+            Id = participantId,
             UserId = userId,
             TranslationRoomId = roomId,
             Status = "CONNECTED"
@@ -138,9 +138,9 @@ public class ParticipantManagementServiceTests
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        
+
         var room = new TranslationRoom { Id = roomId, HostId = hostId };
-        
+
         var participants = new List<TranslationRoomParticipant>
         {
             new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Alice", Status = "CONNECTED", Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow.AddMinutes(-5), ListenLanguage = "en", SpeakLanguage = "en" },

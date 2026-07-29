@@ -53,13 +53,13 @@ public static class WorkspaceInvitationHelper
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
         var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLower();
         var isDomainVerified = await unitOfWork.WorkspaceVerifiedDomainRepository.AnyAsync(
-            vd => vd.WorkspaceId == invitation.WorkspaceId 
-                  && vd.Domain.ToLower() == userDomain.ToLower() 
-                  && vd.Status == verifiedStatus 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null, 
+            vd => vd.WorkspaceId == invitation.WorkspaceId
+                  && vd.Domain.ToLower() == userDomain.ToLower()
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
             ct);
-        
+
         if (string.Equals(invitation.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
         {
             var requiresVerification = workspace.RequireVerifiedDomainForInternal || config.RequireVerifiedDomainForInternal || config.VerifiedDomains.Any();
@@ -80,7 +80,7 @@ public static class WorkspaceInvitationHelper
 
         var existingMember = await unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
-        
+
         if (existingMember != null)
         {
             return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);

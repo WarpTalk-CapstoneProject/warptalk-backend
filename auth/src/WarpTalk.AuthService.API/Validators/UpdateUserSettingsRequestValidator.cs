@@ -20,16 +20,16 @@ public class UpdateUserSettingsRequestValidator : AbstractValidator<UpdateUserSe
             .When(x => x.DefaultMaxParticipants.HasValue);
 
         RuleFor(x => x.Theme)
-            .Must(theme => theme != null && 
-                (theme.ToLowerInvariant() == UserConstants.ThemeLight || 
-                 theme.ToLowerInvariant() == UserConstants.ThemeDark || 
+            .Must(theme => theme != null &&
+                (theme.ToLowerInvariant() == UserConstants.ThemeLight ||
+                 theme.ToLowerInvariant() == UserConstants.ThemeDark ||
                  theme.ToLowerInvariant() == UserConstants.ThemeSystem))
             .WithMessage(string.Format(ApiMessageConstants.ValidationMessages.InvalidTheme, UserConstants.ThemeLight, UserConstants.ThemeDark, UserConstants.ThemeSystem))
             .When(x => x.Theme != null);
 
         RuleFor(x => x.DefaultTranslationRoomType)
-            .Must(roomType => roomType != null && 
-                (roomType.ToLowerInvariant() == UserConstants.RoomTypeInstant || 
+            .Must(roomType => roomType != null &&
+                (roomType.ToLowerInvariant() == UserConstants.RoomTypeInstant ||
                  roomType.ToLowerInvariant() == UserConstants.RoomTypeScheduled))
             .WithMessage(ApiMessageConstants.ValidationMessages.InvalidRoomType)
             .When(x => x.DefaultTranslationRoomType != null);

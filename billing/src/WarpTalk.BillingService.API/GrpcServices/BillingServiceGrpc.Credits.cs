@@ -15,7 +15,7 @@ public partial class BillingServiceGrpc
             throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
 
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, context.CancellationToken);
-        
+
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(BillingMessageConstants.Grpc.Workspace, request.WorkspaceId);
 
@@ -28,8 +28,8 @@ public partial class BillingServiceGrpc
             throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
 
         var result = await _creditService.ConsumeCreditsDirectlyAsync(
-            workspaceId, 
-            request.ToDto(workspaceId), 
+            workspaceId,
+            request.ToDto(workspaceId),
             context.CancellationToken);
 
         if (!result.IsSuccess)
@@ -55,7 +55,7 @@ public partial class BillingServiceGrpc
 
         var result = await _creditService.GetCreditHistoryAsync(
             workspaceId,
-            request.ToCreditHistoryQuery(), 
+            request.ToCreditHistoryQuery(),
             context.CancellationToken);
 
         if (!result.IsSuccess)

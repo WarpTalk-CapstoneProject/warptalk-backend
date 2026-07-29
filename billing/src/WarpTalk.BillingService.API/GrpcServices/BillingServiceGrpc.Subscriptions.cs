@@ -36,7 +36,7 @@ public partial class BillingServiceGrpc
             throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
 
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, context.CancellationToken);
-        
+
         if (!result.IsSuccess)
         {
             return GrpcBillingMapper.ToEmptySubscriptionResponse(result.Error ?? BillingMessageConstants.Grpc.NoActiveSubscription);

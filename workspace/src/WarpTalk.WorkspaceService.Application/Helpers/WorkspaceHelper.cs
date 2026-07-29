@@ -50,11 +50,11 @@ public static class WorkspaceHelper
             "Workspace",
             ct);
 
-        return memberships.Any(m => 
+        return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
-            && m.Workspace != null 
-            && (m.Workspace.RequireVerifiedDomainForInternal 
-                || GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal 
+            && m.Workspace != null
+            && (m.Workspace.RequireVerifiedDomainForInternal
+                || GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal
                 || GetWorkspaceConfig(m.Workspace).VerifiedDomains.Any()));
     }
 
@@ -186,11 +186,11 @@ public static class WorkspaceHelper
 
         var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLower();
         var verifiedDomain = await unitOfWork.WorkspaceVerifiedDomainRepository.FirstOrDefaultAsync(
-            vd => vd.Domain.ToLower() == domain.ToLower() 
-                  && vd.Status == verifiedStatus 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null 
-                  && vd.Workspace.IsActive 
+            vd => vd.Domain.ToLower() == domain.ToLower()
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null
+                  && vd.Workspace.IsActive
                   && vd.Workspace.DeletedAt == null,
             "Workspace",
             ct);

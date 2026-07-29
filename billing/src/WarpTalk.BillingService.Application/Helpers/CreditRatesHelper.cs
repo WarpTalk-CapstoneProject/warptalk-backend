@@ -23,21 +23,4 @@ public static class CreditRatesHelper
         if (string.IsNullOrEmpty(referenceType)) return UsageConstants.UsageTypes.VoiceTranslation;
         return UsageTypeMap.TryGetValue(referenceType, out var usageType) ? usageType : UsageConstants.UsageTypes.VoiceTranslation;
     }
-    /// <summary>
-    /// Calculates the credit cost for a mixed-service usage event using configurable rates.
-    /// </summary>
-    public static int CalculateCreditCost(CreditCostRequest request)
-    {
-        double cost = request.AudioSeconds * request.Rates.SttPerSecond;
-        cost += (request.TokenCount / 100.0) * request.Rates.TranslationPer100Chars;
-
-        double ttsSeconds = request.GpuInferenceMs / 1000.0;
-        double ttsRate = request.IsVoiceClone ? request.Rates.VoiceClonePerSecond : request.Rates.StandardTtsPerSecond;
-        cost += ttsSeconds * ttsRate;
-
-        if (cost <= 0 && (request.AudioSeconds > 0 || request.TokenCount > 0 || request.GpuInferenceMs > 0))
-            return 1;
-
-        return (int)Math.Max(1, Math.Ceiling(cost));
-    }
 }

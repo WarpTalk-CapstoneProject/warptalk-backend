@@ -101,6 +101,13 @@ public class PaymentAppService : IPaymentAppService
             var context = contextResult.Value!;
             if (context.ExistingPayment is { Status: PaymentConstants.PaymentStatuses.Paid })
             {
+                if (context.ExistingPayment.PaidAt is null)
+                {
+                    context.ExistingPayment.PaidAt = DateTime.UtcNow;
+                    context.ExistingPayment.UpdatedAt = DateTime.UtcNow;
+                    await _unitOfWork.SaveChangesAsync();
+                }
+
                 _logger.LogInformation(BillingMessageConstants.LogMessages.StripePaymentAlreadyProcessed, context.ProviderTransactionId);
                 return Result.Success();
             }
@@ -181,6 +188,10 @@ public class PaymentAppService : IPaymentAppService
 
         context.ExistingPayment.Status = context.ParsedPaymentStatus;
         context.ExistingPayment.FailureReason = context.Request.FailureReason;
+        if (context.ParsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
+        {
+            context.ExistingPayment.PaidAt ??= DateTime.UtcNow;
+        }
         context.ExistingPayment.UpdatedAt = DateTime.UtcNow;
     }
 

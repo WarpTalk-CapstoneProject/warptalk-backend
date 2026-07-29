@@ -87,7 +87,7 @@ public class CreditsController : ControllerBase
         {
             return this.ToBadRequest(result.Error, result.ErrorCode);
         }
-        
+
         return Ok(result.Value);
     }
 

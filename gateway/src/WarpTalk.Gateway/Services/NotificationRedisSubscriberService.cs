@@ -70,7 +70,7 @@ public class NotificationRedisSubscriberService : BackgroundService
 
                 using var doc = JsonDocument.Parse(message.ToString());
                 var root = doc.RootElement;
-                
+
                 var eventType = root.TryGetProperty("eventType", out var et) ? et.GetString() : "MeetingUpdated";
                 var workspaceId = root.TryGetProperty("workspaceId", out var ws) ? ws.GetString() : null;
                 var userId = root.TryGetProperty("userId", out var u) ? u.GetString() : null;

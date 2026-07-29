@@ -6,7 +6,7 @@ namespace WarpTalk.AuthService.Domain.ValueObjects;
 
 public record EmailAddress
 {
-    private static readonly Regex EmailRegex = 
+    private static readonly Regex EmailRegex =
         new(Constants.UserConstants.PermittedEmailRegex, RegexOptions.Compiled);
 
     public string Value { get; }

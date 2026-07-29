@@ -117,7 +117,7 @@ public static class CreditMapper
         UserId = request.UserId,
         Amount = request.Plan.CreditsPerCycle,
         Type = TransactionConstants.TransactionTypes.TopUp,
-        Description = request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate 
+        Description = request.PaymentType == PaymentConstants.PaymentTypes.SubscriptionUpdate
             ? string.Format(BillingMessageConstants.AdjustmentMessages.PlanUpgradeDirect, request.Plan.Name)
             : string.Format(BillingMessageConstants.SuccessMessages.SubscriptionPlanActivationTemplate, request.Plan.Name),
         ReferenceId = request.ReferenceId,

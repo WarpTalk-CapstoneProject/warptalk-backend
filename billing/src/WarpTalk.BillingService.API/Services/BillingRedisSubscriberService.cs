@@ -37,30 +37,39 @@ public class BillingRedisSubscriberService : BackgroundService
     /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var subscriber = _redis.GetSubscriber();
-        await subscriber.SubscribeAsync(RedisChannel.Literal(BillingMessageConstants.Notifications.Channel), async (_, message) =>
+        ISubscriber subscriber;
+        try
         {
-            try
+            subscriber = _redis.GetSubscriber();
+            await subscriber.SubscribeAsync(RedisChannel.Literal(BillingMessageConstants.Notifications.Channel), async (_, message) =>
             {
-                if (message.IsNullOrEmpty)
-                    return;
+                try
+                {
+                    if (message.IsNullOrEmpty)
+                        return;
 
-                var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
-                if (payload == null || string.IsNullOrEmpty(payload.UserId))
-                    return;
+                    var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
+                    if (payload == null || string.IsNullOrEmpty(payload.UserId))
+                        return;
 
-                if (string.IsNullOrEmpty(payload.Type) || !payload.Type.StartsWith(BillingMessageConstants.Notifications.TypePrefix, StringComparison.OrdinalIgnoreCase))
-                    return;
+                    if (string.IsNullOrEmpty(payload.Type) || !payload.Type.StartsWith(BillingMessageConstants.Notifications.TypePrefix, StringComparison.OrdinalIgnoreCase))
+                        return;
 
-                await _hubContext.Clients
-                    .Group(BillingHub.UserGroupName(payload.UserId))
-                    .SendAsync(BillingMessageConstants.Notifications.HubEvents.BillingNotification, payload, stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToProcessRedisBillingNotification);
-            }
-        });
+                    await _hubContext.Clients
+                        .Group(BillingHub.UserGroupName(payload.UserId))
+                        .SendAsync(BillingMessageConstants.Notifications.HubEvents.BillingNotification, payload, stoppingToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToProcessRedisBillingNotification);
+                }
+            });
+        }
+        catch (Exception ex) when (ex is RedisConnectionException or RedisTimeoutException or RedisServerException)
+        {
+            _logger.LogWarning(ex, "BillingRedisSubscriberService could not subscribe to {Channel}; realtime billing notifications are disabled until the service restarts.", BillingMessageConstants.Notifications.Channel);
+            return;
+        }
 
         _logger.LogInformation("BillingRedisSubscriberService started listening to {Channel}.", BillingMessageConstants.Notifications.Channel);
     }

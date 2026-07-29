@@ -121,16 +121,21 @@ public class PaymentsController : ControllerBase
                 return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
             }
 
-            // Verify the requesting user is an Owner or Admin of this workspace
-            var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
-                workspaceId,
-                userId.Value,
-                WorkspaceRoleConstants.Owner,
-                WorkspaceRoleConstants.Admin,
-                WorkspaceRoleConstants.SystemAdmin);
-            if (!accessResult.IsSuccess || !accessResult.Value)
+            // Verify the requesting user is a system admin or an Owner/Admin of this workspace.
+            var isSystemAdmin =
+                User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
+                User.IsInRole(WorkspaceRoleConstants.Admin);
+            if (!isSystemAdmin)
             {
-                return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
+                var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                    workspaceId,
+                    userId.Value,
+                    WorkspaceRoleConstants.Owner,
+                    WorkspaceRoleConstants.Admin);
+                if (!accessResult.IsSuccess || !accessResult.Value)
+                {
+                    return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
+                }
             }
 
             // Fallback: process payment event inline if session already marked as paid
@@ -200,4 +205,3 @@ public class PaymentsController : ControllerBase
         }
     }
 }
-

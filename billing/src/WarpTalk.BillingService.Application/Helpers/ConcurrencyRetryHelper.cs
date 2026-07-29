@@ -27,7 +27,7 @@ public static class ConcurrencyRetryHelper
             catch (Exception ex) when (ex.GetType().Name == HelperConstants.Concurrency.ExceptionName)
             {
                 logger.LogWarning(ex, HelperConstants.Concurrency.ConcurrencyLogTemplate, workspaceId, attempt, maxRetries);
-                if (attempt == maxRetries) 
+                if (attempt == maxRetries)
                     return Result.Failure<T>(ApiMessageConstants.ErrorMessages.BillingConcurrencyConflict, ErrorCodes.BillingConcurrencyConflict);
 
                 await Task.Delay(HelperConstants.Concurrency.BaseDelayMilliseconds * attempt, cancellationToken);

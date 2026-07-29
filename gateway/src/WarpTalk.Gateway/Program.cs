@@ -1,13 +1,19 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
+using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
+using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
+using WarpTalk.Shared.Grpc;
 using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -48,7 +54,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                 // Only extract from query string for Hub paths
                 var path = context.HttpContext.Request.Path;
                 if (!string.IsNullOrEmpty(accessToken) &&
-                    (path.StartsWithSegments("/hubs") || path.Value.Contains("chat-hub") || path.Value.Contains("hub")))
+                    (path.StartsWithSegments("/hubs") ||
+                     path.Value?.Contains("chat-hub", StringComparison.OrdinalIgnoreCase) == true ||
+                     path.Value?.Contains("hub", StringComparison.OrdinalIgnoreCase) == true))
                 {
                     context.Token = accessToken;
                 }
@@ -89,6 +97,30 @@ builder.Services.AddCors(options =>
 });
 
 // 3. Configure Rate Limiting
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost;
+
+    foreach (var proxy in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+    {
+        if (IPAddress.TryParse(proxy, out var address))
+        {
+            options.KnownProxies.Add(address);
+        }
+    }
+
+    foreach (var network in builder.Configuration.GetSection("ForwardedHeaders:KnownNetworks").Get<string[]>() ?? [])
+    {
+        if (System.Net.IPNetwork.TryParse(network, out var parsedNetwork))
+        {
+            options.KnownIPNetworks.Add(parsedNetwork);
+        }
+    }
+});
+
 builder.Services.AddRateLimiter(options =>
 {
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
@@ -100,7 +132,7 @@ builder.Services.AddRateLimiter(options =>
                 PermitLimit = 100,
                 Window = TimeSpan.FromMinutes(1)
             }));
-    
+
     // Specific policy for login
     options.AddFixedWindowLimiter("LoginPolicy", opt =>
     {
@@ -160,118 +192,53 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
-builder.Services.AddHostedService<WarpTalk.Gateway.Services.SttSimulatorWorker>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 builder.Services.AddHostedService<TranslationRoomRedisSubscriberService>();
 builder.Services.AddHostedService<WarpTalk.Gateway.Services.BillingRedisSubscriberService>();
 
 // 8. Configure Health Checks
-builder.Services.AddHealthChecks();
+builder.Services
+    .AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])
+    .AddWarpTalkRedisReadiness("gateway-redis");
 
 // 9. Configure gRPC Clients & Server
 builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"] 
+    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"]
                   ?? "http://localhost:50054";
     o.Address = new Uri(address);
 })
-.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
-.ConfigurePrimaryHttpMessageHandler(() =>
-{
-    var handler = new HttpClientHandler();
-    if (builder.Environment.IsDevelopment())
-    {
-        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-    }
-    return handler;
-})
-.AddCallCredentials((context, metadata, serviceProvider) =>
-{
-    var config = serviceProvider.GetRequiredService<IConfiguration>();
-    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var secret = string.IsNullOrWhiteSpace(rawGrpcSecret) || rawGrpcSecret.Contains("CHANGE_ME") ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" : rawGrpcSecret;
-    metadata.Add("x-internal-token", secret);
-    return Task.CompletedTask;
-});
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"] 
+    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
                   ?? "http://localhost:50056";
     o.Address = new Uri(address);
 })
-.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
-.ConfigurePrimaryHttpMessageHandler(() =>
-{
-    var handler = new HttpClientHandler();
-    if (builder.Environment.IsDevelopment())
-    {
-        // [Security] Bypass TLS verification ONLY in local development to fix trust certificate issues (T014).
-        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-    }
-    return handler;
-})
-.AddCallCredentials((context, metadata, serviceProvider) =>
-{
-    // [Security] Zero-Trust Inter-service Authentication: Inject internal secret to gRPC requests.
-    var config = serviceProvider.GetRequiredService<IConfiguration>();
-    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    
-    var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var isDefaultOrInvalid = string.IsNullOrWhiteSpace(rawGrpcSecret) || 
-                             rawGrpcSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase) ||
-                             rawGrpcSecret.Length < 32;
-
-    if (env.IsProduction() && isDefaultOrInvalid)
-    {
-        throw new InvalidOperationException("CRITICAL SECURITY: Grpc Internal Secret is not properly configured for Production. It must be at least 32 characters long and not be the default placeholder.");
-    }
-
-    var secret = isDefaultOrInvalid 
-        ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" 
-        : rawGrpcSecret!;
-        
-    metadata.Add("x-internal-token", secret);
-    return Task.CompletedTask;
-});
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
-    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"] 
+    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]
                   ?? "http://localhost:50052";
     o.Address = new Uri(address);
 })
-.ConfigureChannel(o => o.UnsafeUseInsecureChannelCallCredentials = true)
-.ConfigurePrimaryHttpMessageHandler(() =>
-{
-    var handler = new HttpClientHandler();
-    if (builder.Environment.IsDevelopment())
-    {
-        handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-    }
-    return handler;
-})
-.AddCallCredentials((context, metadata, serviceProvider) =>
-{
-    var config = serviceProvider.GetRequiredService<IConfiguration>();
-    var env = serviceProvider.GetRequiredService<IWebHostEnvironment>();
-    var rawGrpcSecret = config["Grpc:InternalSecret"];
-    var secret = string.IsNullOrWhiteSpace(rawGrpcSecret) || rawGrpcSecret.Contains("CHANGE_ME") ? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!" : rawGrpcSecret;
-    metadata.Add("x-internal-token", secret);
-    return Task.CompletedTask;
-});
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 app.UseWebSockets();
+app.UseForwardedHeaders();
 app.UseCors();
 
 // Security Headers Middleware
 // [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
-app.Use(async (context, next) => {
+app.Use(async (context, next) =>
+{
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
@@ -301,7 +268,11 @@ app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(GatewayBillingConstants.HubPath)
 
 // Map Health Checks
 app.MapHealthChecks("/health");
-app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("live")
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready")
 });

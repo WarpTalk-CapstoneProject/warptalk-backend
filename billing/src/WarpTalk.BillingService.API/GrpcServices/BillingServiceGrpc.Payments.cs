@@ -17,8 +17,8 @@ public partial class BillingServiceGrpc
             throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
 
         var result = await _paymentService.GetPaymentHistoryAsync(
-            workspaceId, 
-            request.ToPaginationQuery(), 
+            workspaceId,
+            request.ToPaginationQuery(),
             context.CancellationToken);
 
         if (!result.IsSuccess)

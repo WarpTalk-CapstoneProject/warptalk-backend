@@ -15,7 +15,6 @@ public static class SubscriptionConstants
     public static class BillingCycles
     {
         public const string Monthly = "monthly";
-        public const string Semiannual = "semiannual";
         public const string Yearly = "yearly";
     }
 

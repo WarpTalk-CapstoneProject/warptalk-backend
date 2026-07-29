@@ -85,6 +85,10 @@ public static class PaymentMapper
     public static Payment CreateStripePayment(StripePaymentCreationRequest request)
     {
         var now = DateTime.UtcNow;
+        var paidAt = string.Equals(request.Status, PaymentConstants.PaymentStatuses.Paid, StringComparison.OrdinalIgnoreCase)
+            ? now
+            : (DateTime?)null;
+
         return new Payment
         {
             Id = Guid.NewGuid(),
@@ -99,6 +103,7 @@ public static class PaymentMapper
             ProviderTransactionId = request.ProviderTransactionId,
             Status = request.Status,
             FailureReason = request.FailureReason,
+            PaidAt = paidAt,
             CreatedAt = now,
             UpdatedAt = now
         };

@@ -27,7 +27,7 @@ public static class InvoiceMapper
             WorkspaceId: workspaceId.ToString(),
             WorkspaceName: workspaceName
         );
-     }
+    }
 
     public static Invoice ToEntity(this TopUpRequest request, Payment payment) => new()
     {
@@ -84,7 +84,8 @@ public static class InvoiceMapper
 
     public static Invoice CreateStripeInvoice(StripeInvoiceCreationRequest request)
     {
-        string invoiceNum = InvoiceConstants.Formats.InvoiceNumberPrefix + DateTime.UtcNow.ToString("yyyyMMdd") + "-" + request.PaymentId.ToString().Substring(0, 8).ToUpper();
+        var now = DateTime.UtcNow;
+        string invoiceNum = InvoiceConstants.Formats.InvoiceNumberPrefix + now.ToString("yyyyMMdd") + "-" + request.PaymentId.ToString().Substring(0, 8).ToUpper();
         return new Invoice
         {
             Id = Guid.NewGuid(),
@@ -98,8 +99,9 @@ public static class InvoiceMapper
             Status = InvoiceConstants.InvoiceStatuses.Paid,
             PdfUrl = request.PdfUrl,
             LineItems = InvoiceConstants.Defaults.EmptyLineItems,
-            IssuedAt = DateTime.UtcNow,
-            CreatedAt = DateTime.UtcNow
+            IssuedAt = now,
+            PaidAt = now,
+            CreatedAt = now
         };
     }
 

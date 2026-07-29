@@ -22,6 +22,7 @@ public class UnitOfWork : IUnitOfWork
         PaymentRepository = new PaymentRepository(db);
         InvoiceRepository = new InvoiceRepository(db);
         RefundRepository = new RefundRepository(db);
+        SalesInquiryRepository = new GenericRepository<SalesInquiry>(db);
         IdempotencyRecords = new IdempotencyRepository(db);
         OutboxMessages = new GenericRepository<OutboxMessage>(db);
         InboxMessages = new GenericRepository<InboxMessage>(db);
@@ -35,6 +36,7 @@ public class UnitOfWork : IUnitOfWork
     public IPaymentRepository PaymentRepository { get; }
     public IInvoiceRepository InvoiceRepository { get; }
     public IRefundRepository RefundRepository { get; }
+    public IGenericRepository<SalesInquiry> SalesInquiryRepository { get; }
     public IIdempotencyRepository IdempotencyRecords { get; }
     public IGenericRepository<OutboxMessage> OutboxMessages { get; }
     public IGenericRepository<InboxMessage> InboxMessages { get; }

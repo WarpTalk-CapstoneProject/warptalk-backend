@@ -141,9 +141,9 @@ public class TranslationRoomService : ITranslationRoomService
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
-                
+
                 var emailTasks = new List<Task>();
-                
+
                 foreach (var email in request.InvitedEmails)
                 {
                     // 1. Store the invitation
@@ -157,10 +157,10 @@ public class TranslationRoomService : ITranslationRoomService
                     // 2. Send the email
                     emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
                 }
-                
+
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
-                
+
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
@@ -211,7 +211,7 @@ public class TranslationRoomService : ITranslationRoomService
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-            
+
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
@@ -313,26 +313,26 @@ public class TranslationRoomService : ITranslationRoomService
             if (participant == null)
             {
                 participant = request.ToParticipantEntity(
-                    translationRoom.Id, 
-                    userId, 
-                    speakLang!, 
-                    listenLang!, 
+                    translationRoom.Id,
+                    userId,
+                    speakLang!,
+                    listenLang!,
                     requiresApproval,
                     isHost
                 );
-                
+
                 await _participantRepository.AddAsync(participant, ct);
             }
             else
             {
                 participant.UpdateFrom(
-                    request, 
-                    speakLang!, 
-                    listenLang!, 
-                    requiresApproval, 
+                    request,
+                    speakLang!,
+                    listenLang!,
+                    requiresApproval,
                     isHost
                 );
-                
+
                 _participantRepository.Update(participant);
             }
 
@@ -371,7 +371,7 @@ public class TranslationRoomService : ITranslationRoomService
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
-            
+
             if (translationRoom.Status != "SCHEDULED")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToWaiting, ErrorCodes.InvalidState);
 
@@ -444,7 +444,7 @@ public class TranslationRoomService : ITranslationRoomService
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
-            
+
             if (translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
 
@@ -473,7 +473,7 @@ public class TranslationRoomService : ITranslationRoomService
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
-            
+
             if (translationRoom.Status != "PAUSED")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
@@ -521,7 +521,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
                                 p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
                     .ToList();
 
@@ -550,7 +550,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            
+
             // Idempotent check
             if (translationRoom.Status == "EXPIRED")
                 return Result.Success();
@@ -567,7 +567,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
                                 p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
                     .ToList();
 
@@ -594,7 +594,7 @@ public class TranslationRoomService : ITranslationRoomService
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-            
+
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
@@ -621,7 +621,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() || 
+                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
                                 p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
                     .ToList();
 
@@ -652,7 +652,7 @@ public class TranslationRoomService : ITranslationRoomService
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-            
+
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
@@ -664,13 +664,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
-                
+
             if (request.Description != null)
                 translationRoom.Description = request.Description;
-                
+
             if (request.MaxParticipants.HasValue)
                 translationRoom.MaxParticipants = request.MaxParticipants.Value;
-                
+
             if (request.ScheduledAt.HasValue)
                 translationRoom.ScheduledAt = request.ScheduledAt.Value;
 
@@ -679,7 +679,7 @@ public class TranslationRoomService : ITranslationRoomService
                 var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<WarpTalk.TranslationRoomService.Domain.Entities.TranslationRoomInvitation>();
-                
+
                 var existingInvitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoom.Id, ct: ct);
                 var existingEmails = existingInvitations.Select(i => i.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -704,7 +704,7 @@ public class TranslationRoomService : ITranslationRoomService
             {
                 if (!await _languagePolicy.IsSupportedAsync(request.SourceLanguage))
                     return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
-                
+
                 translationRoom.SourceLanguage = request.SourceLanguage;
             }
 
@@ -716,15 +716,15 @@ public class TranslationRoomService : ITranslationRoomService
                     if (!await _languagePolicy.IsSupportedAsync(lang))
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
-                
+
                 translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
             }
 
             // Update Settings (RequiresApproval)
             if (request.Settings != null)
             {
-                var newSettings = new TranslationRoomSettings 
-                { 
+                var newSettings = new TranslationRoomSettings
+                {
                     RequiresApproval = request.Settings.RequiresApproval,
                     ArtifactAccess = request.Settings.ArtifactAccess
                 };

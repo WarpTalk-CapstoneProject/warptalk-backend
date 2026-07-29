@@ -470,7 +470,7 @@ public class SubscriptionService : ISubscriptionService
                 return Result.Failure<SubscriptionDto>(
                     ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
                     ErrorCodes.BillingPlanNotFound);
-                    
+
             // Try to update the Stripe subscription directly with proration
             bool stripeUpdated = false;
             try
@@ -500,7 +500,7 @@ public class SubscriptionService : ISubscriptionService
             // We return a "Pending" DTO to the client so the UI can show a loading state.
             var pendingSub = request.ToEntity(oldSub, newPlan);
             pendingSub.Status = SubscriptionConstants.SubscriptionStatuses.Pending;
-            
+
             return Result.Success(pendingSub.ToDto(newPlan));
         }
         catch (Exception ex)

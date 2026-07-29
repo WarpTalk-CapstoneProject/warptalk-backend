@@ -34,6 +34,8 @@ public partial class BillingDbContext : DbContext
 
     public virtual DbSet<Refund> Refunds { get; set; }
 
+    public virtual DbSet<SalesInquiry> SalesInquiries { get; set; }
+
     public virtual DbSet<SchemaMigration> SchemaMigrations { get; set; }
 
     public virtual DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
@@ -44,7 +46,7 @@ public partial class BillingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("plans_pkey");
 
-            entity.ToTable("plans", "subscription", t => t.HasCheckConstraint("chk_billing_cycle", "billing_cycle IN ('monthly', 'semiannual', 'yearly')"));
+            entity.ToTable("plans", "subscription", t => t.HasCheckConstraint("chk_billing_cycle", "billing_cycle IN ('monthly', 'yearly')"));
 
             entity.HasIndex(e => e.Slug, "plans_slug_key").IsUnique();
 
@@ -559,6 +561,82 @@ public partial class BillingDbContext : DbContext
                 .HasForeignKey(d => d.PaymentId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("refunds_payment_id_fkey");
+        });
+
+        modelBuilder.Entity<SalesInquiry>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("sales_inquiries_pkey");
+
+            entity.ToTable("sales_inquiries", "subscription", t =>
+            {
+                t.HasCheckConstraint("sales_inquiries_status_chk", "status IN ('new', 'reviewing', 'quoted', 'converted', 'closed')");
+            });
+
+            entity.HasIndex(e => e.Status, "ix_sales_inquiries_status");
+            entity.HasIndex(e => e.WorkEmail, "ix_sales_inquiries_work_email");
+            entity.HasIndex(e => e.WorkspaceId, "ix_sales_inquiries_workspace_id");
+            entity.HasIndex(e => e.CreatedAt, "ix_sales_inquiries_created_at");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.FirstName)
+                .HasMaxLength(80)
+                .HasColumnName("first_name");
+            entity.Property(e => e.LastName)
+                .HasMaxLength(80)
+                .HasColumnName("last_name");
+            entity.Property(e => e.WorkEmail)
+                .HasMaxLength(255)
+                .HasColumnName("work_email");
+            entity.Property(e => e.Company)
+                .HasMaxLength(160)
+                .HasColumnName("company");
+            entity.Property(e => e.RequestType)
+                .HasMaxLength(80)
+                .HasColumnName("request_type");
+            entity.Property(e => e.FeatureInterests)
+                .HasColumnType("jsonb")
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnName("feature_interests");
+            entity.Property(e => e.TargetLanguages)
+                .HasColumnType("jsonb")
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnName("target_languages");
+            entity.Property(e => e.CurrentMonthlyMeetingVolume)
+                .HasMaxLength(80)
+                .HasColumnName("current_monthly_meeting_volume");
+            entity.Property(e => e.ExpectedMonthlyMeetingVolumeInSixMonths)
+                .HasMaxLength(80)
+                .HasColumnName("expected_monthly_meeting_volume_in_six_months");
+            entity.Property(e => e.UseCaseNotes).HasColumnName("use_case_notes");
+            entity.Property(e => e.PricingEstimateJson)
+                .HasColumnType("jsonb")
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnName("pricing_estimate_json");
+            entity.Property(e => e.Consent).HasColumnName("consent");
+            entity.Property(e => e.Source)
+                .HasMaxLength(80)
+                .HasDefaultValue(SalesInquiryConstants.Sources.LandingPricing)
+                .HasColumnName("source");
+            entity.Property(e => e.Status)
+                .HasMaxLength(30)
+                .HasDefaultValue(SalesInquiryConstants.Statuses.New)
+                .HasColumnName("status");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External WorkspaceService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.SubscriptionId)
+                .HasComment("External subscription id captured after conversion. No physical FK to keep inquiry archival.")
+                .HasColumnName("subscription_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.ConvertedAt).HasColumnName("converted_at");
+            entity.Property(e => e.ClosedAt).HasColumnName("closed_at");
         });
 
         modelBuilder.Entity<IdempotencyRecord>(entity =>

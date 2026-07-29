@@ -20,26 +20,6 @@ public record RecordUsageRequest(
     string? Details = null,
     string? IdempotencyKey = null);
 
-public record ChargeVoiceCloneRequest(
-    Guid HostWorkspaceId,
-    Guid UserId,
-    bool IsAdvanced);
-
-public record ChargeAiAssistantRequest(
-    Guid HostWorkspaceId,
-    Guid UserId,
-    int InputTokens,
-    int OutputTokens,
-    string FeatureName,
-    /// <summary>Optional: model identifier (e.g. "gpt-4o", "gemini-1.5-pro") for audit trail.</summary>
-    string? ProviderModel = null);
-
-public record ChargeDocumentTranslationRequest(
-    Guid HostWorkspaceId,
-    Guid UserId,
-    int CharacterCount,
-    string TargetLanguage);
-
 // ============================================================================
 // USAGE / ANALYTICS RESPONSE DTOs
 // ============================================================================
@@ -90,4 +70,3 @@ public record TopWorkspaceDto(
     Guid WorkspaceId,
     string? WorkspaceName,
     int TotalCreditsConsumed);
-

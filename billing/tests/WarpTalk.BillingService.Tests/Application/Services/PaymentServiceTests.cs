@@ -109,15 +109,21 @@ public class PaymentServiceTests
         var plan = new Plan { Id = planId, BillingCycle = "yearly", CreditsPerCycle = 1000 };
         var pendingSub = new Subscription
         {
-            Id = subscriptionId, UserId = userId, WorkspaceId = workspaceId,
-            PlanId = planId, Status = SubscriptionConstants.SubscriptionStatuses.Pending,
-            IsActive = false, CreditsRemaining = 0, Plan = plan
+            Id = subscriptionId,
+            UserId = userId,
+            WorkspaceId = workspaceId,
+            PlanId = planId,
+            Status = SubscriptionConstants.SubscriptionStatuses.Pending,
+            IsActive = false,
+            CreditsRemaining = 0,
+            Plan = plan
         };
 
         // payment with nav property populated (for GetWithSubscriptionAsync)
         var paymentNav = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
             Status = PaymentConstants.PaymentStatuses.Pending,
             Subscription = pendingSub
         };
@@ -125,7 +131,8 @@ public class PaymentServiceTests
         // payment with full nav (for GetWithSubscriptionAndPlanAsync)
         var paymentFull = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
             Status = PaymentConstants.PaymentStatuses.Pending,
             Subscription = pendingSub
         };
@@ -160,13 +167,17 @@ public class PaymentServiceTests
         var sub = new Subscription { Id = subscriptionId, WorkspaceId = workspaceId };
         var paymentNav = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
-            Status = PaymentConstants.PaymentStatuses.Pending, Subscription = sub
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
+            Status = PaymentConstants.PaymentStatuses.Pending,
+            Subscription = sub
         };
         var paymentFull = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
-            Status = PaymentConstants.PaymentStatuses.Pending, Subscription = sub
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
+            Status = PaymentConstants.PaymentStatuses.Pending,
+            Subscription = sub
         };
 
         _mockPaymentRepo.Setup(r => r.GetWithSubscriptionAsync(paymentId, It.IsAny<CancellationToken>()))
@@ -189,7 +200,8 @@ public class PaymentServiceTests
         // Subscription nav property is null → service returns BillingSubscriptionNotFound immediately
         var payment = new Payment
         {
-            Id = paymentId, SubscriptionId = Guid.NewGuid(),
+            Id = paymentId,
+            SubscriptionId = Guid.NewGuid(),
             Status = PaymentConstants.PaymentStatuses.Pending,
             Subscription = null!
         };
@@ -215,18 +227,26 @@ public class PaymentServiceTests
         var plan = new Plan { Id = planId, BillingCycle = "monthly", CreditsPerCycle = 1000 };
         var activeSub = new Subscription
         {
-            Id = subscriptionId, WorkspaceId = workspaceId, PlanId = planId,
-            Status = SubscriptionConstants.SubscriptionStatuses.Active, IsActive = true, Plan = plan
+            Id = subscriptionId,
+            WorkspaceId = workspaceId,
+            PlanId = planId,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            IsActive = true,
+            Plan = plan
         };
         var paymentNav = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
-            Status = PaymentConstants.PaymentStatuses.Pending, Subscription = activeSub
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
+            Status = PaymentConstants.PaymentStatuses.Pending,
+            Subscription = activeSub
         };
         var paymentFull = new Payment
         {
-            Id = paymentId, SubscriptionId = subscriptionId,
-            Status = PaymentConstants.PaymentStatuses.Pending, Subscription = activeSub
+            Id = paymentId,
+            SubscriptionId = subscriptionId,
+            Status = PaymentConstants.PaymentStatuses.Pending,
+            Subscription = activeSub
         };
 
         _mockPaymentRepo.Setup(r => r.GetWithSubscriptionAsync(paymentId, It.IsAny<CancellationToken>()))

@@ -43,7 +43,7 @@ public class WorkspacesControllerTests
         // Arrange
         var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png");
         var expectedDto = new WorkspaceDto(Guid.NewGuid(), "DeepMind Team", "deepmind-team", "https://cdn.com/logo.png", "Owner", DateTime.UtcNow, "en");
-        
+
         _workspaceService.CreateWorkspaceAsync(request, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedDto));
 
@@ -114,6 +114,36 @@ public class WorkspacesControllerTests
         var okResult = Assert.IsType<OkObjectResult>(result);
         var value = Assert.IsType<WorkspaceDto>(okResult.Value);
         Assert.Equal(expectedDto, value);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceById_ShouldUseAdminLookup_WhenUserHasPlatformAdminRole()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var expectedDto = new WorkspaceDto(workspaceId, "FitPick", "fitpick", null, "admin", DateTime.UtcNow, "en");
+
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, _userId.ToString()),
+            new Claim(ClaimTypes.Role, "admin")
+        };
+        _controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")) }
+        };
+
+        _workspaceService.GetWorkspaceByIdForAdminAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(expectedDto));
+
+        // Act
+        var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
+
+        // Assert
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<WorkspaceDto>(okResult.Value);
+        Assert.Equal(expectedDto, value);
+        await _workspaceService.DidNotReceive().GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>());
     }
 
     [Fact]

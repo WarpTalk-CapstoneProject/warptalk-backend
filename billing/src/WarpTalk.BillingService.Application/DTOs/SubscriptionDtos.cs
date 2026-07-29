@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -69,18 +70,18 @@ public record TransactionDto(
 public record SubscriptionRequest(
     Guid WorkspaceId,
     Guid PlanId,
-    Guid? UserId = null);
+    Guid? UserId = null) : IWorkspaceScopedRequest;
 
 public record CreateWorkspaceContractSubscriptionRequest(
     Guid WorkspaceId,
     Guid PlanId,
     UpdateSubscriptionContractTermsRequest ContractTerms,
-    Guid? UserId = null);
+    Guid? UserId = null) : IWorkspaceScopedRequest;
 
 public record TrialSubscriptionRequest(
     Guid WorkspaceId,
     Guid UserId,
-    string OwnerEmail);
+    string OwnerEmail) : IWorkspaceScopedRequest;
 
 public record ResumeSubscriptionRequest(
     string? Reason = null);
@@ -104,4 +105,3 @@ public record TopUpCreditsRequest(
 
 public record CancelSubscriptionRequest(
     string? CancellationReason = null);
-

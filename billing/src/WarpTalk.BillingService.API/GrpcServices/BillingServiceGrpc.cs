@@ -25,7 +25,7 @@ public partial class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.
     private readonly ILogger<BillingServiceGrpc> _logger;
 
     public BillingServiceGrpc(
-        ICreditService creditService, 
+        ICreditService creditService,
         ISubscriptionService subscriptionService,
         IPaymentService paymentService,
         IPaymentAppService paymentAppService,

@@ -12,13 +12,13 @@ public static class GrpcAuthorizationExtensions
 {
     public static async Task AuthorizeWorkspaceAsync(
         this IWorkspaceAuthorizationService workspaceAuthService,
-        Guid workspaceId, 
-        ServerCallContext context, 
+        Guid workspaceId,
+        ServerCallContext context,
         string allowedRoles = WorkspaceRoleConstants.OwnerAdmin)
     {
         var httpContext = context.GetHttpContext();
         var userId = httpContext.User.GetUserId();
-        
+
         if (userId == null)
         {
             throw new RpcException(new Status(StatusCode.Unauthenticated, BillingMessageConstants.Grpc.AuthenticationRequired));

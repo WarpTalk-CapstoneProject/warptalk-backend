@@ -13,7 +13,6 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -27,7 +26,6 @@ public class UsageServiceTests
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
     private readonly Mock<IPlanRepository> _mockPlanRepo;
-    private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly UsageService _usageService;
 
@@ -38,15 +36,7 @@ public class UsageServiceTests
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
         _mockPlanRepo = new Mock<IPlanRepository>();
-        _mockConfig = new Mock<IConfiguration>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
-
-        _mockConfig.Setup(c => c["BillingRates:SttPerSecond"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:TranslationPer100Chars"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerSecond"]).Returns("1.0");
-        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerSecond"]).Returns("1.5");
-        _mockConfig.Setup(c => c["BillingRates:AiAssistantInputPer1000Tokens"]).Returns("0.5");
-        _mockConfig.Setup(c => c["BillingRates:AiAssistantOutputPer1000Tokens"]).Returns("2.0");
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
@@ -56,30 +46,7 @@ public class UsageServiceTests
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<UsageService>>().Object,
-            null!,
             _mockSettlementService.Object);
-    }
-
-    [Fact]
-    public void CalculateCreditCost_StandardUsage_ShouldCalculateCorrectly()
-    {
-        var rates = new ServiceRatesDto(
-            SttPerSecond: 1.0,
-            TranslationPer100Chars: 1.0,
-            StandardTtsPerSecond: 1.0,
-            VoiceClonePerSecond: 1.5,
-            AiAssistantInputPer1000Tokens: 0.5,
-            AiAssistantOutputPer1000Tokens: 2.0);
-
-        // 60s STT (60 * 1) + 1000 chars translation (1000/100 * 1 = 10) + 1000ms standard TTS (1s * 1 = 1) = 71 credits
-        var cost = CreditRatesHelper.CalculateCreditCost(new CreditCostRequest(
-            AudioSeconds: 60,
-            TokenCount: 1000,
-            GpuInferenceMs: 1000,
-            IsVoiceClone: false,
-            Rates: rates));
-
-        cost.Should().Be(71);
     }
 
     [Fact]
@@ -89,8 +56,13 @@ public class UsageServiceTests
         var planId = Guid.NewGuid();
         var subscription = new Subscription
         {
-            Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
-            PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
         var plan = new Plan { Id = planId, Name = "Pro" };
 
@@ -120,8 +92,13 @@ public class UsageServiceTests
         var planId = Guid.NewGuid();
         var subscription = new Subscription
         {
-            Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
-            PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
         var plan = new Plan { Id = planId, Name = "Pro" };
         var segmentId = Guid.NewGuid();

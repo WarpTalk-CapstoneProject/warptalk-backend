@@ -28,6 +28,7 @@ public class CreditServiceTests
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IRedisBillingStore> _mockRedisStore;
     private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
+    private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly CreditService _creditService;
 
     public CreditServiceTests()
@@ -40,6 +41,7 @@ public class CreditServiceTests
         _mockConfig = new Mock<IConfiguration>();
         _mockRedisStore = new Mock<IRedisBillingStore>();
         _mockWorkspaceClient = new Mock<IWorkspaceClient>();
+        _mockSettlementService = new Mock<IUsageSettlementService>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
@@ -50,7 +52,8 @@ public class CreditServiceTests
             new Mock<ILogger<CreditService>>().Object,
             _mockMessagePublisher.Object,
             _mockConfig.Object,
-            _mockWorkspaceClient.Object);
+            _mockWorkspaceClient.Object,
+            _mockSettlementService.Object);
     }
 
     [Fact]
@@ -87,6 +90,9 @@ public class CreditServiceTests
         var sub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, CreditsRemaining = 50, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5) };
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(false, null, null, sub.CreditsRemaining, "healthy", null)));
 
         var request = new ConsumeCreditsRequest(workspaceId, 100, "Manual", null);
         var result = await _creditService.ConsumeCreditsDirectlyAsync(workspaceId, request);

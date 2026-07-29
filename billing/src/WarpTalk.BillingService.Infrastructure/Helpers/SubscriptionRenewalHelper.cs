@@ -13,7 +13,6 @@ public static class SubscriptionRenewalHelper
         var newEnd = billingCycle switch
         {
             SubscriptionConstants.BillingCycles.Monthly => newStart.AddMonths(1),
-            SubscriptionConstants.BillingCycles.Semiannual => newStart.AddMonths(6),
             SubscriptionConstants.BillingCycles.Yearly => newStart.AddYears(1),
             _ => newStart.AddMonths(1)
         };

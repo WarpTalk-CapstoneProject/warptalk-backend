@@ -22,7 +22,7 @@ public static class ArtifactMapper
             ContainsRawVideo = request.ContainsRawVideo,
             ConsentRequired = request.ConsentRequired,
             RetentionUntil = request.RetentionUntil,
-            Status = ArtifactStatus.Completed.ToString().ToUpperInvariant(), 
+            Status = ArtifactStatus.Completed.ToString().ToUpperInvariant(),
             CreatedAt = DateTime.UtcNow
         };
     }

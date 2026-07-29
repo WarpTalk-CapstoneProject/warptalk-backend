@@ -210,6 +210,7 @@ message SubscriptionResponse {
   string current_period_end   = 9;  // ISO-8601
   bool   auto_renew           = 10;
   string cancelled_at         = 11; // ISO-8601; empty if not cancelled
+  string trial_ends_at        = 12; // ISO-8601; empty if not a trial subscription
 }
 
 message GetFeatureAccessRequest {

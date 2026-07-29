@@ -17,7 +17,7 @@ public class SubscriptionTests
         var userId = Guid.NewGuid();
         var planId = Guid.NewGuid();
         var status = SubscriptionConstants.SubscriptionStatuses.Active;
-        
+
         // Act
         var subscription = new Subscription
         {

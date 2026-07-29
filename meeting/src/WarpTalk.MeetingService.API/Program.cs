@@ -7,6 +7,7 @@ using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
 using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
+using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
 
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
@@ -137,14 +138,16 @@ builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClie
     var url = builder.Configuration["GrpcUrls:TranslationRoomService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:TranslationRoomService is missing in configuration.");
     o.Address = new Uri(url);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:BillingService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:BillingService is missing in configuration.");
     o.Address = new Uri(url);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 

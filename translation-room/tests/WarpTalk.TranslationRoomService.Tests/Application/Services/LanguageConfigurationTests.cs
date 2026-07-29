@@ -151,7 +151,7 @@ public class LanguageConfigurationTests
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync("vi-VN", "en-US", room)).ReturnsAsync((string?)null);
 
         var request = new JoinTranslationRoomRequest(
-            "abc-defg-hij", "User", 
+            "abc-defg-hij", "User",
             "ja-JP", // Not in policy
             "vi-VN"
         );

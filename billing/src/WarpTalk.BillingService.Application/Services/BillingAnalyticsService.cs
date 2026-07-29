@@ -20,7 +20,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
     private readonly IWorkspaceClient _workspaceClient;
 
     public BillingAnalyticsService(
-        IUnitOfWork unitOfWork, 
+        IUnitOfWork unitOfWork,
         ILogger<BillingAnalyticsService> logger,
         IWorkspaceClient workspaceClient)
     {
@@ -164,7 +164,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
             var subs = await _unitOfWork.SubscriptionRepository.FindAsync(s => s.IsActive && s.DeletedAt == null, cancellationToken);
             var totalBalance = subs.Sum(s => s.CreditsRemaining);
             var activeWorkspaces = subs.Select(s => s.WorkspaceId).Distinct().Count();
-            
+
             var currentMonthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc);
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(u => u.RecordedAt >= currentMonthStart, cancellationToken);
             var monthlyUsage = usages.Sum(u => u.CreditsConsumed);
@@ -236,7 +236,7 @@ public class BillingAnalyticsService : IBillingAnalyticsService
         try
         {
             var startDate = DateTime.UtcNow.AddDays(-query.Days);
-            
+
             var usages = await _unitOfWork.UsageRecordRepository.FindAsync(
                 u => u.RecordedAt >= startDate,
                 cancellationToken);
@@ -333,7 +333,8 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesAlerts);
             }
 
-            var alerts = grouped.Select(g => {
+            var alerts = grouped.Select(g =>
+            {
                 var wId = subIdToWorkspaceId.TryGetValue(g.SubscriptionId, out var id) ? id : Guid.Empty;
                 var workspaceName = workspaceNames.TryGetValue(wId, out var name)
                     ? name

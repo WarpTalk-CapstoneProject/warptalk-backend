@@ -53,7 +53,7 @@ public class IdleRoomMonitoringWorker : BackgroundService
 
         // Find all rooms that are WAITING or IN_PROGRESS
         var activeRooms = await roomRepo.FindAsync(r => r.Status == "WAITING" || r.Status == "IN_PROGRESS", "", ct);
-        
+
         foreach (var room in activeRooms)
         {
             // Get participants
@@ -83,7 +83,7 @@ public class IdleRoomMonitoringWorker : BackgroundService
                 if (DateTime.UtcNow - lastPresentTime > _idleTimeout)
                 {
                     _logger.LogInformation("Room {RoomId} has had no participants since {IdleTime}. Auto-ending the room.", room.Id, lastPresentTime);
-                    
+
                     var result = await roomService.EndTranslationRoomAsync(room.Id, room.HostId, ct);
                     if (!result.IsSuccess)
                     {

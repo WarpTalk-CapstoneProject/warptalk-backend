@@ -60,8 +60,8 @@ public static class BillingMessageConstants
     {
         public static class Actions
         {
-            public const string Created    = "created";
-            public const string Updated    = "updated";
+            public const string Created = "created";
+            public const string Updated = "updated";
             public const string Deactivated = "deactivated";
         }
     }
@@ -114,11 +114,6 @@ public static class BillingMessageConstants
         public const string ErrorGettingTopWorkspaces = "Error getting top workspaces";
         public const string FailedToResolveWorkspaceNamesAlerts = "Failed to resolve workspace names for alerts";
         public const string ErrorGettingUsageAlerts = "Error getting usage alerts";
-        public const string BillingRatesUpdated = "BillingRates updated by admin.";
-        public const string ErrorUpdatingServiceRates = "Error updating service rates";
-        public const string ErrorLoadingWorkspaceOwnerIds = "Could not load workspace owner IDs for rate change notification.";
-        public const string SendingRateChangeNotifications = "Sending AI rate change notifications to {Count} workspace owners.";
-        public const string FailedToNotifyWorkspaceOwnersRateUpdate = "Failed to notify workspace owners about rate update";
         public const string ErrorGettingWorkspaceCredits = "Error getting workspace credits for WorkspaceId {WorkspaceId}";
         public const string ErrorGettingInvoices = "Error getting invoices for WorkspaceId {WorkspaceId}";
         public const string FailedToResolveWorkspaceNamesGlobalInvoices = "Failed to resolve workspace names for global invoices";
@@ -272,9 +267,7 @@ public static class BillingMessageConstants
         public const string BillingCheckoutSessionCreateFailed = "Failed to create checkout session";
         public const string BillingCheckoutSessionGetFailed = "Failed to get checkout session";
         public const string BillingPaymentEventFailed = "Failed to process payment event";
-        
-        public const string BillingRateValuesInvalid = "All rate values must be greater than zero.";
-        public const string BillingAppSettingsNotFound = "appsettings.json not found on server.";
+
         public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
         public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";
         public const string BillingAiServiceSuspended = "Workspace AI service is suspended.";

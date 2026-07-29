@@ -45,8 +45,8 @@ public class PaymentService : IPaymentService
         foreach (var entry in entries)
         {
             string type = entry.Type.ToLower();
-            if (type == TransactionConstants.TransactionTypes.TopUp || 
-                type == TransactionConstants.TransactionTypes.Refund || 
+            if (type == TransactionConstants.TransactionTypes.TopUp ||
+                type == TransactionConstants.TransactionTypes.Refund ||
                 type == TransactionConstants.TransactionTypes.Adjustment)
             {
                 netChange += entry.Amount;
@@ -103,11 +103,7 @@ public class PaymentService : IPaymentService
             if (plan == null) return Result.Failure<PaymentTransactionDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.NotFound);
             //get final amount (discount)
             decimal finalAmount = plan.Price;
-            if (plan.BillingCycle.Equals(SubscriptionConstants.BillingCycles.Semiannual, StringComparison.OrdinalIgnoreCase))
-            {
-                finalAmount *= 0.9m; // 10% discount
-            }
-            else if (plan.BillingCycle.Equals(SubscriptionConstants.BillingCycles.Yearly, StringComparison.OrdinalIgnoreCase))
+            if (plan.BillingCycle.Equals(SubscriptionConstants.BillingCycles.Yearly, StringComparison.OrdinalIgnoreCase))
             {
                 finalAmount *= 0.8m; // 20% discount
             }
@@ -274,10 +270,9 @@ public class PaymentService : IPaymentService
                     currentSub.CurrentPeriodEnd = plan.BillingCycle.ToLower() switch // Calculate end time
                     {
                         SubscriptionConstants.BillingCycles.Yearly => DateTime.UtcNow.AddYears(1), // Add 1 year for yearly cycle
-                        SubscriptionConstants.BillingCycles.Semiannual => DateTime.UtcNow.AddMonths(6), // Add 6 months for semiannual cycle
                         _ => DateTime.UtcNow.AddMonths(1) // Default to 1 month for other cycles
                     };
-                    
+
                     // Top up subscription with plan's cycle credits and reset tracker
                     currentSub.ApplyCycleAllocation(plan.CreditsPerCycle); // Credit allocation
                     currentSub.CreditsUsedThisCycle = 0; // Reset usage counter

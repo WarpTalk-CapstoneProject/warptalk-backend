@@ -19,7 +19,7 @@ public class PlanTests
         var currency = "USD";
         var billingCycle = "Monthly";
         var creditsPerCycle = 1000;
-        
+
         // Act
         var plan = new Plan
         {

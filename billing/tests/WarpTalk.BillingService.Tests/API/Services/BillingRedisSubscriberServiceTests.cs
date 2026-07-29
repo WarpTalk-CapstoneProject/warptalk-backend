@@ -61,6 +61,23 @@ public class BillingRedisSubscriberServiceTests
     }
 
     [Fact]
+    public async Task StartAsync_WhenRedisSubscribeFails_DoesNotThrow()
+    {
+        var redis = new Mock<IConnectionMultiplexer>();
+        var subscriber = new Mock<ISubscriber>();
+        redis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(subscriber.Object);
+        subscriber
+            .Setup(s => s.SubscribeAsync(
+                It.IsAny<RedisChannel>(),
+                It.IsAny<Action<RedisChannel, RedisValue>>(),
+                It.IsAny<CommandFlags>()))
+            .ThrowsAsync(new RedisConnectionException(ConnectionFailureType.UnableToConnect, "Redis unavailable"));
+        var service = new BillingRedisSubscriberService(redis.Object, _hubContext.Object, _logger.Object);
+
+        await service.StartAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task RedisMessageHandler_WithBillingNotification_BroadcastsToUserBillingGroup()
     {
         await _service.StartAsync(CancellationToken.None);

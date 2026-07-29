@@ -262,7 +262,7 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
                     {
                         var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
                         var config = workspace != null ? WorkspaceHelper.GetWorkspaceConfig(workspace) : new WorkspaceConfiguration();
-                        var gracePeriodHours = config.ExternalGracePeriodHours 
+                        var gracePeriodHours = config.ExternalGracePeriodHours
                             ?? _configuration.GetValue<int>(WorkspaceConstants.DefaultExternalGracePeriodHoursKey, 24);
 
                         var isWithinGracePeriod = true;

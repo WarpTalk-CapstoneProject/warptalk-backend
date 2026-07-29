@@ -13,6 +13,7 @@ using WarpTalk.BillingService.Infrastructure.Workers;
 using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.Shared.Grpc;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -67,10 +68,10 @@ try
     builder.Services.AddScoped<IUsageService, UsageService>();
     builder.Services.AddScoped<IBillingAnalyticsService, BillingAnalyticsService>();
     builder.Services.AddScoped<IWorkspaceAuthorizationService, WorkspaceAuthorizationService>();
-    builder.Services.AddScoped<IBillingRateService, BillingRateService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddScoped<IPaymentAppService, PaymentAppService>();
     builder.Services.AddScoped<IUsageSettlementService, PostgresUsageSettlementService>();
+    builder.Services.AddScoped<ISalesInquiryService, SalesInquiryService>();
 
     // --- Infrastructure Services ---
     builder.Services.AddScoped<IStripePaymentService, StripePaymentService>();
@@ -86,15 +87,20 @@ try
     {
         var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50053";
         o.Address = new Uri(url);
-    });
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
     {
-        var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056";
+        var url = builder.Configuration["GrpcSettings:WorkspaceServiceUrl"]
+            ?? builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
+            ?? "http://localhost:50056";
         o.Address = new Uri(url);
-    });
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
-    builder.Services.AddGrpc(options =>
+    builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
+    builder.Services.Configure<Grpc.AspNetCore.Server.GrpcServiceOptions>(options =>
     {
         options.EnableDetailedErrors = true;
     });
@@ -157,7 +163,7 @@ try
         {
             options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
-    
+
     builder.Services.AddOpenApi();
 
     var app = builder.Build();
@@ -184,7 +190,7 @@ try
     app.MapControllers();
     app.MapGrpcService<BillingServiceGrpc>();
     app.MapHub<WarpTalk.BillingService.API.Hubs.BillingHub>(BillingMessageConstants.Notifications.HubPaths.Billing);
-    
+
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();

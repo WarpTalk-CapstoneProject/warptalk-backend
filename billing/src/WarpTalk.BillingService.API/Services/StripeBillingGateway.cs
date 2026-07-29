@@ -56,9 +56,7 @@ public sealed class StripeBillingGateway : IStripeBillingGateway
                                 Interval = checkout.BillingCycle.Equals("yearly", StringComparison.OrdinalIgnoreCase)
                                     ? "year"
                                     : "month",
-                                IntervalCount = checkout.BillingCycle.Equals("semiannual", StringComparison.OrdinalIgnoreCase)
-                                    ? 6
-                                    : 1
+                                IntervalCount = 1
                             }
                             : null
                     }

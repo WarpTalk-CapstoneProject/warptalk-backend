@@ -525,7 +525,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             sub.CurrentPeriodEnd = billingCycle switch
             {
                 "yearly" => baseDate.AddYears(1),
-                "semiannual" => baseDate.AddMonths(6),
                 _ => baseDate.AddMonths(1)
             };
         }
@@ -879,7 +878,8 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         CurrentPeriodStart = dto.CurrentPeriodStart.ToString("O"),
         CurrentPeriodEnd = dto.CurrentPeriodEnd.ToString("O"),
         AutoRenew = dto.AutoRenew,
-        CancelledAt = dto.CancelledAt?.ToString("O") ?? string.Empty
+        CancelledAt = dto.CancelledAt?.ToString("O") ?? string.Empty,
+        TrialEndsAt = dto.TrialEndsAt?.ToString("O") ?? string.Empty
     };
 
     private static Shared.Protos.PlanResponse ToPlanResponse(PlanDto dto) => new()

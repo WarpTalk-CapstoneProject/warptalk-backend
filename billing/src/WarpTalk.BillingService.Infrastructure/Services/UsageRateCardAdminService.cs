@@ -18,6 +18,23 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     private const string PricingFormula = "provider_unit_cost_usd * fx_rate_usd_vnd * markup_multiplier / credit_value_vnd";
     private const string ResolverKey = "provider + model + charge_type + unit + source_language_code + target_language_code";
 
+    private static readonly HashSet<RateCardIdentity> RegisteredBillingIdentities = new()
+    {
+        CreateRateCardIdentity("AI_ASSISTANT", "token_in", DefaultCurrency, "openai", "gpt-4.1"),
+        CreateRateCardIdentity("AI_ASSISTANT", "token_in_cached", DefaultCurrency, "openai", "gpt-4.1"),
+        CreateRateCardIdentity("AI_ASSISTANT", "token_out", DefaultCurrency, "openai", "gpt-4.1"),
+        CreateRateCardIdentity("AI_SUMMARY", "token_in", DefaultCurrency, "openai", "gpt-4o-mini"),
+        CreateRateCardIdentity("AI_SUMMARY", "token_in_cached", DefaultCurrency, "openai", "gpt-4o-mini"),
+        CreateRateCardIdentity("AI_SUMMARY", "token_out", DefaultCurrency, "openai", "gpt-4o-mini"),
+        CreateRateCardIdentity("AUDIO_DUBBING_STANDARD", "character", DefaultCurrency, "cartesia", "sonic-3.5"),
+        CreateRateCardIdentity("AUDIO_DUBBING_VOICE_CLONE", "character", DefaultCurrency, "cartesia", "sonic-3.5-clone"),
+        CreateRateCardIdentity("STT", "second", DefaultCurrency, "openai", "gpt-4o-transcribe"),
+        CreateRateCardIdentity("TRANSLATION", "token_in", DefaultCurrency, "openai", "gpt-4.1-mini"),
+        CreateRateCardIdentity("TRANSLATION", "token_in_cached", DefaultCurrency, "openai", "gpt-4.1-mini"),
+        CreateRateCardIdentity("TRANSLATION", "token_out", DefaultCurrency, "openai", "gpt-4.1-mini"),
+        CreateRateCardIdentity("VOICE_CLONE_ENROLLMENT", "profile", DefaultCurrency, "cartesia", "cartesia-localizing-voice"),
+    };
+
     private readonly BillingDbContext _dbContext;
     private readonly ILogger<UsageRateCardAdminService> _logger;
 
@@ -78,6 +95,13 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         if (!IsValid(request))
             return Result.Failure<UsageRateCardDto>("Invalid usage rate card request.", ErrorCodes.ValidationError);
+
+        if (!IsRegisteredBillingIdentity(request))
+        {
+            return Result.Failure<UsageRateCardDto>(
+                "Usage rate-card identity is not registered. Add new billing identities through a migration/backend release first.",
+                ErrorCodes.ValidationError);
+        }
 
         try
         {
@@ -393,6 +417,37 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             : currency.Trim().ToUpperInvariant();
     }
 
+    private static bool IsRegisteredBillingIdentity(UpsertUsageRateCardRequest request)
+    {
+        return RegisteredBillingIdentities.Contains(CreateRateCardIdentity(
+            request.ChargeType,
+            request.Unit,
+            request.Currency,
+            request.Provider,
+            request.Model,
+            request.SourceLanguageCode,
+            request.TargetLanguageCode));
+    }
+
+    private static RateCardIdentity CreateRateCardIdentity(
+        string chargeType,
+        string unit,
+        string? currency,
+        string provider,
+        string model,
+        string? sourceLanguageCode = null,
+        string? targetLanguageCode = null)
+    {
+        return new RateCardIdentity(
+            chargeType.Trim().ToUpperInvariant(),
+            unit.Trim().ToLowerInvariant(),
+            NormalizeCurrency(currency),
+            provider.Trim().ToLowerInvariant(),
+            model.Trim().ToLowerInvariant(),
+            NormalizeLanguageCode(sourceLanguageCode),
+            NormalizeLanguageCode(targetLanguageCode));
+    }
+
     private static PricingConfigDto CreatePricingConfig(decimal fxRateUsdVnd, decimal creditValueVnd)
     {
         return new PricingConfigDto(fxRateUsdVnd, creditValueVnd, PricingFormula, ResolverKey);
@@ -446,4 +501,13 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         parameter.Value = value;
         command.Parameters.Add(parameter);
     }
+
+    private readonly record struct RateCardIdentity(
+        string ChargeType,
+        string Unit,
+        string Currency,
+        string Provider,
+        string Model,
+        string? SourceLanguageCode,
+        string? TargetLanguageCode);
 }

@@ -77,6 +77,19 @@ public class PlanServiceTests
     }
 
     [Fact]
+    public async Task CreatePlanAsync_ShouldReturnFailure_WhenBillingCycleIsSemiannual()
+    {
+        var request = new PlanRequest("Gold", "gold-tier", "Enterprise", 199.99m, "USD", "semiannual", 1000, 10, "{}", 0);
+
+        var result = await _planService.CreatePlanAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        result.Error.Should().Be(ApiMessageConstants.ValidationMessages.PlanBillingCycleInvalid);
+        _mockPlanRepo.Verify(r => r.AddAsync(It.IsAny<Plan>(), default), Times.Never);
+    }
+
+    [Fact]
     public async Task CreatePlanAsync_ShouldMapPhase2PlanDefaults_WhenValidVndRequest()
     {
         var request = new PlanRequest(

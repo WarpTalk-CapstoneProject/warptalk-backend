@@ -33,7 +33,6 @@ public static class PlanHelper
         var isMissingOveragePrice = request.OverageCapCredits > 0 &&
                                     request.OveragePricePerCredit <= 0;
         var isInvalidCycle = cycle is not (SubscriptionConstants.BillingCycles.Monthly or
-                                          SubscriptionConstants.BillingCycles.Semiannual or
                                           SubscriptionConstants.BillingCycles.Yearly);
         var isInvalidFeatures = !string.IsNullOrWhiteSpace(request.Features) &&
                                 !(request.Features.Trim().StartsWith("{") && request.Features.Trim().EndsWith("}")) &&

@@ -123,10 +123,10 @@ public class DocumentAccessEvaluatorTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString(),
             OwnerId = Guid.NewGuid() // Not current user
         };
@@ -154,10 +154,10 @@ public class DocumentAccessEvaluatorTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString(),
             OwnerId = Guid.NewGuid() // Not current user
         };
@@ -370,11 +370,11 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var meetingId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
-            IngestionStatus = "completed", 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            IngestionStatus = "completed",
             ConfidentialityLevel = "general",
             Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
@@ -417,11 +417,11 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var meetingId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
-            IngestionStatus = "completed", 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            IngestionStatus = "completed",
             ConfidentialityLevel = "general",
             Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
@@ -472,10 +472,10 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
 
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = Guid.NewGuid() // Owned by someone else
         };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };
@@ -502,10 +502,10 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
 
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = userId // Owned by current user
         };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };

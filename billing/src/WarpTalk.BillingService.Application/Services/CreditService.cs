@@ -24,7 +24,7 @@ public class CreditService : ICreditService
     private readonly IConfiguration _configuration;
     private readonly IWorkspaceClient _workspaceClient;
     private readonly INotificationClient? _notificationClient;
-    private readonly IUsageSettlementService? _settlementService;
+    private readonly IUsageSettlementService _settlementService;
 
     public CreditService(
         IUnitOfWork unitOfWork,
@@ -32,16 +32,16 @@ public class CreditService : ICreditService
         IBillingMessagePublisher messagePublisher,
         IConfiguration configuration,
         IWorkspaceClient workspaceClient,
-        INotificationClient? notificationClient = null,
-        IUsageSettlementService? settlementService = null)
+        IUsageSettlementService settlementService,
+        INotificationClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _configuration = configuration;
         _workspaceClient = workspaceClient;
-        _notificationClient = notificationClient;
         _settlementService = settlementService;
+        _notificationClient = notificationClient;
     }
 
 
@@ -78,43 +78,17 @@ public class CreditService : ICreditService
                 return Result.Failure<CreditTransactionDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
             var sub = subResult.Value!;
 
-            if (_settlementService is not null)
-            {
-                var settlement = await _settlementService.SettleUsageChargeAsync(
-                    request.ToSettlementRequest(sub, workspaceId),
-                    cancellationToken);
-
-                if (!settlement.IsSuccess)
-                    return Result.Failure<CreditTransactionDto>(settlement.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, settlement.ErrorCode);
-
-                if (settlement.Value?.Applied != true)
-                    return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
-
-                return Result.Success(settlement.Value.ToCreditTransactionDto(request, sub, workspaceId));
-            }
-
-            if (sub.CreditsRemaining < request.Amount)
-                return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
-
-            sub.CreditsRemaining -= request.Amount;
-            sub.CreditsUsedThisCycle += request.Amount;
-            sub.UpdatedAt = DateTime.UtcNow;
-            _unitOfWork.SubscriptionRepository.Update(sub);
-
-            var transaction = request.ToEntity(sub);
-            await _unitOfWork.CreditTransactionRepository.AddAsync(transaction, cancellationToken);
-
-            var usage = request.ToUsageRecord(sub);
-            await _unitOfWork.UsageRecordRepository.AddAsync(usage, cancellationToken);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-            await BillingNotificationHelper.PublishCreditUpdateAsync(
-                _messagePublisher,
-                _logger,
-                NotificationMapper.ToCreditsUpdatedMessage(sub.UserId, sub.CreditsRemaining, string.Empty, string.Empty),
+            var settlement = await _settlementService.SettleUsageChargeAsync(
+                request.ToSettlementRequest(sub, workspaceId),
                 cancellationToken);
 
-            return Result.Success(transaction.ToDto());
+            if (!settlement.IsSuccess)
+                return Result.Failure<CreditTransactionDto>(settlement.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, settlement.ErrorCode);
+
+            if (settlement.Value?.Applied != true)
+                return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInsufficientCredits, ErrorCodes.BillingInsufficientCredits);
+
+            return Result.Success(settlement.Value.ToCreditTransactionDto(request, sub, workspaceId));
         }, cancellationToken);
     }
 

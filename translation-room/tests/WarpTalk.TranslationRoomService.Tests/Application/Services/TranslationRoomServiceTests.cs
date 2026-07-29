@@ -73,10 +73,10 @@ public class TranslationRoomServiceTests
         // Arrange
         var hostId = Guid.NewGuid();
         var roomCode = "abc-defg-hij";
-        var room = new TranslationRoom 
-        { 
-            Id = Guid.NewGuid(), 
-            HostId = hostId, 
+        var room = new TranslationRoom
+        {
+            Id = Guid.NewGuid(),
+            HostId = hostId,
             TranslationRoomCode = roomCode,
             Status = "WAITING",
             TranslationRoomType = "INSTANT".ToString(),
@@ -105,9 +105,9 @@ public class TranslationRoomServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var roomCode = "abc-defg-hij";
-        var room = new TranslationRoom 
-        { 
-            Id = Guid.NewGuid(), 
+        var room = new TranslationRoom
+        {
+            Id = Guid.NewGuid(),
             TranslationRoomCode = roomCode,
             Status = "ENDED",
             TranslationRoomType = "INSTANT".ToString(),
@@ -134,9 +134,9 @@ public class TranslationRoomServiceTests
         var userId = Guid.NewGuid();
         var roomCode = "abc-defg-hij";
         var roomId = Guid.NewGuid();
-        var room = new TranslationRoom 
-        { 
-            Id = roomId, 
+        var room = new TranslationRoom
+        {
+            Id = roomId,
             TranslationRoomCode = roomCode,
             Status = "WAITING",
             HostId = Guid.NewGuid(),
@@ -311,12 +311,12 @@ public class TranslationRoomServiceTests
         // Arrange
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
-        var room = new TranslationRoom 
-        { 
-            Id = roomId, 
-            HostId = hostId, 
-            Status = "WAITING", 
-            Settings = "{\"requires_approval\":true}" 
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "WAITING",
+            Settings = "{\"requires_approval\":true}"
         };
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
