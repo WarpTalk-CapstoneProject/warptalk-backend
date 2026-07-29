@@ -63,7 +63,7 @@ public class PlanService : IPlanService
                     AiAssistantEnabled = true,
                     GlossaryEnabled = true,
                     DedicatedGpu = false,
-                    Features = "[\"Real-time translation\", \"AI summaries\", \"Voice cloning\", \"Glossary access\"]",
+                    Features = SubscriptionConstants.FeatureAccess.EnterpriseFeaturesJson,
                     SortOrder = 1,
                     IsActive = true,
                     CreatedAt = DateTime.UtcNow,

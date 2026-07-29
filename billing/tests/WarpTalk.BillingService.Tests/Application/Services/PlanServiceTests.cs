@@ -1,6 +1,7 @@
 using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Linq.Expressions;
+using System.Text.Json;
 using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
@@ -298,6 +299,24 @@ public class PlanServiceTests
     }
 
     [Fact]
+    public async Task GetActivePlansAsync_ShouldSeedEnterpriseWithGoogleMeetOnlyExternalIntegration()
+    {
+        _mockPlanRepo.Setup(r => r.FindAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default))
+            .ReturnsAsync(Array.Empty<Plan>());
+
+        var result = await _planService.GetActivePlansAsync();
+
+        result.IsSuccess.Should().BeTrue();
+        _mockPlanRepo.Verify(
+            r => r.AddAsync(
+                It.Is<Plan>(p =>
+                    p.Slug == SubscriptionConstants.PlanSlugs.Enterprise &&
+                    PlanFeaturesDeclareGoogleMeetOnly(p.Features)),
+                default),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task DeactivatePlanAsync_ShouldDeactivatePlan_WhenFound()
     {
         var planId = Guid.NewGuid();
@@ -312,5 +331,19 @@ public class PlanServiceTests
         plan.DeletedAt.Should().NotBeNull();
         _mockPlanRepo.Verify(r => r.Update(plan), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Once);
+    }
+
+    private static bool PlanFeaturesDeclareGoogleMeetOnly(string features)
+    {
+        using var document = JsonDocument.Parse(features);
+        var root = document.RootElement;
+        var integrations = root.GetProperty("external_integrations");
+        var supportedPlatforms = root.GetProperty("supported_external_platforms");
+
+        return integrations.GetProperty(SubscriptionConstants.FeatureAccess.GoogleMeetIntegration).GetBoolean() &&
+               !integrations.TryGetProperty("zoom", out _) &&
+               !integrations.TryGetProperty("teams", out _) &&
+               supportedPlatforms.GetArrayLength() == 1 &&
+               supportedPlatforms[0].GetString() == SubscriptionConstants.FeatureAccess.GoogleMeetIntegration;
     }
 }

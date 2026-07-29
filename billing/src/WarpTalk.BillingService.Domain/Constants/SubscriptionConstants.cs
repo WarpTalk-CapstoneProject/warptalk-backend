@@ -66,5 +66,14 @@ public static class SubscriptionConstants
     {
         public const int DefaultMaxLanguages = 3;
         public const string EmptyFeaturesJson = "{}";
+        public const string GoogleMeetIntegration = "google_meet";
+        public const string EnterpriseFeaturesJson =
+            "{"
+            + "\"voice_clone_limit_mins\":-1,"
+            + "\"billing_model\":\"contract_template\","
+            + "\"overage_policy\":\"invoice_after_cap\","
+            + "\"external_integrations\":{\"google_meet\":true},"
+            + "\"supported_external_platforms\":[\"google_meet\"]"
+            + "}";
     }
 }
