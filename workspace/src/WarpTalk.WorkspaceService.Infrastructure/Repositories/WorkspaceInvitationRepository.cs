@@ -48,15 +48,41 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
             .ToListAsync(ct);
     }
 
-    public async Task<(List<WorkspaceInvitation> Items, int TotalCount)> GetInvitationsByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken ct = default)
+    public async Task<List<WorkspaceInvitation>> GetJoinRequestsByUserAsync(Guid userId, CancellationToken ct = default)
+    {
+        return await _dbSet
+            .Include(i => i.Workspace)
+            .Where(i => (i.RequestedBy == userId
+                         || (i.RequestedBy == null
+                             && i.InvitedBy == userId
+                             && i.Status == InvitationStatus.REQUESTED.ToString()))
+                        && (i.Status == InvitationStatus.REQUESTED.ToString()
+                            || i.Status == InvitationStatus.ACCEPTED.ToString()
+                            || i.Status == InvitationStatus.REJECTED.ToString()))
+            .OrderByDescending(i => i.CreatedAt)
+            .ToListAsync(ct);
+    }
+
+    public async Task<(List<WorkspaceInvitation> Items, int TotalCount)> GetInvitationsByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken ct = default, string? kind = null)
     {
         var query = _dbSet
             .Include(i => i.Workspace)
             .Where(i => i.WorkspaceId == workspaceId)
-            .OrderByDescending(i => i.CreatedAt);
+            .AsQueryable();
 
-        var pagedList = await query.ToPagedListAsync(page, pageSize, ct);
+        if (string.Equals(kind, "join-request", StringComparison.OrdinalIgnoreCase))
+        {
+            query = query.Where(i => i.RequestedBy != null || i.Status == InvitationStatus.REQUESTED.ToString());
+        }
+        else if (string.Equals(kind, "outbound", StringComparison.OrdinalIgnoreCase))
+        {
+            query = query.Where(i => i.RequestedBy == null && i.Status != InvitationStatus.REQUESTED.ToString());
+        }
 
-        return pagedList;
+        var totalCount = await query.CountAsync(ct);
+        var skip = Math.Max(0, (page - 1) * pageSize);
+        var items = await query.OrderByDescending(i => i.CreatedAt).Skip(skip).Take(pageSize).ToListAsync(ct);
+
+        return (items, totalCount);
     }
 }

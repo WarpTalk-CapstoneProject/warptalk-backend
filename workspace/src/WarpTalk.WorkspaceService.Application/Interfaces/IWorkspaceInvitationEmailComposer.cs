@@ -13,4 +13,9 @@ public interface IWorkspaceInvitationEmailComposer
         string inviterName,
         string roleName,
         CancellationToken ct = default);
+
+    Task<SendEmailResponse> SendJoinRequestApprovedEmailAsync(
+        WorkspaceInvitation invitation,
+        Workspace workspace,
+        CancellationToken ct = default);
 }

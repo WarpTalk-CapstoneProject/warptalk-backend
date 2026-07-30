@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feat/workspace-join-request-flow`  
 **Created**: 2026-06-21  
-**Status**: Draft  
+**Status**: Approved
 **Input**: User description: "frontend hiển thị không có quyền join meeting, gửi yêu cầu tới admin... preview room bằng code biết room thuộc workspace nào... login/register tối giản email/pass... backend handle kiểu khác không thêm bảng mới."
 
 ---
@@ -182,3 +182,32 @@ Phát triển endpoint mới trong `TranslationRoomService` để cung cấp th�
 ## 6. Assumptions
 * Cơ chế auto-login/register của backend đã hoạt động ổn định và sẵn sàng xử lý yêu cầu xác thực tối giản từ frontend.
 * Quyền admin/owner của workspace được áp dụng chuẩn xác trên các API phê duyệt/từ chối lời mời/yêu cầu.
+
+---
+
+## 7. Approved Implementation Clarifications
+
+The decisions below are the approved implementation contract for this feature and supersede any earlier contradictory wording in this draft, especially the earlier Internal-only and REVOKED-on-reject assumptions.
+
+### 7.1 Join Request persistence
+
+- `WorkspaceInvitation.MembershipType` is reused; no new membership-type column or entity is added.
+- A verified/matching workspace email domain classifies the request as provisional `Internal`.
+- A non-matching email, including a workspace without verified domains, classifies the request as provisional `External`. It is not an active member until approval.
+- `WorkspaceInvitation.Status = REQUESTED` identifies a Join Request. `REVOKED` remains reserved for Owner/Admin revoking an outbound invitation. `REJECTED` is used when Owner/Admin rejects a Join Request.
+- `requested_by`, `reviewed_by`, and `reviewed_at` are nullable tracking columns. `rejected_reason` is intentionally not added.
+- Join Requests always use the `Member` role. The approval API accepts only the final `MembershipType` (`Internal` or `External`); changing a member to `Admin` remains a separate member-role operation.
+
+### 7.2 Approval transaction and notification
+
+- Approving a `REQUESTED` record atomically updates the invitation to `ACCEPTED`, sets the selected membership type, `AcceptedAt`, `ReviewedBy`, and `ReviewedAt`, and inserts exactly one new `WorkspaceMember` record with role `Member` and the selected membership type.
+- If the transaction fails, neither the invitation update nor the member insert is committed.
+- After commit, the requester receives an approval email containing a link to the workspace. The email is informational and does not act as an invitation acceptance token. Email failure does not roll back membership approval.
+- Rejecting a `REQUESTED` record changes only its status and review tracking to `REJECTED`; it does not create a member.
+
+### 7.3 Multi-workspace user experience
+
+- A user requesting access to workspace A while currently using workspace B stays in B. Workspace A is not added to the workspace switcher before approval.
+- The Workspace Hub shows the user's current memberships separately from Join Request statuses (`REQUESTED`, `ACCEPTED`, `REJECTED`).
+- After approval, the Hub can show an `Open Workspace A` action. Clicking it uses the existing workspace-selection/session flow and navigates to A; it does not create or mutate another membership.
+- The first implementation provides a user-scoped Join Request status query so the Hub can refresh status on open, focus, and manual refresh. Realtime delivery is optional follow-up work.

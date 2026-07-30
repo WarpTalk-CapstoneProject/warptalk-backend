@@ -1,6 +1,6 @@
 # Implementation Plan: Workspace Invitation Management and Join Requests
 
-**Branch**: `feat/workspace-join-request-management`  
+**Branch**: `feat/workspace-join-request-flow`
 **Date**: 2026-07-27  
 **Spec**: `warptalk-backend/specs/160-workspace-join-request-flow/spec.md`
 
@@ -62,9 +62,9 @@ Add nullable foreign keys to `auth.users`:
 ```sql
 ALTER TABLE workspace.workspace_invitations
   ADD CONSTRAINT workspace_invitations_requested_by_fkey
-    FOREIGN KEY (requested_by) REFERENCES auth.users(id),
+    FOREIGN KEY (requested_by) REFERENCES auth.users(id) ON DELETE SET NULL,
   ADD CONSTRAINT workspace_invitations_reviewed_by_fkey
-    FOREIGN KEY (reviewed_by) REFERENCES auth.users(id);
+    FOREIGN KEY (reviewed_by) REFERENCES auth.users(id) ON DELETE SET NULL;
 ```
 
 The columns are nullable because existing outbound invitations do not have a requester/reviewer.

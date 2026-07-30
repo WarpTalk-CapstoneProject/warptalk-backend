@@ -49,7 +49,12 @@ public static class WorkspaceInvitationMapper
             invitation.SentCount,
             invitation.ExpiresAt,
             invitation.CreatedAt,
-            invitation.AcceptedAt
+            invitation.AcceptedAt,
+            invitation.RequestedBy,
+            invitation.ReviewedBy,
+            invitation.ReviewedAt,
+            invitation.Workspace?.Name,
+            invitation.Workspace?.Slug
         );
     }
 

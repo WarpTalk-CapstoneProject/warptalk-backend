@@ -19,6 +19,12 @@ public partial class WorkspaceInvitation
 
     public Guid InvitedBy { get; set; }
 
+    public Guid? RequestedBy { get; set; }
+
+    public Guid? ReviewedBy { get; set; }
+
+    public DateTime? ReviewedAt { get; set; }
+
     public string? TokenHash { get; set; }
 
     public string Status { get; set; } = null!;
