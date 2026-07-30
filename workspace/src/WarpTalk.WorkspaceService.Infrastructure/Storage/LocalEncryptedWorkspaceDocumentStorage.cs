@@ -236,7 +236,8 @@ public class LocalEncryptedWorkspaceDocumentStorage : IWorkspaceDocumentStorage
 
     private (byte[] AesKey, byte[] HmacKey) DeriveKeys(Guid workspaceId)
     {
-        var masterKeyStr = _storageOptions.MasterKey ?? "CHANGE_ME_SUPER_SECRET_STORAGE_MASTER_KEY_MIN_32_CHARS!!";
+        var masterKeyStr = _storageOptions.MasterKey
+                           ?? throw new InvalidOperationException("Storage:MasterKey is required.");
         var masterKeyBytes = Encoding.UTF8.GetBytes(masterKeyStr);
 
         // Key Derivation using HMAC-SHA512

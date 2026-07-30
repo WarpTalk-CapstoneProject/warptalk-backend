@@ -28,7 +28,7 @@ public class RoomArtifactsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _artifactService.GetArtifactDownloadUrlAsync(id, userId.Value, ct);
+        var result = await _artifactService.GetArtifactDownloadAsync(id, userId.Value, ct);
         
         if (!result.IsSuccess)
         {
@@ -37,9 +37,7 @@ public class RoomArtifactsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
-        // TODO: In production, this should generate a dynamic Presigned URL with expiration from S3 Cloud/CDN and Redirect to it.
-        // Temporarily returning the static URL as a JSON response to synchronize with the current TranslationRoomArtifactService implementation.
-        return Ok(new { Url = result.Value! });
+        return Ok(result.Value);
     }
 
     [HttpPost("{id}/consent")]

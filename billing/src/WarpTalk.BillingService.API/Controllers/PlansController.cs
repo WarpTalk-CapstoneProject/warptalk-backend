@@ -58,7 +58,7 @@ public class PlansController : ControllerBase
     /// Create a new plan (Admin only).
     /// </summary>
     [HttpPost]
-    [Authorize]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<PlanDto>> CreatePlan(
         [FromBody] PlanRequest request, CancellationToken cancellationToken)
     {

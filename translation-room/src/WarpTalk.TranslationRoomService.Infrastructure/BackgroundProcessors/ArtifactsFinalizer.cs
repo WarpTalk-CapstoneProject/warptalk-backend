@@ -128,24 +128,23 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         {
             try
             {
-                // Run transcript, summary, and recording finalizations in parallel using Task.WhenAll
+                // Meeting owns recording artifacts from its signed
+                // recording_completed event. This finalizer owns transcript
+                // and summary outputs only.
                 var transcriptTask = FinalizeTranscriptAsync(roomId, ct);
                 var summaryTask = FinalizeSummaryAsync(roomId, ct);
-                var recordingTask = FinalizeRecordingAsync(roomId, ct);
 
-                await Task.WhenAll(transcriptTask, summaryTask, recordingTask);
+                await Task.WhenAll(transcriptTask, summaryTask);
 
                 // Await to gather results
                 var transcript = await transcriptTask;
                 var summary = await summaryTask;
-                var recording = await recordingTask;
 
                 // Save all generated artifacts into the DB
                 var artifactRepo = _unitOfWork.Repository<TranslationRoomArtifact>();
                 
                 await artifactRepo.AddAsync(transcript, ct);
                 await artifactRepo.AddAsync(summary, ct);
-                await artifactRepo.AddAsync(recording, ct);
 
                 await _unitOfWork.SaveChangesAsync(ct);
 
@@ -241,18 +240,18 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             }
 
             var fullTranscript = FormatTranscriptText(roomId, segmentsList);
-            string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.TranscriptPathFormat, roomId)}";
             long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
 
             return BuildArtifactRequest(
                 roomId, 
                 ArtifactType.TRANSCRIPT_EXPORT, 
-                fileUrl, 
+                null,
                 "text/markdown", 
                 sizeBytes, 
                 false, 
                 false, 
-                false)
+                false,
+                content: fullTranscript)
                 .ToEntity();
         }
         catch (Exception ex)
@@ -263,17 +262,17 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             var redisKey = CacheKeyHelper.GetTranscriptKey(roomId);
             string fullTranscript = await _transcriptCacheService.AssembleTranscriptAsync(roomId, redisKey);
             long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
-            string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.TranscriptPathFormat, roomId)}";
 
             return BuildArtifactRequest(
                 roomId, 
                 ArtifactType.TRANSCRIPT_EXPORT, 
-                fileUrl, 
+                null,
                 "text/markdown", 
                 sizeBytes, 
                 false, 
                 false, 
-                false)
+                false,
+                content: fullTranscript)
                 .ToEntity();
         }
     }
@@ -294,7 +293,6 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
 
             var summaryText = FormatSummaryText(roomId, summaryContent, actionItems);
-            string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.SummaryPathFormat, roomId)}";
             long sizeBytes = Encoding.UTF8.GetByteCount(summaryText);
             string content = BuildStructuredSummaryContent(structuredJson, summaryContent, actionItems);
 
@@ -304,7 +302,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             return BuildArtifactRequest(
                 roomId,
                 ArtifactType.SUMMARY_EXPORT,
-                fileUrl,
+                null,
                 "text/markdown",
                 sizeBytes,
                 false,
@@ -315,16 +313,15 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to retrieve summary from Redis. Falling back to local template.");
+            _logger.LogError(ex, "Failed to retrieve summary from Redis. Saving an explicit insufficient-data result.");
 
-            string fallbackText = FormatFallbackSummary(roomId);
+            string fallbackText = FormatSummaryText(roomId, null, null);
             long sizeBytes = Encoding.UTF8.GetByteCount(fallbackText);
-            string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.SummaryPathFormat, roomId)}";
 
             return BuildArtifactRequest(
                 roomId,
                 ArtifactType.SUMMARY_EXPORT,
-                fileUrl,
+                null,
                 "text/markdown",
                 sizeBytes,
                 false,
@@ -333,50 +330,6 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 content: BuildStructuredSummaryContent(null, null, null))
                 .ToEntity();
         }
-    }
-
-    private async Task<TranslationRoomArtifact> FinalizeRecordingAsync(Guid roomId, CancellationToken ct)
-    {
-        _logger.LogInformation("Processing raw audio recording for room {RoomId}", roomId);
-
-        long sizeBytes = 0;
-        int durationMs = 0;
-
-        try
-        {
-            var request = CreateGetTranscriptsRequest(roomId);
-            var response = await _transcriptClient.GetTranscriptsByTranslationRoomIdAsync(request, cancellationToken: ct);
-
-            if (response != null && response.Transcripts.Any())
-            {
-                durationMs = response.Transcripts.Max(t => t.TotalDurationMs);
-                // Standard 16kHz 16-bit mono PCM is ~32KB/sec (32000 bytes/sec)
-                sizeBytes = (durationMs / 1000L) * 32000L;
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to fetch transcript duration for recording estimation. Using default sizing.");
-        }
-
-        if (sizeBytes <= 0)
-        {
-            sizeBytes = 10485760; // 10MB default
-        }
-
-        string fileUrl = $"{_settings.StorageBaseUrl.TrimEnd('/')}{string.Format(_settings.RecordingPathFormat, roomId)}";
-
-        return BuildArtifactRequest(
-            roomId, 
-            ArtifactType.OPTIONAL_RECORDING, 
-            fileUrl, 
-            "audio/wav", 
-            sizeBytes, 
-            true, 
-            false, 
-            true,
-            DateTime.UtcNow.AddDays(30))
-            .ToEntity();
     }
 
     #region Static Factories & String Helpers (Ensures Zero "new" in Workflow Methods)
@@ -402,7 +355,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     private static CreateArtifactRequest BuildArtifactRequest(
         Guid roomId,
         ArtifactType artifactType,
-        string fileUrl,
+        string? fileUrl,
         string fileFormat,
         long sizeBytes,
         bool containsRawAudio,
@@ -442,12 +395,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
         return summarySection != string.Empty || actionItemsSection != string.Empty
             ? header + summarySection + actionItemsSection
-            : header + "## Summary\n*No real-time summary could be generated by the AI Assistant worker.*\n\n## Key Takeaways\n- Meeting concluded gracefully.\n- All system processes completed successfully.";
-    }
-
-    private static string FormatFallbackSummary(Guid roomId)
-    {
-        return $"# WarpTalk AI Meeting Summary\nRoom ID: {roomId}\nStatus: Completed\n\n## Key Takeaways\n- The speakers discussed the ongoing audio routing development.\n- Confirmed that Redis state storage solves horizontal scaling split-brain issues.\n";
+            : header + "## Summary\n*No real-time summary could be generated by the AI Assistant worker.*\n\n## Key Takeaways\n- The meeting ended, but summary generation did not complete.\n- Review the transcript export or retry summary generation when the AI worker is available.";
     }
 
     /// <summary>

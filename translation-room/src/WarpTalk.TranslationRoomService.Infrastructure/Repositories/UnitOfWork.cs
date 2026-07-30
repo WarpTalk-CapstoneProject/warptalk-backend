@@ -12,7 +12,6 @@ public class UnitOfWork : IUnitOfWork
     public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
     public ITranslationRoomAudioRouteRepository TranslationRoomAudioRouteRepository { get; }
     public ILanguageRepository LanguageRepository { get; }
-    public IUserSettingsRepository UserSettingsRepository { get; }
     public ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
     public ITranslationRoomSessionRepository TranslationRoomSessionRepository { get; }
 
@@ -22,7 +21,6 @@ public class UnitOfWork : IUnitOfWork
         ITranslationRoomParticipantRepository translationRoomParticipantRepository,
         ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
         ILanguageRepository languageRepository,
-        IUserSettingsRepository userSettingsRepository,
         ITranslationRoomArtifactRepository translationRoomArtifactRepository,
         ITranslationRoomSessionRepository translationRoomSessionRepository)
     {
@@ -31,7 +29,6 @@ public class UnitOfWork : IUnitOfWork
         TranslationRoomParticipantRepository = translationRoomParticipantRepository;
         TranslationRoomAudioRouteRepository = translationRoomAudioRouteRepository;
         LanguageRepository = languageRepository;
-        UserSettingsRepository = userSettingsRepository;
         TranslationRoomArtifactRepository = translationRoomArtifactRepository;
         TranslationRoomSessionRepository = translationRoomSessionRepository;
     }

@@ -16,9 +16,17 @@ using WarpTalk.AuthService.Infrastructure.Persistence;
 using WarpTalk.AuthService.Infrastructure.Repositories;
 using WarpTalk.AuthService.Infrastructure.Security;
 using WarpTalk.AuthService.Infrastructure.Storage;
+using WarpTalk.AuthService.Infrastructure.Extensions;
+using WarpTalk.AuthService.Infrastructure.Services;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.RequirePublicBaseUrl(builder.Environment, "AppBaseUrl");
+builder.Services.AddWarpTalkObservability(
+    builder.Configuration,
+    builder.Environment,
+    "warptalk-auth");
 
 // Kestrel Ports Configuration
 builder.WebHost.ConfigureKestrel(options =>
@@ -30,6 +38,7 @@ builder.WebHost.ConfigureKestrel(options =>
 // DbContext
 builder.Services.AddDbContext<AuthDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("AuthDb")));
+builder.Services.AddWarpTalkServiceHealthChecks<AuthDbContext>("auth-database");
 
 // Configuration Options
 builder.Services.Configure<AuthSettings>(builder.Configuration.GetSection("AuthSettings"));
@@ -47,8 +56,26 @@ builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // Application Services & Memory Cache
 builder.Services.AddMemoryCache();
-builder.Services.AddDistributedMemoryCache();
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"];
+if (string.IsNullOrWhiteSpace(redisConnectionString))
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException("Redis:ConnectionString is required in Production.");
+    }
+
+    builder.Services.AddDistributedMemoryCache();
+}
+else
+{
+    builder.Services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = redisConnectionString;
+    });
+}
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddResendClient(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IAuthEmailSender, ResendAuthEmailSender>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
@@ -59,17 +86,21 @@ builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
-builder.Services.AddSingleton<IVoiceSampleStorage, LocalVoiceSampleStorage>();
+builder.Services.AddVoiceSampleStorage(builder.Configuration, builder.Environment);
 
 // Inter-Service gRPC Clients
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService.WorkspaceInvitationServiceClient>(o =>
 {
-    o.Address = new Uri(builder.Configuration["GrpcSettings:WorkspaceServiceUrl"] ?? "http://localhost:50056");
-});
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IWorkspaceInvitationClient, WorkspaceInvitationGrpcClient>();
 
 // Clean & Secure JWT Authentication
-builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration);
+builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
 
 // Validation & Custom API Behavior
@@ -78,7 +109,7 @@ builder.Services.AddFluentValidationAutoValidation();
 builder.Services.AddCustomApiBehavior();
 
 builder.Services.AddControllers();
-builder.Services.AddGrpc();
+builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
@@ -86,6 +117,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapGrpcService<UserServiceGrpc>();
+app.MapWarpTalkServiceHealthChecks();
 
 app.Run();
 

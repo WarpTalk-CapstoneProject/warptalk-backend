@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -26,6 +27,9 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         _factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
+                builder.UseSetting(
+                    "Grpc:InternalSecret",
+                    "test-only-internal-grpc-secret-32-characters");
                 builder.ConfigureTestServices(services =>
                 {
                     // Remove existing DbContext registration
@@ -103,9 +107,8 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
 
         db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS translation_room;");
-        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS platform;");
-        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS platform.supported_languages (code CHAR(5) PRIMARY KEY, name VARCHAR(100) NOT NULL, is_active BOOLEAN DEFAULT TRUE);");
-        db.Database.ExecuteSqlRaw("INSERT INTO platform.supported_languages (code, name) VALUES ('en', 'English'), ('vi', 'Vietnamese'), ('fr', 'French'), ('es', 'Spanish') ON CONFLICT DO NOTHING;");
+        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS translation_room.supported_languages (code VARCHAR(15) PRIMARY KEY, name VARCHAR(100) NOT NULL, native_name VARCHAR(100), is_active BOOLEAN NOT NULL DEFAULT TRUE);");
+        db.Database.ExecuteSqlRaw("INSERT INTO translation_room.supported_languages (code, name, native_name) VALUES ('en', 'English', 'English'), ('vi', 'Vietnamese', 'Tiếng Việt'), ('fr', 'French', 'Français'), ('es', 'Spanish', 'Español') ON CONFLICT DO NOTHING;");
     }
 
     public async Task DisposeAsync()

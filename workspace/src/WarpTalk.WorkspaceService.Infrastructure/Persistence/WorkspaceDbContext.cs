@@ -31,6 +31,8 @@ public partial class WorkspaceDbContext : DbContext
 
     public virtual DbSet<WorkspaceVerifiedDomain> WorkspaceVerifiedDomains { get; set; }
 
+    public virtual DbSet<WorkspaceOutboxMessage> WorkspaceOutboxMessages { get; set; }
+
     
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -425,6 +427,33 @@ public partial class WorkspaceDbContext : DbContext
                 .HasForeignKey(d => d.WorkspaceId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("workspace_verified_domains_workspace_id_fkey");
+        });
+
+        modelBuilder.Entity<WorkspaceOutboxMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("workspace_outbox_messages_pkey");
+            entity.ToTable("outbox_messages", "workspace");
+            entity.HasIndex(e => new { e.PublishedAt, e.AvailableAt, e.CreatedAt },
+                "idx_workspace_outbox_dispatch");
+            entity.HasIndex(e => new { e.DeadLetteredAt, e.CreatedAt },
+                "idx_workspace_outbox_dead_letter");
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.EventType).HasMaxLength(150).HasColumnName("event_type");
+            entity.Property(e => e.CompatibilityEventType).HasMaxLength(100).HasColumnName("compatibility_event_type");
+            entity.Property(e => e.SchemaVersion).HasColumnName("schema_version");
+            entity.Property(e => e.OccurredAt).HasColumnName("occurred_at");
+            entity.Property(e => e.Producer).HasMaxLength(100).HasColumnName("producer");
+            entity.Property(e => e.CorrelationId).HasMaxLength(100).HasColumnName("correlation_id");
+            entity.Property(e => e.CausationId).HasMaxLength(100).HasColumnName("causation_id");
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.PayloadJson).HasColumnType("jsonb").HasColumnName("payload_json");
+            entity.Property(e => e.AttemptCount).HasColumnName("attempt_count");
+            entity.Property(e => e.AvailableAt).HasColumnName("available_at");
+            entity.Property(e => e.PublishedAt).HasColumnName("published_at");
+            entity.Property(e => e.LockedAt).HasColumnName("locked_at");
+            entity.Property(e => e.DeadLetteredAt).HasColumnName("dead_lettered_at");
+            entity.Property(e => e.LastError).HasColumnName("last_error");
+            entity.Property(e => e.CreatedAt).HasColumnName("created_at");
         });
 
         OnModelCreatingPartial(modelBuilder);

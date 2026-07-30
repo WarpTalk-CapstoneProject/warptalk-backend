@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using System.Data.Common;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Exceptions;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
 
@@ -22,6 +23,8 @@ public class UnitOfWork : IUnitOfWork
         InvoiceRepository = new GenericRepository<Invoice>(db);
         RefundRepository = new GenericRepository<Refund>(db);
         IdempotencyRecords = new IdempotencyRepository(db);
+        OutboxMessages = new GenericRepository<OutboxMessage>(db);
+        InboxMessages = new GenericRepository<InboxMessage>(db);
     }
 
     public IGenericRepository<Plan> PlanRepository { get; }
@@ -33,13 +36,26 @@ public class UnitOfWork : IUnitOfWork
     public IGenericRepository<Invoice> InvoiceRepository { get; }
     public IGenericRepository<Refund> RefundRepository { get; }
     public IIdempotencyRepository IdempotencyRecords { get; }
+    public IGenericRepository<OutboxMessage> OutboxMessages { get; }
+    public IGenericRepository<InboxMessage> InboxMessages { get; }
 
     public DbConnection GetDbConnection() => _db.Database.GetDbConnection();
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
-        => await _db.SaveChangesAsync(ct);
+    {
+        try
+        {
+            return await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException exception)
+        {
+            throw new ConcurrencyConflictException(
+                "The billing record changed while it was being updated.",
+                exception);
+        }
+    }
 
     public void Dispose() => _db.Dispose();
 }

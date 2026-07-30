@@ -1,6 +1,6 @@
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
-using Moq;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using Xunit;
@@ -9,22 +9,22 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class RealtimeCostCalculatorTests
 {
-    private readonly Mock<IConfiguration> _mockConfig;
     private readonly UsageService _calculator;
 
     public RealtimeCostCalculatorTests()
     {
-        _mockConfig = new Mock<IConfiguration>();
-
-        _mockConfig.Setup(c => c["BillingRates:SttPerMinute"]).Returns("10.0");
-        _mockConfig.Setup(c => c["BillingRates:TranslationPerMinute"]).Returns("10.0");
-        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerMinute"]).Returns("5.0");
-        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerMinute"]).Returns("25.0");
-
         _calculator = new UsageService(
             null!, 
             null!, 
-            _mockConfig.Object);
+            Options.Create(new BillingRatesOptions
+            {
+                SttPerMinute = 10.0,
+                TranslationPerMinute = 10.0,
+                StandardTtsPerMinute = 5.0,
+                VoiceClonePerMinute = 25.0,
+                AiSummaryPerRequest = 5.0,
+                AiChatPerRequest = 2.0
+            }));
     }
 
     [Fact]
@@ -77,4 +77,3 @@ public class RealtimeCostCalculatorTests
         cost.Should().BeGreaterThanOrEqualTo(1);
     }
 }
-

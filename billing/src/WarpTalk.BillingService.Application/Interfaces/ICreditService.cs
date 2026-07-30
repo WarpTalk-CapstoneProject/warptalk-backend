@@ -22,11 +22,6 @@ public interface ICreditService
         ConsumeCreditsRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<Result<CreditBalanceDto>> TopUpCreditsAsync(
-        Guid workspaceId,
-        TopUpRequest request,
-        CancellationToken cancellationToken = default);
-
     Task<Result<PagedResult<CreditTransactionDto>>> GetCreditHistoryAsync(
         Guid workspaceId,
         int pageNumber,
@@ -56,7 +51,7 @@ public interface ICreditService
         Guid subscriptionId,
         int amount,
         string reason,
-        string adminUserId,
+        Guid adminUserId,
         CancellationToken cancellationToken = default);
 
     Task<Result<PagedResult<CreditTransactionDto>>> GetGlobalCreditHistoryAsync(

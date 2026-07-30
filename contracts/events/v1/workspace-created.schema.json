@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/workspace-created.schema.json",
+  "title": "Workspace created v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "workspace.created"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "workspace.created"
+        },
+        "producer": {
+          "const": "workspace-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspace_id",
+            "name",
+            "slug",
+            "owner_user_id",
+            "created_at"
+          ],
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "slug": {
+              "type": "string"
+            },
+            "owner_user_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

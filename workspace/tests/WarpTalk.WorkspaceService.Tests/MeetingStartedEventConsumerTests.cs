@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
@@ -11,6 +12,7 @@ using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
+using WarpTalk.Shared.Events;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -51,6 +53,26 @@ public class MeetingStartedEventConsumerTests
             _serviceProvider,
             Substitute.For<ILogger<MeetingStartedEventConsumer>>()
         );
+    }
+
+    [Fact]
+    public void TryParseEvent_AcceptsVersionedMeetingStartedEnvelope()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.Started,
+            "meeting-service",
+            workspaceId.ToString(),
+            new MeetingStartedEventPayload(roomId, workspaceId));
+
+        var parsed = MeetingStartedEventConsumer.TryParseEvent(
+            JsonSerializer.Serialize(envelope),
+            out var payload);
+
+        Assert.True(parsed);
+        Assert.Equal(roomId, payload!.TranslationRoomId);
+        Assert.Equal(workspaceId, payload.WorkspaceId);
     }
 
     [Fact]

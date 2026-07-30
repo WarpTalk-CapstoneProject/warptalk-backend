@@ -143,8 +143,8 @@ public class WorkspaceService : IWorkspaceService
                 }
             }
 
-            await _unitOfWork.SaveChangesAsync(ct);
             await _eventPublisher.PublishWorkspaceCreatedAsync(workspace.Id, workspace.Name, workspace.Slug, userId, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
         }
@@ -265,6 +265,12 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
+            var role = await _authIdentity.GetRoleByIdAsync(member.RoleId, ct);
+            if (role is null || !role.Name.IsOwnerOrAdmin())
+            {
+                return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.AccessDeniedDefault, ErrorCodes.Forbidden);
+            }
+
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
             return Result.Success(settings.ToSettingsDto());
         }
@@ -367,9 +373,8 @@ public class WorkspaceService : IWorkspaceService
             workspace.UpdatedBy = userId;
             
             _unitOfWork.WorkspaceRepository.Update(workspace);
-            await _unitOfWork.SaveChangesAsync(ct);
-
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success();
         }

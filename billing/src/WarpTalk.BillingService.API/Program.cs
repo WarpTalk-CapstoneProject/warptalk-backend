@@ -1,17 +1,25 @@
-using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Context;
 using WarpTalk.BillingService.API.GrpcServices;
+using WarpTalk.BillingService.API.Filters;
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.API.Swagger;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Services;
+using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Messaging;
 using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Redis;
 using WarpTalk.BillingService.Infrastructure.Repositories;
+using WarpTalk.BillingService.Infrastructure.Clients;
+using WarpTalk.BillingService.API.Workers;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.Protos;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Information()
@@ -26,6 +34,10 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
     builder.Host.UseSerilog();
+    builder.Services.AddWarpTalkObservability(
+        builder.Configuration,
+        builder.Environment,
+        "warptalk-billing");
 
     builder.WebHost.ConfigureKestrel(options =>
     {
@@ -38,45 +50,68 @@ try
 
     builder.Services.AddDbContext<BillingDbContext>(options =>
         options.UseNpgsql(
-            builder.Configuration.GetConnectionString("BillingDb"),
+            builder.Configuration.GetConnectionString("BillingDb")
+                ?? throw new InvalidOperationException("ConnectionStrings:BillingDb is required."),
             npgsqlOptions =>
             {
                 npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null);
                 npgsqlOptions.CommandTimeout(30);
             }));
+    builder.Services
+        .AddOptions<BillingRatesOptions>()
+        .Bind(builder.Configuration.GetRequiredSection(BillingRatesOptions.SectionName))
+        .ValidateDataAnnotations()
+        .ValidateOnStart();
 
     builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+    builder.Services.AddBillingAuthorizationDependencies();
+    builder.Services.AddWarpTalkMassTransit(builder.Configuration);
+    builder.Services.AddScoped<IOutboxEventPublisher, MassTransitOutboxEventPublisher>();
+    builder.Services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
+    builder.Services.AddScoped<OutboxDispatcher>();
+    builder.Services.AddScoped<OutboxReplayService>();
     builder.Services.AddScoped<IBillingService, WarpTalk.BillingService.Application.Services.BillingService>();
+    var redisConnectionString =
+        builder.Configuration.GetConnectionString("Redis")
+        ?? builder.Configuration["Redis:ConnectionString"]
+        ?? throw new InvalidOperationException("Redis connection string is not configured.");
+    builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
+        _ => StackExchange.Redis.ConnectionMultiplexer.Connect(
+            $"{redisConnectionString},abortConnect=false"));
+    builder.Services.AddScoped<IRedisBillingStore, RedisBillingStore>();
+    builder.Services.AddScoped<IBillingMessagePublisher, RedisBillingMessagePublisher>();
+    builder.Services.AddScoped<ICreditService, CreditService>();
+    builder.Services.AddScoped<IPlanService, PlanService>();
+    builder.Services.AddScoped<ICheckoutPricingService, CheckoutPricingService>();
+    builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+    builder.Services.AddScoped<IPaymentAndLedgerService, PaymentAndLedgerService>();
+    builder.Services.AddScoped<IInvoiceService, InvoiceService>();
+    builder.Services.AddScoped<IRefundService, RefundService>();
+    builder.Services.AddScoped<IUsageService, UsageService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
-    builder.Services.AddScoped<IWorkspaceValidationService, WorkspaceValidationService>();
-    builder.Services.AddGrpc();
+    builder.Services.AddGrpcClient<WorkspaceService.WorkspaceServiceClient>(options =>
+    {
+        options.Address = builder.Configuration.GetRequiredServiceUri(
+            builder.Environment,
+            "GrpcUrls:WorkspaceServiceUrl",
+            "http://workspace-service:50056");
+    })
+    .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+    builder.Services.AddScoped<IWorkspaceDirectory, WorkspaceDirectoryGrpcClient>();
+    builder.Services.AddScoped<BillingGrpcService>();
+    builder.Services.AddScoped<IStripeBillingGateway, StripeBillingGateway>();
+    builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
     builder.Services.AddGrpcReflection();
+    builder.Services.AddHostedService<BillingOutboxWorker>();
 
-    var jwtSettings = builder.Configuration.GetSection("Jwt");
-    var secretKey = Environment.GetEnvironmentVariable("JWT__SecretKey") ?? jwtSettings["SecretKey"];
-    if (string.IsNullOrWhiteSpace(secretKey))
-        throw new InvalidOperationException("JWT SecretKey is not configured. Set JWT__SecretKey environment variable in production.");
-
-    var issuer = Environment.GetEnvironmentVariable("JWT__Issuer") ?? jwtSettings["Issuer"] ?? "WarpTalk";
-    var audience = Environment.GetEnvironmentVariable("JWT__Audience") ?? jwtSettings["Audience"] ?? "WarpTalk.API";
-    var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-
-    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options =>
+    builder.Services.AddWarpTalkJwtAuthentication(
+        builder.Configuration,
+        builder.Environment,
+        options =>
         {
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuerSigningKey = true,
-                IssuerSigningKey = signingKey,
-                ValidateIssuer = true,
-                ValidIssuer = issuer,
-                ValidateAudience = true,
-                ValidAudience = audience,
-                ValidateLifetime = true,
-                ClockSkew = TimeSpan.Zero,
-                NameClaimType = "email",
-                RoleClaimType = "role"
-            };
+            options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
+            options.TokenValidationParameters.NameClaimType = "email";
+            options.TokenValidationParameters.RoleClaimType = "role";
 
             options.Events = new JwtBearerEvents
             {
@@ -126,11 +161,8 @@ try
         });
     });
 
-    builder.Services.AddHealthChecks()
-        .AddNpgSql(
-            builder.Configuration.GetConnectionString("BillingDb"),
-            name: "Billing DB",
-            tags: new[] { "db", "ready" });
+    builder.Services.AddWarpTalkServiceHealthChecks<BillingDbContext>(
+        "billing-database");
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
@@ -192,15 +224,7 @@ try
         app.UseHttpsRedirection();
     }
 
-    app.MapHealthChecks("/health");
-    app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-    {
-        Predicate = r => r.Tags.Contains("live")
-    });
-    app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-    {
-        Predicate = r => r.Tags.Contains("ready")
-    });
+    app.MapWarpTalkServiceHealthChecks();
 
     app.Use(async (context, next) =>
     {
@@ -259,7 +283,7 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
-    app.MapGrpcService<BillingServiceGrpc>();
+    app.MapGrpcService<BillingGrpcService>();
     
     if (app.Environment.IsDevelopment())
     {

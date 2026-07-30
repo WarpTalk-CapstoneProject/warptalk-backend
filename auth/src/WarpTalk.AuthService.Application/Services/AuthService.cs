@@ -32,6 +32,7 @@ public class AuthService : IAuthService
     private readonly ILogger<AuthService> _logger;
     private readonly TimeSpan _lockoutDuration;
     private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
+    private readonly IAuthEmailSender _authEmailSender;
 
     public AuthService(
         IUnitOfWork unitOfWork,
@@ -40,7 +41,8 @@ public class AuthService : IAuthService
         IDistributedCache cache,
         IOptions<AuthSettings> authSettings,
         ILogger<AuthService> logger,
-        IWorkspaceInvitationClient workspaceInvitationClient)
+        IWorkspaceInvitationClient workspaceInvitationClient,
+        IAuthEmailSender authEmailSender)
     {
         _unitOfWork = unitOfWork;
         _passwordHasher = passwordHasher;
@@ -52,6 +54,7 @@ public class AuthService : IAuthService
         _userRepository = _unitOfWork.UserRepository;
         _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
         _workspaceInvitationClient = workspaceInvitationClient;
+        _authEmailSender = authEmailSender;
     }
 
     public async Task<Result<AuthResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
@@ -63,6 +66,10 @@ public class AuthService : IAuthService
 
             var passwordHash = _passwordHasher.Hash(request.Password);
             var user = UserMapper.ToUser(request, passwordHash);
+            var verificationToken = TokenHashing.GenerateToken();
+            user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
+            user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+                _authSettings.VerificationTokenLifetimeMinutes);
 
             await _userRepository.AddAsync(user, ct);
 
@@ -72,6 +79,21 @@ public class AuthService : IAuthService
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            try
+            {
+                await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
+            }
+            catch (Exception ex)
+            {
+                // The user and verification token are already committed. Returning a
+                // registration failure here would invite duplicate retries while the
+                // account actually exists. The user can request another verification
+                // message through the dedicated resend endpoint.
+                _logger.LogError(
+                    ex,
+                    "Registration persisted but verification email delivery failed. UserId: {UserId}",
+                    user.Id);
+            }
 
             var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
             return Result.Success(response);
@@ -201,8 +223,13 @@ public class AuthService : IAuthService
             var nextAttemptsString = $"{attemptsCount + 1}|{expiryTime:O}";
             await _cache.SetStringAsync(windowKey, nextAttemptsString, windowOptions, ct);
 
-            // Simulate dispatching a verification email
-            _logger.LogInformation("[Verification] Generated verification token and dispatched verification email for user: {Email}", user.Email);
+            var verificationToken = TokenHashing.GenerateToken();
+            user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
+            user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+                _authSettings.VerificationTokenLifetimeMinutes);
+            _userRepository.Update(user);
+            await _unitOfWork.SaveChangesAsync(ct);
+            await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
 
             return Result.Success();
         }
@@ -290,5 +317,83 @@ public class AuthService : IAuthService
             }
             return Result.Failure<AuthResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<Result> VerifyEmailAsync(VerifyEmailRequest request, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Token))
+            return Result.Failure("Verification token is required.", ErrorCodes.ValidationError);
+
+        var user = await _userRepository.GetByEmailVerificationTokenHashAsync(
+            TokenHashing.Hash(request.Token), ct);
+        if (user is null || user.EmailVerificationTokenExpiresAt is null ||
+            user.EmailVerificationTokenExpiresAt <= DateTime.UtcNow)
+        {
+            return Result.Failure("Verification token is invalid or expired.", ErrorCodes.ValidationError);
+        }
+
+        user.EmailVerified = true;
+        user.EmailVerifiedAt = DateTime.UtcNow;
+        user.EmailVerificationTokenHash = null;
+        user.EmailVerificationTokenExpiresAt = null;
+        _userRepository.Update(user);
+        await _unitOfWork.SaveChangesAsync(ct);
+        return Result.Success();
+    }
+
+    public async Task<Result> ForgotPasswordAsync(
+        ForgotPasswordRequest request,
+        CancellationToken ct = default)
+    {
+        var email = request.Email.Trim().ToLowerInvariant();
+        var user = await _userRepository.GetByEmailWithRolesAsync(email, ct);
+        if (user is null || user.DeletedAt is not null || !user.IsActive)
+            return Result.Success();
+
+        var token = TokenHashing.GenerateToken();
+        user.PasswordResetTokenHash = TokenHashing.Hash(token);
+        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+            _authSettings.PasswordResetTokenLifetimeMinutes);
+        _userRepository.Update(user);
+        await _unitOfWork.SaveChangesAsync(ct);
+        try
+        {
+            await _authEmailSender.SendPasswordResetEmailAsync(user, token, ct);
+        }
+        catch (Exception ex)
+        {
+            // Keep the response indistinguishable from an unknown address. The
+            // token remains bounded and can be retried through a future request.
+            _logger.LogError(ex, "Password reset email delivery failed for user {UserId}", user.Id);
+        }
+        return Result.Success();
+    }
+
+    public async Task<Result> ResetPasswordAsync(
+        ResetPasswordRequest request,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Token) ||
+            string.IsNullOrWhiteSpace(request.NewPassword))
+        {
+            return Result.Failure("Reset token and new password are required.", ErrorCodes.ValidationError);
+        }
+
+        var user = await _userRepository.GetByPasswordResetTokenHashAsync(
+            TokenHashing.Hash(request.Token), ct);
+        if (user is null || user.PasswordResetTokenExpiresAt is null ||
+            user.PasswordResetTokenExpiresAt <= DateTime.UtcNow)
+        {
+            return Result.Failure("Reset token is invalid or expired.", ErrorCodes.ValidationError);
+        }
+
+        user.PasswordHash = _passwordHasher.Hash(request.NewPassword);
+        user.PasswordResetTokenHash = null;
+        user.PasswordResetTokenExpiresAt = null;
+        user.UpdatedAt = DateTime.UtcNow;
+        _userRepository.Update(user);
+        await _refreshTokenRepository.RevokeAllForUserAsync(user.Id, ct);
+        await _unitOfWork.SaveChangesAsync(ct);
+        return Result.Success();
     }
 }

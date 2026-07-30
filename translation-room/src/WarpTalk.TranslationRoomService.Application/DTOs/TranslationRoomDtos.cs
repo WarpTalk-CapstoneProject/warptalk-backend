@@ -142,14 +142,14 @@ public record TranslationRoomArtifactDto(
     string Status,
     DateTime CreatedAt,
     // WT-13: inline payload (e.g. AI meeting-summary JSON) for artifact types that don't
-    // need real file storage. Null for transcript/recording artifacts.
+    // need external file storage.
     string? Content = null
 );
 
 public record CreateArtifactRequest(
     Guid RoomId,
     string ArtifactType,
-    string FileUrl,
+    string? FileUrl,
     string FileFormat,
     long SizeBytes,
     bool ContainsRawAudio,

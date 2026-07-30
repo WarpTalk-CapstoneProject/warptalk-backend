@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/billing-payment.schema.json",
+  "title": "Billing payment outcome v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "billing.payment_succeeded",
+    "billing.payment_failed",
+    "billing.payment_refunded",
+    "billing.payment_disputed",
+    "billing.subscription_cancelled"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "enum": [
+            "billing.payment_succeeded",
+            "billing.payment_failed",
+            "billing.payment_refunded",
+            "billing.payment_disputed",
+            "billing.subscription_cancelled"
+          ]
+        },
+        "producer": {
+          "const": "billing-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider_transaction_id",
+            "stripe_session_id",
+            "status",
+            "amount",
+            "currency",
+            "payment_type",
+            "user_id",
+            "workspace_id",
+            "plan_slug",
+            "billing_cycle",
+            "failure_reason"
+          ],
+          "properties": {
+            "provider_transaction_id": {
+              "type": "string"
+            },
+            "stripe_session_id": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "amount": {
+              "type": "number",
+              "minimum": 0
+            },
+            "currency": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 3
+            },
+            "payment_type": {
+              "type": "string"
+            },
+            "user_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            },
+            "plan_slug": {
+              "type": "string"
+            },
+            "billing_cycle": {
+              "type": "string"
+            },
+            "failure_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

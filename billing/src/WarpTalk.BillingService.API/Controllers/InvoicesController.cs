@@ -43,7 +43,7 @@ public class InvoicesController : ControllerBase
     /// Paginated global invoice history for admins.
     /// </summary>
     [HttpGet("global")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<PagedResult<InvoiceDto>>> GetGlobalInvoices(
         [FromQuery] int pageNumber = 1,
         [FromQuery] int pageSize = 20,

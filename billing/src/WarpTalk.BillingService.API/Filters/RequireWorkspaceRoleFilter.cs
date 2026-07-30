@@ -73,14 +73,7 @@ public class RequireWorkspaceRoleFilter : IAsyncActionFilter
 
         if (workspaceId == null)
         {
-            await next();
-            return;
-        }
-
-        // Allow users to access their own personal credits/wallet sandbox (workspaceId == userId)
-        if (workspaceId == userId)
-        {
-            await next();
+            context.Result = new BadRequestObjectResult("A valid workspaceId is required for this billing operation.");
             return;
         }
 

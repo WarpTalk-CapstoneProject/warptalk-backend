@@ -66,4 +66,13 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
 
         return await query.ToListAsync(ct);
     }
+
+    public Task<int> CountActiveByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
+        => _dbSet.CountAsync(
+            room => room.WorkspaceId == workspaceId
+                && room.DeletedAt == null
+                && (room.Status == "WAITING"
+                    || room.Status == "IN_PROGRESS"
+                    || room.Status == "PAUSED"),
+            ct);
 }

@@ -1,4 +1,10 @@
 <Project>
+  <PropertyGroup>
+    <!-- API XML documentation is generated only where the release pipeline
+         publishes it; undocumented internal/public DTOs must not drown
+         actionable compiler diagnostics in every service build. -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(DOTNET_RUNNING_IN_CONTAINER)' == 'true'">
     <BaseIntermediateOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' == 'Development'">/obj-dev/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
     <BaseIntermediateOutputPath Condition="'$(ASPNETCORE_ENVIRONMENT)' != 'Development'">/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>

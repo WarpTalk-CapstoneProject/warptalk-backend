@@ -11,7 +11,8 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -24,7 +25,6 @@ public class CreditServiceTests
     private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
     private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IRedisBillingStore> _mockRedisStore;
     private readonly CreditService _creditService;
 
@@ -35,7 +35,6 @@ public class CreditServiceTests
         _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
         _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockConfig = new Mock<IConfiguration>();
         _mockRedisStore = new Mock<IRedisBillingStore>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
@@ -47,7 +46,15 @@ public class CreditServiceTests
             new Mock<ILogger<CreditService>>().Object,
             _mockMessagePublisher.Object,
             _mockRedisStore.Object,
-            _mockConfig.Object);
+            Options.Create(new BillingRatesOptions
+            {
+                SttPerMinute = 15.0,
+                TranslationPerMinute = 15.0,
+                StandardTtsPerMinute = 15.0,
+                VoiceClonePerMinute = 40.0,
+                AiSummaryPerRequest = 5.0,
+                AiChatPerRequest = 2.0
+            }));
     }
 
     [Fact]
@@ -90,5 +97,138 @@ public class CreditServiceTests
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingInsufficientCredits);
+    }
+
+    [Fact]
+    public async Task AdjustCreditsAsync_ShouldPersistAdministratorAsAuditActor()
+    {
+        var administratorId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
+            CreditsRemaining = 50,
+            IsActive = true
+        };
+        CreditTransaction? persistedTransaction = null;
+        _mockSubRepo
+            .Setup(repository => repository.GetByIdAsync(subscription.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+        _mockTxRepo
+            .Setup(repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
+            .Callback<CreditTransaction, CancellationToken>((transaction, _) => persistedTransaction = transaction)
+            .Returns(Task.CompletedTask);
+        _mockMessagePublisher
+            .Setup(publisher => publisher.PublishAsync(
+                It.IsAny<string>(),
+                It.IsAny<WarpTalk.Shared.Models.RealtimeNotificationMessage>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var result = await _creditService.AdjustCreditsAsync(
+            subscription.Id,
+            25,
+            "Demo support grant",
+            administratorId);
+
+        result.IsSuccess.Should().BeTrue();
+        persistedTransaction.Should().NotBeNull();
+        persistedTransaction!.UserId.Should().Be(administratorId);
+        persistedTransaction.ReferenceType.Should().Be("manual_adjustment");
+        persistedTransaction.Description.Should().Be("Demo support grant");
+        persistedTransaction.BalanceAfter.Should().Be(75);
+    }
+
+    [Fact]
+    public async Task AdjustCreditsAsync_ShouldRejectAdjustmentThatMakesBalanceNegative()
+    {
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            CreditsRemaining = 10,
+            IsActive = true
+        };
+        _mockSubRepo
+            .Setup(repository => repository.GetByIdAsync(subscription.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+
+        var result = await _creditService.AdjustCreditsAsync(
+            subscription.Id,
+            -11,
+            "Correction",
+            Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingInsufficientCredits);
+        _mockTxRepo.Verify(
+            repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ConfirmConsumeAsync_ShouldCommitDurableReservationWhenRedisEntryExpired()
+    {
+        var workspaceId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            CreditsRemaining = 70,
+            CreditsUsedThisCycle = 5,
+            IsActive = true
+        };
+        var reservation = new CreditTransaction
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = subscription.Id,
+            CorrelationId = correlationId,
+            Type = "consumption",
+            Status = "reserved",
+            Amount = -30,
+            BalanceAfter = 70
+        };
+        _mockTxRepo
+            .Setup(repository => repository.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<CreditTransaction, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Expression<Func<CreditTransaction, bool>> predicate, CancellationToken _) =>
+                predicate.Compile()(reservation) ? reservation : null);
+        _mockSubRepo
+            .Setup(repository => repository.GetByIdAsync(subscription.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+        _mockRedisStore
+            .Setup(store => store.GetAndRemoveReservationAsync(correlationId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RedisCreditReservation?)null);
+
+        var result = await _creditService.ConfirmConsumeAsync(workspaceId, correlationId);
+
+        result.IsSuccess.Should().BeTrue();
+        reservation.Status.Should().Be("committed");
+        reservation.Description.Should().Be("AI Real-time consumption");
+        subscription.CreditsUsedThisCycle.Should().Be(35);
+        _mockTxRepo.Verify(repository => repository.Update(reservation), Times.Once);
+    }
+
+    [Fact]
+    public async Task ConfirmConsumeAsync_ShouldNotFabricateTransactionWhenReservationIsMissing()
+    {
+        _mockTxRepo
+            .Setup(repository => repository.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<CreditTransaction, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CreditTransaction?)null);
+
+        var result = await _creditService.ConfirmConsumeAsync(
+            Guid.NewGuid(),
+            Guid.NewGuid().ToString());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be("RESERVATION_NOT_FOUND");
+        _mockTxRepo.Verify(
+            repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 }

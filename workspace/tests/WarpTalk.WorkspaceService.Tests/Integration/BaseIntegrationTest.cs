@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -39,6 +40,9 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         Factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
             {
+                builder.UseSetting(
+                    "Grpc:InternalSecret",
+                    "test-only-internal-grpc-secret-32-characters");
                 builder.ConfigureTestServices(services =>
                 {
                     // Swap DbContext to use Testcontainer Postgres

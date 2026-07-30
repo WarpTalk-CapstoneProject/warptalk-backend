@@ -27,19 +27,6 @@ public record ConsumeCreditsRequest(
     Guid? ReferenceId
 );
 
-public record TopUpRequest(
-    [Required]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be at least 1.")]
-    int Amount,
-
-    [Required(ErrorMessage = "ReferenceType is required.")]
-    [MaxLength(100)]
-    string ReferenceType,
-
-    Guid? ReferenceId
-);
-
-
 public record CreditTransactionDto(
     Guid Id,
     int Amount,        // negative = consumption, positive = top-up
@@ -69,9 +56,11 @@ public record CreditTransactionDto(
 }
 
 public record AdjustCreditsRequest(
-    [Required]
+    [property: Required]
+    [property: Range(-1_000_000, 1_000_000)]
     int Amount,
-    [Required]
+    [property: Required]
+    [property: MaxLength(500)]
     string Reason
 );
 

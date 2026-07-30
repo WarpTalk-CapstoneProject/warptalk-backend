@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 
@@ -37,17 +38,12 @@ public class MeetingStartedEventConsumer : BackgroundService
         {
             try
             {
-                var payload = JsonSerializer.Deserialize<JsonElement>(message.ToString());
-                if (payload.TryGetProperty("TranslationRoomId", out var roomIdElement) &&
-                    payload.TryGetProperty("WorkspaceId", out var workspaceIdElement))
+                if (TryParseEvent(message.ToString(), out var payload))
                 {
-                    var roomId = roomIdElement.GetString();
-                    var workspaceId = workspaceIdElement.GetString();
-
-                    if (!string.IsNullOrEmpty(roomId) && !string.IsNullOrEmpty(workspaceId) && Guid.TryParse(workspaceId, out var wsIdGuid))
-                    {
-                        await ProcessContextSnapshotAsync(roomId, wsIdGuid, stoppingToken);
-                    }
+                    await ProcessContextSnapshotAsync(
+                        payload!.TranslationRoomId.ToString(),
+                        payload.WorkspaceId,
+                        stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -55,6 +51,33 @@ public class MeetingStartedEventConsumer : BackgroundService
                 _logger.LogError(ex, "Error processing meeting.started event.");
             }
         });
+    }
+
+    public static bool TryParseEvent(
+        string serializedEvent,
+        out MeetingStartedEventPayload? payload)
+    {
+        payload = null;
+        try
+        {
+            var envelope = JsonSerializer.Deserialize<EventEnvelope<MeetingStartedEventPayload>>(
+                serializedEvent);
+            if (envelope == null ||
+                envelope.EventType != MeetingEventTypes.Started ||
+                envelope.SchemaVersion != DomainEventEnvelope.CurrentSchemaVersion ||
+                envelope.Payload.TranslationRoomId == Guid.Empty ||
+                envelope.Payload.WorkspaceId == Guid.Empty)
+            {
+                return false;
+            }
+
+            payload = envelope.Payload;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     public async Task ProcessContextSnapshotAsync(string roomId, Guid workspaceId, CancellationToken ct)

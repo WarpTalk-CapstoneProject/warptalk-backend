@@ -1,20 +1,18 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Domain.Exceptions;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
-using NotificationClient = WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient;
-using NotificationRequest = WarpTalk.Shared.Protos.SendNotificationRequest;
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -22,46 +20,41 @@ public class UsageService : IUsageService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<UsageService> _logger;
-    private readonly IConfiguration _configuration;
-    private readonly NotificationClient? _notificationClient;
+    private readonly BillingRatesOptions _rates;
+    private readonly IWorkspaceDirectory? _workspaceDirectory;
 
     public UsageService(
         IUnitOfWork unitOfWork,
         ILogger<UsageService> logger,
-        IConfiguration configuration,
-        NotificationClient? notificationClient = null)
+        IOptions<BillingRatesOptions> rates,
+        IWorkspaceDirectory? workspaceDirectory = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
-        _configuration = configuration;
-        _notificationClient = notificationClient;
+        _rates = rates.Value;
+        _workspaceDirectory = workspaceDirectory;
     }
 
     public int CalculateCreditCost(int audioSeconds, int tokenCount, int gpuInferenceMs, bool isVoiceClone, Plan plan)
     {
-        var sttRateMin = double.Parse(_configuration["BillingRates:SttPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
-        var transRateMin = double.Parse(_configuration["BillingRates:TranslationPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
-        var ttsRateMin = double.Parse(_configuration["BillingRates:StandardTtsPerMinute"] ?? "15.0", System.Globalization.CultureInfo.InvariantCulture);
-        var vcRateMin = double.Parse(_configuration["BillingRates:VoiceClonePerMinute"] ?? "40.0", System.Globalization.CultureInfo.InvariantCulture);
-
         double ratePerMinute = 0;
         if (isVoiceClone)
         {
-            ratePerMinute = vcRateMin;
+            ratePerMinute = _rates.VoiceClonePerMinute;
         }
         else
         {
             if (audioSeconds > 0)
             {
-                ratePerMinute += sttRateMin;
+                ratePerMinute += _rates.SttPerMinute;
             }
             if (tokenCount > 0)
             {
-                ratePerMinute += transRateMin;
+                ratePerMinute += _rates.TranslationPerMinute;
             }
             if (gpuInferenceMs > 0)
             {
-                ratePerMinute += ttsRateMin;
+                ratePerMinute += _rates.StandardTtsPerMinute;
             }
         }
 
@@ -410,27 +403,14 @@ public class UsageService : IUsageService
                 .Take(limit)
                 .ToList();
 
-            if (topWorkspaces.Any())
+            if (topWorkspaces.Any() && _workspaceDirectory is not null)
             {
                 try
                 {
-                    var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                    var wasOpen = connection.State == System.Data.ConnectionState.Open;
-                    if (!wasOpen) await connection.OpenAsync(cancellationToken);
-
                     var ids = topWorkspaces.Select(w => w.WorkspaceId).Distinct().ToArray();
-                    using var cmd = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
-                        connection);
-                    cmd.Parameters.AddWithValue("ids", ids);
-
-                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-                    var workspaceNames = new Dictionary<Guid, string>();
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
-                    }
-                    await reader.CloseAsync();
+                    var workspaceNames = await _workspaceDirectory.GetNamesAsync(
+                        ids,
+                        cancellationToken);
 
                     var resolvedTopWorkspaces = new List<TopWorkspaceDto>();
                     foreach (var tw in topWorkspaces)
@@ -490,36 +470,19 @@ public class UsageService : IUsageService
 
             try
             {
-                var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                if (connection.State != System.Data.ConnectionState.Open)
-                    await connection.OpenAsync(cancellationToken);
-
-                using var cmdSubs = new Npgsql.NpgsqlCommand(
-                    "SELECT id, workspace_id FROM subscription.subscriptions WHERE id = ANY(@subIds)", connection);
-                cmdSubs.Parameters.AddWithValue("subIds", subIds);
-                using var readerSubs = await cmdSubs.ExecuteReaderAsync(cancellationToken);
+                var subscriptions = await _unitOfWork.SubscriptionRepository.FindAsync(
+                    subscription => subIds.Contains(subscription.Id),
+                    cancellationToken);
                 var workspaceIds = new List<Guid>();
-                while (await readerSubs.ReadAsync(cancellationToken))
+                foreach (var subscription in subscriptions)
                 {
-                    var sId = readerSubs.GetGuid(0);
-                    var wId = readerSubs.GetGuid(1);
-                    subIdToWorkspaceId[sId] = wId;
-                    workspaceIds.Add(wId);
+                    subIdToWorkspaceId[subscription.Id] = subscription.WorkspaceId;
+                    workspaceIds.Add(subscription.WorkspaceId);
                 }
-                await readerSubs.CloseAsync();
 
-                if (workspaceIds.Any())
-                {
-                    using var command = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
-                    command.Parameters.AddWithValue("ids", workspaceIds.ToArray());
-
-                    using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
-                    }
-                }
+                if (workspaceIds.Any() && _workspaceDirectory is not null)
+                    workspaceNames = new Dictionary<Guid, string>(
+                        await _workspaceDirectory.GetNamesAsync(workspaceIds, cancellationToken));
             }
             catch (Exception ex)
             {
@@ -545,160 +508,17 @@ public class UsageService : IUsageService
         }
     }
 
-    private double GetRate(string key, double fallback) =>
-        double.TryParse(_configuration[key], System.Globalization.NumberStyles.Any,
-            System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : fallback;
-
     public Result<ServiceRatesDto> GetServiceRates()
     {
         var dto = new ServiceRatesDto(
-            SttPerMinute: GetRate("BillingRates:SttPerMinute", 15.0),
-            TranslationPerMinute: GetRate("BillingRates:TranslationPerMinute", 15.0),
-            StandardTtsPerMinute: GetRate("BillingRates:StandardTtsPerMinute", 15.0),
-            VoiceClonePerMinute: GetRate("BillingRates:VoiceClonePerMinute", 40.0),
-            AiSummaryPerRequest: GetRate("BillingRates:AiSummaryPerRequest", 5.0),
-            AiChatPerRequest: GetRate("BillingRates:AiChatPerRequest", 2.0)
+            SttPerMinute: _rates.SttPerMinute,
+            TranslationPerMinute: _rates.TranslationPerMinute,
+            StandardTtsPerMinute: _rates.StandardTtsPerMinute,
+            VoiceClonePerMinute: _rates.VoiceClonePerMinute,
+            AiSummaryPerRequest: _rates.AiSummaryPerRequest,
+            AiChatPerRequest: _rates.AiChatPerRequest
         );
         return Result.Success(dto);
-    }
-
-    public async Task<Result<ServiceRatesDto>> UpdateServiceRatesAsync(
-        UpdateServiceRatesRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            if (request.SttPerMinute <= 0 || request.TranslationPerMinute <= 0 ||
-                request.StandardTtsPerMinute <= 0 || request.VoiceClonePerMinute <= 0 ||
-                request.AiSummaryPerRequest <= 0 || request.AiChatPerRequest <= 0)
-            {
-                return Result.Failure<ServiceRatesDto>("All rate values must be greater than zero.", "INVALID_REQUEST");
-            }
-
-            var appSettingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-            if (!File.Exists(appSettingsPath))
-                return Result.Failure<ServiceRatesDto>("appsettings.json not found on server.", "INTERNAL_ERROR");
-
-            var oldRates = GetServiceRates().Value;
-
-            var json = await File.ReadAllTextAsync(appSettingsPath, cancellationToken);
-            var doc = JsonDocument.Parse(json);
-            using var stream = new System.IO.MemoryStream();
-            using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
-
-            writer.WriteStartObject();
-            foreach (var prop in doc.RootElement.EnumerateObject())
-            {
-                if (prop.Name == "BillingRates")
-                    continue;
-                prop.WriteTo(writer);
-            }
-
-            writer.WritePropertyName("BillingRates");
-            writer.WriteStartObject();
-            writer.WriteNumber("SttPerMinute", request.SttPerMinute);
-            writer.WriteNumber("TranslationPerMinute", request.TranslationPerMinute);
-            writer.WriteNumber("StandardTtsPerMinute", request.StandardTtsPerMinute);
-            writer.WriteNumber("VoiceClonePerMinute", request.VoiceClonePerMinute);
-            writer.WriteNumber("AiSummaryPerRequest", request.AiSummaryPerRequest);
-            writer.WriteNumber("AiChatPerRequest", request.AiChatPerRequest);
-            writer.WriteEndObject();
-
-            writer.WriteEndObject();
-            await writer.FlushAsync(cancellationToken);
-
-            var updatedJson = System.Text.Encoding.UTF8.GetString(stream.ToArray());
-            await File.WriteAllTextAsync(appSettingsPath, updatedJson, cancellationToken);
-
-            if (_configuration is IConfigurationRoot configRoot)
-                configRoot.Reload();
-
-            _logger.LogInformation("BillingRates updated by admin.");
-
-            var savedRates = GetServiceRates();
-            await NotifyWorkspaceOwnersAsync(oldRates, request, cancellationToken);
-            return savedRates;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error updating service rates");
-            return Result.Failure<ServiceRatesDto>("An unexpected error occurred while saving rates.", "INTERNAL_ERROR");
-        }
-    }
-
-    private async Task NotifyWorkspaceOwnersAsync(
-        ServiceRatesDto? oldRates,
-        UpdateServiceRatesRequest newRates,
-        CancellationToken cancellationToken)
-    {
-        if (_notificationClient is null) return;
-
-        try
-        {
-            var changes = new List<string>();
-            void AddChange(string label, double oldVal, double newVal, string unit)
-            {
-                if (Math.Abs(oldVal - newVal) > 0.0001)
-                    changes.Add($"• {label}: {oldVal:0.##} → {newVal:0.##} {unit}");
-            }
-
-            if (oldRates is not null)
-            {
-                AddChange("Speech-to-Text (STT)",       oldRates.SttPerMinute,           newRates.SttPerMinute,           "credits/min");
-                AddChange("Real-time Translation",      oldRates.TranslationPerMinute,   newRates.TranslationPerMinute,   "credits/min");
-                AddChange("Text-to-Speech (TTS)",       oldRates.StandardTtsPerMinute,   newRates.StandardTtsPerMinute,   "credits/min");
-                AddChange("Voice Clone TTS",            oldRates.VoiceClonePerMinute,    newRates.VoiceClonePerMinute,    "credits/min");
-                AddChange("AI Summary",                 oldRates.AiSummaryPerRequest,    newRates.AiSummaryPerRequest,    "credits/req");
-                AddChange("AI Workspace Chat",          oldRates.AiChatPerRequest,       newRates.AiChatPerRequest,       "credits/req");
-            }
-
-            if (changes.Count == 0) return;
-
-            var changedList  = string.Join("\n", changes);
-            var body = $"WarpTalk has updated the AI service credit rates that apply to your workspace:\n\n{changedList}\n\nNew rates are effective immediately for all future sessions.";
-
-            var ownerUserIds = new List<Guid>();
-            try
-            {
-                using var conn = _unitOfWork.GetDbConnection();
-                await conn.OpenAsync(cancellationToken);
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "SELECT DISTINCT user_id FROM subscription.subscriptions WHERE is_active = true AND deleted_at IS NULL AND user_id IS NOT NULL";
-                using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-                while (await reader.ReadAsync(cancellationToken))
-                {
-                    if (!reader.IsDBNull(0))
-                        ownerUserIds.Add(reader.GetGuid(0));
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not load workspace owner IDs for rate change notification.");
-                return;
-            }
-
-            _logger.LogInformation("Sending AI rate change notifications to {Count} workspace owners.", ownerUserIds.Count);
-
-            var tasks = ownerUserIds.Select(userId =>
-            {
-                var req = new NotificationRequest
-                {
-                    UserId    = userId.ToString(),
-                    Type      = "billing.rate_change",
-                    Title     = "AI Service Rates Updated",
-                    Body      = body,
-                    ActionUrl = "/billing"
-                };
-                req.Metadata["changed_services"] = changes.Count.ToString();
-                return _notificationClient.SendNotificationAsync(req, cancellationToken: cancellationToken).ResponseAsync;
-            });
-
-            await Task.WhenAll(tasks);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send rate change notifications to workspace owners.");
-        }
     }
 
     private async Task<WarpTalk.BillingService.Domain.Entities.Subscription?> GetActiveSubscriptionAsync(
@@ -722,7 +542,7 @@ public class UsageService : IUsageService
             {
                 return await operation();
             }
-            catch (Exception ex) when (ex.GetType().Name == "DbUpdateConcurrencyException")
+            catch (ConcurrencyConflictException ex)
             {
                 _logger.LogWarning(ex, "Concurrency conflict for WorkspaceId {WorkspaceId}. Attempt {Attempt} of {MaxRetries}", workspaceId, attempt, maxRetries);
                 if (attempt == maxRetries) return Result.Failure<T>("System is busy. Please try again later.", "CONCURRENCY_ERROR");

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/workspace-deleted.schema.json",
+  "title": "Workspace deleted v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "workspace.deleted"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "workspace.deleted"
+        },
+        "producer": {
+          "const": "workspace-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workspace_id",
+            "deleted_by_user_id",
+            "deleted_at",
+            "reason"
+          ],
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            },
+            "deleted_by_user_id": {
+              "type": "string"
+            },
+            "deleted_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

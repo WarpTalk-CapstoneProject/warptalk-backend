@@ -10,11 +10,30 @@ namespace WarpTalk.Gateway.Transforms;
 
 public class InternalContextTransformProvider : Yarp.ReverseProxy.Transforms.Builder.ITransformProvider
 {
-    private readonly IConfiguration _configuration;
+    private readonly byte[] _signingKey;
 
-    public InternalContextTransformProvider(IConfiguration configuration)
+    public InternalContextTransformProvider(
+        IConfiguration configuration,
+        IWebHostEnvironment environment)
     {
-        _configuration = configuration;
+        var rawSecret = configuration["Jwt:InternalSecret"]
+                        ?? configuration["Grpc:InternalSecret"];
+        var isInvalid = string.IsNullOrWhiteSpace(rawSecret)
+                        || rawSecret.Length < 32
+                        || rawSecret.Contains("CHANGE_ME", StringComparison.OrdinalIgnoreCase)
+                        || rawSecret.Contains("placeholder", StringComparison.OrdinalIgnoreCase);
+        if (isInvalid && !environment.IsDevelopment())
+        {
+            throw new InvalidOperationException(
+                "CRITICAL SECURITY ERROR: Jwt:InternalSecret or Grpc:InternalSecret must contain at least 32 characters and must not be a placeholder.");
+        }
+        if (string.IsNullOrWhiteSpace(rawSecret))
+        {
+            throw new InvalidOperationException(
+                "An explicit internal signing secret is required, including in Development.");
+        }
+
+        _signingKey = Encoding.UTF8.GetBytes(rawSecret);
     }
 
     public void ValidateRoute(TransformRouteValidationContext context)
@@ -43,9 +62,6 @@ public class InternalContextTransformProvider : Yarp.ReverseProxy.Transforms.Bui
                 if (!string.IsNullOrEmpty(sub) && !string.IsNullOrEmpty(workspaceId))
                 {
                     var tokenHandler = new JwtSecurityTokenHandler();
-                    var rawSecret = _configuration["Jwt:InternalSecret"] ?? _configuration["Grpc:InternalSecret"] ?? "CHANGE_ME_INTERNAL_SECRET_MIN_32_CHARS_LONG!!";
-                    var key = Encoding.UTF8.GetBytes(rawSecret);
-
                     var claims = new List<Claim>
                     {
                         new("sub", sub),
@@ -65,7 +81,7 @@ public class InternalContextTransformProvider : Yarp.ReverseProxy.Transforms.Bui
                     {
                         Subject = new ClaimsIdentity(claims),
                         Expires = DateTime.UtcNow.AddMinutes(5),
-                        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature)
+                        SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(_signingKey), SecurityAlgorithms.HmacSha256Signature)
                     };
 
                     var token = tokenHandler.CreateToken(tokenDescriptor);

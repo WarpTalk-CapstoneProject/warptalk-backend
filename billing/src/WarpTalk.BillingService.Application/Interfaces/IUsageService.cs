@@ -57,8 +57,4 @@ public interface IUsageService
 
     // --- Service Rates ---
     Result<ServiceRatesDto> GetServiceRates();
-    
-    Task<Result<ServiceRatesDto>> UpdateServiceRatesAsync(
-        UpdateServiceRatesRequest request,
-        CancellationToken cancellationToken = default);
 }

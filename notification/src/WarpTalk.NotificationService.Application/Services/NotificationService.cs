@@ -72,13 +72,6 @@ public class NotificationService : INotificationService
         return Result.Success(MapToDto(pref));
     }
 
-    public async Task<Result> SendNotificationAsync(Guid userId, string templateCode, Dictionary<string, string> variables, CancellationToken ct = default)
-    {
-        // Mock notification send logic
-        await Task.Delay(100, ct);
-        return Result.Success();
-    }
-
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
         pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
@@ -120,12 +113,6 @@ public class NotificationService : INotificationService
         return Result.Success();
     }
 
-    public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(Guid userId, string type, string title, string content, string? actionUrl, string payloadJson, CancellationToken ct = default)
-    {
-        var dto = new CreateNotificationMessageDto(userId, type, title, content, actionUrl, payloadJson);
-        return await CreateNotificationAsync(dto, ct);
-    }
-
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(CreateNotificationMessageDto dto, CancellationToken ct = default)
     {
         var repo = _unitOfWork.Repository<NotificationMessage>();
@@ -134,35 +121,42 @@ public class NotificationService : INotificationService
         await repo.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
         
-        // Attempt email dispatch if email sender is registered
         if (_emailSender != null)
         {
-            _ = Task.Run(async () =>
+            try
             {
-                try
+                var prefResult = await GetPreferencesAsync(dto.UserId, ct);
+                if (prefResult.IsSuccess && prefResult.Value?.EmailEnabled == true)
                 {
-                    var prefResult = await GetPreferencesAsync(dto.UserId);
-                    if (prefResult.IsSuccess && prefResult.Value.EmailEnabled)
+                    var userEmail = ExtractEmailFromPayload(dto.PayloadJson);
+                    if (!string.IsNullOrWhiteSpace(userEmail))
                     {
-                        var userEmail = extractEmailFromPayload(dto.PayloadJson);
-                        if (!string.IsNullOrWhiteSpace(userEmail))
+                        var htmlBody = EmailTemplateRenderer.RenderGenericNotification(
+                            dto.Title,
+                            dto.Content,
+                            dto.ActionUrl);
+                        var delivered = await _emailSender.SendEmailAsync(
+                            new EmailMessage(userEmail, dto.Title, htmlBody),
+                            ct);
+                        if (!delivered)
                         {
-                            var htmlBody = EmailTemplateRenderer.RenderMeetingReminder(dto.Title, DateTime.UtcNow.AddMinutes(15).ToString("f"), dto.ActionUrl ?? "https://warptalk.app");
-                            await _emailSender.SendEmailAsync(new EmailMessage(userEmail, dto.Title, htmlBody));
+                            _logger.LogWarning(
+                                "Email delivery was rejected for notification {NotificationId}",
+                                notification.Id);
                         }
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Background email delivery failed for notification {Id}", notification.Id);
-                }
-            });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Email delivery failed for notification {Id}", notification.Id);
+            }
         }
         
         return Result.Success(NotificationMessageMapper.ToDto(notification));
     }
 
-    private static string? extractEmailFromPayload(string? json)
+    private static string? ExtractEmailFromPayload(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         try

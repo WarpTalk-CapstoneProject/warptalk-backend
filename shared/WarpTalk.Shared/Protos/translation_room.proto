@@ -8,6 +8,7 @@ service TranslationRoomService {
   rpc GetTranslationRoomById (GetTranslationRoomRequest) returns (GetTranslationRoomResponse);
   rpc GetTranslationRoomByCode (GetTranslationRoomByCodeRequest) returns (GetTranslationRoomResponse);
   rpc GetParticipantsByRoomId (GetParticipantsByRoomIdRequest) returns (GetParticipantsByRoomIdResponse);
+  rpc GetActiveRoomCountByWorkspace (GetActiveRoomCountByWorkspaceRequest) returns (GetActiveRoomCountByWorkspaceResponse);
 }
 
 message GetTranslationRoomRequest {
@@ -38,6 +39,14 @@ message GetParticipantsByRoomIdResponse {
   repeated Participant participants = 1;
 }
 
+message GetActiveRoomCountByWorkspaceRequest {
+  string workspace_id = 1;
+}
+
+message GetActiveRoomCountByWorkspaceResponse {
+  int32 count = 1;
+}
+
 message Participant {
   string id = 1;
   string display_name = 2;
@@ -45,4 +54,3 @@ message Participant {
   string language = 4;   // e.g. "vi-VN"
   bool is_active = 5;
 }
-

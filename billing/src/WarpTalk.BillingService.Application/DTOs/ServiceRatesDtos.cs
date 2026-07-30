@@ -11,15 +11,3 @@ public record ServiceRatesDto(
     double AiSummaryPerRequest,
     double AiChatPerRequest
 );
-
-/// <summary>
-/// Request body for updating AI service rates (admin only).
-/// </summary>
-public record UpdateServiceRatesRequest(
-    double SttPerMinute,
-    double TranslationPerMinute,
-    double StandardTtsPerMinute,
-    double VoiceClonePerMinute,
-    double AiSummaryPerRequest,
-    double AiChatPerRequest
-);

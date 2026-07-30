@@ -38,19 +38,24 @@ public class RedisStreamRepository : IRedisStreamRepository
         int count = 10)
     {
         var entries = await GetDb().StreamReadGroupAsync(streamName, groupName, consumerName, position, count);
-        var messages = new List<RedisStreamMessage>();
+        return Map(entries);
+    }
 
-        foreach (var entry in entries)
-        {
-            var values = entry.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
-            messages.Add(new RedisStreamMessage
-            {
-                Id = entry.Id.ToString(),
-                Values = values
-            });
-        }
-
-        return messages;
+    public async Task<List<RedisStreamMessage>> ClaimStaleAsync(
+        string streamName,
+        string groupName,
+        string consumerName,
+        TimeSpan minimumIdleTime,
+        int count = 10)
+    {
+        var result = await GetDb().StreamAutoClaimAsync(
+            streamName,
+            groupName,
+            consumerName,
+            checked((long)minimumIdleTime.TotalMilliseconds),
+            "0-0",
+            count);
+        return Map(result.ClaimedEntries);
     }
 
     public async Task AcknowledgeAsync(string streamName, string groupName, string messageId)
@@ -63,4 +68,14 @@ public class RedisStreamRepository : IRedisStreamRepository
         var entries = values.Select(kv => new NameValueEntry(kv.Key, kv.Value)).ToArray();
         await GetDb().StreamAddAsync(streamName, entries);
     }
+
+    private static List<RedisStreamMessage> Map(StreamEntry[] entries) =>
+        entries.Select(entry => new RedisStreamMessage
+        {
+            Id = entry.Id.ToString(),
+            Values = entry.Values.ToDictionary(
+                value => value.Name.ToString(),
+                value => value.Value.ToString(),
+                StringComparer.OrdinalIgnoreCase)
+        }).ToList();
 }

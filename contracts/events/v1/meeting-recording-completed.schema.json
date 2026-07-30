@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/meeting-recording-completed.schema.json",
+  "title": "Meeting recording completed v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "meeting.recording_completed"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "meeting.recording_completed"
+        },
+        "producer": {
+          "const": "meeting-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "translation_room_id",
+            "egress_id",
+            "file_url",
+            "file_format",
+            "file_size_bytes",
+            "contains_raw_audio",
+            "contains_raw_video"
+          ],
+          "properties": {
+            "translation_room_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "egress_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "file_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "file_format": {
+              "type": "string"
+            },
+            "file_size_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "contains_raw_audio": {
+              "type": "boolean"
+            },
+            "contains_raw_video": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

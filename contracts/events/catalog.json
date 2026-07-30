@@ -1,0 +1,187 @@
+{
+  "catalog_version": 1,
+  "compatibility_policy": "Backward-compatible changes may extend an existing version. Removing or changing a required field requires a new schema version.",
+  "events": [
+    {
+      "event_type": "billing.payment_succeeded",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "billing-service",
+      "consumers": [
+        "notification-service.billing-events.v1"
+      ],
+      "transports": [
+        "rabbitmq"
+      ],
+      "schema": "v1/billing-payment.schema.json"
+    },
+    {
+      "event_type": "billing.payment_failed",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "billing-service",
+      "consumers": [
+        "notification-service.billing-events.v1"
+      ],
+      "transports": [
+        "rabbitmq"
+      ],
+      "schema": "v1/billing-payment.schema.json"
+    },
+    {
+      "event_type": "billing.payment_refunded",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "billing-service",
+      "consumers": [
+        "notification-service.billing-events.v1"
+      ],
+      "transports": [
+        "rabbitmq"
+      ],
+      "schema": "v1/billing-payment.schema.json"
+    },
+    {
+      "event_type": "billing.payment_disputed",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "billing-service",
+      "consumers": [
+        "notification-service.billing-events.v1"
+      ],
+      "transports": [
+        "rabbitmq"
+      ],
+      "schema": "v1/billing-payment.schema.json"
+    },
+    {
+      "event_type": "billing.subscription_cancelled",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "billing-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq"
+      ],
+      "schema": "v1/billing-payment.schema.json"
+    },
+    {
+      "event_type": "workspace.created",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "workspace-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq",
+        "redis-stream-compatibility"
+      ],
+      "schema": "v1/workspace-created.schema.json"
+    },
+    {
+      "event_type": "workspace.deleted",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "workspace-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq",
+        "redis-stream-compatibility"
+      ],
+      "schema": "v1/workspace-deleted.schema.json"
+    },
+    {
+      "event_type": "workspace.member_removed",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "workspace-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq",
+        "redis-stream-compatibility"
+      ],
+      "schema": "v1/workspace-member-removed.schema.json"
+    },
+    {
+      "event_type": "workspace.document_ingestion_requested",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "workspace-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq",
+        "redis-stream-compatibility"
+      ],
+      "schema": "v1/workspace-document-ingestion-requested.schema.json"
+    },
+    {
+      "event_type": "workspace.document_invalidated",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "workspace-service",
+      "consumers": [],
+      "transports": [
+        "rabbitmq",
+        "redis-stream-compatibility"
+      ],
+      "schema": "v1/workspace-document-invalidated.schema.json"
+    },
+    {
+      "event_type": "meeting.recording_completed",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "meeting-service",
+      "consumers": [
+        "translation-room-service.recordings.v1"
+      ],
+      "transports": [
+        "redis-stream"
+      ],
+      "schema": "v1/meeting-recording-completed.schema.json"
+    },
+    {
+      "event_type": "meeting.started",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "meeting-service",
+      "consumers": [
+        "gateway.realtime.v1",
+        "workspace-service.context-snapshot.v1",
+        "transcript-service.glossary-prompts.v1"
+      ],
+      "transports": [
+        "redis-pubsub"
+      ],
+      "schema": "v1/meeting-started.schema.json"
+    },
+    {
+      "event_type": "meeting.track_published",
+      "schema_version": 1,
+      "status": "active",
+      "producer": "meeting-service",
+      "consumers": [
+        "ai-livekit-ingress.v1"
+      ],
+      "transports": [
+        "redis-pubsub"
+      ],
+      "schema": "v1/meeting-track-published.schema.json"
+    }
+  ],
+  "planned_event_types": [
+    "auth.user_created",
+    "auth.user_updated",
+    "auth.user_deactivated",
+    "workspace.updated",
+    "workspace.member_changed",
+    "translation_room.created",
+    "translation_room.started",
+    "translation_room.ended",
+    "transcript.segment_created",
+    "transcript.finalized",
+    "billing.usage_recorded",
+    "billing.credits_adjusted",
+    "billing.subscription_changed",
+    "workspace.document_approved",
+    "workspace.document_deleted"
+  ]
+}

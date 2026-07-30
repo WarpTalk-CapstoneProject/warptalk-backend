@@ -10,13 +10,16 @@ namespace WarpTalk.TranslationRoomService.API.GrpcServices;
 public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.TranslationRoomServiceBase
 {
     private readonly ITranslationRoomService _translationRoomService;
+    private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
 
     public TranslationRoomGrpcService(
         ITranslationRoomService translationRoomService,
+        ITranslationRoomRepository translationRoomRepository,
         ITranslationRoomParticipantRepository participantRepository)
     {
         _translationRoomService = translationRoomService;
+        _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
     }
 
@@ -65,5 +68,18 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         }
 
         return response;
+    }
+
+    public override async Task<GetActiveRoomCountByWorkspaceResponse> GetActiveRoomCountByWorkspace(
+        GetActiveRoomCountByWorkspaceRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            throw GrpcErrors.InvalidId("Workspace");
+
+        var count = await _translationRoomRepository.CountActiveByWorkspaceAsync(
+            workspaceId,
+            context.CancellationToken);
+        return new GetActiveRoomCountByWorkspaceResponse { Count = count };
     }
 }

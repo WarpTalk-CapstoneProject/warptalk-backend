@@ -32,10 +32,9 @@ public class CreateAdminNotificationValidator : AbstractValidator<CreateAdminNot
         
         RuleFor(x => x.TargetAudienceMode)
             .NotEmpty()
-            .Must(mode => mode == NotificationConstants.TargetModeBroadcast || 
-                          mode == NotificationConstants.TargetModeSegment || 
-                          mode == NotificationConstants.TargetModeSpecificUsers)
-            .WithMessage("Invalid target audience mode.");
+            .Equal(NotificationConstants.TargetModeSpecificUsers)
+            .WithMessage(
+                "Only SPECIFIC_USERS is supported until a production user/segment resolver is configured.");
 
         When(x => x.TargetAudienceMode == NotificationConstants.TargetModeSpecificUsers, () =>
         {
