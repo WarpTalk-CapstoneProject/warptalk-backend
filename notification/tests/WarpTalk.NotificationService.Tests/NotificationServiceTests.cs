@@ -34,7 +34,7 @@ public class NotificationServiceTests
         var attackerId = Guid.NewGuid();
         var notificationId = Guid.NewGuid();
 
-        _mockRepo.Setup(r => r.GetByIdAndUserIdAsync(notificationId, attackerId, It.IsAny<CancellationToken>())).ReturnsAsync((NotificationMessage)null);
+        _mockRepo.Setup(r => r.GetByIdAndUserIdAsync(notificationId, attackerId, It.IsAny<CancellationToken>())).ReturnsAsync((NotificationMessage?)null);
 
         // Act
         var result = await _sut.MarkAsReadAsync(attackerId, notificationId);

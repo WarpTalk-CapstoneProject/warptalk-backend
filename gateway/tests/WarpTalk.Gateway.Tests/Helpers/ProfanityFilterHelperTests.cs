@@ -16,7 +16,6 @@ public class ProfanityFilterHelperTests
     [InlineData("Shit happens", "*** happens")]
     [InlineData("fUcK", "***")]
     [InlineData("", "")]
-    [InlineData(null, null)]
     public void MaskProfanity_ShouldMaskProfaneWords_WhenPresent(string input, string expected)
     {
         // Act

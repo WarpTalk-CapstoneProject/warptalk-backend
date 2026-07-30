@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="3.7.415.7" />
     <ProjectReference Include="..\WarpTalk.AuthService.Domain\WarpTalk.AuthService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.AuthService.Application\WarpTalk.AuthService.Application.csproj" />
     <ProjectReference Include="..\..\..\shared\WarpTalk.Shared\WarpTalk.Shared.csproj" />

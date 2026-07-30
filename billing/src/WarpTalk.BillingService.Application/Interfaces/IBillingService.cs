@@ -26,9 +26,6 @@ public interface IBillingService
     Task<Result<WorkspaceCreditsDto>> CancelSubscriptionAsync(Guid workspaceId, string? reason = null, CancellationToken ct = default);
 
     // --- CREDIT MANAGEMENT ---
-    /// <summary>Top-up credits (admin only or via payment)</summary>
-    Task<Result<WorkspaceCreditsDto>> TopUpCreditsAsync(Guid workspaceId, int amount, string referenceType = "topup", Guid? referenceId = null, CancellationToken ct = default, Guid? userId = null);
-
     /// <summary>Consume credits for service usage</summary>
     Task<Result<WorkspaceCreditsDto>> ConsumeCreditsAsync(Guid workspaceId, int amount, string referenceType, Guid? referenceId = null, CancellationToken ct = default, Guid? userId = null);
 

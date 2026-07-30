@@ -202,19 +202,6 @@ public static class BillingMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction ToEntity(this TopUpRequest request, Subscription sub) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        UserId = sub.UserId,
-        Amount = request.Amount,
-        Type = "top_up",
-        ReferenceType = request.ReferenceType,
-        ReferenceId = request.ReferenceId,
-        BalanceAfter = sub.CreditsRemaining,
-        CreatedAt = DateTime.UtcNow
-    };
-
     public static PaymentTransactionDto ToDto(this Payment payment) => new(
         payment.Id,
         payment.SubscriptionId,

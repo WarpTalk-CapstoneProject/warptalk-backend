@@ -27,6 +27,7 @@ public class UsagesController : ControllerBase
     /// Record usage for a workspace.
     /// </summary>
     [HttpPost("workspace/{workspaceId:guid}/record-usage")]
+    [Authorize(Roles = "Admin,billing_admin")]
     public async Task<ActionResult> RecordUsage(
         Guid workspaceId,
         [FromBody] RecordUsageRequest request,
@@ -86,7 +87,7 @@ public class UsagesController : ControllerBase
     /// Gets feature adoption metrics for a workspace.
     /// </summary>
     [HttpGet("workspace/{workspaceId:guid}/breakdown")]
-    [AllowAnonymous]
+    [RequireWorkspaceRole("Owner", "Admin")]
     public async Task<ActionResult<IEnumerable<FeatureAdoptionDto>>> GetWorkspaceFeatureAdoption(
         Guid workspaceId,
         [FromQuery] int days = 30,
@@ -98,7 +99,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<GlobalBillingMetricsDto>> GetGlobalMetrics(CancellationToken cancellationToken = default)
     {
         var result = await _usageService.GetGlobalMetricsAsync(cancellationToken);
@@ -107,7 +108,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/chart")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<UsageChartDto>> GetGlobalUsageChart(
         [FromQuery] int year,
         CancellationToken cancellationToken = default)
@@ -118,7 +119,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/breakdown")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<IEnumerable<UsageSummaryDto>>> GetGlobalUsageBreakdown(
         [FromQuery] int days = 30,
         CancellationToken cancellationToken = default)
@@ -129,7 +130,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/top-workspaces")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<IEnumerable<TopWorkspaceDto>>> GetTopWorkspaces(
         [FromQuery] int days = 30,
         [FromQuery] int limit = 5,
@@ -141,7 +142,7 @@ public class UsagesController : ControllerBase
     }
 
     [HttpGet("metrics/global/alerts")]
-    [AllowAnonymous]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<IEnumerable<UsageAlertDto>>> GetUsageAlerts(CancellationToken cancellationToken = default)
     {
         var result = await _usageService.GetUsageAlertsAsync(cancellationToken);
@@ -153,34 +154,10 @@ public class UsagesController : ControllerBase
     /// Get current AI service credit rates (admin only).
     /// </summary>
     [HttpGet("rates")]
-    [Authorize]
+    [Authorize(Roles = "Admin")]
     public ActionResult<ServiceRatesDto> GetServiceRates()
     {
         var result = _usageService.GetServiceRates();
-        if (!result.IsSuccess) return HandleFailure(result);
-        return Ok(result.Value);
-    }
-
-    [HttpPut("rates")]
-    [Authorize]
-    public async Task<ActionResult<ServiceRatesDto>> UpdateServiceRates(
-        [FromBody] UpdateServiceRatesRequest request,
-        CancellationToken cancellationToken)
-    {
-        // Manual verification of admin claim or email to bypass identity roles mapping mismatch
-        var email = User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value 
-                    ?? User.FindFirst("email")?.Value;
-        
-        var isSystemAdmin = email == "admin@warptalk.com" || 
-                            User.IsInRole("Admin") || 
-                            User.FindFirst("role")?.Value == "Admin";
-
-        if (!isSystemAdmin)
-        {
-            return Forbid();
-        }
-
-        var result = await _usageService.UpdateServiceRatesAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result);
         return Ok(result.Value);
     }

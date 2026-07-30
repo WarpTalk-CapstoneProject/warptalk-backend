@@ -28,4 +28,13 @@ public class MeetingChatNotifier : IMeetingChatNotifier
         var groupName = MeetingChatHub.GetRoomGroupName(roomId);
         await _hubContext.Clients.Group(groupName).SendAsync("ChatMessageHidden", messageId, cancellationToken: ct);
     }
+
+    public async Task BroadcastAssistantResponsePendingAsync(Guid roomId, Guid requestId, CancellationToken ct = default)
+    {
+        var groupName = MeetingChatHub.GetRoomGroupName(roomId);
+        await _hubContext.Clients.Group(groupName).SendAsync(
+            "ChatAssistantResponsePending",
+            new { requestId },
+            cancellationToken: ct);
+    }
 }

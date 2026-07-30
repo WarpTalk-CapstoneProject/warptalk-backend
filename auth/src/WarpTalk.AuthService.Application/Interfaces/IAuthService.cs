@@ -9,4 +9,7 @@ public interface IAuthService
     Task<Result<AuthResponse>> RegisterInvitedAsync(RegisterInvitedRequest request, CancellationToken ct = default);
     Task<Result<AuthResponse>> LoginAsync(LoginRequest request, CancellationToken ct = default);
     Task<Result> ResendVerificationAsync(Guid userId, CancellationToken ct = default);
+    Task<Result> VerifyEmailAsync(VerifyEmailRequest request, CancellationToken ct = default);
+    Task<Result> ForgotPasswordAsync(ForgotPasswordRequest request, CancellationToken ct = default);
+    Task<Result> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken ct = default);
 }

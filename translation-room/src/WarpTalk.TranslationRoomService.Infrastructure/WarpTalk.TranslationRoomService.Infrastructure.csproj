@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="3.7.415.7" />
     <ProjectReference Include="..\WarpTalk.TranslationRoomService.Domain\WarpTalk.TranslationRoomService.Domain.csproj" />
     <ProjectReference Include="..\WarpTalk.TranslationRoomService.Application\WarpTalk.TranslationRoomService.Application.csproj" />
   </ItemGroup>
@@ -10,7 +11,7 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.8" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
-    <PackageReference Include="StackExchange.Redis" Version="2.13.1" />
+    <PackageReference Include="StackExchange.Redis" Version="3.0.17" />
   </ItemGroup>
 
   <PropertyGroup>

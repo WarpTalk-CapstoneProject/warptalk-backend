@@ -115,6 +115,7 @@ public class WorkspaceDocumentServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), result.Value.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), result.Value.IngestionStatus);
         
@@ -182,6 +183,7 @@ public class WorkspaceDocumentServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(WorkspaceDocumentStatus.@public.ToString(), result.Value.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.pending.ToString(), result.Value.IngestionStatus);
 
@@ -268,6 +270,7 @@ public class WorkspaceDocumentServiceTests
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId);
 
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.False(result.Value.IsAiAllowed);
         Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), result.Value.IngestionStatus);
         await _storage.Received(1).SaveDocumentContentAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<Stream>(), Arg.Any<CancellationToken>());
@@ -385,6 +388,7 @@ public class WorkspaceDocumentServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("file.pdf", result.Value.FileName);
         await _workspaceDocumentAuditRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocumentAudit>(), Arg.Any<CancellationToken>());
     }
@@ -464,6 +468,7 @@ public class WorkspaceDocumentServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(3, result.Value.Total);
         Assert.Single(result.Value.Items);
         Assert.Equal(policies[2].Id, result.Value.Items[0].Id);

@@ -350,6 +350,7 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(2, result.Value.Page);
         Assert.Equal(5, result.Value.PageSize);
         Assert.Equal(12, result.Value.Total);
@@ -402,6 +403,7 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(workspaceId, result.Value.SelectedWorkspaceId);
 
         // Verify cache service received the update
@@ -416,7 +418,7 @@ public class WorkspaceServiceTests
         var workspaceId = Guid.NewGuid();
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns((WorkspaceMember)null);
+            .Returns((WorkspaceMember?)null);
 
         // Act
         var result = await _workspaceService.SelectWorkspaceAsync(workspaceId, userId);
@@ -477,7 +479,7 @@ public class WorkspaceServiceTests
         var workspaceId = Guid.NewGuid();
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns((WorkspaceMember)null);
+            .Returns((WorkspaceMember?)null);
 
         // Act
         var result = await _workspaceService.GetWorkspaceByIdAsync(workspaceId, userId);
@@ -498,7 +500,7 @@ public class WorkspaceServiceTests
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(member);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns((Workspace)null);
+            .Returns((Workspace?)null);
 
         // Act
         var result = await _workspaceService.GetWorkspaceByIdAsync(workspaceId, userId);
@@ -602,7 +604,7 @@ public class WorkspaceServiceTests
         var workspaceId = Guid.NewGuid();
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns((WorkspaceMember)null);
+            .Returns((WorkspaceMember?)null);
 
         // Act
         var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
@@ -905,7 +907,7 @@ public class WorkspaceServiceTests
         var userId = Guid.NewGuid();
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns((Workspace)null);
+            .Returns((Workspace?)null);
 
         // Act
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, userId);

@@ -23,8 +23,8 @@ public class CreateAdminNotificationValidatorTests
             Title: "Valid Title",
             Content: "Valid Content without HTML.",
             Type: type,
-            TargetAudienceMode: NotificationConstants.TargetModeBroadcast,
-            SpecificUserIds: null,
+            TargetAudienceMode: NotificationConstants.TargetModeSpecificUsers,
+            SpecificUserIds: new List<Guid> { Guid.NewGuid() },
             SegmentId: null
         );
     }
@@ -84,6 +84,23 @@ public class CreateAdminNotificationValidatorTests
         };
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.SegmentId);
+    }
+
+    [Theory]
+    [InlineData(NotificationConstants.TargetModeBroadcast)]
+    [InlineData(NotificationConstants.TargetModeSegment)]
+    public void Should_Reject_Audience_Modes_Without_A_Production_Resolver(string mode)
+    {
+        var model = CreateValidBaseDto() with
+        {
+            TargetAudienceMode = mode,
+            SpecificUserIds = null,
+            SegmentId = mode == NotificationConstants.TargetModeSegment ? Guid.NewGuid() : null
+        };
+
+        var result = _validator.TestValidate(model);
+
+        result.ShouldHaveValidationErrorFor(x => x.TargetAudienceMode);
     }
 
     [Fact]

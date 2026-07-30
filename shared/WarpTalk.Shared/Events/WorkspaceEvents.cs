@@ -1,71 +1,46 @@
+using System.Text.Json.Serialization;
+
 namespace WarpTalk.Shared.Events;
 
-/// <summary>
-/// Event published to RabbitMQ when a new Enterprise Workspace is created.
-/// Triggers initial provisioning across microservices.
-/// </summary>
-public record WorkspaceCreatedEvent
+public static class WorkspaceEventTypes
 {
-    public Guid EventId { get; init; } = Guid.NewGuid();
-    public int SchemaVersion { get; init; } = 1;
-    public required string WorkspaceId { get; init; }
-    public required string Name { get; init; }
-    public required string Slug { get; init; }
-    public required string OwnerUserId { get; init; }
-    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+    public const string Producer = "workspace-service";
+    public const string WorkspaceCreated = "workspace.created";
+    public const string WorkspaceDeleted = "workspace.deleted";
+    public const string MemberRemoved = "workspace.member_removed";
+    public const string DocumentIngestionRequested = "workspace.document_ingestion_requested";
+    public const string DocumentInvalidated = "workspace.document_invalidated";
 }
 
-/// <summary>
-/// Event published when an entire Enterprise Workspace is soft-deleted or suspended.
-/// Triggers cascading actions like force-terminating active meetings and revoking active streams.
-/// </summary>
-public record WorkspaceDeletedEvent
-{
-    public required string WorkspaceId { get; init; }
-    public required string DeletedByUserId { get; init; }
-    public required DateTime DeletedAt { get; init; }
-    public string? Reason { get; init; }
-}
+public sealed record WorkspaceCreatedEventPayload(
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("slug")] string Slug,
+    [property: JsonPropertyName("owner_user_id")] string OwnerUserId,
+    [property: JsonPropertyName("created_at")] DateTime CreatedAt);
 
-/// <summary>
-/// Event published when a specific Member is removed, suspended, or demoted from a Workspace.
-/// Triggers realtime eviction (Kick) if the user is currently in a TranslationRoom.
-/// </summary>
-public record MemberRemovedEvent
-{
-    public required string WorkspaceId { get; init; }
-    public required string UserId { get; init; }
-    public required string RemovedByUserId { get; init; }
-    public required DateTime RemovedAt { get; init; }
-}
+public sealed record WorkspaceDeletedEventPayload(
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("deleted_by_user_id")] string DeletedByUserId,
+    [property: JsonPropertyName("deleted_at")] DateTime DeletedAt,
+    [property: JsonPropertyName("reason")] string? Reason);
 
-/// <summary>
-/// Durable domain event emitted after a workspace document becomes AI-eligible.
-/// Consumers can fan this into Redis Streams for realtime AI indexing jobs.
-/// </summary>
-public record WorkspaceDocumentIngestionRequestedEvent
-{
-    public Guid EventId { get; init; } = Guid.NewGuid();
-    public int SchemaVersion { get; init; } = 1;
-    public required string DocumentId { get; init; }
-    public required string WorkspaceId { get; init; }
-    public required string StorageKey { get; init; }
-    public required string FileName { get; init; }
-    public required string FileExtension { get; init; }
-    public required string RequestedByUserId { get; init; }
-    public bool IsSensitive { get; init; }
-    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
-}
+public sealed record MemberRemovedEventPayload(
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("user_id")] string UserId,
+    [property: JsonPropertyName("removed_by_user_id")] string RemovedByUserId,
+    [property: JsonPropertyName("removed_at")] DateTime RemovedAt);
 
-/// <summary>
-/// Durable domain event emitted when a document must no longer be used by AI/RAG.
-/// </summary>
-public record WorkspaceDocumentInvalidatedEvent
-{
-    public Guid EventId { get; init; } = Guid.NewGuid();
-    public int SchemaVersion { get; init; } = 1;
-    public required string DocumentId { get; init; }
-    public required string WorkspaceId { get; init; }
-    public required string Reason { get; init; }
-    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
-}
+public sealed record WorkspaceDocumentIngestionRequestedEventPayload(
+    [property: JsonPropertyName("document_id")] string DocumentId,
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("storage_key")] string StorageKey,
+    [property: JsonPropertyName("file_name")] string FileName,
+    [property: JsonPropertyName("file_extension")] string FileExtension,
+    [property: JsonPropertyName("requested_by_user_id")] string RequestedByUserId,
+    [property: JsonPropertyName("is_sensitive")] bool IsSensitive);
+
+public sealed record WorkspaceDocumentInvalidatedEventPayload(
+    [property: JsonPropertyName("document_id")] string DocumentId,
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("reason")] string Reason);

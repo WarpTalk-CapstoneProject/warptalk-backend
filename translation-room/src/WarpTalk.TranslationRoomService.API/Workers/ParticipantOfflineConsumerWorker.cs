@@ -30,7 +30,7 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
         var subscriber = _redis.GetSubscriber();
         _logger.LogInformation("ParticipantOfflineConsumerWorker started subscribing to 'translationRoom:participant-offline'.");
 
-        await subscriber.SubscribeAsync("translationRoom:participant-offline", async (channel, message) =>
+        await subscriber.SubscribeAsync(RedisChannel.Literal("translationRoom:participant-offline"), async (channel, message) =>
         {
             try
             {

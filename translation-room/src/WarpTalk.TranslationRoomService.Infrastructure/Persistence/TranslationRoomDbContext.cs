@@ -34,7 +34,6 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomInvitation> TranslationRoomInvitations { get; set; }
 
-    public virtual DbSet<UserSetting> UserSettings { get; set; }
 
 
 
@@ -94,13 +93,17 @@ public partial class TranslationRoomDbContext : DbContext
         modelBuilder.Entity<SupportedLanguage>(entity =>
         {
             entity
-                .HasNoKey()
-                .ToView("supported_languages", "translation_room");
+                .HasKey(language => language.Code)
+                .HasName("supported_languages_pkey");
+
+            entity.ToTable("supported_languages", "translation_room");
 
             entity.Property(e => e.Code)
                 .HasMaxLength(15)
                 .HasColumnName("code");
-            entity.Property(e => e.IsActive).HasColumnName("is_active");
+            entity.Property(e => e.IsActive)
+                .HasDefaultValue(true)
+                .HasColumnName("is_active");
             entity.Property(e => e.Name)
                 .HasMaxLength(100)
                 .HasColumnName("name");
@@ -198,6 +201,10 @@ public partial class TranslationRoomDbContext : DbContext
 
             entity.HasIndex(e => new { e.TranslationRoomId, e.ArtifactType }, "translation_room_artifacts_translation_room_id_artifact_typ_idx");
 
+            entity.HasIndex(e => e.ProviderArtifactId, "translation_room_artifacts_provider_artifact_id_key")
+                .IsUnique()
+                .HasFilter("provider_artifact_id IS NOT NULL");
+
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuidv7()")
                 .HasColumnName("id");
@@ -225,6 +232,9 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.FileUrl)
                 .HasMaxLength(500)
                 .HasColumnName("file_url");
+            entity.Property(e => e.ProviderArtifactId)
+                .HasMaxLength(255)
+                .HasColumnName("provider_artifact_id");
             entity.Property(e => e.RetentionUntil).HasColumnName("retention_until");
             entity.Property(e => e.Status)
                 .HasMaxLength(20)
@@ -453,21 +463,6 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasForeignKey(d => d.TranslationRoomId)
                 .OnDelete(DeleteBehavior.Cascade)
                 .HasConstraintName("translation_room_invitations_translation_room_id_fkey");
-        });
-
-        modelBuilder.Entity<UserSetting>(entity =>
-        {
-            entity
-                .HasNoKey()
-                .ToView("user_settings", "translation_room");
-
-            entity.Property(e => e.DefaultListenLanguage)
-                .HasMaxLength(15)
-                .HasColumnName("default_listen_language");
-            entity.Property(e => e.DefaultSpeakLanguage)
-                .HasMaxLength(15)
-                .HasColumnName("default_speak_language");
-            entity.Property(e => e.UserId).HasColumnName("user_id");
         });
 
         OnModelCreatingPartial(modelBuilder);

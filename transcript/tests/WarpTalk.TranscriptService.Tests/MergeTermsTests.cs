@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using WarpTalk.TranscriptService.Infrastructure.Redis;
+using System.Text.Json;
+using WarpTalk.Shared.Events;
 using Xunit;
 
 namespace WarpTalk.TranscriptService.Tests;
@@ -8,6 +10,26 @@ using PromptTerm = GlossaryStartedEventConsumer.PromptTerm;
 
 public class MergeTermsTests
 {
+    [Fact]
+    public void TryParseStartedEvent_AcceptsVersionedEnvelope()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.Started,
+            "meeting-service",
+            workspaceId.ToString(),
+            new MeetingStartedEventPayload(roomId, workspaceId));
+
+        var parsed = GlossaryStartedEventConsumer.TryParseStartedEvent(
+            JsonSerializer.Serialize(envelope),
+            out var payload);
+
+        Assert.True(parsed);
+        Assert.Equal(roomId, payload!.TranslationRoomId);
+        Assert.Equal(workspaceId, payload.WorkspaceId);
+    }
+
     [Fact]
     public void MergeTerms_WorkspaceTermAlwaysWinsOverGlobalTermWithSameKey()
     {

@@ -9,6 +9,7 @@ using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Interfaces.Security;
+using WarpTalk.AuthService.Application.Helpers;
 using WarpTalk.AuthService.Domain.Constants;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Domain.Entities;
@@ -31,6 +32,7 @@ public class AuthServiceTests
     private readonly IOptions<AuthSettings> _authSettingsOptions;
     private readonly ILogger<WarpTalk.AuthService.Application.Services.AuthService> _logger;
     private readonly IWorkspaceInvitationClient _workspaceInvitationClient;
+    private readonly IAuthEmailSender _authEmailSender;
     private readonly WarpTalk.AuthService.Application.Services.AuthService _authService;
 
     public AuthServiceTests()
@@ -44,6 +46,7 @@ public class AuthServiceTests
         _cache = Substitute.For<IDistributedCache>();
         _logger = Substitute.For<ILogger<WarpTalk.AuthService.Application.Services.AuthService>>();
         _workspaceInvitationClient = Substitute.For<IWorkspaceInvitationClient>();
+        _authEmailSender = Substitute.For<IAuthEmailSender>();
 
         _unitOfWork.UserRepository.Returns(_userRepository);
         _unitOfWork.RefreshTokenRepository.Returns(_refreshTokenRepository);
@@ -64,7 +67,8 @@ public class AuthServiceTests
             _cache,
             _authSettingsOptions,
             _logger,
-            _workspaceInvitationClient
+            _workspaceInvitationClient,
+            _authEmailSender
         );
     }
 
@@ -94,6 +98,26 @@ public class AuthServiceTests
             Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
             Arg.Any<CancellationToken>()
         );
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ShouldReturnSuccess_WhenVerificationEmailDeliveryFailsAfterPersistence()
+    {
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+        _authEmailSender
+            .SendVerificationEmailAsync(
+                Arg.Any<User>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("provider unavailable")));
+
+        var result = await _authService.RegisterAsync(
+            new RegisterRequest("delivery-failure@warptalk.vn", "Password123!", "Delivery Failure"));
+
+        Assert.True(result.IsSuccess);
+        await _unitOfWork.Received().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -281,6 +305,15 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+
+        await _authEmailSender.Received(1).SendVerificationEmailAsync(
+            user,
+            Arg.Is<string>(token => !string.IsNullOrWhiteSpace(token)),
+            Arg.Any<CancellationToken>()
+        );
+        Assert.NotNull(user.EmailVerificationTokenHash);
+        Assert.NotNull(user.EmailVerificationTokenExpiresAt);
+        await _unitOfWork.Received().SaveChangesAsync(Arg.Any<CancellationToken>());
         
         // Confirm cache is updated
         await _cache.Received(1).SetAsync(
@@ -399,5 +432,107 @@ public class AuthServiceTests
         );
     }
 
+    [Fact]
+    public async Task VerifyEmailAsync_ShouldConsumeValidToken()
+    {
+        var token = "verification-token";
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = "verify@warptalk.vn",
+            EmailVerified = false,
+            IsActive = true,
+            EmailVerificationTokenHash = TokenHashing.Hash(token),
+            EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(10)
+        };
+        _userRepository.GetByEmailVerificationTokenHashAsync(
+                user.EmailVerificationTokenHash,
+                Arg.Any<CancellationToken>())
+            .Returns(user);
+
+        var result = await _authService.VerifyEmailAsync(new VerifyEmailRequest(token));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(user.EmailVerified);
+        Assert.NotNull(user.EmailVerifiedAt);
+        Assert.Null(user.EmailVerificationTokenHash);
+        Assert.Null(user.EmailVerificationTokenExpiresAt);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ForgotPasswordAsync_ShouldNotRevealUnknownEmail()
+    {
+        _userRepository.GetByEmailWithRolesAsync(
+                "missing@warptalk.vn",
+                Arg.Any<CancellationToken>())
+            .Returns((User?)null);
+
+        var result = await _authService.ForgotPasswordAsync(
+            new ForgotPasswordRequest("missing@warptalk.vn"));
+
+        Assert.True(result.IsSuccess);
+        await _authEmailSender.DidNotReceiveWithAnyArgs()
+            .SendPasswordResetEmailAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task ForgotPasswordAsync_ShouldPersistHashedTokenAndSendEmail()
+    {
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = "reset@warptalk.vn",
+            EmailVerified = true,
+            IsActive = true
+        };
+        _userRepository.GetByEmailWithRolesAsync(
+                user.Email,
+                Arg.Any<CancellationToken>())
+            .Returns(user);
+
+        var result = await _authService.ForgotPasswordAsync(
+            new ForgotPasswordRequest(user.Email));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(user.PasswordResetTokenHash);
+        Assert.NotNull(user.PasswordResetTokenExpiresAt);
+        await _authEmailSender.Received(1).SendPasswordResetEmailAsync(
+            user,
+            Arg.Is<string>(token =>
+                TokenHashing.Hash(token) == user.PasswordResetTokenHash),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ResetPasswordAsync_ShouldConsumeValidTokenAndRevokeRefreshTokens()
+    {
+        var token = "password-reset-token";
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Email = "reset@warptalk.vn",
+            EmailVerified = true,
+            IsActive = true,
+            PasswordResetTokenHash = TokenHashing.Hash(token),
+            PasswordResetTokenExpiresAt = DateTime.UtcNow.AddMinutes(10)
+        };
+        _userRepository.GetByPasswordResetTokenHashAsync(
+                user.PasswordResetTokenHash,
+                Arg.Any<CancellationToken>())
+            .Returns(user);
+        _passwordHasher.Hash("NewPassword123!").Returns("new-password-hash");
+
+        var result = await _authService.ResetPasswordAsync(
+            new ResetPasswordRequest(token, "NewPassword123!"));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("new-password-hash", user.PasswordHash);
+        Assert.Null(user.PasswordResetTokenHash);
+        Assert.Null(user.PasswordResetTokenExpiresAt);
+        await _refreshTokenRepository.Received(1)
+            .RevokeAllForUserAsync(user.Id, Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
 
 }

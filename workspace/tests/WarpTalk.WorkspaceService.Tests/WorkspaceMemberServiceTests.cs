@@ -187,6 +187,7 @@ public class WorkspaceMemberServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal(2, result.Value.Total);
         Assert.Equal("Active User", result.Value.Items[0].FullName);
         Assert.Equal("active@warptalk.vn", result.Value.Items[0].Email); // Owner/Admin can see emails
@@ -204,7 +205,7 @@ public class WorkspaceMemberServiceTests
 
         // Mock that requester is NOT member
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
-            .Returns((WorkspaceMember)null);
+            .Returns((WorkspaceMember?)null);
 
         // Act
         var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);

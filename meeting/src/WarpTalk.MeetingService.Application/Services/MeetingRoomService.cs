@@ -6,6 +6,7 @@ using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.MeetingService.Application.Services;
 
@@ -16,6 +17,7 @@ public class MeetingRoomService : IMeetingRoomService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRedisService _redisService;
     private readonly ILiveKitEgressService _egressService;
+    private readonly ILiveKitRoomAdminService _roomAdminService;
     private readonly ILogger<MeetingRoomService> _logger;
 
     // Same Redis Pub/Sub channel TranslationRoomService's WorkspaceEventConsumerWorker
@@ -33,6 +35,7 @@ public class MeetingRoomService : IMeetingRoomService
         IUnitOfWork unitOfWork,
         IRedisService redisService,
         ILiveKitEgressService egressService,
+        ILiveKitRoomAdminService roomAdminService,
         ILogger<MeetingRoomService> logger)
     {
         _tokenService = tokenService;
@@ -40,6 +43,7 @@ public class MeetingRoomService : IMeetingRoomService
         _unitOfWork = unitOfWork;
         _redisService = redisService;
         _egressService = egressService;
+        _roomAdminService = roomAdminService;
         _logger = logger;
     }
 
@@ -59,7 +63,9 @@ public class MeetingRoomService : IMeetingRoomService
                 return Result.Failure<JoinMeetingResponse>("Translation room not found", ErrorCodes.NotFound);
 
             roomDetails = grpcResult.Value;
-            await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromMinutes(5));
+            // Billing and AI workers consume this as the local room -> workspace projection.
+            // Keep it for the longest supported meeting window instead of expiring mid-call.
+            await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromHours(24));
         }
 
         if (roomDetails.Status == "ENDED" || roomDetails.Status == "FINISHED" || roomDetails.Status == "CANCELLED")
@@ -95,11 +101,7 @@ public class MeetingRoomService : IMeetingRoomService
             await _unitOfWork.SaveChangesAsync();
 
             // Notify WorkspaceService to capture Context Snapshot
-            await _redisService.PublishEventAsync("meeting.started", new
-            {
-                TranslationRoomId = translationRoomId.ToString(),
-                WorkspaceId = roomDetails.WorkspaceId
-            });
+            await PublishMeetingStartedAsync(translationRoomId, roomDetails.WorkspaceId);
         }
         else if (meetingRoom.Status != roomDetails.Status)
         {
@@ -110,11 +112,7 @@ public class MeetingRoomService : IMeetingRoomService
             // If it transitions to IN_PROGRESS, might want to trigger too if not done
             if (meetingRoom.Status == "IN_PROGRESS")
             {
-                await _redisService.PublishEventAsync("meeting.started", new
-                {
-                    TranslationRoomId = translationRoomId.ToString(),
-                    WorkspaceId = roomDetails.WorkspaceId
-                });
+                await PublishMeetingStartedAsync(translationRoomId, roomDetails.WorkspaceId);
             }
         }
 
@@ -300,12 +298,10 @@ public class MeetingRoomService : IMeetingRoomService
         // 7. Notify AI Worker via Redis Pub/Sub
         try
         {
-            await _redisService.PublishEventAsync("meeting.track_published", new
-            {
-                room_name = meetingRoom.ProviderRoomName,
-                participant_identity = providerIdentity,
-                track_sid = "audio_track_1"
-            });
+            await PublishTrackPublishedAsync(
+                meetingRoom.ProviderRoomName,
+                providerIdentity,
+                "audio_track_1");
         }
         catch (Exception ex)
         {
@@ -331,12 +327,10 @@ public class MeetingRoomService : IMeetingRoomService
 
     public async Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request)
     {
-        var publishResult = await _redisService.PublishEventAsync("meeting.track_published", new
-        {
-            RoomName = translationRoomId.ToString(),
-            ParticipantIdentity = request.ParticipantIdentity,
-            TrackId = "audio_track_1"
-        });
+        var publishResult = await PublishTrackPublishedAsync(
+            translationRoomId.ToString(),
+            request.ParticipantIdentity,
+            "audio_track_1");
 
         if (!publishResult.IsSuccess)
         {
@@ -346,6 +340,45 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         return Result.Success<bool>(true);
+    }
+
+    private async Task PublishMeetingStartedAsync(Guid translationRoomId, string workspaceIdValue)
+    {
+        if (!Guid.TryParse(workspaceIdValue, out var workspaceId))
+            throw new InvalidOperationException(
+                $"Cannot publish {MeetingEventTypes.Started}: invalid workspace id");
+
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.Started,
+            "meeting-service",
+            workspaceId.ToString(),
+            new MeetingStartedEventPayload(translationRoomId, workspaceId));
+        var result = await _redisService.PublishEventAsync(
+            MeetingEventTypes.Started,
+            envelope);
+
+        if (!result.IsSuccess)
+            throw new InvalidOperationException(
+                $"Cannot publish {MeetingEventTypes.Started}: {result.Error}");
+    }
+
+    private Task<Result> PublishTrackPublishedAsync(
+        string roomName,
+        string? participantIdentity,
+        string trackId)
+    {
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.TrackPublished,
+            "meeting-service",
+            workspaceId: null,
+            new MeetingTrackPublishedEventPayload(
+                roomName,
+                participantIdentity,
+                trackId,
+                DateTime.UtcNow));
+        return _redisService.PublishEventAsync(
+            MeetingEventTypes.TrackPublished,
+            envelope);
     }
 
     public async Task<Result<bool>> RejectParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId)
@@ -528,19 +561,13 @@ public class MeetingRoomService : IMeetingRoomService
 
         await _unitOfWork.SaveChangesAsync();
 
-        // 1. Tell Provider (LiveKit) to disconnect them (Worker handles retry)
-        await _redisService.PublishEventAsync("meeting.kick_participant", new
-        {
-            RoomName = meetingRoom.ProviderRoomName,
-            ParticipantIdentity = participantUserId.ToString()
-        });
-
-        // 2. Tell SignalR Hub to block Chat
-        await _redisService.PublishEventAsync("meeting.chat.participant_kicked", new
-        {
-            RoomId = meetingRoom.Id.ToString(),
-            ParticipantUserId = participantUserId.ToString()
-        });
+        var removeResult = await _roomAdminService.RemoveParticipantAsync(
+            meetingRoom.ProviderRoomName,
+            participantUserId.ToString());
+        if (!removeResult.IsSuccess)
+            return Result.Failure<bool>(
+                removeResult.Error ?? "Failed to remove participant from LiveKit.",
+                removeResult.ErrorCode);
 
         return Result.Success(true);
     }
@@ -579,26 +606,12 @@ public class MeetingRoomService : IMeetingRoomService
 
         await _unitOfWork.SaveChangesAsync();
 
-        // Publish to Provider (LiveKit) to end room
-        await _redisService.PublishEventAsync("meeting.end_room", new
-        {
-            RoomName = meetingRoom?.ProviderRoomName ?? translationRoomId.ToString()
-        });
-
-        // Finalize Artifacts and Stop Billing
-        await _redisService.PublishEventAsync("meeting.billing.stop", new
-        {
-            TranslationRoomId = translationRoomId.ToString(),
-            MeetingRoomId = meetingRoom?.Id.ToString() ?? Guid.Empty.ToString()
-        });
-
-        // WT-13: Notify other services (e.g. WorkspaceService, following the same
-        // "meeting.started" pub/sub pattern) that the meeting has ended.
-        await _redisService.PublishEventAsync("meeting.ended", new
-        {
-            TranslationRoomId = translationRoomId.ToString(),
-            WorkspaceId = roomDetails.WorkspaceId
-        });
+        var deleteRoomResult = await _roomAdminService.DeleteRoomAsync(
+            meetingRoom?.ProviderRoomName ?? translationRoomId.ToString());
+        if (!deleteRoomResult.IsSuccess)
+            return Result.Failure<bool>(
+                deleteRoomResult.Error ?? "Failed to end LiveKit room.",
+                deleteRoomResult.ErrorCode);
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from

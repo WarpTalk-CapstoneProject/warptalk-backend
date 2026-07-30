@@ -33,6 +33,37 @@ public record PaymentWebhookRequest(
     string TransactionId
 );
 
+public record CreateCheckoutSessionRequest(
+    Guid UserId,
+    Guid WorkspaceId,
+    decimal Amount,
+    string Currency,
+    string PaymentType,
+    string? PlanSlug = null,
+    string? BillingCycle = null
+);
+
+public record ResolvedCheckout(
+    Guid UserId,
+    Guid WorkspaceId,
+    decimal Amount,
+    string Currency,
+    string PaymentType,
+    string PlanSlug,
+    string BillingCycle,
+    string ProductName
+);
+
+public record CheckoutSessionDto(
+    string Id,
+    long? AmountTotal,
+    string Currency,
+    IReadOnlyDictionary<string, string> Metadata,
+    string PaymentStatus,
+    string Status,
+    string? PaymentIntentId
+);
+
 public class RefundDto
 {
     public string Id { get; set; } = string.Empty;
@@ -48,5 +79,4 @@ public record RefundPaymentRequest(
     decimal Amount,
     string Reason
 );
-
 

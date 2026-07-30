@@ -13,9 +13,8 @@ public class CreateBreakoutsRequest
 {
     public List<BreakoutGroupRequest> Groups { get; set; } = new();
 
-    /// <summary>Optional countdown length. When set, the frontend computes "time remaining"
-    /// from StartedAt + DurationSeconds itself (no server-side scheduled job — see
-    /// BreakoutsService.EndBreakoutsAsync doc for why auto-expiry is not enforced server-side).</summary>
+    /// <summary>Optional countdown length. The frontend renders the countdown while the
+    /// Meeting Service independently enforces expiry on the server.</summary>
     public int? DurationSeconds { get; set; }
 }
 

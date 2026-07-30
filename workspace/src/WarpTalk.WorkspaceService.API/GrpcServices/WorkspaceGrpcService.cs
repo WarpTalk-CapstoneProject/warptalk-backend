@@ -13,11 +13,16 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly ITranslationRoomClient _translationRoomClient;
 
-    public WorkspaceGrpcService(IUnitOfWork unitOfWork, IAuthIdentityClient authIdentity)
+    public WorkspaceGrpcService(
+        IUnitOfWork unitOfWork,
+        IAuthIdentityClient authIdentity,
+        ITranslationRoomClient translationRoomClient)
     {
         _unitOfWork = unitOfWork;
         _authIdentity = authIdentity;
+        _translationRoomClient = translationRoomClient;
     }
 
     public override async Task<GetWorkspaceMemberResponse> GetWorkspaceMemberDetails(
@@ -49,6 +54,31 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             IsActive = string.Equals(member.Status, "active", StringComparison.OrdinalIgnoreCase),
             CanCreateMeetings = member.CanCreateMeetings
         };
+    }
+
+    public override async Task<GetWorkspaceNamesResponse> GetWorkspaceNames(
+        GetWorkspaceNamesRequest request,
+        ServerCallContext context)
+    {
+        var workspaceIds = request.WorkspaceIds
+            .Select(value => Guid.TryParse(value, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var response = new GetWorkspaceNamesResponse();
+        if (workspaceIds.Length == 0)
+            return response;
+
+        var workspaces = await _unitOfWork.WorkspaceRepository.FindAsync(
+            workspace => workspaceIds.Contains(workspace.Id),
+            "",
+            context.CancellationToken);
+        response.Workspaces.AddRange(workspaces.Select(workspace => new WorkspaceNameItem
+        {
+            WorkspaceId = workspace.Id.ToString(),
+            WorkspaceName = workspace.Name
+        }));
+        return response;
     }
 
     public override async Task<ValidateMeetingCreationResponse> ValidateMeetingCreation(
@@ -126,10 +156,15 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             }
         }
 
-        // Active rooms check:
-        // Since we are only modifying the Workspace module, we simulate the active rooms check.
-        // Once TranslationRoomService has an active rooms count endpoint, we would call it.
-        // For now, we allow the request to pass.
+        var activeRoomCount = await _translationRoomClient.GetActiveRoomCountAsync(workspaceId, ct);
+        if (config.MaxActiveRooms > 0 && activeRoomCount >= config.MaxActiveRooms)
+        {
+            return new ValidateMeetingCreationResponse
+            {
+                IsAllowed = false,
+                ErrorMessage = $"Workspace active room limit ({config.MaxActiveRooms}) has been reached."
+            };
+        }
         
         return new ValidateMeetingCreationResponse
         {

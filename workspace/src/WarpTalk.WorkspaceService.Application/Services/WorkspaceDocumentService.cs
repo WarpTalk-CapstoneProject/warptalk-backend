@@ -120,6 +120,18 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             try
             {
                 await _unitOfWork.WorkspaceDocumentRepository.AddAsync(document, ct);
+                if (isOwnerOrAdmin && effectiveIsAiAllowed)
+                {
+                    await _eventPublisher.PublishDocumentUploadedAsync(
+                        document.Id,
+                        workspaceId,
+                        document.StorageKey,
+                        document.FileName,
+                        document.FileExtension,
+                        userId,
+                        document.ConfidentialityLevel,
+                        ct);
+                }
                 await _unitOfWork.SaveChangesAsync(ct);
             }
             catch
@@ -141,19 +153,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.UpdatedAt,
                 userId,
                 ct);
-
-            if (isOwnerOrAdmin && effectiveIsAiAllowed)
-            {
-                await _eventPublisher.PublishDocumentUploadedAsync(
-                    document.Id,
-                    workspaceId,
-                    document.StorageKey,
-                    document.FileName,
-                    document.FileExtension,
-                    userId,
-                    document.ConfidentialityLevel,
-                    ct);
-            }
 
             await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.UploadDocument, new { document.Name, document.ConfidentialityLevel }, _logger, ct);
 
@@ -593,20 +592,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.UpdatedAt = DateTime.UtcNow;
 
                 _unitOfWork.WorkspaceDocumentRepository.Update(document);
-                await _unitOfWork.SaveChangesAsync(ct);
-                await _eventPublisher.PublishDocumentLifecycleAsync(
-                    document.Id,
-                    workspaceId,
-                    document.Status,
-                    document.IngestionStatus,
-                    WorkspaceDocumentConstants.LifecycleEvents.Approved,
-                    document.UpdatedAt,
-                    userId,
-                    ct);
-
                 if (document.IsAiAllowed)
                 {
-                    // Publish event to Redis Stream for AI Ingestion
                     await _eventPublisher.PublishDocumentUploadedAsync(
                         document.Id,
                         workspaceId,
@@ -617,6 +604,16 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                         document.ConfidentialityLevel,
                         ct);
                 }
+                await _unitOfWork.SaveChangesAsync(ct);
+                await _eventPublisher.PublishDocumentLifecycleAsync(
+                    document.Id,
+                    workspaceId,
+                    document.Status,
+                    document.IngestionStatus,
+                    WorkspaceDocumentConstants.LifecycleEvents.Approved,
+                    document.UpdatedAt,
+                    userId,
+                    ct);
 
                 await _unitOfWork.AuditAsync(document.Id, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.ApproveDocument, logger: _logger, ct: ct);
             }
@@ -713,10 +710,9 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            // Publish deletion event to Redis Stream to invalidate embeddings
-            await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
             await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
@@ -769,10 +765,9 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
+            await _eventPublisher.PublishDocumentArchivedAsync(documentId, workspaceId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            // Publish archived event to Redis Stream to clean up embeddings from Qdrant
-            await _eventPublisher.PublishDocumentArchivedAsync(documentId, workspaceId, ct);
             await _eventPublisher.PublishDocumentLifecycleAsync(
                 document.Id,
                 workspaceId,
@@ -837,21 +832,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             document.UpdatedAt = DateTime.UtcNow;
 
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
-            await _unitOfWork.SaveChangesAsync(ct);
-            await _eventPublisher.PublishDocumentLifecycleAsync(
-                document.Id,
-                workspaceId,
-                document.Status,
-                document.IngestionStatus,
-                WorkspaceDocumentConstants.LifecycleEvents.Restored,
-                document.UpdatedAt,
-                userId,
-                ct);
-
-            // Administrative documents never enter the AI ingestion pipeline.
             if (document.IsAiAllowed)
             {
-                // Re-publish upload event to trigger security scan and Qdrant index refresh.
                 await _eventPublisher.PublishDocumentUploadedAsync(
                     document.Id,
                     workspaceId,
@@ -862,6 +844,16 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     document.ConfidentialityLevel,
                     ct);
             }
+            await _unitOfWork.SaveChangesAsync(ct);
+            await _eventPublisher.PublishDocumentLifecycleAsync(
+                document.Id,
+                workspaceId,
+                document.Status,
+                document.IngestionStatus,
+                WorkspaceDocumentConstants.LifecycleEvents.Restored,
+                document.UpdatedAt,
+                userId,
+                ct);
 
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.RestoreDocument, logger: _logger, ct: ct);
 

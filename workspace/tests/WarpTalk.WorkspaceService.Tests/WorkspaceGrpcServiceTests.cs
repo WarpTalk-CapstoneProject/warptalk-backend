@@ -20,6 +20,7 @@ public class WorkspaceGrpcServiceTests
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
+    private readonly ITranslationRoomClient _translationRoomClient;
     private readonly WorkspaceGrpcService _service;
     private readonly ServerCallContext _context;
 
@@ -27,7 +28,8 @@ public class WorkspaceGrpcServiceTests
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
-        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity);
+        _translationRoomClient = Substitute.For<ITranslationRoomClient>();
+        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity, _translationRoomClient);
         _context = new TestServerCallContext(CancellationToken.None);
     }
 
@@ -91,6 +93,28 @@ public class WorkspaceGrpcServiceTests
 
         // Assert
         Assert.False(response.IsMember);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceNames_ReturnsOnlyExistingWorkspaces()
+    {
+        var firstId = Guid.NewGuid();
+        var missingId = Guid.NewGuid();
+        _unitOfWork.WorkspaceRepository
+            .FindAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new[]
+            {
+                new Workspace { Id = firstId, Name = "WarpTalk Team" }
+            });
+        var request = new GetWorkspaceNamesRequest();
+        request.WorkspaceIds.Add(firstId.ToString());
+        request.WorkspaceIds.Add(missingId.ToString());
+
+        var response = await _service.GetWorkspaceNames(request, _context);
+
+        Assert.Single(response.Workspaces);
+        Assert.Equal(firstId.ToString(), response.Workspaces[0].WorkspaceId);
+        Assert.Equal("WarpTalk Team", response.Workspaces[0].WorkspaceName);
     }
 
     [Fact]
@@ -207,6 +231,49 @@ public class WorkspaceGrpcServiceTests
         // Assert
         Assert.False(response.IsAllowed);
         Assert.Contains("not allowed", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldDeny_WhenWorkspaceReachedActiveRoomLimit()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"MaxActiveRooms\":2}"
+        };
+
+        _unitOfWork.WorkspaceMemberRepository
+            .FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(member);
+        _unitOfWork.WorkspaceRepository
+            .GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(2);
+
+        var response = await _service.ValidateMeetingCreation(
+            new ValidateMeetingCreationRequest
+            {
+                WorkspaceId = workspaceId.ToString(),
+                UserId = userId.ToString()
+            },
+            _context);
+
+        Assert.False(response.IsAllowed);
+        Assert.Contains("active room limit", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -358,10 +425,10 @@ public class WorkspaceGrpcServiceTests
         protected override CancellationToken CancellationTokenCore => _cancellationToken;
         protected override Metadata ResponseTrailersCore => new Metadata();
         protected override Status StatusCore { get; set; }
-        protected override WriteOptions WriteOptionsCore { get; set; }
+        protected override WriteOptions? WriteOptionsCore { get; set; }
         protected override AuthContext AuthContextCore => null!;
 
-        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions options) => null!;
+        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions? options) => null!;
         protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders) => Task.CompletedTask;
     }
 }

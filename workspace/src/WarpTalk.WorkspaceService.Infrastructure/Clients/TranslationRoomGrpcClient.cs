@@ -111,4 +111,15 @@ public class TranslationRoomGrpcClient : ITranslationRoomClient
             return new List<TranslationRoomParticipantDto>();
         }
     }
+
+    public async Task<int> GetActiveRoomCountAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        var response = await _client.GetActiveRoomCountByWorkspaceAsync(
+            new GetActiveRoomCountByWorkspaceRequest
+            {
+                WorkspaceId = workspaceId.ToString()
+            },
+            cancellationToken: ct);
+        return response.Count;
+    }
 }

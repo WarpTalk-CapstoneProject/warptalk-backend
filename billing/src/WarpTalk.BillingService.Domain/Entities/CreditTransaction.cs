@@ -48,6 +48,10 @@ public partial class CreditTransaction
 
     public string? IdempotencyKey { get; set; }
 
+    public string? CorrelationId { get; set; }
+
+    public string Status { get; set; } = "committed";
+
     public Guid? TriggeredByParticipantId { get; set; }
 
     /// <summary>

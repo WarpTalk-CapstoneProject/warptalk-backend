@@ -1,17 +1,22 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
+using WarpTalk.MeetingService.Infrastructure.Extensions;
 using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
 using WarpTalk.Shared.Protos;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
 
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddWarpTalkObservability(
+    builder.Configuration,
+    builder.Environment,
+    "warptalk-meeting");
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -38,6 +43,7 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
         StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
     builder.Services.AddSingleton<IRedisService, RedisService>();
+    builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService>();
 }
 
 var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("DefaultConnection"));
@@ -59,25 +65,16 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(dataSource));
+builder.Services.AddWarpTalkServiceHealthChecks<MeetingDbContext>(
+    "meeting-database");
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+builder.Services.AddWarpTalkJwtAuthentication(
+    builder.Configuration,
+    builder.Environment,
+    options =>
     {
-        var jwtSecret = builder.Configuration["Jwt:Secret"] ?? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!";
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtSecret)),
-            ClockSkew = TimeSpan.FromSeconds(30)
-        };
-
         // SignalR: Extract JWT from query string for WebSocket handshake
-        options.Events = new JwtBearerEvents
+        options.Events = new Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
@@ -101,6 +98,7 @@ builder.Services.AddSignalR();
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
 builder.Services.AddHttpClient<ILiveKitEgressService, LiveKitEgressService>();
+builder.Services.AddHttpClient<ILiveKitRoomAdminService, LiveKitRoomAdminService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
@@ -111,6 +109,7 @@ builder.Services.AddScoped<IQuestionsService, QuestionsService>();
 
 // Breakout rooms (scoped-down)
 builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.BreakoutExpiryWorker>();
 
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
@@ -124,7 +123,7 @@ builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAs
 builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
-builder.Services.AddScoped<IMeetingChatFileStorage, WarpTalk.MeetingService.Infrastructure.Storage.LocalMeetingChatFileStorage>();
+builder.Services.AddMeetingChatFileStorage(builder.Configuration, builder.Environment);
 builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 
 // History service
@@ -132,21 +131,22 @@ builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
-builder.Services.AddHostedService<WarpTalk.MeetingService.Infrastructure.Workers.FractionalBillingWorker>();
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:TranslationRoomService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:TranslationRoomService is missing in configuration.");
     o.Address = new Uri(url);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
 {
     var url = builder.Configuration["GrpcUrls:BillingService"];
     if (string.IsNullOrEmpty(url)) throw new Exception("GrpcUrls:BillingService is missing in configuration.");
     o.Address = new Uri(url);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
@@ -164,5 +164,6 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub");
+app.MapWarpTalkServiceHealthChecks();
 
 app.Run();

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.API.Common;
+using WarpTalk.BillingService.API.Filters;
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.Application;
 using WarpTalk.BillingService.Application.DTOs;
@@ -22,18 +23,15 @@ public class BillingController : ControllerBase
 
     private readonly IBillingService _billingService;
     private readonly ILogger<BillingController> _logger;
-    private readonly IWorkspaceValidationService _workspaceValidationService;
     private readonly IIdempotencyService _idempotencyService;
 
     public BillingController(
         IBillingService billingService,
         ILogger<BillingController> logger,
-        IWorkspaceValidationService workspaceValidationService,
         IIdempotencyService idempotencyService)
     {
         _billingService = billingService;
         _logger = logger;
-        _workspaceValidationService = workspaceValidationService;
         _idempotencyService = idempotencyService;
     }
 
@@ -80,6 +78,7 @@ public class BillingController : ControllerBase
     /// - 500 Service Unavailable: Database or service error
     /// </remarks>
     [HttpGet("workspaces/{workspaceId:guid}/credits")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(WorkspaceCreditsDto), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -90,7 +89,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
             var result = await _billingService.GetWorkspaceCreditsAsync(workspaceId, ct);
             return result.IsSuccess
                 ? Ok(result.Value)
@@ -101,11 +99,11 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
@@ -129,6 +127,7 @@ public class BillingController : ControllerBase
     /// - 500 Service Unavailable: Error
     /// </remarks>
     [HttpGet("workspaces/{workspaceId:guid}/subscriptions/active")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(SubscriptionDto), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -139,7 +138,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
             var result = await _billingService.GetActiveSubscriptionAsync(workspaceId, ct);
             return result.IsSuccess
                 ? Ok(result.Value)
@@ -150,11 +148,11 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
@@ -184,7 +182,7 @@ public class BillingController : ControllerBase
     /// - 500 Service Unavailable: Error
     /// </remarks>
     [HttpPost("workspaces/{workspaceId:guid}/subscriptions")]
-    [AllowAnonymous]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(SubscriptionDto), 201)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -197,8 +195,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-
             if (!ModelState.IsValid)
                 return BadRequest(new ApiErrorResponse(BillingErrorMessages.VALIDATION_FAILED, BillingErrorCodes.VALIDATION_FAILED));
 
@@ -215,110 +211,17 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error creating subscription for workspace {WorkspaceId}", workspaceId);
-            return StatusCode(500, new ApiErrorResponse(BillingErrorMessages.GetMessage(BillingErrorCodes.SERVICE_UNAVAILABLE), BillingErrorCodes.SERVICE_UNAVAILABLE));
-        }
-    }
-
-    /// <summary>Top-up credits for workspace</summary>
-    /// <remarks>
-    /// Adds credits to active subscription. Requires billing_admin role or workspace access.
-    /// Supports idempotency via Idempotency-Key header to prevent duplicate charges.
-    /// 
-    /// **Request Validation:**
-    /// - Amount must be > 0
-    /// - Workspace must have active subscription
-    /// 
-    /// **Idempotency:**
-    /// - Include Idempotency-Key header for idempotent requests
-    /// - Duplicate request returns cached response (HTTP 200)
-    /// 
-    /// **Status Codes:**
-    /// - 200 OK: Credits added, returns updated balance
-    /// - 400 Bad Request: Invalid amount (≤ 0) or workspace ID
-    /// - 403 Forbidden: Unauthorized access
-    /// - 404 Not Found: No active subscription
-    /// - 409 Conflict: Concurrency error, retry
-    /// - 500 Service Unavailable: Error
-    /// </remarks>
-    [HttpPost("workspaces/{workspaceId:guid}/credits/topup")]
-    [Authorize]
-    [ProducesResponseType(typeof(WorkspaceCreditsDto), 200)]
-    [ProducesResponseType(typeof(ApiErrorResponse), 400)]
-    [ProducesResponseType(typeof(ApiErrorResponse), 403)]
-    [ProducesResponseType(typeof(ApiErrorResponse), 404)]
-    [ProducesResponseType(typeof(ApiErrorResponse), 409)]
-    [ProducesResponseType(typeof(ApiErrorResponse), 500)]
-    [Produces("application/json")]
-    [Consumes("application/json")]
-    public async Task<IActionResult> TopUpCredits(Guid workspaceId, [FromBody] TopUpCreditsRequest request, CancellationToken ct)
-    {
-        const string operation = "topup-credits";
-
-        try
-        {
-            if (!User.IsInRole("billing_admin"))
-            {
-                await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-            }
-
-            if (!ModelState.IsValid)
-                return BadRequest(new ApiErrorResponse(BillingErrorMessages.VALIDATION_FAILED, BillingErrorCodes.VALIDATION_FAILED));
-
-            var idempotencyKey = Request.Headers["Idempotency-Key"].FirstOrDefault();
-            var requestHash = PersistentIdempotencyService.HashPayload($"{operation}:{workspaceId}:{request.Amount}");
-
-            if (!string.IsNullOrWhiteSpace(idempotencyKey))
-            {
-                var cached = await _idempotencyService.GetResponseJsonAsync(idempotencyKey, operation, requestHash, ct);
-                if (!string.IsNullOrWhiteSpace(cached))
-                {
-                    var cachedDto = JsonSerializer.Deserialize<WorkspaceCreditsDto>(cached, JsonOptions);
-                    return Ok(cachedDto);
-                }
-            }
-
-            var result = await _billingService.TopUpCreditsAsync(workspaceId, request.Amount, "topup", null, ct);
-            if (!result.IsSuccess)
-                return StatusCode(result.ErrorCode == BillingErrorCodes.SUBSCRIPTION_NOT_FOUND ? 404 : 400,
-                    new ApiErrorResponse(result.Error ?? BillingErrorMessages.GetMessage(result.ErrorCode ?? string.Empty), result.ErrorCode ?? BillingErrorCodes.SERVICE_UNAVAILABLE));
-
-            if (!string.IsNullOrWhiteSpace(idempotencyKey) && result.Value is not null)
-            {
-                await _idempotencyService.StoreResponseJsonAsync(idempotencyKey, operation, requestHash, JsonSerializer.Serialize(result.Value, JsonOptions), workspaceId, ct);
-            }
-
-            return Ok(result.Value);
-        }
-        catch (ArgumentException)
-        {
-            return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
-        }
-        catch (KeyNotFoundException ex)
-        {
-            return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Conflict(new ApiErrorResponse(BillingErrorMessages.CONCURRENCY_CONFLICT, BillingErrorCodes.CONCURRENCY_CONFLICT));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error topping up credits for workspace {WorkspaceId}", workspaceId);
             return StatusCode(500, new ApiErrorResponse(BillingErrorMessages.GetMessage(BillingErrorCodes.SERVICE_UNAVAILABLE), BillingErrorCodes.SERVICE_UNAVAILABLE));
         }
     }
@@ -352,6 +255,7 @@ public class BillingController : ControllerBase
     /// - Concurrent requests handled with optimistic locking
     /// </remarks>
     [HttpPost("workspaces/{workspaceId:guid}/credits/consume")]
+    [Authorize(Roles = "Admin,billing_admin")]
     [ProducesResponseType(typeof(WorkspaceCreditsDto), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 402)]
@@ -367,8 +271,6 @@ public class BillingController : ControllerBase
 
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-
             if (!ModelState.IsValid)
                 return BadRequest(new ApiErrorResponse(BillingErrorMessages.VALIDATION_FAILED, BillingErrorCodes.VALIDATION_FAILED));
 
@@ -405,15 +307,15 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
             return Conflict(new ApiErrorResponse(BillingErrorMessages.CONCURRENCY_CONFLICT, BillingErrorCodes.CONCURRENCY_CONFLICT));
         }
@@ -456,6 +358,7 @@ public class BillingController : ControllerBase
     /// ```
     /// </remarks>
     [HttpGet("workspaces/{workspaceId:guid}/credits/history")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(PaginatedResponse<CreditTransactionDto>), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -466,8 +369,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-
             var result = await _billingService.GetCreditHistoryAsync(workspaceId, pageNumber, pageSize, ct);
             return result.IsSuccess
                 ? Ok(result.Value)
@@ -477,11 +378,11 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
@@ -524,6 +425,7 @@ public class BillingController : ControllerBase
     /// ```
     /// </remarks>
     [HttpGet("workspaces/{workspaceId:guid}/transactions")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(PaginatedResponse<TransactionDto>), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -534,8 +436,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-
             var result = await _billingService.GetTransactionHistoryAsync(workspaceId, pageNumber, pageSize, ct);
             return result.IsSuccess
                 ? Ok(result.Value)
@@ -545,11 +445,11 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }
@@ -581,6 +481,7 @@ public class BillingController : ControllerBase
     /// - Workspace can create new subscription after cancellation
     /// </remarks>
     [HttpPost("workspaces/{workspaceId:guid}/subscriptions/cancel")]
+    [RequireWorkspaceRole("Owner", "Admin")]
     [ProducesResponseType(typeof(WorkspaceCreditsDto), 200)]
     [ProducesResponseType(typeof(ApiErrorResponse), 400)]
     [ProducesResponseType(typeof(ApiErrorResponse), 403)]
@@ -592,8 +493,6 @@ public class BillingController : ControllerBase
     {
         try
         {
-            await _workspaceValidationService.ValidateAsync(workspaceId, User, ct);
-
             var result = await _billingService.CancelSubscriptionAsync(workspaceId, request.CancellationReason, ct);
             return result.IsSuccess
                 ? Ok(result.Value)
@@ -604,11 +503,11 @@ public class BillingController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(BillingErrorMessages.INVALID_WORKSPACE_ID, BillingErrorCodes.INVALID_WORKSPACE_ID));
         }
-        catch (KeyNotFoundException ex)
+        catch (KeyNotFoundException)
         {
             return NotFound(new ApiErrorResponse(BillingErrorMessages.WORKSPACE_NOT_FOUND, BillingErrorCodes.WORKSPACE_NOT_FOUND));
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(403, new ApiErrorResponse(BillingErrorMessages.ACCESS_DENIED, BillingErrorCodes.VALIDATION_FAILED));
         }

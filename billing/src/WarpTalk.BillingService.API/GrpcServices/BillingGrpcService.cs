@@ -1,7 +1,9 @@
 using Grpc.Core;
+using System.Text.Json;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.BillingService.API.GrpcServices;
 
@@ -95,35 +97,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         {
             Success = true,
             NewBalance = result.Value!.BalanceAfter
-        };
-    }
-
-    public override async Task<Shared.Protos.GetCreditsResponse> TopUpCredits(
-        Shared.Protos.TopUpRequest request, ServerCallContext context)
-    {
-        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid workspace_id."));
-
-        Guid.TryParse(request.ReferenceId, out var refId);
-
-        var result = await _creditService.TopUpCreditsAsync(workspaceId, new TopUpRequest(
-            request.Amount,
-            request.ReferenceType,
-            refId == Guid.Empty ? null : refId
-        ), context.CancellationToken);
-
-        if (!result.IsSuccess)
-            throw new RpcException(new Status(StatusCode.NotFound, result.Error ?? "TopUp failed."));
-
-        var dto = result.Value!;
-        return new Shared.Protos.GetCreditsResponse
-        {
-            WorkspaceId = request.WorkspaceId,
-            CurrentCredits = dto.CurrentCredits,
-            Status = dto.Status,
-            CreditsUsedThisCycle = dto.CreditsUsedThisCycle,
-            CurrentPeriodStart = dto.CurrentPeriodStart.ToString("O"),
-            CurrentPeriodEnd = dto.CurrentPeriodEnd.ToString("O")
         };
     }
 
@@ -438,7 +411,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
     }
 
     private async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentSuccessInternal(
-        Shared.Protos.ProcessPaymentEventRequest request, ServerCallContext context)
+        Shared.Protos.ProcessPaymentEventRequest request, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
             return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Invalid workspace_id." };
@@ -449,13 +422,13 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
             s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
-            context.CancellationToken);
+            cancellationToken);
 
         if (sub == null)
         {
             var oldSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
                 s => s.WorkspaceId == workspaceId && s.DeletedAt == null,
-                context.CancellationToken);
+                cancellationToken);
 
             if (oldSub == null)
             {
@@ -492,7 +465,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                     UpdatedAt = DateTime.UtcNow
                 };
                 await _unitOfWork.SubscriptionRepository.AddAsync(sub);
-                await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
             }
             else
             {
@@ -516,7 +489,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             }
         }
 
-        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, context.CancellationToken);
+        var planResult = await _planService.GetPlanByIdAsync(sub.PlanId, cancellationToken);
         if (!planResult.IsSuccess || planResult.Value == null)
         {
             return new Shared.Protos.ProcessPaymentResponse { Success = false, ErrorMessage = "Plan not found." };
@@ -561,7 +534,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
             p => p.ProviderTransactionId == providerTxId,
-            context.CancellationToken
+            cancellationToken
         );
 
         if (existingPayment == null)
@@ -648,6 +621,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                 CreatedAt = DateTime.UtcNow
             };
             await _unitOfWork.InvoiceRepository.AddAsync(invoice);
+            await EnqueuePaymentEventAsync(request, cancellationToken);
 
             _logger.LogInformation("Successfully updated subscription and added credits for Workspace {WorkspaceId} via gRPC", workspaceId);
         }
@@ -656,26 +630,26 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             _logger.LogInformation("Payment already processed for Stripe Session {SessionId}", request.StripeSessionId);
         }
 
-        await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", workspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
     }
 
     private async Task ProcessPaymentRefundOrDisputeInternal(
-        WarpTalk.BillingService.Domain.Entities.Payment payment, ServerCallContext context)
+        WarpTalk.BillingService.Domain.Entities.Payment payment, CancellationToken cancellationToken)
     {
         _logger.LogInformation("Processing refund/dispute for Payment {PaymentId}, ProviderTxId: {ProviderTxId}", payment.Id, payment.ProviderTransactionId);
 
         var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
             s => s.Id == payment.SubscriptionId,
-            context.CancellationToken);
+            cancellationToken);
 
         if (sub == null) return;
 
         var creditedTx = await _unitOfWork.CreditTransactionRepository.FirstOrDefaultAsync(
             tx => tx.ReferenceId == payment.Id && tx.Type == "top_up" && tx.SubscriptionId == sub.Id,
-            context.CancellationToken);
+            cancellationToken);
 
         if (creditedTx == null)
         {
@@ -722,6 +696,11 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
     public override async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentEvent(
         Shared.Protos.ProcessPaymentEventRequest request, ServerCallContext context)
+        => await ProcessPaymentEventCoreAsync(request, context.CancellationToken);
+
+    public async Task<Shared.Protos.ProcessPaymentResponse> ProcessPaymentEventCoreAsync(
+        Shared.Protos.ProcessPaymentEventRequest request,
+        CancellationToken cancellationToken = default)
     {
         var providerTxId = string.IsNullOrEmpty(request.ProviderTransactionId) ? request.StripeSessionId : request.ProviderTransactionId;
         if (string.IsNullOrEmpty(providerTxId))
@@ -733,14 +712,14 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         var existingPayment = await _unitOfWork.PaymentRepository.FirstOrDefaultAsync(
             p => p.ProviderTransactionId == providerTxId,
-            context.CancellationToken);
+            cancellationToken);
 
         if (existingPayment != null)
         {
             if (existingPayment.Status == request.Status)
             {
                 _logger.LogInformation("Payment {ProviderTxId} already in status {Status}. Ignoring (Idempotent).", providerTxId, request.Status);
-                await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
                 _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
                 return new Shared.Protos.ProcessPaymentResponse { Success = true };
@@ -756,13 +735,12 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
             if (request.Status == "refunded" || request.Status == "disputed")
             {
-                await ProcessPaymentRefundOrDisputeInternal(existingPayment, context);
+                await ProcessPaymentRefundOrDisputeInternal(existingPayment, cancellationToken);
             }
 
+            await EnqueuePaymentEventAsync(request, cancellationToken);
 
-
-            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
-            await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
             return new Shared.Protos.ProcessPaymentResponse { Success = true };
@@ -770,7 +748,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
         if (request.Status == "paid")
         {
-            return await ProcessPaymentSuccessInternal(request, context);
+            return await ProcessPaymentSuccessInternal(request, cancellationToken);
         }
 
         if (request.Status == "cancelled" && !string.IsNullOrEmpty(request.WorkspaceId))
@@ -779,7 +757,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
                     s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
-                    context.CancellationToken);
+                    cancellationToken);
 
                 if (sub != null)
                 {
@@ -787,7 +765,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                     sub.Status = "cancelled";
                     sub.CancelledAt = DateTime.UtcNow;
                     _unitOfWork.SubscriptionRepository.Update(sub);
-                    await _unitOfWork.SaveChangesAsync(context.CancellationToken);
                     _logger.LogWarning("Subscription for Workspace {WorkspaceId} cancelled via Stripe webhook.", workspaceId);
                 }
             }
@@ -800,7 +777,7 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
             {
                 var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
                     s => s.WorkspaceId == workspaceId && s.DeletedAt == null && s.IsActive,
-                    context.CancellationToken);
+                    cancellationToken);
 
                 if (sub != null)
                 {
@@ -821,13 +798,16 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow
                     };
-                    await _unitOfWork.PaymentRepository.AddAsync(paymentTx, context.CancellationToken);
-                    await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+                    await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
+                    await EnqueuePaymentEventAsync(request, cancellationToken);
                 }
             }
         }
 
-        await _unitOfWork.SaveChangesAsync(context.CancellationToken);
+        if (request.Status == "cancelled")
+            await EnqueuePaymentEventAsync(request, cancellationToken);
+
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Successfully saved billing database changes for Workspace {WorkspaceId}", request.WorkspaceId);
 
         return new Shared.Protos.ProcessPaymentResponse { Success = true };
@@ -835,6 +815,58 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
 
     // ─── Private helpers ──────────────────────────────────────────────────
+
+    private async Task EnqueuePaymentEventAsync(
+        Shared.Protos.ProcessPaymentEventRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            return;
+
+        var eventId = Guid.NewGuid();
+        var eventType = BillingEventTypes.ForStatus(request.Status);
+        var payload = new BillingPaymentEventPayload(
+            string.IsNullOrWhiteSpace(request.ProviderTransactionId)
+                ? request.StripeSessionId
+                : request.ProviderTransactionId,
+            request.StripeSessionId,
+            request.Status,
+            (decimal)request.Amount,
+            request.Currency ?? string.Empty,
+            request.PaymentType ?? string.Empty,
+            request.UserId ?? string.Empty,
+            request.WorkspaceId,
+            request.PlanSlug ?? string.Empty,
+            request.BillingCycle ?? string.Empty,
+            string.IsNullOrWhiteSpace(request.FailureReason)
+                ? null
+                : request.FailureReason);
+
+        var envelope = new EventEnvelope<BillingPaymentEventPayload>(
+            eventId,
+            eventType,
+            1,
+            DateTime.UtcNow,
+            "billing-service",
+            null,
+            payload.ProviderTransactionId,
+            request.WorkspaceId,
+            payload);
+
+        await _unitOfWork.OutboxMessages.AddAsync(new WarpTalk.BillingService.Domain.Entities.OutboxMessage
+        {
+            Id = eventId,
+            EventType = eventType,
+            SchemaVersion = envelope.SchemaVersion,
+            OccurredAt = envelope.OccurredAt,
+            Producer = envelope.Producer,
+            CausationId = envelope.CausationId,
+            WorkspaceId = workspaceId,
+            PayloadJson = JsonSerializer.Serialize(envelope),
+            AvailableAt = DateTime.UtcNow,
+            CreatedAt = DateTime.UtcNow
+        }, cancellationToken);
+    }
 
     private static Shared.Protos.SubscriptionResponse ToSubscriptionResponse(SubscriptionDto dto) => new()
     {

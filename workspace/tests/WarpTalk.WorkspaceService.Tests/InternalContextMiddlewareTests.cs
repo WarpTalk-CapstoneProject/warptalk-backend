@@ -89,6 +89,7 @@ public class InternalContextMiddlewareTests
         // Assert
         await _next.Received(1).Invoke(context);
         Assert.NotNull(context.User);
+        Assert.NotNull(context.User.Identity);
         Assert.True(context.User.Identity.IsAuthenticated);
         var subClaim = context.User.FindFirst("sub")?.Value ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         Assert.Equal(userId.ToString(), subClaim);

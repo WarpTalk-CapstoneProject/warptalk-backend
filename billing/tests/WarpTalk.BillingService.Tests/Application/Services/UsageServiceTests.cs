@@ -11,7 +11,8 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -24,7 +25,6 @@ public class UsageServiceTests
     private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IConfiguration> _mockConfig;
     private readonly UsageService _usageService;
 
     public UsageServiceTests()
@@ -34,13 +34,6 @@ public class UsageServiceTests
         _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockConfig = new Mock<IConfiguration>();
-
-        _mockConfig.Setup(c => c["BillingRates:SttPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:TranslationPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:StandardTtsPerMinute"]).Returns("15.0");
-        _mockConfig.Setup(c => c["BillingRates:VoiceClonePerMinute"]).Returns("40.0");
-
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
         _mockUnitOfWork.Setup(u => u.UsageRecordRepository).Returns(_mockUsageRepo.Object);
@@ -49,7 +42,15 @@ public class UsageServiceTests
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<UsageService>>().Object,
-            _mockConfig.Object);
+            Options.Create(new BillingRatesOptions
+            {
+                SttPerMinute = 15.0,
+                TranslationPerMinute = 15.0,
+                StandardTtsPerMinute = 15.0,
+                VoiceClonePerMinute = 40.0,
+                AiSummaryPerRequest = 5.0,
+                AiChatPerRequest = 2.0
+            }));
     }
 
     [Fact]

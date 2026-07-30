@@ -140,6 +140,10 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateParticipant(_hostId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+        _redisMock.Setup(r => r.PublishStreamMessageAsync(
+                "assistant:chat_requests",
+                It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
 
         var request = new SendMeetingChatMessageRequest { OriginalText = "hello host", OriginalLanguage = "en" };
         var result = await _sut.SendMessageAsync(_roomId, _hostId, request);
@@ -180,6 +184,10 @@ public class MeetingChatServiceTests
             .ReturnsAsync(CreateParticipant(_userId));
 
         _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+        _redisMock.Setup(r => r.PublishStreamMessageAsync(
+                "assistant:chat_requests",
+                It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
 
         var request = new SendMeetingChatMessageRequest
         {
@@ -194,8 +202,63 @@ public class MeetingChatServiceTests
         var result = await _sut.SendMessageAsync(_roomId, _userId, request);
 
         Assert.True(result.IsSuccess);
-        _redisMock.Verify(r => r.PublishEventAsync("meeting.chat.assistant_requested", It.IsAny<object>()), Times.Once);
+        _redisMock.Verify(r => r.PublishStreamMessageAsync(
+            "assistant:chat_requests",
+            It.Is<Dictionary<string, string>>(fields =>
+                fields["request_id"] != string.Empty
+                && fields["conversation_id"] != string.Empty
+                && fields["origin"] == "meeting_chat"
+                && fields.ContainsKey("history_json"))), Times.Once);
         _assistantRepoMock.Verify(r => r.AddAsync(It.IsAny<MeetingChatAssistantRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_WhenAssistantStreamIsUnavailable_KeepsUserMessageAndPersistsFailureReply()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingRoom, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom());
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateParticipant(_userId));
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+        _redisMock.Setup(r => r.PublishStreamMessageAsync(
+                "assistant:chat_requests",
+                It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Failure("offline", "REDIS_ERROR"));
+
+        var persistedMessages = new List<MeetingChatMessage>();
+        _chatMessageRepoMock.Setup(r => r.AddAsync(
+                It.IsAny<MeetingChatMessage>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<MeetingChatMessage, CancellationToken>((message, _) => persistedMessages.Add(message))
+            .Returns(Task.CompletedTask);
+
+        var request = new SendMeetingChatMessageRequest
+        {
+            OriginalText = "@WarpBot summarize",
+            OriginalLanguage = "en",
+            Mentions =
+            [
+                new ChatMentionDto { Id = "warpbot", Display = "WarpBot", Type = "agent" }
+            ]
+        };
+
+        var result = await _sut.SendMessageAsync(_roomId, _userId, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(persistedMessages, message =>
+            message.SenderType == "assistant"
+            && message.MessageType == "assistant_response"
+            && message.OriginalText.Contains("unavailable", StringComparison.OrdinalIgnoreCase));
+        _notifierMock.Verify(n => n.BroadcastMessageReceivedAsync(
+            _roomId,
+            It.Is<MeetingChatMessageDto>(message => message.SenderType == "assistant"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // --- ModerateMessage Tests ---

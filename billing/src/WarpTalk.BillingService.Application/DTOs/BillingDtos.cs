@@ -100,11 +100,6 @@ public record CreateSubscriptionRequest(
     [Required(ErrorMessage = "Plan ID is required")]
     Guid PlanId);
 
-public record TopUpCreditsRequest(
-    [Required(ErrorMessage = "Amount is required")]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be greater than 0")]
-    int Amount);
-
 public record CancelSubscriptionRequest(
     string? CancellationReason = null);
 

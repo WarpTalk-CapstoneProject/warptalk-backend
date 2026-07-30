@@ -16,11 +16,16 @@ public class InvoiceService : IInvoiceService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<InvoiceService> _logger;
+    private readonly IWorkspaceDirectory? _workspaceDirectory;
 
-    public InvoiceService(IUnitOfWork unitOfWork, ILogger<InvoiceService> logger)
+    public InvoiceService(
+        IUnitOfWork unitOfWork,
+        ILogger<InvoiceService> logger,
+        IWorkspaceDirectory? workspaceDirectory = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _workspaceDirectory = workspaceDirectory;
     }
 
     public async Task<Result<PagedResult<InvoiceDto>>> GetInvoicesAsync(
@@ -119,22 +124,11 @@ public class InvoiceService : IInvoiceService
             try
             {
                 var workspaceIds = items.Select(i => i.Payment.Subscription.WorkspaceId).Distinct().ToArray();
-                if (workspaceIds.Length > 0)
+                if (workspaceIds.Length > 0 && _workspaceDirectory is not null)
                 {
-                    var connection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                    if (connection.State != System.Data.ConnectionState.Open)
-                        await connection.OpenAsync(cancellationToken);
-
-                    using var command = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)", connection);
-                    command.Parameters.AddWithValue("ids", workspaceIds);
-
-                    using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                    var workspaceNames = new Dictionary<Guid, string>();
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        workspaceNames.Add(reader.GetFieldValue<Guid>(0), reader.GetString(1));
-                    }
+                    var workspaceNames = await _workspaceDirectory.GetNamesAsync(
+                        workspaceIds,
+                        cancellationToken);
 
                     foreach (var dto in dtos)
                     {

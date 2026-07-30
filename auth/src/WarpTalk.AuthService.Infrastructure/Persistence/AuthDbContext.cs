@@ -246,6 +246,11 @@ public partial class AuthDbContext : DbContext
                 .HasColumnName("email");
             entity.Property(e => e.EmailVerified).HasColumnName("email_verified");
             entity.Property(e => e.EmailVerifiedAt).HasColumnName("email_verified_at");
+            entity.Property(e => e.EmailVerificationTokenHash)
+                .HasMaxLength(64)
+                .HasColumnName("email_verification_token_hash");
+            entity.Property(e => e.EmailVerificationTokenExpiresAt)
+                .HasColumnName("email_verification_token_expires_at");
             entity.Property(e => e.FailedLoginAttempts).HasColumnName("failed_login_attempts");
             entity.Property(e => e.FullName)
                 .HasMaxLength(150)
@@ -265,6 +270,11 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.PasswordHash)
                 .HasMaxLength(255)
                 .HasColumnName("password_hash");
+            entity.Property(e => e.PasswordResetTokenHash)
+                .HasMaxLength(64)
+                .HasColumnName("password_reset_token_hash");
+            entity.Property(e => e.PasswordResetTokenExpiresAt)
+                .HasColumnName("password_reset_token_expires_at");
             entity.Property(e => e.Phone)
                 .HasMaxLength(20)
                 .HasColumnName("phone");

@@ -73,6 +73,7 @@ public class ProfileServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("Active User", result.Value.FullName);
     }
 
@@ -98,6 +99,7 @@ public class ProfileServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("Pending User", result.Value.FullName);
     }
 
@@ -206,6 +208,7 @@ public class ProfileServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("New Name", result.Value.FullName);
         Assert.Equal("0987654321", result.Value.Phone);
         _userRepository.Received(1).Update(user);

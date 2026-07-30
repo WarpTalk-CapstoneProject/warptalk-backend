@@ -40,7 +40,8 @@ public class MeetingChatController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> SendMessage(Guid roomId, [FromBody] SendMeetingChatMessageRequest request, CancellationToken ct)
     {
-        var result = await _chatService.SendMessageAsync(roomId, CurrentUserId, request, ct);
+        var bearerToken = Request.Headers.Authorization.ToString();
+        var result = await _chatService.SendMessageAsync(roomId, CurrentUserId, request, bearerToken, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);

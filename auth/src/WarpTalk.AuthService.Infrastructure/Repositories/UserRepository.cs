@@ -39,4 +39,10 @@ public class UserRepository : GenericRepository<User>, IUserRepository
             .ThenInclude(ur => ur.Role)
             .FirstOrDefaultAsync(u => u.GoogleId == googleId, ct);
     }
+
+    public Task<User?> GetByEmailVerificationTokenHashAsync(string tokenHash, CancellationToken ct = default)
+        => _dbSet.FirstOrDefaultAsync(u => u.EmailVerificationTokenHash == tokenHash, ct);
+
+    public Task<User?> GetByPasswordResetTokenHashAsync(string tokenHash, CancellationToken ct = default)
+        => _dbSet.FirstOrDefaultAsync(u => u.PasswordResetTokenHash == tokenHash, ct);
 }

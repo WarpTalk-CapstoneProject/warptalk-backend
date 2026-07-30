@@ -17,15 +17,18 @@ public class SubscriptionService : ISubscriptionService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<SubscriptionService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
+    private readonly IWorkspaceDirectory? _workspaceDirectory;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
         ILogger<SubscriptionService> logger,
-        IBillingMessagePublisher messagePublisher)
+        IBillingMessagePublisher messagePublisher,
+        IWorkspaceDirectory? workspaceDirectory = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
+        _workspaceDirectory = workspaceDirectory;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -77,7 +80,7 @@ public class SubscriptionService : ISubscriptionService
                 items.Add(sub.ToDto(plan?.Name ?? "Unknown Plan", plan?.Price ?? 0m));
             }
 
-            // Resolve workspace names cross-schema
+            // Resolve display names through the Workspace service boundary.
             try
             {
                 var workspaceIds = items
@@ -86,24 +89,11 @@ public class SubscriptionService : ISubscriptionService
                     .Distinct()
                     .ToArray();
 
-                if (workspaceIds.Length > 0)
+                if (workspaceIds.Length > 0 && _workspaceDirectory is not null)
                 {
-                    var dbConnection = (Npgsql.NpgsqlConnection)_unitOfWork.GetDbConnection();
-                    var wasOpen = dbConnection.State == System.Data.ConnectionState.Open;
-                    if (!wasOpen) await dbConnection.OpenAsync(cancellationToken);
-
-                    using var cmd = new Npgsql.NpgsqlCommand(
-                        "SELECT id, name FROM workspace.workspaces WHERE id = ANY(@ids)",
-                        dbConnection);
-                    cmd.Parameters.AddWithValue("ids", workspaceIds);
-
-                    var workspaceNames = new Dictionary<Guid, string>();
-                    using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        workspaceNames[reader.GetGuid(0)] = reader.GetString(1);
-                    }
-                    await reader.CloseAsync();
+                    var workspaceNames = await _workspaceDirectory.GetNamesAsync(
+                        workspaceIds,
+                        cancellationToken);
 
                     items = items.Select(i =>
                         i.WorkspaceId.HasValue && workspaceNames.TryGetValue(i.WorkspaceId.Value, out var wName)
@@ -231,71 +221,9 @@ public class SubscriptionService : ISubscriptionService
             // Create new subscription with carry-over credits
             var newSub = request.ToEntity(oldSub, newPlan);
 
-            // For local development, even if stripeUpdate fails or is skipped, we still make the new subscription active immediately
-            newSub.IsActive = true;
-            newSub.Status = "active";
-            newSub.CurrentPeriodStart = DateTime.UtcNow;
-            newSub.CurrentPeriodEnd = newPlan.BillingCycle switch
-            {
-                "yearly" => DateTime.UtcNow.AddYears(1),
-                "semiannual" => DateTime.UtcNow.AddMonths(6),
-                _ => DateTime.UtcNow.AddMonths(1)
-            };
-
-            newSub.CreditsRemaining += newPlan.CreditsPerCycle;
-
-            var randomSuffix = Guid.NewGuid().ToString().Replace("-", "")[..14].ToLower();
-            var upgradeTx = new WarpTalk.BillingService.Domain.Entities.CreditTransaction
-            {
-                Id = Guid.NewGuid(),
-                SubscriptionId = newSub.Id,
-                UserId = newSub.UserId,
-                Amount = newPlan.CreditsPerCycle,
-                Type = "top_up",
-                Description = $"Plan upgrade to {newPlan.Name} (Simulation)",
-                ReferenceId = Guid.NewGuid(),
-                ReferenceType = "stripe_payment",
-                BalanceAfter = newSub.CreditsRemaining,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.CreditTransactionRepository.AddAsync(upgradeTx, cancellationToken);
-
-            var paymentTx = new WarpTalk.BillingService.Domain.Entities.Payment
-            {
-                Id = Guid.NewGuid(),
-                SubscriptionId = newSub.Id,
-                UserId = newSub.UserId,
-                Amount = newPlan.Price,
-                TaxAmount = 0m,
-                TotalAmount = newPlan.Price,
-                Currency = newPlan.Currency,
-                PaymentMethod = "Stripe Upgrade (Simulation)",
-                Provider = "stripe",
-                ProviderTransactionId = $"ch_{randomSuffix}",
-                Status = "paid",
-                PaidAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.PaymentRepository.AddAsync(paymentTx, cancellationToken);
-
-            var invoice = new WarpTalk.BillingService.Domain.Entities.Invoice
-            {
-                Id = Guid.NewGuid(),
-                UserId = newSub.UserId,
-                PaymentId = paymentTx.Id,
-                InvoiceNumber = $"in_{randomSuffix}",
-                Subtotal = newPlan.Price,
-                Tax = 0,
-                Total = newPlan.Price,
-                Currency = newPlan.Currency,
-                Status = "paid",
-                PdfUrl = string.Empty,
-                LineItems = "[]",
-                IssuedAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.InvoiceRepository.AddAsync(invoice, cancellationToken);
+            // The replacement remains pending until the provider confirms the
+            // plan-change payment. It must not grant credits or access before
+            // the payment/webhook path completes.
 
             await _unitOfWork.SubscriptionRepository.AddAsync(newSub, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);

@@ -33,6 +33,14 @@ public partial class User
 
     public DateTime? EmailVerifiedAt { get; set; }
 
+    public string? EmailVerificationTokenHash { get; set; }
+
+    public DateTime? EmailVerificationTokenExpiresAt { get; set; }
+
+    public string? PasswordResetTokenHash { get; set; }
+
+    public DateTime? PasswordResetTokenExpiresAt { get; set; }
+
     public string? GoogleId { get; set; }
 
     public DateTime? LastLoginAt { get; set; }

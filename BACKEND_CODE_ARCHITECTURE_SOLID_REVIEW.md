@@ -1,7 +1,14 @@
 # WarpTalk Backend — Code, Architecture and SOLID Review
 
+> **Historical baseline (2026-07-27).** This review predates the full-scope
+> hardening pass. Findings about Stripe simulation, `mock_session_` behavior,
+> Redis recovery, provider storage and production authorization must not be
+> treated as current state. The current implementation/evidence is tracked in
+> `../docs/production-full-scope-completion-matrix-2026-07-28.md`; retain this
+> file only as an audit trail of the original baseline.
+
 **Review date:** 2026-07-27  
-**Scope:** `auth`, `billing`, `gateway`, `meeting`, `notification`, `payment`, `transcript`, `translation-room`, `workspace`, `assistant`, and `shared`  
+**Historical scope:** `auth`, `billing`, `gateway`, `meeting`, `notification`, former `payment`, `transcript`, `translation-room`, `workspace`, `assistant`, and `shared`
 **Review mode:** Read-only static analysis, CodeGraph dependency analysis, build/package checks, and targeted test inspection
 
 ## Executive summary

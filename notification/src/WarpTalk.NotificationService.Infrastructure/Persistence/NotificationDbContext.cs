@@ -26,6 +26,7 @@ public partial class NotificationDbContext : DbContext
     public virtual DbSet<NotificationMessage> NotificationMessages { get; set; }
 
     public virtual DbSet<AdminNotification> AdminNotifications { get; set; }
+    public virtual DbSet<NotificationInboxMessage> InboxMessages { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -75,6 +76,16 @@ public partial class NotificationDbContext : DbContext
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
+        });
+
+        modelBuilder.Entity<NotificationInboxMessage>(entity =>
+        {
+            entity.HasKey(e => new { e.EventId, e.Consumer }).HasName("inbox_messages_pkey");
+            entity.ToTable("inbox_messages", "notification");
+            entity.Property(e => e.EventId).HasColumnName("event_id");
+            entity.Property(e => e.Consumer).HasColumnName("consumer").HasMaxLength(150);
+            entity.Property(e => e.EventType).HasColumnName("event_type").HasMaxLength(150);
+            entity.Property(e => e.ProcessedAt).HasColumnName("processed_at");
         });
 
         modelBuilder.Entity<NotificationMessage>(entity =>

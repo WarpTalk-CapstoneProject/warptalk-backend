@@ -70,6 +70,7 @@ public class UserSettingsServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("vi-VN", result.Value.DefaultSpeakLanguage);
         Assert.Equal("dark", result.Value.Theme);
     }
@@ -95,6 +96,7 @@ public class UserSettingsServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("vi-VN", result.Value.DefaultSpeakLanguage); // Default Speak Language
         Assert.Equal("en-US", result.Value.DefaultListenLanguage); // Default Listen Language
         Assert.Equal("system", result.Value.Theme);
@@ -150,6 +152,7 @@ public class UserSettingsServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
         Assert.Equal("en-US", result.Value.DefaultSpeakLanguage);
         Assert.Equal("ja-JP", result.Value.DefaultListenLanguage);
         Assert.Equal("dark", result.Value.Theme);
