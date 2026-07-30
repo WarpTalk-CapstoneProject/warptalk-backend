@@ -362,6 +362,51 @@ public class TranslationRoomHubTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task OnDisconnectedAsync_ShouldPublishParticipantOffline_WhenAnotherHubConnectionRemains()
+    {
+        var connectionManagerMock = new Mock<IConnectionManager>();
+        connectionManagerMock
+            .Setup(m => m.RemoveConnection(It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(false);
+
+        var redisMock = new Mock<IConnectionMultiplexer>();
+        var dbMock = new Mock<IDatabase>();
+        redisMock.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(dbMock.Object);
+
+        var configMock = new Mock<Microsoft.Extensions.Configuration.IConfiguration>();
+        var configSectionMock = new Mock<Microsoft.Extensions.Configuration.IConfigurationSection>();
+        configSectionMock.Setup(s => s.Value).Returns("10000");
+        configMock.Setup(c => c.GetSection(It.IsAny<string>())).Returns(configSectionMock.Object);
+
+        var hub = new TranslationRoomHub(
+            connectionManagerMock.Object,
+            new RedisStreamService(redisMock.Object, new NullLogger<RedisStreamService>(), configMock.Object),
+            new ActiveTranslationRoomRegistry(),
+            redisMock.Object,
+            new NullLogger<TranslationRoomHub>());
+
+        var clientsMock = new Mock<IHubCallerClients>();
+        var clientProxyMock = new Mock<IClientProxy>();
+        clientsMock.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(clientProxyMock.Object);
+        hub.Clients = clientsMock.Object;
+        hub.Groups = new Mock<IGroupManager>().Object;
+
+        var userId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(userId.ToString(), $"translation-{Guid.NewGuid()}");
+        await hub.JoinTranslationRoom(roomId, "User", "en", "vi");
+
+        await hub.OnDisconnectedAsync(null);
+
+        dbMock.Verify(
+            db => db.PublishAsync(
+                RedisChannel.Literal("translationRoom:participant-offline"),
+                $"{roomId}:{userId}",
+                CommandFlags.None),
+            Times.Once);
+    }
+
     private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub()
     {
         var connectionManagerMock = new Mock<IConnectionManager>();

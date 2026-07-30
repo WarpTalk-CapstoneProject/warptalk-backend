@@ -38,6 +38,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             Id = result.Value!.Id.ToString(),
             WorkspaceId = result.Value!.WorkspaceId.ToString(),
             Title = result.Value!.Title,
+            Description = result.Value!.Description ?? string.Empty,
             HostId = result.Value!.HostId.ToString(),
             Status = result.Value!.Status.ToString(),
             StartedAt = result.Value!.StartedAt?.ToString("O") ?? string.Empty,

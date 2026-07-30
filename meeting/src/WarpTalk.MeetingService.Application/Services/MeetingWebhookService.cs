@@ -341,10 +341,17 @@ public class MeetingWebhookService : IMeetingWebhookService
         var roomName = root.GetProperty("room").GetProperty("name").GetString();
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
 
-        if (room != null)
+        // LiveKit destroys its ephemeral provider room as soon as the last participant
+        // disconnects. That is not the same as ending the WarpTalk meeting: the translation
+        // room owns the five-minute empty-room grace period and may be rejoined meanwhile.
+        // Explicit "End for Everyone" already marks this record FINISHED before DeleteRoom,
+        // so a natural room_finished webhook must not advance application lifecycle state.
+        if (room != null && string.Equals(
+                room.Status,
+                MeetingStatus.Finished.ToString(),
+                StringComparison.OrdinalIgnoreCase))
         {
-            room.Status = MeetingStatus.Finished.ToString();
-            room.EndedAt = DateTime.UtcNow;
+            room.EndedAt ??= DateTime.UtcNow;
         }
     }
 }

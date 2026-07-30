@@ -41,8 +41,10 @@ public class LiveKitRoomAdminServiceTests
     [Fact]
     public async Task DeleteRoomAsync_IsIdempotentWhenProviderRoomIsAlreadyGone()
     {
+        HttpRequestMessage? capturedRequest = null;
         var sut = CreateService(new StubHttpMessageHandler(request =>
         {
+            capturedRequest = request;
             Assert.Equal(
                 "https://warptalk-staging.livekit.cloud/twirp/livekit.RoomService/DeleteRoom",
                 request.RequestUri!.ToString());
@@ -52,6 +54,11 @@ public class LiveKitRoomAdminServiceTests
         var result = await sut.DeleteRoomAsync("room-already-gone");
 
         Assert.True(result.IsSuccess);
+        var token = capturedRequest!.Headers.Authorization!.Parameter!;
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
+        using var grant = JsonDocument.Parse(jwt.Payload["video"].ToString()!);
+        Assert.True(grant.RootElement.GetProperty("roomCreate").GetBoolean());
+        Assert.False(grant.RootElement.TryGetProperty("roomAdmin", out _));
     }
 
     private static LiveKitRoomAdminService CreateService(HttpMessageHandler handler)

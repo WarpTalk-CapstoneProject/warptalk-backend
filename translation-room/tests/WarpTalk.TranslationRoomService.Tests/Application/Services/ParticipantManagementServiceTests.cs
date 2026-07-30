@@ -130,6 +130,8 @@ public class ParticipantManagementServiceTests
 
         result.IsSuccess.Should().BeTrue();
         participant.Status.Should().Be("LEFT");
+        participant.LeftAt.Should().NotBeNull();
+        participant.LeftAt!.Value.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(2));
         _participantRepositoryMock.Verify(repo => repo.Update(participant), Times.Once);
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }

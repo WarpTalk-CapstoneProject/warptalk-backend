@@ -17,6 +17,33 @@ public sealed class MeetingWebhookRecordingTests
     private const string Secret = "test-webhook-secret-with-at-least-32-characters";
 
     [Fact]
+    public async Task RoomFinished_PreservesActiveMeetingUntilIdleGracePeriodEnds()
+    {
+        var room = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = Guid.NewGuid(),
+            ProviderRoomName = "room-123",
+            Status = "IN_PROGRESS"
+        };
+        var unitOfWork = CreateUnitOfWork(room);
+        var sut = CreateService(unitOfWork.Object, Mock.Of<IRedisService>());
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "room_finished",
+              "room": { "name": "room-123" }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("IN_PROGRESS", room.Status);
+        Assert.Null(room.EndedAt);
+    }
+
+    [Fact]
     public async Task EgressEnded_PublishesVersionedDurableRecordingEvent()
     {
         var translationRoomId = Guid.NewGuid();

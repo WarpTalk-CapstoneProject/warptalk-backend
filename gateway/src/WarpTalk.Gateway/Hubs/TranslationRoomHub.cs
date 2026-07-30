@@ -61,7 +61,12 @@ public class TranslationRoomHub : Hub
         var userId = GetUserId();
         var isFullyOffline = _connectionManager.RemoveConnection(userId, Context.ConnectionId);
 
-        if (_connectionToRoom.TryRemove(Context.ConnectionId, out var roomIdStr) && isFullyOffline)
+        // Room presence belongs to this TranslationRoomHub connection. The shared
+        // connection manager also contains NotificationHub connections, so its
+        // "fully offline" result cannot decide whether the participant left a room.
+        // TryRemove still prevents an old connection (replaced by another device)
+        // from publishing a false offline event.
+        if (_connectionToRoom.TryRemove(Context.ConnectionId, out var roomIdStr))
         {
             var roomUserKey = $"{roomIdStr}_{userId}";
             _roomUserToConnection.TryRemove(roomUserKey, out _);
