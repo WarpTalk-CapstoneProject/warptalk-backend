@@ -74,4 +74,59 @@ public class RabbitMqWorkspaceEventPublisher : IWorkspaceEventPublisher
             _logger.LogWarning(ex, "Failed to publish MemberRemovedEvent to RabbitMQ. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, memberUserId);
         }
     }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            await _publishEndpoint.Publish(new { EventType = "WorkspaceMemberRoleChanged.v1", WorkspaceId = workspaceId, TargetUserId = targetUserId, OldRole = oldRole, NewRole = newRole, ChangedByUserId = changedByUserId, OccurredAt = DateTime.UtcNow }, ct);
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Failed to publish role change event. WorkspaceId: {WorkspaceId}", workspaceId); }
+    }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, CancellationToken ct = default)
+    {
+        try
+        {
+            await _publishEndpoint.Publish(new
+            {
+                EventType = "WorkspaceMemberRoleChanged.v1",
+                EventId = eventId,
+                WorkspaceId = workspaceId,
+                TargetUserId = targetUserId,
+                OldRole = oldRole,
+                NewRole = newRole,
+                ChangedByUserId = changedByUserId,
+                CorrelationId = correlationId,
+                OccurredAt = DateTime.UtcNow,
+                EffectiveBehavior = "next-request-or-session"
+            }, ct);
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Failed to publish role change event. WorkspaceId: {WorkspaceId}", workspaceId); }
+    }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, string membershipType, string effectiveBehavior, DateTime effectiveAt, string? idempotencyKey, CancellationToken ct = default)
+    {
+        try
+        {
+            await _publishEndpoint.Publish(new
+            {
+                EventType = "WorkspaceMemberRoleChanged.v1",
+                EventId = eventId,
+                WorkspaceId = workspaceId,
+                TargetUserId = targetUserId,
+                OldRole = oldRole,
+                NewRole = newRole,
+                MembershipType = membershipType,
+                ChangedByUserId = changedByUserId,
+                CorrelationId = correlationId,
+                IdempotencyKey = idempotencyKey,
+                OccurredAt = DateTime.UtcNow,
+                EffectiveAt = effectiveAt,
+                EffectiveBehavior = effectiveBehavior
+            }, ct);
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Failed to publish role change event. WorkspaceId: {WorkspaceId}", workspaceId); }
+    }
+
 }

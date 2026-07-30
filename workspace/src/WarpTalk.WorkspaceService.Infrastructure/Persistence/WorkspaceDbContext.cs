@@ -311,6 +311,9 @@ public partial class WorkspaceDbContext : DbContext
                 .HasColumnName("email");
             entity.Property(e => e.ExpiresAt).HasColumnName("expires_at");
             entity.Property(e => e.InvitedBy).HasColumnName("invited_by");
+            entity.Property(e => e.RequestedBy).HasColumnName("requested_by");
+            entity.Property(e => e.ReviewedBy).HasColumnName("reviewed_by");
+            entity.Property(e => e.ReviewedAt).HasColumnName("reviewed_at");
             entity.Property(e => e.MatchedDomainId).HasColumnName("matched_domain_id");
             entity.Property(e => e.MembershipType)
                 .HasMaxLength(20)
@@ -341,6 +344,8 @@ public partial class WorkspaceDbContext : DbContext
                 .HasForeignKey(d => d.WorkspaceId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("workspace_invitations_workspace_id_fkey");
+
+            entity.HasIndex(e => new { e.WorkspaceId, e.Status, e.CreatedAt }, "IX_workspace_invitations_workspace_id_status_created_at");
         });
 
         modelBuilder.Entity<WorkspaceMember>(entity =>

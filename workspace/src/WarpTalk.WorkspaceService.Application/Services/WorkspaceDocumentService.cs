@@ -246,6 +246,12 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 }
             }
 
+            var approvalAudits = await _unitOfWork.WorkspaceDocumentAuditRepository.FindAsync(
+                a => a.WorkspaceId == workspaceId && a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument, "", ct);
+            var approversByDoc = approvalAudits
+                .GroupBy(a => a.DocumentId)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(a => a.ActionAt).FirstOrDefault()?.ActorId);
+
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
             {
@@ -265,7 +271,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 if (accessResult.IsSuccess)
                 {
                     var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id);
-                    allowedDtos.Add(doc.ToDto(downloadUrl));
+                    approversByDoc.TryGetValue(doc.Id, out var approvedBy);
+                    allowedDtos.Add(doc.ToDto(downloadUrl, approvedBy));
                 }
             }
 
@@ -407,7 +414,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure("Forbidden. Only workspace Owner/Admin or the document owner can manage document access policies.", ErrorCodes.Forbidden);
             }
 
-            var normalizedSubjectType = NormalizePolicySubjectType(request.SubjectType);
+            var normalizedSubjectType = WorkspaceDocumentHelper.NormalizePolicySubjectType(request.SubjectType);
             var normalizedPermission = request.Permission?.Trim().ToLowerInvariant();
             var normalizedEffect = request.Effect?.Trim().ToUpperInvariant();
             var normalizedSubjectKey = request.SubjectKey?.Trim();
@@ -416,7 +423,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             {
                 return Result.Failure("SubjectType must be User, Role, or MembershipType.", ErrorCodes.ValidationError);
             }
-            if (!IsSupportedPolicyPermission(normalizedPermission))
+            if (!WorkspaceDocumentHelper.IsSupportedPolicyPermission(normalizedPermission))
             {
                 return Result.Failure("Permission must be view, download, or ai_retrieval.", ErrorCodes.ValidationError);
             }
@@ -533,14 +540,11 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>("Forbidden. Only workspace Owner/Admin or the document owner can view access policies.", ErrorCodes.Forbidden);
             }
 
-            var policies = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
-                .FindAsync(p => p.DocumentId == documentId, "", ct);
+            var (policies, totalCount) = await _unitOfWork.WorkspaceDocumentAccessPolicyRepository
+                .GetPagedAccessPoliciesAsync(documentId, query.Page, query.PageSize, isDescending: true, ct);
 
             var dtos = policies.Select(p => p.ToDto()).ToList();
-            var totalCount = dtos.Count;
-            var pagedItems = dtos.Skip((query.Page - 1) * query.PageSize).Take(query.PageSize).ToList();
-
-            var pagedResult = new PagedResult<WorkspaceDocumentAccessPolicyDto>(pagedItems, query.Page, query.PageSize, totalCount);
+            var pagedResult = new PagedResult<WorkspaceDocumentAccessPolicyDto>(dtos, query.Page, query.PageSize, totalCount);
 
             return Result.Success(pagedResult);
         }
@@ -549,24 +553,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             _logger.LogError(ex, "Error occurred while fetching document access policies. DocumentId: {DocumentId}", documentId);
             return Result.Failure<PagedResult<WorkspaceDocumentAccessPolicyDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
-    }
-
-    private static string? NormalizePolicySubjectType(string? subjectType)
-    {
-        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase))
-            return WorkspacePolicyConstants.SubjectTypeUser;
-        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase))
-            return WorkspacePolicyConstants.SubjectTypeRole;
-        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase))
-            return WorkspacePolicyConstants.SubjectTypeMembershipType;
-        return null;
-    }
-
-    private static bool IsSupportedPolicyPermission(string? permission)
-    {
-        return string.Equals(permission, WorkspaceDocumentPermissions.View, StringComparison.Ordinal)
-            || string.Equals(permission, WorkspaceDocumentPermissions.Download, StringComparison.Ordinal)
-            || string.Equals(permission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.Ordinal);
     }
 
     public async Task<Result> ApproveDocumentAsync(Guid workspaceId, Guid documentId, ApproveDocumentRequest request, Guid userId, CancellationToken ct = default)

@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
@@ -32,7 +33,7 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         if (request.File == null || request.File.Length == 0)
         {
@@ -40,15 +41,7 @@ public class WorkspaceDocumentsController : ControllerBase
         }
 
         var result = await _documentService.UploadDocumentAsync(workspaceId, request, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -59,18 +52,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.ListDocumentsAsync(workspaceId, query, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -81,18 +66,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.GetDocumentByIdAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -104,18 +81,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.PatchDocumentMetadataAsync(workspaceId, documentId, request, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -127,18 +96,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.ApproveDocumentAsync(workspaceId, documentId, request, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+        return ToNoContentResult(result);
     }
 
     [Authorize]
@@ -149,16 +110,12 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.DownloadDocumentAsync(workspaceId, documentId, userId.Value, ct);
         if (!result.IsSuccess || result.Value == null)
         {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error ?? "Download failed.", result.ErrorCode));
+            return ToActionResult(result);
         }
 
         var dto = result.Value;
@@ -174,18 +131,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.GetExtractedTextAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -197,18 +146,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.UpdateExtractedTextAsync(workspaceId, documentId, request.Text, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -219,18 +160,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.DeleteDocumentAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+        return ToNoContentResult(result);
     }
 
     [Authorize]
@@ -242,18 +175,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.AddAccessPolicyAsync(workspaceId, documentId, request, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+        return ToNoContentResult(result);
     }
 
     [Authorize]
@@ -265,18 +190,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.RemoveAccessPolicyAsync(workspaceId, documentId, policyId, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+        return ToNoContentResult(result);
     }
 
     [Authorize]
@@ -288,18 +205,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.GetAccessPoliciesAsync(workspaceId, documentId, query, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return ToActionResult(result);
     }
 
     [Authorize]
@@ -310,18 +219,10 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.ArchiveDocumentAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+        return ToNoContentResult(result);
     }
 
     [Authorize]
@@ -332,17 +233,39 @@ public class WorkspaceDocumentsController : ControllerBase
         CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.RestoreDocumentAsync(workspaceId, documentId, userId.Value, ct);
-        if (!result.IsSuccess)
+        return ToNoContentResult(result);
+    }
+
+    private IActionResult ToActionResult<T>(Result<T> result)
+    {
+        if (result.IsSuccess)
+            return Ok(result.Value);
+
+        return result.ErrorCode switch
         {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
+            ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
+        };
+    }
+
+    private IActionResult ToNoContentResult(Result result)
+    {
+        if (result.IsSuccess)
+            return NoContent();
+
+        return result.ErrorCode switch
+        {
+            ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
+        };
     }
 }

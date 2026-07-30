@@ -11,13 +11,14 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceDocumentMapper
 {
-    public static WorkspaceDocumentDto ToDto(this WorkspaceDocument doc, string downloadUrl)
+    public static WorkspaceDocumentDto ToDto(this WorkspaceDocument doc, string downloadUrl, Guid? approvedBy = null)
     {
         return new WorkspaceDocumentDto(
             doc.Id,
             doc.WorkspaceId,
             doc.UploadedBy,
             doc.OwnerId,
+            approvedBy,
             doc.Name,
             doc.FileName,
             doc.FileExtension,

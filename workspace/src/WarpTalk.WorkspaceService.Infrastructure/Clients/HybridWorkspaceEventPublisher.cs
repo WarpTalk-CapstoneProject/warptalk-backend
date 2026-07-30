@@ -40,4 +40,20 @@ public class HybridWorkspaceEventPublisher : IWorkspaceEventPublisher
         await _rabbitMqPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, removedByUserId, ct);
         await _redisPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, removedByUserId, ct);
     }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, CancellationToken ct = default)
+    {
+        await _rabbitMqPublisher.PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, ct);
+    }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, CancellationToken ct = default)
+    {
+        await _rabbitMqPublisher.PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, eventId, correlationId, ct);
+    }
+
+    public async Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, string membershipType, string effectiveBehavior, DateTime effectiveAt, string? idempotencyKey, CancellationToken ct = default)
+    {
+        await _rabbitMqPublisher.PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, eventId, correlationId, membershipType, effectiveBehavior, effectiveAt, idempotencyKey, ct);
+    }
+
 }

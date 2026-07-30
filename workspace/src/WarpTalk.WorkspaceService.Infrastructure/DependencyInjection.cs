@@ -19,6 +19,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using WarpTalk.WorkspaceService.Infrastructure.Storage;
+using WarpTalk.WorkspaceService.Application.Services;
 
 namespace WarpTalk.WorkspaceService.Infrastructure;
 

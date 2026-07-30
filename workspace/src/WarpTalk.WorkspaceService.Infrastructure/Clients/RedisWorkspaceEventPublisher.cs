@@ -77,4 +77,19 @@ public class RedisWorkspaceEventPublisher : IWorkspaceEventPublisher
             _logger.LogWarning(ex, "Failed to publish member removed event to Redis Stream. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, memberUserId);
         }
     }
+
+    public Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, CancellationToken ct = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, CancellationToken ct = default)
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task PublishMemberRoleChangedAsync(Guid workspaceId, Guid targetUserId, string oldRole, string newRole, Guid changedByUserId, Guid eventId, string? correlationId, string membershipType, string effectiveBehavior, DateTime effectiveAt, string? idempotencyKey, CancellationToken ct = default)
+    {
+        return Task.CompletedTask;
+    }
 }

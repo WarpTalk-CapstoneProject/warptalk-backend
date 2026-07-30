@@ -27,7 +27,7 @@ public class WorkspaceServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
-    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
+    private readonly IWorkspaceVerifiedDomainRepository _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly IWorkspaceEventPublisher _eventPublisher;
@@ -38,7 +38,7 @@ public class WorkspaceServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
-        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _workspaceCache = Substitute.For<IWorkspaceCacheService>();
         _eventPublisher = Substitute.For<IWorkspaceEventPublisher>();
@@ -711,9 +711,42 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsAdmin()
     {
         // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
+        };
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30, true,
+            new List<string>(), false, false, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId, Arg.Any<WorkspaceConfiguration>(), userId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
+    {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var newSettings = new WorkspaceSettingsDto(

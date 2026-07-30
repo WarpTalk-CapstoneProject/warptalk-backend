@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Testcontainers.PostgreSql;
 using WarpTalk.WorkspaceService.Application.Interfaces;
@@ -41,6 +42,11 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
             {
                 builder.ConfigureTestServices(services =>
                 {
+                    // Do not use the Windows EventLog provider in the disposable
+                    // test host; MassTransit's shutdown can log after that provider
+                    // has already been disposed on Windows.
+                    services.AddLogging(logging => logging.ClearProviders());
+
                     // Swap DbContext to use Testcontainer Postgres
                     var dbDescriptor = services.SingleOrDefault(
                         d => d.ServiceType == typeof(DbContextOptions<WorkspaceDbContext>));

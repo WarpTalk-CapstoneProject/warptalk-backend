@@ -212,7 +212,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
-            if (scanResult.DlpDetected)
+            if (scanResult.PiiDetected || scanResult.DlpDetected)
             {
                 document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
             }
