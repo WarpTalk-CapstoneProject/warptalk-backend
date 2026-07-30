@@ -58,7 +58,7 @@ public class TranslationRoomsController : ControllerBase
             return StatusCode(403, new ApiErrorResponse("Email not verified", ErrorCodes.AccountPending));
         }
 
-        var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value);
+        var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value, User.GetEmail());
 
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -312,7 +312,7 @@ public class TranslationRoomsController : ControllerBase
         if (hostId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.UpdateTranslationRoomSettingsAsync(id, hostId.Value, request, ct);
+        var result = await _translationRoomService.UpdateTranslationRoomSettingsAsync(id, hostId.Value, request, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)

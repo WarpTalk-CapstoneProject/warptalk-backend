@@ -107,6 +107,8 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
         var videoGrant = new Dictionary<string, object>
         {
             ["roomAdmin"] = true,
+            ["roomCreate"] = true,
+            ["roomList"] = true,
             ["room"] = roomName
         };
         var payload = new JwtPayload(

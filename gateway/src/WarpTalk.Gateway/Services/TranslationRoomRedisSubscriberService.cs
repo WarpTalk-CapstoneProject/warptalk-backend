@@ -77,6 +77,12 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("HostChanged", payload.NewHostUserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted HostChanged({NewHostUserId}) to room {RoomId}", payload.NewHostUserId, payload.RoomId);
                 }
+                else if (payload.Command == "MeetingEnded" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomEnded", payload.RoomId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomEnded to room {RoomId}", payload.RoomId);
+                }
                 // Polls + Q&A: MeetingService.PollsService/QuestionsService publish these on the
                 // same channel via the same REST+relay pattern as RoomLockChanged/HostChanged
                 // above — Poll/Question/FinalResult/Tally are pre-serialized (camelCase) JSON

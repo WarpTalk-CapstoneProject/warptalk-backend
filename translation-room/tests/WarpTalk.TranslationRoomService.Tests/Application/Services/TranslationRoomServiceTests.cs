@@ -68,6 +68,107 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
+    public async Task CreateTranslationRoomAsync_AddsHostParticipantAsConnected()
+    {
+        // Arrange
+        var hostId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var request = new CreateTranslationRoomRequest(
+            workspaceId,
+            "Daily sync",
+            null,
+            "INSTANT",
+            10,
+            "en",
+            new List<string> { "vi" },
+            new RoomSettingsRequest(RequiresApproval: true),
+            null,
+            null);
+
+        TranslationRoomParticipant? capturedParticipant = null;
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _mockParticipantRepo
+            .Setup(r => r.AddAsync(It.IsAny<TranslationRoomParticipant>(), It.IsAny<CancellationToken>()))
+            .Callback<TranslationRoomParticipant, CancellationToken>((participant, _) => capturedParticipant = participant)
+            .Returns(Task.CompletedTask);
+
+        // Act
+        var result = await _service.CreateTranslationRoomAsync(request, hostId);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        capturedParticipant.Should().NotBeNull();
+        capturedParticipant!.UserId.Should().Be(hostId);
+        capturedParticipant.Role.Should().Be("HOST");
+        capturedParticipant.Status.Should().Be(TranslationRoomParticipantStatus.CONNECTED.ToString());
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_DoesNotInviteHostEmail()
+    {
+        // Arrange
+        var hostId = Guid.NewGuid();
+        var hostEmail = "alice.smith@enterprise.vn";
+        var bobEmail = "bob.johnson@enterprise.vn";
+        var request = new CreateTranslationRoomRequest(
+            Guid.NewGuid(),
+            "Customer call",
+            null,
+            "INSTANT",
+            10,
+            "en",
+            new List<string> { "vi" },
+            new RoomSettingsRequest(RequiresApproval: true),
+            null,
+            new List<string> { hostEmail.ToUpperInvariant(), bobEmail });
+
+        var invitationRepoMock = new Mock<IGenericRepository<TranslationRoomInvitation>>();
+        _mockUow
+            .Setup(u => u.Repository<TranslationRoomInvitation>())
+            .Returns(invitationRepoMock.Object);
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        // Act
+        var result = await _service.CreateTranslationRoomAsync(request, hostId, hostEmail);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        invitationRepoMock.Verify(
+            repo => repo.AddAsync(
+                It.Is<TranslationRoomInvitation>(invitation =>
+                    invitation.Email.Equals(hostEmail, StringComparison.OrdinalIgnoreCase)),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        invitationRepoMock.Verify(
+            repo => repo.AddAsync(
+                It.Is<TranslationRoomInvitation>(invitation => invitation.Email == bobEmail),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockEmailService.Verify(
+            service => service.SendMeetingInvitationAsync(
+                It.Is<string>(email => email.Equals(hostEmail, StringComparison.OrdinalIgnoreCase)),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        _mockEmailService.Verify(
+            service => service.SendMeetingInvitationAsync(
+                bobEmail,
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
     public async Task JoinTranslationRoomAsync_ShouldAssignHostRole_WhenUserIsHost()
     {
         // Arrange

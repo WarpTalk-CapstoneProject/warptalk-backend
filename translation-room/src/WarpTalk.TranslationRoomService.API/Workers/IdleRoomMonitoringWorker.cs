@@ -60,7 +60,9 @@ public class IdleRoomMonitoringWorker : BackgroundService
             var participants = await participantRepo.FindAsync(p => p.TranslationRoomId == room.Id, "", ct);
             var participantList = participants.ToList();
 
-            var hasConnectedParticipants = participantList.Any(p => p.Status == "CONNECTED");
+            var hasConnectedParticipants = participantList.Any(p =>
+                p.Status == "CONNECTED" ||
+                p.Status == "JOINED");
 
             if (!hasConnectedParticipants)
             {

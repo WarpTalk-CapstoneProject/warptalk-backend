@@ -57,7 +57,7 @@ public class TranslationRoomService : ITranslationRoomService
         _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl ?? "http://localhost:3000";
     }
 
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, string? hostEmail = null, CancellationToken ct = default)
     {
         try
         {
@@ -123,7 +123,7 @@ public class TranslationRoomService : ITranslationRoomService
                 SpeakLanguage = sourceLang,
                 ListenLanguage = sourceLang,
                 Role = "HOST",
-                Status = "JOINED",
+                Status = TranslationRoomParticipantStatus.CONNECTED.ToString(),
                 ConnectionType = "WEBRTC",
                 IsTranslationAudioEnabled = true,
                 IsUsingVoiceClone = false,
@@ -136,7 +136,8 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Send invitations
-            if (request.InvitedEmails != null && request.InvitedEmails.Any())
+            var invitationEmails = ExcludeHostEmail(request.InvitedEmails, hostEmail);
+            if (invitationEmails.Any())
             {
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
@@ -144,7 +145,7 @@ public class TranslationRoomService : ITranslationRoomService
                 
                 var emailTasks = new List<Task>();
                 
-                foreach (var email in request.InvitedEmails)
+                foreach (var email in invitationEmails)
                 {
                     // 1. Store the invitation
                     await invitationRepo.AddAsync(new TranslationRoomInvitation
@@ -647,7 +648,7 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default)
+    public async Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, string? hostEmail = null, CancellationToken ct = default)
     {
         try
         {
@@ -674,7 +675,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (request.ScheduledAt.HasValue)
                 translationRoom.ScheduledAt = request.ScheduledAt.Value;
 
-            if (request.InvitedEmails != null && request.InvitedEmails.Any())
+            var invitationEmails = ExcludeHostEmail(request.InvitedEmails, hostEmail);
+            if (invitationEmails.Any())
             {
                 var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
@@ -683,7 +685,7 @@ public class TranslationRoomService : ITranslationRoomService
                 var existingInvitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoom.Id, ct: ct);
                 var existingEmails = existingInvitations.Select(i => i.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                foreach (var email in request.InvitedEmails)
+                foreach (var email in invitationEmails)
                 {
                     if (!existingEmails.Contains(email))
                     {
@@ -992,6 +994,22 @@ public class TranslationRoomService : ITranslationRoomService
             room.TranslationRoomParticipants.Count,
             room.HostId == userId
         );
+    }
+
+    private static List<string> ExcludeHostEmail(IEnumerable<string>? invitedEmails, string? hostEmail)
+    {
+        if (invitedEmails == null)
+            return new List<string>();
+
+        var normalizedHostEmail = hostEmail?.Trim();
+        return invitedEmails
+            .Select(email => email.Trim())
+            .Where(email => !string.IsNullOrWhiteSpace(email))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(email =>
+                string.IsNullOrWhiteSpace(normalizedHostEmail) ||
+                !email.Equals(normalizedHostEmail, StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)

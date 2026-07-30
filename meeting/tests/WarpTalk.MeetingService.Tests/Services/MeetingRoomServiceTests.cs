@@ -280,7 +280,57 @@ public class MeetingRoomServiceTests
         _redisServiceMock.Verify(
             r => r.PublishEventAsync(
                 "warptalk:translation-room:commands",
-                It.Is<object>(payload => HasProperty(payload, "Command", "HostChanged") && HasProperty(payload, "NewHostUserId", earlierUserId.ToString()))),
+            It.Is<object>(payload => HasProperty(payload, "Command", "HostChanged") && HasProperty(payload, "NewHostUserId", earlierUserId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task TransferHostAsync_UpdatesActiveHost_AndBroadcastsHostChanged()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+        var currentHostId = Guid.NewGuid();
+        var newHostId = Guid.NewGuid();
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = meetingRoomId,
+            TranslationRoomId = translationRoomId,
+            ActiveHostId = currentHostId,
+            ProviderRoomName = "room-1"
+        };
+        var roomRepoMock = SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingParticipant
+            {
+                MeetingRoomId = meetingRoomId,
+                UserId = newHostId,
+                IsActive = true
+            });
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+            {
+                HostId = currentHostId.ToString()
+            }));
+
+        var result = await _sut.TransferHostAsync(translationRoomId, currentHostId, newHostId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(newHostId, meetingRoom.ActiveHostId);
+        roomRepoMock.Verify(r => r.Update(meetingRoom), Times.Once);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload => HasProperty(payload, "Command", "HostChanged") && HasProperty(payload, "NewHostUserId", newHostId.ToString()))),
             Times.Once);
     }
 
@@ -456,6 +506,14 @@ public class MeetingRoomServiceTests
             Times.Never);
         _roomAdminServiceMock.Verify(
             r => r.DeleteRoomAsync(translationRoomId.ToString(), It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload =>
+                    HasProperty(payload, "Command", "MeetingEnded") &&
+                    HasProperty(payload, "RoomId", translationRoomId.ToString()))),
             Times.Once);
 
         _redisServiceMock.Verify(

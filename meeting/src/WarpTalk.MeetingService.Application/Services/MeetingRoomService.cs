@@ -56,13 +56,18 @@ public class MeetingRoomService : IMeetingRoomService
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
-        if (roomDetails == null)
+        if (roomDetails == null || roomDetails.Status == "SCHEDULED" || roomDetails.Status == "WAITING")
         {
             var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
-            if (!grpcResult.IsSuccess || grpcResult.Value == null)
+            if (grpcResult.IsSuccess && grpcResult.Value != null)
+            {
+                roomDetails = grpcResult.Value;
+            }
+            else if (roomDetails == null)
+            {
                 return Result.Failure<JoinMeetingResponse>("Translation room not found", ErrorCodes.NotFound);
+            }
 
-            roomDetails = grpcResult.Value;
             // Billing and AI workers consume this as the local room -> workspace projection.
             // Keep it for the longest supported meeting window instead of expiring mid-call.
             await _redisService.SetCacheAsync(roomCacheKey, roomDetails, TimeSpan.FromHours(24));
@@ -240,6 +245,7 @@ public class MeetingRoomService : IMeetingRoomService
                     Token = string.Empty,
                     ProviderRoomName = meetingRoom.ProviderRoomName,
                     ParticipantIdentity = providerIdentity,
+                    ActiveHostId = meetingRoom.ActiveHostId?.ToString(),
                     IsWaitingRoom = true,
                     MuteOnEntry = meetingRoom.MuteOnEntry
                 });
@@ -313,6 +319,7 @@ public class MeetingRoomService : IMeetingRoomService
             Token = tokenResult.Value!,
             ProviderRoomName = meetingRoom.ProviderRoomName,
             ParticipantIdentity = providerIdentity,
+            ActiveHostId = meetingRoom.ActiveHostId?.ToString(),
             IsWaitingRoom = false,
             MuteOnEntry = meetingRoom.MuteOnEntry
         });
@@ -498,6 +505,11 @@ public class MeetingRoomService : IMeetingRoomService
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
 
+        await PublishGatewayCommandAsync(
+            "HostChanged",
+            translationRoomId,
+            new { NewHostUserId = newHostUserId.ToString() });
+
         return Result.Success(true);
     }
 
@@ -609,9 +621,14 @@ public class MeetingRoomService : IMeetingRoomService
         var deleteRoomResult = await _roomAdminService.DeleteRoomAsync(
             meetingRoom?.ProviderRoomName ?? translationRoomId.ToString());
         if (!deleteRoomResult.IsSuccess)
-            return Result.Failure<bool>(
-                deleteRoomResult.Error ?? "Failed to end LiveKit room.",
-                deleteRoomResult.ErrorCode);
+        {
+            _logger.LogWarning(
+                "LiveKit room delete failed for translation room {TranslationRoomId}: {Error}",
+                translationRoomId,
+                deleteRoomResult.Error ?? deleteRoomResult.ErrorCode);
+        }
+
+        await PublishGatewayCommandAsync("MeetingEnded", translationRoomId, new { });
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from
