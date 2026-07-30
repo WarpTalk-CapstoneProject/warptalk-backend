@@ -26,7 +26,7 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 options.SubscriptionExpirationIntervalMinutes > 0 &&
                 options.SubscriptionRenewalLookbackHours > 0 &&
                 options.DailyAuditHourUtc is >= 0 and <= 23 &&
-                options.BillingAggregationIntervalMinutes > 0 &&
+                options.BillingAggregationIntervalSeconds > 0 &&
                 options.BillingAggregationBatchSize > 0 &&
                 options.BillingCycleIntervalMinutes > 0 &&
                 options.InvoiceOverdueIntervalMinutes > 0,
@@ -51,7 +51,11 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddSingleton<IConnectionMultiplexer>(_ =>
             ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
-        services.AddScoped<IRedisBillingStore, RedisBillingStore>();
+        services.AddScoped<RedisBillingStore>();
+        services.AddScoped<IRedisBillingStore>(sp => sp.GetRequiredService<RedisBillingStore>());
+        services.AddScoped<IBillingUsageQueue>(sp => sp.GetRequiredService<RedisBillingStore>());
+        services.AddScoped<IAiServiceStateStore>(sp => sp.GetRequiredService<RedisBillingStore>());
+        services.AddScoped<ISessionActivityStore>(sp => sp.GetRequiredService<RedisBillingStore>());
         services.AddScoped<IBillingMessagePublisher, RedisBillingMessagePublisher>();
         services.AddScoped<IBillingCycleClosingService, BillingCycleClosingService>();
         services.AddScoped<IBillingOperationalAlertService, BillingOperationalAlertService>();

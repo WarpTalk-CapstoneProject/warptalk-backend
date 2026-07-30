@@ -54,11 +54,12 @@ public class BillingAggregationWorker : BackgroundService
     private async Task AggregateAndSyncTempLogsAsync(CancellationToken stoppingToken)
     {
         using var scope = _serviceProvider.CreateScope();
-        var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
+        var usageQueue = scope.ServiceProvider.GetRequiredService<IBillingUsageQueue>();
+        var aiServiceStateStore = scope.ServiceProvider.GetRequiredService<IAiServiceStateStore>();
         var settlementService = scope.ServiceProvider.GetRequiredService<IUsageSettlementService>();
         var alertService = scope.ServiceProvider.GetService<IBillingOperationalAlertService>();
 
-        var tempLogsResult = await redisStore.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
+        var tempLogsResult = await usageQueue.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
         if (!tempLogsResult.IsSuccess)
         {
             _logger.LogWarning("Failed to get temp usage logs from Redis: {Error}", tempLogsResult.Error);
@@ -73,8 +74,8 @@ public class BillingAggregationWorker : BackgroundService
         }
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
-        await AggregateTempLogsAsync(tempLogs, settlementService, redisStore, _logger, alertService, stoppingToken);
-        var trimResult = await redisStore.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
+        await AggregateTempLogsAsync(tempLogs, settlementService, aiServiceStateStore, _logger, alertService, stoppingToken);
+        var trimResult = await usageQueue.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
         if (!trimResult.IsSuccess)
         {
             _logger.LogWarning("Synced aggregated logs to DB, but failed to trim Redis temp usage logs: {Error}", trimResult.Error);
@@ -87,7 +88,7 @@ public class BillingAggregationWorker : BackgroundService
     public static async Task AggregateTempLogsAsync(
         IReadOnlyList<TempUsageLogDto> tempLogs,
         IUsageSettlementService settlementService,
-        IRedisBillingStore? redisStore,
+        IAiServiceStateStore? aiServiceStateStore,
         ILogger? logger,
         IBillingOperationalAlertService? alertService,
         CancellationToken stoppingToken)
@@ -147,9 +148,9 @@ public class BillingAggregationWorker : BackgroundService
                         settlement.Value.SuspendedReason);
                 }
 
-                if (!string.IsNullOrWhiteSpace(settlement.Value?.ServiceState) && redisStore is not null)
+                if (!string.IsNullOrWhiteSpace(settlement.Value?.ServiceState) && aiServiceStateStore is not null)
                 {
-                    await redisStore.SetAiServiceStateAsync(
+                    await aiServiceStateStore.SetAiServiceStateAsync(
                         group.Key.WorkspaceId,
                         settlement.Value.ServiceState!,
                         settlement.Value.SuspendedReason,
@@ -157,7 +158,7 @@ public class BillingAggregationWorker : BackgroundService
 
                     if (settlementRequest.TranslationRoomId.HasValue)
                     {
-                        await redisStore.SetAiServiceStateForRoomAsync(
+                        await aiServiceStateStore.SetAiServiceStateForRoomAsync(
                             settlementRequest.TranslationRoomId.Value,
                             settlement.Value.ServiceState!,
                             settlement.Value.SuspendedReason,

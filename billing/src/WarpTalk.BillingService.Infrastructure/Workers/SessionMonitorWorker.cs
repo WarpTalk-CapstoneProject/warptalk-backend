@@ -50,11 +50,11 @@ public class SessionMonitorWorker : BackgroundService
     private async Task CheckSessionsAsync(CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
-        var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
+        var sessionActivityStore = scope.ServiceProvider.GetRequiredService<ISessionActivityStore>();
 
         var now = DateTimeOffset.UtcNow;
 
-        var expiredResult = await redisStore.GetExpiredSessionsAsync(now, cancellationToken);
+        var expiredResult = await sessionActivityStore.GetExpiredSessionsAsync(now, cancellationToken);
         if (!expiredResult.IsSuccess)
         {
             _logger.LogWarning("Failed to get expired sessions from Redis: {Error}", expiredResult.Error);
@@ -63,7 +63,7 @@ public class SessionMonitorWorker : BackgroundService
 
         foreach (var sessionId in expiredResult.Value ?? Array.Empty<Guid>())
         {
-            await redisStore.RemoveSessionAsync(sessionId, cancellationToken);
+            await sessionActivityStore.RemoveSessionAsync(sessionId, cancellationToken);
             _logger.LogInformation("Session {SessionId} missed heartbeats and exceeded 60s grace period. Terminated.", sessionId);
         }
     }

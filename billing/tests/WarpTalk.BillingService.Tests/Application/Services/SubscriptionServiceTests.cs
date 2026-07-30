@@ -25,7 +25,7 @@ public class SubscriptionServiceTests
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IStripePaymentService> _mockStripePaymentService;
     private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
-    private readonly Mock<IRedisBillingStore> _mockRedisBillingStore;
+    private readonly Mock<IAiServiceStateStore> _mockAiServiceStateStore;
     private readonly SubscriptionService _subscriptionService;
 
     public SubscriptionServiceTests()
@@ -36,7 +36,7 @@ public class SubscriptionServiceTests
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockStripePaymentService = new Mock<IStripePaymentService>();
         _mockWorkspaceClient = new Mock<IWorkspaceClient>();
-        _mockRedisBillingStore = new Mock<IRedisBillingStore>();
+        _mockAiServiceStateStore = new Mock<IAiServiceStateStore>();
 
         var mockPaymentRepo = new Mock<IPaymentRepository>();
         var mockInvoiceRepo = new Mock<IInvoiceRepository>();
@@ -53,7 +53,7 @@ public class SubscriptionServiceTests
             new Mock<IBillingMessagePublisher>().Object,
             _mockStripePaymentService.Object,
             _mockWorkspaceClient.Object,
-            _mockRedisBillingStore.Object);
+            _mockAiServiceStateStore.Object);
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public class SubscriptionServiceTests
 
         _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
-        _mockRedisBillingStore
+        _mockAiServiceStateStore
             .Setup(r => r.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default))
             .ReturnsAsync(Result.Success());
 
@@ -203,7 +203,7 @@ public class SubscriptionServiceTests
         subscription.SuspendedReason.Should().BeNull();
         subscription.OverageStartedAt.Should().BeNull();
         _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
-        _mockRedisBillingStore.Verify(r => r.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default), Times.Once);
+        _mockAiServiceStateStore.Verify(r => r.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default), Times.Once);
     }
 
     [Fact]

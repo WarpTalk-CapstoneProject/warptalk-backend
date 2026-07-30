@@ -32,6 +32,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
+    private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
 
@@ -43,7 +44,8 @@ public class TranslationRoomService : ITranslationRoomService
         IUserSettingsDirectory userSettingsDirectory,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
-        IOptions<AppSettings>? appSettings = null)
+        IOptions<AppSettings>? appSettings = null,
+        IRedisStateRepository? redisStateRepository = null)
     {
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
@@ -51,6 +53,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
         _emailService = emailService;
+        _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _logger = logger;
@@ -123,7 +126,7 @@ public class TranslationRoomService : ITranslationRoomService
                 SpeakLanguage = sourceLang,
                 ListenLanguage = sourceLang,
                 Role = "HOST",
-                Status = "JOINED",
+                Status = "CONNECTED",
                 ConnectionType = "WEBRTC",
                 IsTranslationAudioEnabled = true,
                 IsUsingVoiceClone = false,
@@ -134,6 +137,7 @@ public class TranslationRoomService : ITranslationRoomService
             await _participantRepository.AddAsync(hostParticipant, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishRoomTargetLanguagesAsync(room, ct);
 
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
@@ -402,7 +406,10 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<TranslationRoomDto>("Only the host can start the room.", ErrorCodes.Forbidden);
 
             if (translationRoom.Status == "IN_PROGRESS")
+            {
+                await PublishRoomTargetLanguagesAsync(translationRoom, ct);
                 return Result.Success(translationRoom.ToResponseDto());
+            }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
@@ -424,6 +431,7 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
@@ -434,6 +442,25 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while starting the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private async Task PublishRoomTargetLanguagesAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+            return;
+
+        try
+        {
+            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+            await _redisStateRepository.StringSetAsync(
+                $"meeting:{room.Id}:target_languages",
+                JsonSerializer.Serialize(targetLanguages),
+                TimeSpan.FromHours(24));
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Failed to publish target languages for room {RoomId}", room.Id);
         }
     }
 

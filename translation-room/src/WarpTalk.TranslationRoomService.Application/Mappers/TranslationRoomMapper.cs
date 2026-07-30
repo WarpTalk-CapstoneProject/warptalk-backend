@@ -50,10 +50,13 @@ public static class TranslationRoomMapper
 
     public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
     {
+        if (!request.WorkspaceId.HasValue || request.WorkspaceId.Value == Guid.Empty)
+            throw new ArgumentException("WorkspaceId must be a valid workspace.", nameof(request));
+
         return new TranslationRoom
         {
             Id = Guid.CreateVersion7(),
-            WorkspaceId = request.WorkspaceId ?? Guid.Empty,
+            WorkspaceId = request.WorkspaceId.Value,
             HostId = hostId,
             Title = request.Title,
             Description = request.Description,

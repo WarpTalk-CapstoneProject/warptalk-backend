@@ -24,7 +24,7 @@ public class SubscriptionService : ISubscriptionService
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IStripePaymentService _stripePaymentService;
     private readonly IWorkspaceClient _workspaceClient;
-    private readonly IRedisBillingStore? _redisBillingStore;
+    private readonly IAiServiceStateStore? _aiServiceStateStore;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
@@ -32,14 +32,14 @@ public class SubscriptionService : ISubscriptionService
         IBillingMessagePublisher messagePublisher,
         IStripePaymentService stripePaymentService,
         IWorkspaceClient workspaceClient,
-        IRedisBillingStore? redisBillingStore = null)
+        IAiServiceStateStore? aiServiceStateStore = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _stripePaymentService = stripePaymentService;
         _workspaceClient = workspaceClient;
-        _redisBillingStore = redisBillingStore;
+        _aiServiceStateStore = aiServiceStateStore;
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -361,9 +361,9 @@ public class SubscriptionService : ISubscriptionService
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            if (_redisBillingStore is not null)
+            if (_aiServiceStateStore is not null)
             {
-                var redisResult = await _redisBillingStore.SetAiServiceStateAsync(
+                var redisResult = await _aiServiceStateStore.SetAiServiceStateAsync(
                     workspaceId,
                     sub.ServiceState,
                     sub.SuspendedReason,

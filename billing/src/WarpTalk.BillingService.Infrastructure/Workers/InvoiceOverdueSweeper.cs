@@ -52,7 +52,7 @@ public sealed class InvoiceOverdueSweeper : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var redisStore = scope.ServiceProvider.GetRequiredService<IRedisBillingStore>();
+        var aiServiceStateStore = scope.ServiceProvider.GetRequiredService<IAiServiceStateStore>();
         var notificationClient = scope.ServiceProvider.GetService<INotificationClient>();
         var redis = scope.ServiceProvider.GetRequiredService<IConnectionMultiplexer>();
 
@@ -78,7 +78,7 @@ public sealed class InvoiceOverdueSweeper : BackgroundService
             subscription.UpdatedAt = now;
             unitOfWork.SubscriptionRepository.Update(subscription);
 
-            await redisStore.SetAiServiceStateAsync(
+            await aiServiceStateStore.SetAiServiceStateAsync(
                 subscription.WorkspaceId,
                 subscription.ServiceState,
                 subscription.SuspendedReason,

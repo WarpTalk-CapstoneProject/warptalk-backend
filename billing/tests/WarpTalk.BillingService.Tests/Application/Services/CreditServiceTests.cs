@@ -26,7 +26,6 @@ public class CreditServiceTests
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
-    private readonly Mock<IRedisBillingStore> _mockRedisStore;
     private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly CreditService _creditService;
@@ -39,7 +38,6 @@ public class CreditServiceTests
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockPlanRepo = new Mock<IPlanRepository>();
         _mockConfig = new Mock<IConfiguration>();
-        _mockRedisStore = new Mock<IRedisBillingStore>();
         _mockWorkspaceClient = new Mock<IWorkspaceClient>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
 

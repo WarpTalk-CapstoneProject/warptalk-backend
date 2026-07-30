@@ -54,7 +54,7 @@ public class SubscriptionExpirationWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var redisStore = scope.ServiceProvider.GetService<IRedisBillingStore>();
+        var aiServiceStateStore = scope.ServiceProvider.GetService<IAiServiceStateStore>();
 
         var now = DateTime.UtcNow;
 
@@ -75,9 +75,9 @@ public class SubscriptionExpirationWorker : BackgroundService
                     sub.IsActive = true;
                     suspendedTrials++;
 
-                    if (redisStore is not null)
+                    if (aiServiceStateStore is not null)
                     {
-                        await redisStore.SetAiServiceStateAsync(
+                        await aiServiceStateStore.SetAiServiceStateAsync(
                             sub.WorkspaceId,
                             sub.ServiceState,
                             sub.SuspendedReason,

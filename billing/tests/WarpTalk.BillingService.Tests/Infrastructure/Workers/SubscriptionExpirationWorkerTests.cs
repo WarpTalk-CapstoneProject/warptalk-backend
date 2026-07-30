@@ -40,8 +40,8 @@ public class SubscriptionExpirationWorkerTests
         unitOfWork.Setup(u => u.SubscriptionRepository).Returns(subscriptionRepository.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
 
-        var redisStore = new Mock<IRedisBillingStore>();
-        redisStore
+        var aiServiceStateStore = new Mock<IAiServiceStateStore>();
+        aiServiceStateStore
             .Setup(s => s.SetAiServiceStateAsync(
                 subscription.WorkspaceId,
                 It.IsAny<string>(),
@@ -51,7 +51,7 @@ public class SubscriptionExpirationWorkerTests
 
         var services = new ServiceCollection()
             .AddSingleton(unitOfWork.Object)
-            .AddSingleton(redisStore.Object)
+            .AddSingleton(aiServiceStateStore.Object)
             .BuildServiceProvider();
 
         var worker = new SubscriptionExpirationWorker(
@@ -66,7 +66,7 @@ public class SubscriptionExpirationWorkerTests
         subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Suspended);
         subscription.SuspendedReason.Should().Be(SubscriptionConstants.SuspendedReasons.TrialEnded);
         subscriptionRepository.Verify(r => r.Update(subscription), Times.Once);
-        redisStore.Verify(s => s.SetAiServiceStateAsync(
+        aiServiceStateStore.Verify(s => s.SetAiServiceStateAsync(
             subscription.WorkspaceId,
             SubscriptionConstants.ServiceStates.Suspended,
             SubscriptionConstants.SuspendedReasons.TrialEnded,

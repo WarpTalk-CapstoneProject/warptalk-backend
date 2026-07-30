@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Runtime.CompilerServices;
 
 namespace WarpTalk.BillingService.Tests.Architecture;
 
@@ -19,15 +20,21 @@ public class BillingArchitectureTests
         offenders.Should().BeEmpty("billing idempotency keys must be deterministic across retries");
     }
 
-    private static string FindRepoRoot()
+    private static string FindRepoRoot([CallerFilePath] string sourceFilePath = "")
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
+        foreach (var startPath in new[] { sourceFilePath, AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
         {
-            if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")))
-                return directory.FullName;
+            var directory = File.Exists(startPath)
+                ? new FileInfo(startPath).Directory
+                : new DirectoryInfo(startPath);
+            while (directory is not null)
+            {
+                if (File.Exists(Path.Combine(directory.FullName, "Directory.Build.props")) &&
+                    File.Exists(Path.Combine(directory.FullName, "billing", "WarpTalk.BillingService.slnx")))
+                    return directory.FullName;
 
-            directory = directory.Parent;
+                directory = directory.Parent;
+            }
         }
 
         throw new DirectoryNotFoundException("Could not locate repository root.");

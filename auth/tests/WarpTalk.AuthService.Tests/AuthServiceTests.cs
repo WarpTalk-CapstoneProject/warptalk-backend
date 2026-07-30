@@ -56,7 +56,8 @@ public class AuthServiceTests
         {
             DefaultRole = "user",
             MaxFailedAttempts = 5,
-            LockoutDurationMinutes = 15
+            LockoutDurationMinutes = 15,
+            AutoVerifySelfRegistration = true
         };
         _authSettingsOptions = Options.Create(settings);
 
@@ -94,6 +95,7 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.User.EmailVerified);
         await _userSettingRepository.Received(1).AddAsync(
             Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
             Arg.Any<CancellationToken>()
@@ -103,6 +105,7 @@ public class AuthServiceTests
     [Fact]
     public async Task RegisterAsync_ShouldReturnSuccess_WhenVerificationEmailDeliveryFailsAfterPersistence()
     {
+        _authSettingsOptions.Value.AutoVerifySelfRegistration = false;
         _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(false);
         _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");

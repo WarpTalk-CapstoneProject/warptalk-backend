@@ -7,17 +7,27 @@ using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
-public interface IRedisBillingStore
+public interface ISessionActivityStore
 {
     Task<Result> SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default);
     Task<Result<bool>> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<Guid>>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
     Task<Result> RemoveSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
+}
 
+public interface IBillingUsageQueue
+{
     Task<Result> PushTempUsageLogDtoAsync(TempUsageLogDto log, CancellationToken cancellationToken = default);
     Task<Result<IReadOnlyList<TempUsageLogDto>>> GetTempUsageLogBatchAsync(int batchSize, CancellationToken cancellationToken = default);
     Task<Result> TrimTempUsageLogBatchAsync(int processedCount, CancellationToken cancellationToken = default);
+}
 
+public interface IAiServiceStateStore
+{
     Task<Result> SetAiServiceStateAsync(Guid workspaceId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
     Task<Result> SetAiServiceStateForRoomAsync(Guid translationRoomId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
+}
+
+public interface IRedisBillingStore : ISessionActivityStore, IBillingUsageQueue, IAiServiceStateStore
+{
 }
