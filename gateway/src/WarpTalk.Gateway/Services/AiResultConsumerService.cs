@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using Grpc.Core;
 using Microsoft.AspNetCore.SignalR;
 using WarpTalk.Gateway.Hubs;
 
@@ -21,10 +24,15 @@ public sealed class AiResultConsumerService : BackgroundService
     private readonly RedisStreamService _streamService;
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IHubContext<TranslationRoomHub> _hubContext;
+    private readonly WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient _workspaceClient;
+    private readonly WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient _roomClient;
     private readonly ILogger<AiResultConsumerService> _logger;
 
     private const string ConsumerGroupName = "gateway-consumers";
     private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
+
+    // Cache profanity settings: translationRoomId -> isProfanityFilterEnabled
+    private readonly ConcurrentDictionary<string, bool> _profanityFilterCache = new();
 
     // translationRoomId → CancellationTokenSource (for stopping consumers when translationRoom ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _translationRoomCts = new();
@@ -33,32 +41,32 @@ public sealed class AiResultConsumerService : BackgroundService
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IHubContext<TranslationRoomHub> hubContext,
+        WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient workspaceClient,
+        WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient roomClient,
         ILogger<AiResultConsumerService> logger)
     {
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _hubContext = hubContext;
+        _workspaceClient = workspaceClient;
+        _roomClient = roomClient;
         _logger = logger;
     }
+
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("AiResultConsumerService starting, consumer={Consumer}", _consumerName);
 
-        // Subscribe to translationRoom lifecycle events
-        _translationRoomRegistry.TranslationRoomActivated += OnTranslationRoomActivated;
-        _translationRoomRegistry.TranslationRoomDeactivated += OnTranslationRoomDeactivated;
-
-        // Start consuming for any translationRooms already active (e.g., after gateway restart)
-        foreach (var translationRoomId in _translationRoomRegistry.GetActiveTranslationRoomIds())
-        {
-            OnTranslationRoomActivated(translationRoomId);
-        }
-
-        // Keep running until shutdown
         try
         {
-            await Task.Delay(Timeout.Infinite, stoppingToken);
+            // Keep all consumer loops owned by the host so initialization/runtime failures are
+            // observed and shutdown awaits every loop instead of leaving unobserved tasks behind.
+            await Task.WhenAll(
+                ConsumeSTTResultsAsync(stoppingToken),
+                ConsumeTranslationResultsAsync(stoppingToken),
+                ConsumeTTSResultsAsync(stoppingToken),
+                ConsumeAiAssistantResultsAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {
@@ -66,57 +74,49 @@ public sealed class AiResultConsumerService : BackgroundService
         }
         finally
         {
-            _translationRoomRegistry.TranslationRoomActivated -= OnTranslationRoomActivated;
-            _translationRoomRegistry.TranslationRoomDeactivated -= OnTranslationRoomDeactivated;
-
-            // Cancel all active consumers
-            foreach (var (_, cts) in _translationRoomCts)
-            {
-                cts.Cancel();
-                cts.Dispose();
-            }
-            _translationRoomCts.Clear();
-
             _logger.LogInformation("AiResultConsumerService stopped");
         }
     }
 
-    private void OnTranslationRoomActivated(string translationRoomId)
-    {
-        if (_translationRoomCts.ContainsKey(translationRoomId))
-            return;
 
-        var cts = new CancellationTokenSource();
-        if (!_translationRoomCts.TryAdd(translationRoomId, cts))
+
+    // ── Profanity Masking ────────────────────────────────────
+
+    private async Task<bool> IsProfanityFilterEnabledAsync(string translationRoomId, CancellationToken ct)
+    {
+        if (_profanityFilterCache.TryGetValue(translationRoomId, out var isEnabled))
+            return isEnabled;
+
+        try
         {
-            cts.Dispose();
-            return;
+            var roomResponse = await _roomClient.GetTranslationRoomByIdAsync(
+                new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = translationRoomId }, cancellationToken: ct);
+            
+            var workspaceResponse = await _workspaceClient.GetWorkspaceSettingsAsync(
+                new WarpTalk.Shared.Protos.GetWorkspaceSettingsRequest { WorkspaceId = roomResponse.WorkspaceId }, cancellationToken: ct);
+            
+            isEnabled = workspaceResponse.IsProfanityFilterEnabled;
+            _profanityFilterCache.TryAdd(translationRoomId, isEnabled);
+            return isEnabled;
         }
-
-        _logger.LogInformation("Starting AI result consumers for translationRoom {TranslationRoomId}", translationRoomId);
-
-        // Start 4 parallel consumer loops for this translationRoom
-        _ = Task.Run(() => ConsumeSTTResultsAsync(translationRoomId, cts.Token));
-        _ = Task.Run(() => ConsumeTranslationResultsAsync(translationRoomId, cts.Token));
-        _ = Task.Run(() => ConsumeTTSResultsAsync(translationRoomId, cts.Token));
-        _ = Task.Run(() => ConsumeAiAssistantResultsAsync(translationRoomId, cts.Token));
-    }
-
-    private void OnTranslationRoomDeactivated(string translationRoomId)
-    {
-        if (_translationRoomCts.TryRemove(translationRoomId, out var cts))
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {
-            _logger.LogInformation("Stopping AI result consumers for translationRoom {TranslationRoomId}", translationRoomId);
-            cts.Cancel();
-            cts.Dispose();
+            _profanityFilterCache.TryAdd(translationRoomId, false);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get profanity filter setting for room {RoomId}", translationRoomId);
+            return false;
         }
     }
 
     // ── STT Results → TranscriptSegmentReceived ──────────────
 
-    private async Task ConsumeSTTResultsAsync(string translationRoomId, CancellationToken ct)
+    private async Task ConsumeSTTResultsAsync(CancellationToken ct)
     {
-        var streamKey = $"stt:results:{translationRoomId}";
+        var streamKey = "stt:results";
+
         await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
 
         _logger.LogDebug("Consuming STT results: {StreamKey}", streamKey);
@@ -130,11 +130,21 @@ public sealed class AiResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+                    
+                    var originalText = RedisStreamService.GetField(entry, "text") ?? "";
+                    
+                    if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                    {
+                        originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
+                    }
+
                     var segment = new TranscriptSegmentDto(
                         SegmentId: Guid.TryParse(RedisStreamService.GetField(entry, "segment_id"), out var sid) ? sid : Guid.NewGuid(),
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
                         SpeakerName: RedisStreamService.GetField(entry, "speaker_id") ?? "Unknown",
-                        OriginalText: RedisStreamService.GetField(entry, "text") ?? "",
+                        OriginalText: originalText,
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
                         TargetLanguage: null,
@@ -155,7 +165,7 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error consuming STT results for translationRoom {TranslationRoomId}", translationRoomId);
+                _logger.LogError(ex, "Error consuming STT results");
                 await Task.Delay(1000, ct);
             }
         }
@@ -163,9 +173,10 @@ public sealed class AiResultConsumerService : BackgroundService
 
     // ── Translation Results → TranslationTextReceived ────────
 
-    private async Task ConsumeTranslationResultsAsync(string translationRoomId, CancellationToken ct)
+    private async Task ConsumeTranslationResultsAsync(CancellationToken ct)
     {
-        var streamKey = $"translate:results:{translationRoomId}";
+        var streamKey = "translate:results";
+
         await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
 
         while (!ct.IsCancellationRequested)
@@ -177,13 +188,29 @@ public sealed class AiResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    if (string.IsNullOrEmpty(translationRoomId)) continue;
+
+                    var originalText = RedisStreamService.GetField(entry, "original_text") ?? "";
+                    var translatedText = RedisStreamService.GetField(entry, "translated_text") ?? "";
+
+                    if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                    {
+                        originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);
+                        translatedText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(translatedText);
+                    }
+
                     var dto = new TranslationTextDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
-                        OriginalText: RedisStreamService.GetField(entry, "original_text") ?? "",
-                        TranslatedText: RedisStreamService.GetField(entry, "translated_text") ?? "",
+                        OriginalText: originalText,
+                        TranslatedText: translatedText,
                         SourceLang: RedisStreamService.GetField(entry, "source_lang") ?? "",
-                        TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "");
+                        TargetLang: RedisStreamService.GetField(entry, "target_lang") ?? "",
+                        StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_ms"), out var tStart) ? tStart : 0,
+                        EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var tEnd) ? tEnd : 0,
+                        SourceSegmentId: RedisStreamService.GetField(entry, "source_segment_id") ?? "",
+                        ChunkIndex: int.TryParse(RedisStreamService.GetField(entry, "chunk_index"), out var chunkIdx) ? chunkIdx : 0);
 
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
@@ -198,7 +225,7 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error consuming Translation results for translationRoom {TranslationRoomId}", translationRoomId);
+                _logger.LogError(ex, "Error consuming Translation results");
                 await Task.Delay(2000, ct);
             }
         }
@@ -206,9 +233,10 @@ public sealed class AiResultConsumerService : BackgroundService
 
     // ── TTS Results → TranslatedAudioReceived ────────────────
 
-    private async Task ConsumeTTSResultsAsync(string translationRoomId, CancellationToken ct)
+    private async Task ConsumeTTSResultsAsync(CancellationToken ct)
     {
-        var streamKey = $"tts:results:{translationRoomId}";
+        var streamKey = "tts:results";
+
         await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
 
         _logger.LogDebug("Consuming TTS results: {StreamKey}", streamKey);
@@ -222,12 +250,24 @@ public sealed class AiResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    if (string.IsNullOrEmpty(translationRoomId)) continue;
                     var audioDto = new TranslatedAudioDto(
                         SegmentId: RedisStreamService.GetField(entry, "segment_id") ?? "",
                         SpeakerId: Guid.TryParse(RedisStreamService.GetField(entry, "speaker_id"), out var spk) ? spk : Guid.Empty,
                         AudioBase64: RedisStreamService.GetField(entry, "audio_data") ?? "",
                         VoiceType: RedisStreamService.GetField(entry, "voice_type") ?? "default",
-                        DurationMs: int.TryParse(RedisStreamService.GetField(entry, "duration_ms"), out var dur) ? dur : 0);
+                        DurationMs: int.TryParse(RedisStreamService.GetField(entry, "duration_ms"), out var dur) ? dur : 0,
+                        VoiceMode: RedisStreamService.GetField(entry, "voice_mode"),
+                        CloneStrength: double.TryParse(RedisStreamService.GetField(entry, "clone_strength"), NumberStyles.Float, CultureInfo.InvariantCulture, out var strength) ? strength : null,
+                        AnchorProvider: RedisStreamService.GetField(entry, "anchor_provider"),
+                        CloneProvider: RedisStreamService.GetField(entry, "clone_provider"),
+                        RenderLocation: RedisStreamService.GetField(entry, "render_location"),
+                        CacheKey: RedisStreamService.GetField(entry, "cache_key"),
+                        CacheHit: bool.TryParse(RedisStreamService.GetField(entry, "cache_hit"), out var cacheHit) ? cacheHit : null,
+                        SynthesisLatencyMs: int.TryParse(RedisStreamService.GetField(entry, "synthesis_latency_ms"), out var synthMs) ? synthMs : null,
+                        ConversionLatencyMs: int.TryParse(RedisStreamService.GetField(entry, "conversion_latency_ms"), out var conversionMs) ? conversionMs : null,
+                        FallbackReason: RedisStreamService.GetField(entry, "fallback_reason"));
 
                     await _hubContext.Clients
                         .Group($"translationRoom:{translationRoomId}")
@@ -246,7 +286,7 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error consuming TTS results for translationRoom {TranslationRoomId}", translationRoomId);
+                _logger.LogError(ex, "Error consuming TTS results");
                 await Task.Delay(1000, ct);
             }
         }
@@ -254,9 +294,10 @@ public sealed class AiResultConsumerService : BackgroundService
 
     // ── AI Assistant Results → AiAssistantResult ─────────────
 
-    private async Task ConsumeAiAssistantResultsAsync(string translationRoomId, CancellationToken ct)
+    private async Task ConsumeAiAssistantResultsAsync(CancellationToken ct)
     {
-        var streamKey = $"ai_assistant:results:{translationRoomId}";
+        var streamKey = "ai_assistant:results";
+
         await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
 
         _logger.LogDebug("Consuming AI Assistant results: {StreamKey}", streamKey);
@@ -270,6 +311,8 @@ public sealed class AiResultConsumerService : BackgroundService
 
                 foreach (var entry in entries)
                 {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    if (string.IsNullOrEmpty(translationRoomId)) continue;
                     var result = new AiAssistantResultDto(
                         TranslationRoomId: translationRoomId,
                         Type: RedisStreamService.GetField(entry, "type") ?? "summary",
@@ -289,7 +332,7 @@ public sealed class AiResultConsumerService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error consuming AI Assistant results for translationRoom {TranslationRoomId}", translationRoomId);
+                _logger.LogError(ex, "Error consuming AI Assistant results");
                 await Task.Delay(2000, ct);
             }
         }

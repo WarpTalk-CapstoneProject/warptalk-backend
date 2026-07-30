@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/workspace-document-invalidated.schema.json",
+  "title": "Workspace document invalidated v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "workspace.document_invalidated"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "workspace.document_invalidated"
+        },
+        "producer": {
+          "const": "workspace-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "document_id",
+            "workspace_id",
+            "reason"
+          ],
+          "properties": {
+            "document_id": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "deleted",
+                "archived"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

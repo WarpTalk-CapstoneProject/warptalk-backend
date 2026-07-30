@@ -1,16 +1,24 @@
 using System.Net;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using StackExchange.Redis;
 using WarpTalk.Shared.Protos;
-using WarpTalk.TranscriptService.Domain.Interfaces;
-using WarpTalk.TranscriptService.Infrastructure.Persistence;
-using WarpTalk.TranscriptService.Infrastructure.Repositories;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Application.Services;
-using WarpTalk.TranscriptService.API.GrpcServices;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
-using System.Text;
+using WarpTalk.TranscriptService.Domain.Enums;
+using WarpTalk.TranscriptService.Domain.Interfaces;
+using WarpTalk.TranscriptService.Infrastructure.Persistence;
+using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
+using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Grpc;
+
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddWarpTalkObservability(
+    builder.Configuration,
+    builder.Environment,
+    "warptalk-transcript");
 
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -27,41 +35,77 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
-builder.Services.AddDbContext<TranscriptDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("TranscriptDb")));
+// --- DbContext ---
+var dataSourceBuilder = new NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("TranscriptDb"));
+var dataSource = dataSourceBuilder.Build();
 
+builder.Services.AddDbContext<TranscriptDbContext>(options =>
+    options.UseNpgsql(dataSource));
+builder.Services.AddWarpTalkServiceHealthChecks<TranscriptDbContext>(
+    "transcript-database");
+
+// --- Repositories ---
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
-builder.Services.AddScoped<ITranscriptService, WarpTalk.TranscriptService.Application.Services.TranscriptService>();
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"] ?? "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"))
-        };
-    });
+// --- Application Services ---
+builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
+builder.Services.AddScoped<IGlossaryService, GlossaryService>();
+builder.Services.AddScoped<IGlobalGlossaryService, GlobalGlossaryService>();
+builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
+builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
+
+// --- Redis ---
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
+                          ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+    ConnectionMultiplexer.Connect(redisConnectionString));
+
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
+builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
+
+// --- Authentication ---
+builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
-builder.Services.AddGrpc();
+
+// --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcUrls:AuthServiceUrl"]!);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
     o.Address = new Uri(builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]!);
-});
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
-builder.Services.AddControllers();
+builder.Services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:BillingServiceUrl",
+        "http://localhost:50054");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcUrls:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 builder.Services.AddOpenApi();
+builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
@@ -76,6 +120,9 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapGrpcService<TranscriptGrpcService>();
+
+app.MapGrpcService<WarpTalk.TranscriptService.API.GrpcServices.TranscriptGrpcService>();
+app.MapWarpTalkServiceHealthChecks();
+app.MapGet("/", () => "Communication with gRPC endpoints must be made through a gRPC client.");
 
 app.Run();

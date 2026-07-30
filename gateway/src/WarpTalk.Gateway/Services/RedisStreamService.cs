@@ -34,7 +34,13 @@ public sealed class RedisStreamService
         int chunkIndex,
         string audioBase64,
         string language = "auto",
-        int sampleRate = 16000)
+        int sampleRate = 16000,
+        string sourceRuntime = "web",
+        double vadConfidence = 0.0,
+        int speechStartMs = 0,
+        int speechEndMs = 0,
+        double inputLufs = 0.0,
+        bool noiseSuppressionEnabled = false)
     {
         var db = _redis.GetDatabase();
         var streamKey = $"audio:chunks:{translationRoomId}";
@@ -48,6 +54,12 @@ public sealed class RedisStreamService
             new("audio_data", audioBase64),
             new("language", language),
             new("sample_rate", sampleRate.ToString()),
+            new("source_runtime", sourceRuntime),
+            new("vad_confidence", vadConfidence.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("speech_start_ms", speechStartMs.ToString()),
+            new("speech_end_ms", speechEndMs.ToString()),
+            new("input_lufs", inputLufs.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("noise_suppression_enabled", noiseSuppressionEnabled ? "true" : "false"),
             new("timestamp_ms", timestampMs.ToString()),
         };
 
