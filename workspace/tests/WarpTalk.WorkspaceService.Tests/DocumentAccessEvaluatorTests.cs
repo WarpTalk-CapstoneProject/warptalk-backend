@@ -362,6 +362,54 @@ public class DocumentAccessEvaluatorTests
     }
 
     [Fact]
+    public async Task EvaluateAccessAsync_ShouldAllowExternalUploaderToViewOwnApprovedDocument()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            UploadedBy = userId,
+            OwnerId = userId,
+            IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString(),
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            SourceType = "UPLOAD"
+        };
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = roleId,
+            MembershipType = MembershipType.External.ToString()
+        };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(member);
+        StubRoleName(roleId, "Member");
+        _policyRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceDocumentAccessPolicy>());
+
+        var result = await _evaluator.EvaluateAccessAsync(
+            userId,
+            workspaceId,
+            documentId,
+            WorkspaceDocumentPermissions.View);
+
+        Assert.True(result.IsSuccess, result.Error);
+    }
+
+    [Fact]
     public async Task EvaluateAccessAsync_ShouldAllowAccess_WhenExternalMemberAccessesMeetingDocument_WithinGracePeriod()
     {
         // Arrange

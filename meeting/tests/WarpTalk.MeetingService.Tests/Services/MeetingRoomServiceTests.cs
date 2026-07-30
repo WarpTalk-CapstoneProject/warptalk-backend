@@ -328,14 +328,32 @@ public class MeetingRoomServiceTests
     public async Task TriggerAiAsync_PublishesTrackPublishedEvent()
     {
         var translationRoomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
         var request = new TriggerAiRequest
         {
             ParticipantIdentity = Guid.NewGuid().ToString()
         };
+        _grpcServiceMock
+            .Setup(service => service.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+            {
+                WorkspaceId = workspaceId.ToString(),
+                Title = "WarpTalk engineering review",
+                Description = "Discuss Docker, Kubernetes, Redis, and LiveKit."
+            }));
 
         var result = await _sut.TriggerAiAsync(translationRoomId, request);
 
         Assert.True(result.IsSuccess);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                MeetingEventTypes.Started,
+                It.Is<EventEnvelope<MeetingStartedEventPayload>>(envelope =>
+                    envelope.Payload.TranslationRoomId == translationRoomId &&
+                    envelope.Payload.WorkspaceId == workspaceId &&
+                    envelope.Payload.Title == "WarpTalk engineering review" &&
+                    envelope.Payload.Description == "Discuss Docker, Kubernetes, Redis, and LiveKit.")),
+            Times.Once);
         _redisServiceMock.Verify(
             r => r.PublishEventAsync(
                 MeetingEventTypes.TrackPublished,
@@ -351,13 +369,20 @@ public class MeetingRoomServiceTests
     [Fact]
     public async Task TriggerAiAsync_ReturnsFailure_WhenPublishFails()
     {
+        var translationRoomId = Guid.NewGuid();
+        _grpcServiceMock
+            .Setup(service => service.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+            {
+                WorkspaceId = Guid.NewGuid().ToString()
+            }));
         _redisServiceMock
             .Setup(r => r.PublishEventAsync(
                 MeetingEventTypes.TrackPublished,
                 It.IsAny<EventEnvelope<MeetingTrackPublishedEventPayload>>()))
             .ReturnsAsync(Result.Failure("Redis unavailable", "REDIS_ERROR"));
 
-        var result = await _sut.TriggerAiAsync(Guid.NewGuid(), new TriggerAiRequest
+        var result = await _sut.TriggerAiAsync(translationRoomId, new TriggerAiRequest
         {
             ParticipantIdentity = Guid.NewGuid().ToString()
         });
@@ -496,6 +521,42 @@ public class MeetingRoomServiceTests
         var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
 
         Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task EndMeetingAsync_DoesNotPersistFinishedState_WhenLiveKitDeleteFails()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = "provider-room",
+            ActiveHostId = hostId,
+            Status = "IN_PROGRESS"
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    WorkspaceId = Guid.NewGuid().ToString()
+                }));
+        _roomAdminServiceMock
+            .Setup(service => service.DeleteRoomAsync("provider-room", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure<bool>("LiveKit Unauthorized", "LIVEKIT_ROOM_COMMAND_FAILED"));
+
+        var result = await _sut.EndMeetingAsync(translationRoomId, hostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("IN_PROGRESS", meetingRoom.Status);
+        Assert.Null(meetingRoom.EndedAt);
+        _unitOfWorkMock.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]

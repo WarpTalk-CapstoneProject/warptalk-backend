@@ -272,7 +272,7 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
-    public async Task EndTranslationRoomAsync_CalculatesDurationAndFiresEvent()
+    public async Task EndTranslationRoomAsync_SetsEndedAtWithoutPersistingDurationAndFiresEvent()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
@@ -287,7 +287,7 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue();
         room.Status.Should().Be("ENDED");
         room.EndedAt.Should().NotBeNull();
-        room.DurationSeconds.Should().BeGreaterOrEqualTo(1800); // 30 mins = 1800s
+        room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
     }
 

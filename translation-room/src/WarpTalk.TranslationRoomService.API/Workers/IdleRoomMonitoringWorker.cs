@@ -60,7 +60,12 @@ public class IdleRoomMonitoringWorker : BackgroundService
             var participants = await participantRepo.FindAsync(p => p.TranslationRoomId == room.Id, "", ct);
             var participantList = participants.ToList();
 
-            var hasConnectedParticipants = participantList.Any(p => p.Status == "CONNECTED");
+            // JOINED is the persisted state used after the REST join succeeds; CONNECTED
+            // is only set when the realtime presence path happens to update the row.
+            // A participant actively publishing in LiveKit can therefore remain JOINED.
+            // Treat both states as present so the idle worker cannot end a live room.
+            var hasConnectedParticipants = participantList.Any(
+                p => p.Status == "CONNECTED" || p.Status == "JOINED");
 
             if (!hasConnectedParticipants)
             {
