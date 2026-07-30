@@ -76,7 +76,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             if (inviterRoleName.IsAdmin() && request.RoleName.IsAdmin())
             {
                 return Result.Failure<InviteMemberResponse>(
-                    WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings,
+                    WorkspaceConstants.Errors.AdminCannotPromoteToAdmin,
                     ErrorCodes.Forbidden);
             }
 
