@@ -1,0 +1,1 @@
+import hashlib, base64, os; salt=os.urandom(16); h=hashlib.pbkdf2_hmac('sha512', b'Admin@123', salt, 100000, 32); print(f'v2$SHA512$100000$16${base64.b64encode(salt).decode()}${base64.b64encode(h).decode()}')

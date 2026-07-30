@@ -1,0 +1,43 @@
+%% WarpTalk Module 1 - Translation Room Management
+%% Recommended Audio Routing State Diagram
+%% Converted from PDF to Mermaid
+
+---
+title: Recommended Audio Routing State Diagram
+---
+stateDiagram-v2
+    [*] --> PENDING: START
+    PENDING --> READY: config ready
+    READY --> BROADCASTING: session starts
+
+    BROADCASTING --> PAUSED: room pause
+    PAUSED --> BROADCASTING: room resume
+
+    BROADCASTING --> SPEECH_DELAYED: stt latency high
+    SPEECH_DELAYED --> BROADCASTING: stt recovered
+
+    BROADCASTING --> TRANSLATION_DELAYED: translation latency high
+    TRANSLATION_DELAYED --> BROADCASTING: translation recovered
+
+    BROADCASTING --> VOICE_DELAYED: tts latency high
+    VOICE_DELAYED --> BROADCASTING: tts recovered
+
+    BROADCASTING --> STANDARD_VOICE: voice clone unavailable
+    STANDARD_VOICE --> BROADCASTING: voice clone recovered
+
+    BROADCASTING --> CAPTION_ONLY: audio unavailable
+    VOICE_DELAYED --> CAPTION_ONLY: tts unavailable
+    STANDARD_VOICE --> CAPTION_ONLY: tts unavailable
+    CAPTION_ONLY --> BROADCASTING: audio recovered
+
+    BROADCASTING --> ENDING: session ends or system disables
+    PAUSED --> ENDING: session ends or system disables
+    SPEECH_DELAYED --> ENDING: session ends or system disables
+    TRANSLATION_DELAYED --> ENDING: session ends or system disables
+    VOICE_DELAYED --> ENDING: session ends or system disables
+    STANDARD_VOICE --> ENDING: session ends or system disables
+    CAPTION_ONLY --> ENDING: session ends or system disables
+
+    ENDING --> SAVING_OUTPUTS: flush runtime
+    SAVING_OUTPUTS --> COMPLETED: outputs linked
+    COMPLETED --> [*]: END

@@ -1,0 +1,231 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package billing;
+
+service BillingService {
+  rpc GetWorkspaceCredits (GetCreditsRequest) returns (GetCreditsResponse);
+  rpc ConsumeCredits (ConsumeCreditsRequest) returns (ConsumeCreditsResponse);
+  rpc RecordUsage (RecordUsageGrpcRequest) returns (RecordUsageGrpcResponse);
+  rpc LogUsageOnly (RecordUsageGrpcRequest) returns (RecordUsageGrpcResponse);
+  rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
+
+  rpc CreateSubscription (CreateSubscriptionRequest) returns (SubscriptionResponse);
+  rpc GetActiveSubscription (GetActiveSubscriptionRequest) returns (SubscriptionResponse);
+  rpc GetWorkspaceFeatureAccess (GetFeatureAccessRequest) returns (GetFeatureAccessResponse);
+  rpc CancelSubscription (CancelSubscriptionRequest) returns (SubscriptionResponse);
+
+  rpc GetPlans (GetPlansRequest) returns (GetPlansResponse);
+  rpc GetPlanById (GetPlanByIdRequest) returns (PlanResponse);
+
+  rpc GetTransactionHistory (GetHistoryRequest) returns (TransactionHistoryResponse);
+  rpc ProcessPaymentEvent (ProcessPaymentEventRequest) returns (ProcessPaymentResponse);
+  rpc GetInvoices (GetInvoicesRequest) returns (GetInvoicesResponse);
+}
+
+message GetCreditsRequest {
+  string workspace_id = 1;
+}
+
+message GetCreditsResponse {
+  string workspace_id = 1;
+  int32 current_credits = 2;
+  string status = 3;
+  int32 credits_used_this_cycle = 4;
+  string current_period_start = 5;
+  string current_period_end = 6;
+}
+
+message ConsumeCreditsRequest {
+  string workspace_id = 1;
+  int32 amount = 2;
+  string reference_type = 3;
+  string reference_id = 4;
+}
+
+message ConsumeCreditsResponse {
+  bool success = 1;
+  int32 new_balance = 2;
+  string error_message = 3;
+}
+
+message GetHistoryRequest {
+  string workspace_id = 1;
+  int32 page_number = 2;
+  int32 page_size = 3;
+}
+
+message CreditHistoryResponse {
+  repeated CreditTransaction items = 1;
+  int32 total_count = 2;
+}
+
+message CreditTransaction {
+  string id = 1;
+  int32 amount = 2;
+  string type = 3;
+  string description = 4;
+  string reference_type = 5;
+  string reference_id = 6;
+  int32 balance_after = 7;
+  string created_at = 8;
+}
+
+message RecordUsageGrpcRequest {
+  string host_workspace_id = 1;
+  string user_id = 2;
+  string usage_type = 3;
+  string unit = 4;
+  double quantity = 5;
+  int32 credits_consumed = 6;
+  int32 duration_seconds = 7;
+  string translation_room_id = 8;
+  string details_json = 9;
+  string segment_id = 10;
+}
+
+message RecordUsageGrpcResponse {
+  bool success = 1;
+  int32 new_balance = 2;
+  string error_message = 3;
+}
+
+message CreateSubscriptionRequest {
+  string workspace_id = 1;
+  string plan_id = 2;
+  string user_id = 3;
+}
+
+message GetActiveSubscriptionRequest {
+  string workspace_id = 1;
+}
+
+message CancelSubscriptionRequest {
+  string workspace_id = 1;
+  string reason = 2;
+}
+
+message SubscriptionResponse {
+  string subscription_id = 1;
+  string status = 2;
+  string error_message = 3;
+  string plan_id = 4;
+  string plan_name = 5;
+  string workspace_id = 6;
+  int32 credits_remaining = 7;
+  string current_period_start = 8;
+  string current_period_end = 9;
+  bool auto_renew = 10;
+  string cancelled_at = 11;
+}
+
+message GetFeatureAccessRequest {
+  string workspace_id = 1;
+}
+
+message GetFeatureAccessResponse {
+  bool has_active_subscription = 1;
+  string plan_tier = 2;
+  int32 max_participants = 3;
+  int32 max_languages = 4;
+  bool voice_clone_enabled = 5;
+  bool ai_assistant_enabled = 6;
+  bool glossary_enabled = 7;
+  bool dedicated_gpu = 8;
+  string features_json = 9;
+  bool allow_glossary = 10;
+  bool allow_acl = 11;
+}
+
+message GetPlansRequest {}
+
+message GetPlansResponse {
+  repeated PlanResponse plans = 1;
+}
+
+message GetPlanByIdRequest {
+  string plan_id = 1;
+}
+
+message PlanResponse {
+  string plan_id = 1;
+  string name = 2;
+  string slug = 3;
+  string tier = 4;
+  double price = 5;
+  string currency = 6;
+  string billing_cycle = 7;
+  int32 credits_per_cycle = 8;
+  int32 max_participants = 9;
+  int32 max_languages = 10;
+  bool voice_clone_enabled = 11;
+  bool ai_assistant_enabled = 12;
+  bool glossary_enabled = 13;
+  bool dedicated_gpu = 14;
+  string features = 15;
+  int32 sort_order = 16;
+  bool allow_glossary = 17;
+  bool allow_acl = 18;
+}
+
+message TransactionHistoryResponse {
+  repeated PaymentTransaction items = 1;
+  int32 total_count = 2;
+}
+
+message PaymentTransaction {
+  string id = 1;
+  string subscription_id = 2;
+  double amount = 3;
+  double tax_amount = 4;
+  double total_amount = 5;
+  string currency = 6;
+  string payment_method = 7;
+  string provider = 8;
+  string provider_transaction_id = 9;
+  string status = 10;
+  string failure_reason = 11;
+  string paid_at = 12;
+  string created_at = 13;
+}
+
+message ProcessPaymentEventRequest {
+  string user_id = 1;
+  double amount = 2;
+  string currency = 3;
+  string payment_type = 4;
+  string stripe_session_id = 5;
+  string provider_transaction_id = 6;
+  string status = 7;
+  string failure_reason = 8;
+  string workspace_id = 9;
+  string invoice_url = 10;
+  string invoice_pdf = 11;
+  string plan_slug = 12;
+  string billing_cycle = 13;
+}
+
+message ProcessPaymentResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message GetInvoicesRequest {
+  string workspace_id = 1;
+}
+
+message GetInvoicesResponse {
+  repeated Invoice items = 1;
+}
+
+message Invoice {
+  string id = 1;
+  string stripe_invoice_id = 2;
+  double amount = 3;
+  string currency = 4;
+  string status = 5;
+  string invoice_pdf_url = 6;
+  string hosted_invoice_url = 7;
+  string created_at = 8;
+}

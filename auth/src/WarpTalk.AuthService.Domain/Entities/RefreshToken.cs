@@ -9,6 +9,8 @@ public partial class RefreshToken
 
     public Guid UserId { get; set; }
 
+    public Guid FamilyId { get; set; }
+
     public string TokenHash { get; set; } = null!;
 
     public string? DeviceInfo { get; set; }

@@ -1,0 +1,21 @@
+# Tasks: Participant Management Features
+
+- [ ] Phase 0: TDD Setup
+  - [ ] Create failing integration test skeletons in `ParticipantManagementIntegrationTests.cs`.
+  - [ ] Create failing unit test skeletons in `ParticipantManagementServiceTests.cs`.
+- [ ] Phase 1: Domain & Application Contracts
+  - [ ] Verify `TranslationRoomParticipantStatus` has required statuses.
+  - [ ] Define DTOs in `TranslationRoomDtos.cs`.
+  - [ ] Add interface methods to `ITranslationRoomService`.
+- [ ] Phase 2: Application Implementation
+  - [ ] Implement `GetParticipantsAsync`.
+  - [ ] Implement `UpdateParticipantAudioAsync` (toggles `IsMuted`).
+  - [ ] Implement `KickParticipantAsync` (sets status to `KICKED`).
+  - [ ] Implement `LeaveRoomAsync` (sets status to `LEFT`).
+- [ ] Phase 3: Infrastructure
+  - [ ] Verify `TranslationRoomParticipantRepository` has necessary queries (e.g., fetch by room and participant ID).
+- [ ] Phase 4: API Layer
+  - [ ] Create Validators for new requests.
+  - [ ] Add endpoints to `TranslationRoomsController`.
+- [ ] Phase 5: Verification
+  - [ ] Run `dotnet test` and ensure all tests pass.

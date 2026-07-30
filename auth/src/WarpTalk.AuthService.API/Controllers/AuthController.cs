@@ -1,26 +1,44 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
 [ApiController]
-[Route("api/auth")]
+[Route("api/v1/auth")]
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
 
-    public AuthController(IAuthService authService) => _authService = authService;
+    public AuthController(IAuthService authService)
+    {
+        _authService = authService;
+    }
 
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request, CancellationToken ct)
     {
         var result = await _authService.RegisterAsync(request, ct);
         if (!result.IsSuccess)
+        {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpPost("register-invited")]
+    public async Task<IActionResult> RegisterInvited([FromBody] RegisterInvitedRequest request, CancellationToken ct)
+    {
+        var result = await _authService.RegisterInvitedAsync(request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
 
@@ -32,86 +50,65 @@ public class AuthController : ControllerBase
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             DeviceInfo = Request.Headers.UserAgent.ToString()
         };
-
+        
         var result = await _authService.LoginAsync(loginRequest, ct);
         if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok(result.Value);
-    }
-
-    [HttpPost("google-login")]
-    public async Task<IActionResult> GoogleLogin([FromBody] GoogleLoginRequest request, CancellationToken ct)
-    {
-        var loginRequest = request with
         {
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            DeviceInfo = Request.Headers.UserAgent.ToString()
-        };
-
-        var result = await _authService.GoogleLoginAsync(loginRequest, ct);
-        if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok(result.Value);
-    }
-
-    [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh([FromBody] RefreshTokenRequest request, CancellationToken ct)
-    {
-        var refreshRequest = request with
-        {
-            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-            DeviceInfo = Request.Headers.UserAgent.ToString()
-        };
-
-        var result = await _authService.RefreshTokenAsync(refreshRequest, ct);
-        if (!result.IsSuccess)
-            return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidCredentials)
+            {
+                return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            }
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
 
     [Authorize]
-    [HttpPost("logout")]
-    public async Task<IActionResult> Logout([FromBody] LogoutRequest request, CancellationToken ct)
+    [HttpPost("resend-verification")]
+    public async Task<IActionResult> ResendVerification(CancellationToken ct)
     {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _authService.LogoutAsync(userId, request.RefreshToken, ct);
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _authService.ResendVerificationAsync(userId.Value, ct);
         if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, null));
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
         return NoContent();
     }
 
-    [Authorize]
-    [HttpGet("me")]
-    public async Task<IActionResult> GetProfile(CancellationToken ct)
+    [AllowAnonymous]
+    [HttpPost("verify-email")]
+    public async Task<IActionResult> VerifyEmail(
+        [FromBody] VerifyEmailRequest request,
+        CancellationToken ct)
     {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _authService.GetProfileAsync(userId, ct);
-        if (!result.IsSuccess)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok(result.Value);
-    }
-
-    [Authorize]
-    [HttpPut("me")]
-    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request, CancellationToken ct)
-    {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _authService.UpdateProfileAsync(userId, request, ct);
+        var result = await _authService.VerifyEmailAsync(request, ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        return Ok(result.Value);
+        return NoContent();
     }
 
-    [Authorize]
-    [HttpPost("change-password")]
-    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request, CancellationToken ct)
+    [AllowAnonymous]
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword(
+        [FromBody] ForgotPasswordRequest request,
+        CancellationToken ct)
     {
-        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        var result = await _authService.ChangePasswordAsync(userId, request, ct);
+        await _authService.ForgotPasswordAsync(request, ct);
+        return NoContent();
+    }
+
+    [AllowAnonymous]
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword(
+        [FromBody] ResetPasswordRequest request,
+        CancellationToken ct)
+    {
+        var result = await _authService.ResetPasswordAsync(request, ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         return NoContent();
     }
 }
-
-public record LogoutRequest(string RefreshToken);

@@ -1,35 +1,86 @@
 using Grpc.Core;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
-using WarpTalk.TranslationRoomService.Infrastructure;
 
 namespace WarpTalk.TranslationRoomService.API.GrpcServices;
 
 public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.TranslationRoomServiceBase
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly ITranslationRoomService _translationRoomService;
+    private readonly ITranslationRoomRepository _translationRoomRepository;
+    private readonly ITranslationRoomParticipantRepository _participantRepository;
 
-    public TranslationRoomGrpcService(IUnitOfWork unitOfWork)
+    public TranslationRoomGrpcService(
+        ITranslationRoomService translationRoomService,
+        ITranslationRoomRepository translationRoomRepository,
+        ITranslationRoomParticipantRepository participantRepository)
     {
-        _unitOfWork = unitOfWork;
+        _translationRoomService = translationRoomService;
+        _translationRoomRepository = translationRoomRepository;
+        _participantRepository = participantRepository;
     }
 
     public override async Task<GetTranslationRoomResponse> GetTranslationRoomById(GetTranslationRoomRequest request, ServerCallContext context)
     {
         if (!Guid.TryParse(request.Id, out var parsedId))
-            throw GrpcErrors.InvalidId("TranslationRoom");
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
 
-        var repo = _unitOfWork.Repository<TranslationRoom>();
-        var translationRoom = await repo.GetByIdAsync(parsedId);
+        var result = await _translationRoomService.GetTranslationRoomAsync(parsedId, context.CancellationToken);
 
-        if (translationRoom is null)
-            throw GrpcErrors.NotFound("TranslationRoom", request.Id);
+        if (!result.IsSuccess)
+            throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.Id);
 
         return new GetTranslationRoomResponse
         {
-            Id = translationRoom.Id.ToString(),
-            Title = translationRoom.Title
+            Id = result.Value!.Id.ToString(),
+            WorkspaceId = result.Value!.WorkspaceId.ToString(),
+            Title = result.Value!.Title,
+            Description = result.Value!.Description ?? string.Empty,
+            HostId = result.Value!.HostId.ToString(),
+            Status = result.Value!.Status.ToString(),
+            StartedAt = result.Value!.StartedAt?.ToString("O") ?? string.Empty,
+            EndedAt = result.Value!.EndedAt?.ToString("O") ?? string.Empty,
+            ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty
         };
+    }
+
+    public override async Task<GetParticipantsByRoomIdResponse> GetParticipantsByRoomId(GetParticipantsByRoomIdRequest request, ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var parsedRoomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        var participants = await _participantRepository.FindAsync(p => p.TranslationRoomId == parsedRoomId, "", context.CancellationToken);
+
+        var response = new GetParticipantsByRoomIdResponse();
+        
+        foreach (var p in participants)
+        {
+            response.Participants.Add(new Shared.Protos.Participant
+            {
+                Id = p.UserId?.ToString() ?? string.Empty,
+                DisplayName = p.DisplayName ?? string.Empty,
+                Role = p.Role ?? string.Empty,
+                Language = p.SpeakLanguage ?? string.Empty,
+                IsActive = p.Status == "CONNECTED"
+            });
+        }
+
+        return response;
+    }
+
+    public override async Task<GetActiveRoomCountByWorkspaceResponse> GetActiveRoomCountByWorkspace(
+        GetActiveRoomCountByWorkspaceRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
+            throw GrpcErrors.InvalidId("Workspace");
+
+        var count = await _translationRoomRepository.CountActiveByWorkspaceAsync(
+            workspaceId,
+            context.CancellationToken);
+        return new GetActiveRoomCountByWorkspaceResponse { Count = count };
     }
 }

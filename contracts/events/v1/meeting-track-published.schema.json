@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.warptalk.vn/events/v1/meeting-track-published.schema.json",
+  "title": "Meeting track published v1",
+  "x-schema-version": 1,
+  "x-event-types": [
+    "meeting.track_published"
+  ],
+  "allOf": [
+    {
+      "$ref": "./event-envelope.schema.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event_type": {
+          "const": "meeting.track_published"
+        },
+        "producer": {
+          "const": "meeting-service"
+        },
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "room_name",
+            "participant_identity",
+            "track_id",
+            "published_at"
+          ],
+          "properties": {
+            "room_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "participant_identity": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "track_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "published_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

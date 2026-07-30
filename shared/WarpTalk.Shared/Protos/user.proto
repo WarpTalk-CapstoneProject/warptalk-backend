@@ -6,10 +6,18 @@ package user;
 
 service UserService {
   rpc GetUserById (GetUserRequest) returns (GetUserResponse);
+  rpc GetUserByEmail (GetUserByEmailRequest) returns (GetUserResponse);
+  rpc GetUserSettings (GetUserRequest) returns (GetUserSettingsResponse);
+  rpc GetRoleByName (GetRoleByNameRequest) returns (GetRoleResponse);
+  rpc GetRoleById (GetRoleByIdRequest) returns (GetRoleResponse);
 }
 
 message GetUserRequest {
   string id = 1;
+}
+
+message GetUserByEmailRequest {
+  string email = 1;
 }
 
 message GetUserResponse {
@@ -17,4 +25,25 @@ message GetUserResponse {
   string email = 2;
   string full_name = 3;
   string avatar_url = 4;
+  string preferred_language = 5;
+}
+
+message GetUserSettingsResponse {
+  bool found = 1;
+  string default_speak_language = 2;
+  string default_listen_language = 3;
+}
+
+message GetRoleByNameRequest {
+  string name = 1;
+}
+
+message GetRoleByIdRequest {
+  string id = 1;
+}
+
+message GetRoleResponse {
+  string id = 1;
+  string name = 2;
+  string description = 3;
 }

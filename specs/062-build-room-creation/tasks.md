@@ -1,0 +1,24 @@
+# Tasks: 1.1 Build Room Creation and Scheduling Flow
+
+- [/] Phase 0: Write ALL tests first (contract -> unit -> integration) -> confirm FAIL (Deferred until entities are scaffolded)
+- [ ] Phase 1: Domain layer
+  - [x] Scaffold `translation_room` schema using Database First.
+  - [x] Move entities to `WarpTalk.TranslationRoomService.Domain/Entities`.
+  - [x] Define Enums (`RoomStatus`, `TranslationRoomType`) in Domain and map them in DbContext.
+  - [x] Define `TranslationRoomConstants`.
+  - [x] Define `ITranslationRoomRepository`.
+- [x] Phase 2: Application layer
+  - [x] Create `CreateTranslationRoomRequest` & `CreateTranslationRoomResponse`.
+  - [x] Create `CreateTranslationRoomCommand`.
+  - [x] Create `CreateTranslationRoomCommandValidator`.
+  - [x] Create `CreateTranslationRoomCommandHandler`.
+  - [x] Create `RoomCodeGenerator` helper.
+- [x] Phase 3: Infrastructure layer
+  - [x] Move `TranslationRoomDbContext` to `Infrastructure/Persistence`.
+  - [x] Implement `TranslationRoomRepository`.
+- [x] Phase 4: API layer
+  - [x] Implement `TranslationRoomsController`.
+- [ ] Phase 5: Verification
+  - [ ] Run all tests and ensure they pass.
+- [ ] Phase 6: PR prep
+  - [ ] Check code style and conventions.
