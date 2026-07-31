@@ -19,13 +19,18 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
+    private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly ILogger<TranslationRoomParticipantService> _logger;
 
-    public TranslationRoomParticipantService(IUnitOfWork unitOfWork, ILogger<TranslationRoomParticipantService> logger)
+    public TranslationRoomParticipantService(
+        IUnitOfWork unitOfWork,
+        IWorkspaceMemberDirectory workspaceMemberDirectory,
+        ILogger<TranslationRoomParticipantService> logger)
     {
         _unitOfWork = unitOfWork;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
+        _workspaceMemberDirectory = workspaceMemberDirectory;
         _logger = logger;
     }
 
@@ -127,8 +132,18 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (room == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (room.HostId != requestedByUserId)
-                return Result.Failure("Only the host can admit participants.", ErrorCodes.Forbidden);
+            // WT-188: admission is not host-only. The web client already grants host-like lobby
+            // controls to workspace Owners/Admins (see room page's `isHost`), so restricting this to
+            // room.HostId left them staring at an Approve button that always 403'd — while a plain
+            // Member who happened to create the room could admit the Owner. Widened to "room host OR
+            // workspace Owner/Admin", which is what the UI has always advertised.
+            if (room.HostId != requestedByUserId
+                && !await _workspaceMemberDirectory.IsOwnerOrAdminAsync(room.WorkspaceId, requestedByUserId, ct))
+            {
+                return Result.Failure(
+                    "Only the host or a workspace owner/admin can admit participants.",
+                    ErrorCodes.Forbidden);
+            }
 
             var participant = await _participantRepository.GetByIdAsync(participantId, ct);
             if (participant == null || participant.TranslationRoomId != translationRoomId)
