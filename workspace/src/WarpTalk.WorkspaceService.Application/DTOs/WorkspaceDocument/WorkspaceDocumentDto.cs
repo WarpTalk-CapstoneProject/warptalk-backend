@@ -6,6 +6,7 @@ public record WorkspaceDocumentDto(
     Guid Id,
     Guid WorkspaceId,
     Guid? UploadedBy,
+    Guid? ApprovedBy,
     Guid? OwnerId,
     Guid? ApprovedBy,
     string Name,

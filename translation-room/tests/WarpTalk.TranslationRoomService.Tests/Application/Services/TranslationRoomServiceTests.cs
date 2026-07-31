@@ -174,6 +174,106 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
+    public async Task JoinTranslationRoomAsync_ShouldKeepPriorApproval_WhenAdmittedParticipantRejoins()
+    {
+        var userId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var roomCode = "approved-rejoin";
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            TranslationRoomCode = roomCode,
+            Status = "WAITING",
+            HostId = Guid.NewGuid(),
+            TranslationRoomType = "INSTANT",
+            Settings = "{\"requires_approval\":true}"
+        };
+        var existingParticipant = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            UserId = userId,
+            DisplayName = "Approved User",
+            Role = "PARTICIPANT",
+            Status = "LEFT",
+            LeftAt = DateTime.UtcNow
+        };
+        var request = new JoinTranslationRoomRequest(
+            roomCode,
+            "Approved User",
+            "en",
+            "vi");
+
+        _mockRoomRepo
+            .Setup(r => r.GetByCodeAsync(
+                roomCode,
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(p => p.GetByRoomAndUserAsync(
+                roomId,
+                userId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(existingParticipant);
+
+        var result = await _service.JoinTranslationRoomAsync(request, userId);
+
+        result.IsSuccess.Should().BeTrue();
+        existingParticipant.Status.Should().Be("CONNECTED");
+        existingParticipant.LeftAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoomAsync_ShouldStillRequireApproval_ForNeverAdmittedInvitee()
+    {
+        var userId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var roomCode = "first-approval";
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            TranslationRoomCode = roomCode,
+            Status = "WAITING",
+            HostId = Guid.NewGuid(),
+            TranslationRoomType = "INSTANT",
+            Settings = "{\"requires_approval\":true}"
+        };
+        var existingParticipant = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            UserId = userId,
+            DisplayName = "New Invitee",
+            Role = "PARTICIPANT",
+            Status = "INVITED"
+        };
+        var request = new JoinTranslationRoomRequest(
+            roomCode,
+            "New Invitee",
+            "en",
+            "vi");
+
+        _mockRoomRepo
+            .Setup(r => r.GetByCodeAsync(
+                roomCode,
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(p => p.GetByRoomAndUserAsync(
+                roomId,
+                userId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(existingParticipant);
+
+        var result = await _service.JoinTranslationRoomAsync(request, userId);
+
+        result.IsSuccess.Should().BeTrue();
+        existingParticipant.Status.Should().Be("WAITING");
+    }
+
+    [Fact]
     public async Task StartTranslationRoomAsync_ValidState_UpdatesStatusAndFiresEvent()
     {
         var roomId = Guid.NewGuid();
@@ -272,7 +372,7 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
-    public async Task EndTranslationRoomAsync_CalculatesDurationAndFiresEvent()
+    public async Task EndTranslationRoomAsync_SetsEndedAtWithoutPersistingDurationAndFiresEvent()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
@@ -287,7 +387,7 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue();
         room.Status.Should().Be("ENDED");
         room.EndedAt.Should().NotBeNull();
-        room.DurationSeconds.Should().BeGreaterOrEqualTo(1800); // 30 mins = 1800s
+        room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
     }
 

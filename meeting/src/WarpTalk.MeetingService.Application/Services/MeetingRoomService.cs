@@ -101,7 +101,11 @@ public class MeetingRoomService : IMeetingRoomService
             await _unitOfWork.SaveChangesAsync();
 
             // Notify WorkspaceService to capture Context Snapshot
-            await PublishMeetingStartedAsync(translationRoomId, roomDetails.WorkspaceId);
+            await PublishMeetingStartedAsync(
+                translationRoomId,
+                roomDetails.WorkspaceId,
+                roomDetails.Title,
+                roomDetails.Description);
         }
         else if (meetingRoom.Status != roomDetails.Status)
         {
@@ -112,7 +116,11 @@ public class MeetingRoomService : IMeetingRoomService
             // If it transitions to IN_PROGRESS, might want to trigger too if not done
             if (meetingRoom.Status == "IN_PROGRESS")
             {
-                await PublishMeetingStartedAsync(translationRoomId, roomDetails.WorkspaceId);
+                await PublishMeetingStartedAsync(
+                    translationRoomId,
+                    roomDetails.WorkspaceId,
+                    roomDetails.Title,
+                    roomDetails.Description);
             }
         }
 
@@ -234,15 +242,32 @@ public class MeetingRoomService : IMeetingRoomService
             }
             else
             {
-                await _unitOfWork.CommitTransactionAsync();
-                return Result.Success(new JoinMeetingResponse
+                // Translation Room owns lobby admission. Once the host admits this user,
+                // its participant row becomes CONNECTED and is exposed over gRPC as active.
+                // Do not keep an admitted participant trapped in Meeting Service's lobby
+                // just because the room itself is still in WAITING state.
+                if (participantsResponse == null)
                 {
-                    Token = string.Empty,
-                    ProviderRoomName = meetingRoom.ProviderRoomName,
-                    ParticipantIdentity = providerIdentity,
-                    IsWaitingRoom = true,
-                    MuteOnEntry = meetingRoom.MuteOnEntry
-                });
+                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                        participantsResponse = grpcPartsResult.Value;
+                }
+
+                var translationParticipant = participantsResponse?.Participants
+                    .FirstOrDefault(p => p.Id == userIdString);
+
+                if (translationParticipant?.IsActive != true)
+                {
+                    await _unitOfWork.CommitTransactionAsync();
+                    return Result.Success(new JoinMeetingResponse
+                    {
+                        Token = string.Empty,
+                        ProviderRoomName = meetingRoom.ProviderRoomName,
+                        ParticipantIdentity = providerIdentity,
+                        IsWaitingRoom = true,
+                        MuteOnEntry = meetingRoom.MuteOnEntry
+                    });
+                }
             }
         }
         else if (isHost && meetingRoom.ActiveHostId == null)
@@ -327,6 +352,40 @@ public class MeetingRoomService : IMeetingRoomService
 
     public async Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request)
     {
+        // Re-publish meeting context when translation is explicitly started. The initial
+        // meeting.started Pub/Sub notification is intentionally lightweight but can be
+        // missed across a consumer restart; this idempotent write lets TranscriptService
+        // restore the STT/MT prompt before the first deliberate translation turn.
+        var roomDetailsResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+        if (roomDetailsResult.IsSuccess && roomDetailsResult.Value != null)
+        {
+            try
+            {
+                await PublishMeetingStartedAsync(
+                    translationRoomId,
+                    roomDetailsResult.Value.WorkspaceId,
+                    roomDetailsResult.Value.Title,
+                    roomDetailsResult.Value.Description);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Failed to republish meeting context before starting AI for room {RoomId}",
+                    translationRoomId);
+                return Result.Failure<bool>(
+                    "Failed to prepare meeting context.",
+                    ErrorCodes.InternalServerError);
+            }
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Could not refresh meeting context before starting AI for room {RoomId}: {Error}",
+                translationRoomId,
+                roomDetailsResult.Error);
+        }
+
         var publishResult = await PublishTrackPublishedAsync(
             translationRoomId.ToString(),
             request.ParticipantIdentity,
@@ -342,7 +401,11 @@ public class MeetingRoomService : IMeetingRoomService
         return Result.Success<bool>(true);
     }
 
-    private async Task PublishMeetingStartedAsync(Guid translationRoomId, string workspaceIdValue)
+    private async Task PublishMeetingStartedAsync(
+        Guid translationRoomId,
+        string workspaceIdValue,
+        string? title,
+        string? description)
     {
         if (!Guid.TryParse(workspaceIdValue, out var workspaceId))
             throw new InvalidOperationException(
@@ -352,7 +415,11 @@ public class MeetingRoomService : IMeetingRoomService
             MeetingEventTypes.Started,
             "meeting-service",
             workspaceId.ToString(),
-            new MeetingStartedEventPayload(translationRoomId, workspaceId));
+            new MeetingStartedEventPayload(
+                translationRoomId,
+                workspaceId,
+                title,
+                description));
         var result = await _redisService.PublishEventAsync(
             MeetingEventTypes.Started,
             envelope);
@@ -596,7 +663,16 @@ public class MeetingRoomService : IMeetingRoomService
         if (!isOriginalHost && !isActiveHost)
             return Result.Failure<bool>("Only the host can end the meeting for all.", ErrorCodes.Forbidden);
 
-        // Update status if it exists
+        // Provider teardown must succeed before application state is finalized. Otherwise a
+        // transient LiveKit authorization/configuration error leaves the DB saying FINISHED
+        // while participants are still connected to a live provider room.
+        var deleteRoomResult = await _roomAdminService.DeleteRoomAsync(
+            meetingRoom?.ProviderRoomName ?? translationRoomId.ToString());
+        if (!deleteRoomResult.IsSuccess)
+            return Result.Failure<bool>(
+                deleteRoomResult.Error ?? "Failed to end LiveKit room.",
+                deleteRoomResult.ErrorCode);
+
         if (meetingRoom != null)
         {
             meetingRoom.Status = "FINISHED";
@@ -605,13 +681,6 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         await _unitOfWork.SaveChangesAsync();
-
-        var deleteRoomResult = await _roomAdminService.DeleteRoomAsync(
-            meetingRoom?.ProviderRoomName ?? translationRoomId.ToString());
-        if (!deleteRoomResult.IsSuccess)
-            return Result.Failure<bool>(
-                deleteRoomResult.Error ?? "Failed to end LiveKit room.",
-                deleteRoomResult.ErrorCode);
 
         // WT-13: Trigger AI meeting-summary generation. The Python AI Assistant worker
         // (warptalk-ai/ai_assistant_worker) already accumulates the meeting transcript from

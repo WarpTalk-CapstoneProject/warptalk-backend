@@ -90,6 +90,17 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
         var isDocOwner = document.OwnerId == userId || document.UploadedBy == userId;
         var isOwnerOrAdmin = roleName.IsOwnerOrAdmin();
 
+        // The uploader must retain visibility after an Owner/Admin approves the document.
+        // This is intentionally limited to View: download and AI retrieval keep their
+        // independent status/security requirements below.
+        if (isDocOwner && string.Equals(
+                requiredPermission,
+                WorkspaceDocumentPermissions.View,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Success();
+        }
+
         // Archived check: only Owner/Admin, Document Owner, or the Archiver can view/download archived documents.
         if (string.Equals(document.Status, WorkspaceDocumentStatus.archived.ToString(), StringComparison.OrdinalIgnoreCase))
         {

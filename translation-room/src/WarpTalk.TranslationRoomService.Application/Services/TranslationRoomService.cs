@@ -610,11 +610,6 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
-            if (translationRoom.StartedAt.HasValue)
-            {
-                translationRoom.DurationSeconds = (int)(translationRoom.EndedAt.Value - translationRoom.StartedAt.Value).TotalSeconds;
-            }
-
             _translationRoomRepository.Update(translationRoom);
 
             var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);

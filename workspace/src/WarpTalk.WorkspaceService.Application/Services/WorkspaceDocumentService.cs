@@ -191,6 +191,17 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
                 d => d.WorkspaceId == workspaceId && d.DeletedAt == null, "", ct);
+            var approvalAudits = await _unitOfWork.WorkspaceDocumentAuditRepository.FindAsync(
+                a => a.WorkspaceId == workspaceId &&
+                     a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
+                "",
+                ct);
+            var approvedByDocument = approvalAudits
+                .Where(a => a.ActorId.HasValue)
+                .GroupBy(a => a.DocumentId)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(a => a.ActionAt).First().ActorId);
 
             var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
@@ -310,7 +321,12 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             await _unitOfWork.AuditAsync(documentId, workspaceId, userId, WorkspaceDocumentConstants.AuditActions.GetDocumentDetails, logger: _logger, ct: ct);
 
             var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, document.Id);
-            return Result.Success(document.ToDto(downloadUrl));
+            var approvalAudit = await _unitOfWork.WorkspaceDocumentAuditRepository.FirstOrDefaultAsync(
+                a => a.DocumentId == documentId &&
+                     a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
+                "",
+                ct);
+            return Result.Success(document.ToDto(downloadUrl, approvalAudit?.ActorId));
         }
         catch (Exception ex)
         {
