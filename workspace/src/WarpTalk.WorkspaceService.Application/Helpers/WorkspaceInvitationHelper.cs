@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -85,6 +86,53 @@ public static class WorkspaceInvitationHelper
         {
             return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
         }
+
+        return Result.Success();
+    }
+
+    public static async Task<Result> ProcessAcceptanceAsync(
+        IUnitOfWork unitOfWork,
+        WorkspaceInvitation invitation,
+        Guid userId,
+        string userEmail,
+        CancellationToken ct)
+    {
+        var validationResult = await ValidateAcceptanceAsync(unitOfWork, invitation, userId, userEmail, ct);
+        if (!validationResult.IsSuccess)
+        {
+            return validationResult;
+        }
+
+        var workspace = await unitOfWork.WorkspaceRepository.GetByIdAsync(invitation.WorkspaceId, ct);
+        if (workspace == null)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+        }
+
+        var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
+            unitOfWork,
+            userEmail,
+            workspace,
+            ct);
+        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+        if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
+        {
+            return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
+        }
+
+        invitation.MembershipType = membershipType.ToString();
+        var newMember = WorkspaceMemberMapper.CreateInvitationMember(
+            invitation.WorkspaceId,
+            userId,
+            invitation.RoleId,
+            invitation.MembershipType);
+
+        invitation.Status = InvitationStatus.ACCEPTED.ToString();
+        invitation.AcceptedAt = DateTime.UtcNow;
+
+        await unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
+        unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+        await unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success();
     }

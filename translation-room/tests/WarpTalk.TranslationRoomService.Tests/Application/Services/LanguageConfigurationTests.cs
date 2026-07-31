@@ -28,7 +28,6 @@ public class LanguageConfigurationTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
-    private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
 
@@ -42,7 +41,6 @@ public class LanguageConfigurationTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
-        _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
@@ -55,7 +53,6 @@ public class LanguageConfigurationTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockEmailService.Object,
-            _mockRedisStateRepository.Object,
             _mockLogger.Object);
     }
 

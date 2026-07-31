@@ -481,7 +481,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvalidOrExpiredToken, ErrorCodes.NotFound);
         }
 
-        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
+        try
+        {
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while accepting invitation {InvitationId}.", invitation.Id);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result> AcceptInvitationByIdAsync(Guid invitationId, Guid userId, string userEmail, CancellationToken ct = default)
@@ -492,51 +500,9 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
         }
 
-        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
-    }
-
-    private async Task<Result> ProcessAcceptInvitationAsync(WorkspaceInvitation invitation, Guid userId, string userEmail, CancellationToken ct = default)
-    {
         try
         {
-            var validationResult = await WorkspaceInvitationHelper.ValidateAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
-            if (!validationResult.IsSuccess)
-            {
-                return validationResult;
-            }
-
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(invitation.WorkspaceId, ct);
-            if (workspace == null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
-            }
-
-            var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                _unitOfWork,
-                userEmail,
-                workspace,
-                ct);
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
-            }
-
-            invitation.MembershipType = membershipType.ToString();
-            var newMember = WorkspaceMemberMapper.CreateInvitationMember(
-                invitation.WorkspaceId,
-                userId,
-                invitation.RoleId,
-                invitation.MembershipType);
-
-            invitation.Status = InvitationStatus.ACCEPTED.ToString();
-            invitation.AcceptedAt = DateTime.UtcNow;
-
-            await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
-            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
-            await _unitOfWork.SaveChangesAsync(ct);
-
-            return Result.Success();
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {
