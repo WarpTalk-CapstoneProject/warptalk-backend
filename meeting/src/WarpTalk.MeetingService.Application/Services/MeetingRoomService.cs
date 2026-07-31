@@ -242,15 +242,32 @@ public class MeetingRoomService : IMeetingRoomService
             }
             else
             {
-                await _unitOfWork.CommitTransactionAsync();
-                return Result.Success(new JoinMeetingResponse
+                // Translation Room owns lobby admission. Once the host admits this user,
+                // its participant row becomes CONNECTED and is exposed over gRPC as active.
+                // Do not keep an admitted participant trapped in Meeting Service's lobby
+                // just because the room itself is still in WAITING state.
+                if (participantsResponse == null)
                 {
-                    Token = string.Empty,
-                    ProviderRoomName = meetingRoom.ProviderRoomName,
-                    ParticipantIdentity = providerIdentity,
-                    IsWaitingRoom = true,
-                    MuteOnEntry = meetingRoom.MuteOnEntry
-                });
+                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                        participantsResponse = grpcPartsResult.Value;
+                }
+
+                var translationParticipant = participantsResponse?.Participants
+                    .FirstOrDefault(p => p.Id == userIdString);
+
+                if (translationParticipant?.IsActive != true)
+                {
+                    await _unitOfWork.CommitTransactionAsync();
+                    return Result.Success(new JoinMeetingResponse
+                    {
+                        Token = string.Empty,
+                        ProviderRoomName = meetingRoom.ProviderRoomName,
+                        ParticipantIdentity = providerIdentity,
+                        IsWaitingRoom = true,
+                        MuteOnEntry = meetingRoom.MuteOnEntry
+                    });
+                }
             }
         }
         else if (isHost && meetingRoom.ActiveHostId == null)
