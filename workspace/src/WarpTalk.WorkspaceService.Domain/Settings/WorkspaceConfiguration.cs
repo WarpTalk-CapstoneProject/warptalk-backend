@@ -44,7 +44,7 @@ public class WorkspaceConfiguration
     public int ArtifactRetentionDays
     {
         get => _artifactRetentionDays;
-        set => _artifactRetentionDays = value <= 0 ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays : value;
+        set => _artifactRetentionDays = value < 0 ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays : value;
     }
 
     public bool EnforceHostApprovalDefault { get; set; } = true;
@@ -52,6 +52,8 @@ public class WorkspaceConfiguration
     // 4. Enterprise & External Collaboration
     public List<string> VerifiedDomains { get; set; } = new();
     public bool AllowExternalCollaboration { get; set; } = true;
+    // Verification is opt-in for a new workspace without an explicit domain.
+    // Keep this aligned with CreateWorkspaceAsync and the FE default.
     public bool RequireVerifiedDomainForInternal { get; set; } = false;
     public int? ExternalGracePeriodHours { get; set; }
 

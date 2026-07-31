@@ -158,11 +158,7 @@ public class NotificationRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(userGroup).SendAsync(RealtimeConstants.ClientMethods.WorkspaceEvent, root, stoppingToken);
                     if (!string.IsNullOrEmpty(eventType))
                     {
-                        // Group(userGroup), not Group(eventType): the latter addressed a group
-                        // named after the event ("MemberRoleUpdated", …) that nobody ever joins,
-                        // so user-scoped workspace events were silently dropped. The other three
-                        // handlers in this file always got this right.
-                        await _hubContext.Clients.Group(userGroup).SendAsync(eventType, root, stoppingToken);
+                        await _hubContext.Clients.Group(eventType).SendAsync(eventType, root, stoppingToken);
                     }
                     _logger.LogDebug("RedisSubscriber: Broadcasted {EventType} to {GroupName}", eventType, userGroup);
                 }

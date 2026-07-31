@@ -4,6 +4,7 @@ using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
@@ -43,7 +44,18 @@ public class WorkspaceMemberServiceTests
             _unitOfWork,
             Substitute.For<ILogger<WorkspaceMemberService>>(),
             _authIdentity,
-            Substitute.For<IWorkspaceEventPublisher>());
+            Substitute.For<IWorkspaceEventPublisher>(),
+            CreatePreviewSigningConfiguration());
+    }
+
+    private static IConfiguration CreatePreviewSigningConfiguration(string key = "test-role-preview-signing-key-with-at-least-32-characters")
+    {
+        return new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Security:RolePreviewSigningKey"] = key
+            })
+            .Build();
     }
 
     private void StubRoleName(Guid roleId, string roleName)
@@ -56,6 +68,57 @@ public class WorkspaceMemberServiceTests
     {
         _authIdentity.GetRoleByNameAsync(roleName, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = roleId, Name = roleName });
+    }
+
+    [Fact]
+    public void Constructor_ShouldFailFast_WhenPreviewSigningKeyIsMissing()
+    {
+        var previousEnvKey = Environment.GetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY", null);
+            var emptyConfiguration = new ConfigurationBuilder().Build();
+
+            Assert.Throws<InvalidOperationException>(() => new WorkspaceMemberService(
+                _unitOfWork,
+                Substitute.For<ILogger<WorkspaceMemberService>>(),
+                _authIdentity,
+                Substitute.For<IWorkspaceEventPublisher>(),
+                emptyConfiguration));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY", previousEnvKey);
+        }
+    }
+
+    [Fact]
+    public void Constructor_ShouldUseEnvPreviewSigningKey_WhenJwtSecretIsPlaceholder()
+    {
+        var previousEnvKey = Environment.GetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY", "env-role-preview-signing-key-with-at-least-32-characters");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Jwt:Secret"] = "CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!"
+                })
+                .Build();
+
+            var service = new WorkspaceMemberService(
+                _unitOfWork,
+                Substitute.For<ILogger<WorkspaceMemberService>>(),
+                _authIdentity,
+                Substitute.For<IWorkspaceEventPublisher>(),
+                configuration);
+
+            Assert.NotNull(service);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY", previousEnvKey);
+        }
     }
 
     #region ListMembersAsync Tests
@@ -84,6 +147,7 @@ public class WorkspaceMemberServiceTests
             .Returns(new Role { Id = requesterRoleId, Name = "Member" });
 
         var memberUserId = Guid.NewGuid();
+        var nonMatchingUserId = Guid.NewGuid();
         var memberRoleId = Guid.NewGuid();
         var members = new List<WorkspaceMember>
         {
@@ -96,6 +160,16 @@ public class WorkspaceMemberServiceTests
                 Status = "Active", 
                 JoinedAt = DateTime.UtcNow,
                 MembershipType = "Internal"
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                UserId = nonMatchingUserId,
+                RoleId = memberRoleId,
+                Status = "Active",
+                JoinedAt = DateTime.UtcNow.AddMinutes(-1),
+                MembershipType = "Internal"
             }
         };
 
@@ -104,6 +178,8 @@ public class WorkspaceMemberServiceTests
 
         _authIdentity.GetUserByIdAsync(memberUserId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = memberUserId, FullName = "John Doe", Email = "john@warptalk.vn" });
+        _authIdentity.GetUserByIdAsync(nonMatchingUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = nonMatchingUserId, FullName = "Jane Smith", Email = "jane@warptalk.vn" });
 
         _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = memberRoleId, Name = "Member" });
@@ -169,8 +245,8 @@ public class WorkspaceMemberServiceTests
             new() { WorkspaceId = workspaceId, UserId = removedMemberUserId, RoleId = removedRoleId, Status = "Removed", JoinedAt = DateTime.UtcNow, RemovedAt = DateTime.UtcNow }
         };
 
-        _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
-            .Returns(members);
+        _workspaceMemberRepository.GetPagedMembersAsync(workspaceId, query.Page, query.PageSize, true, true, Arg.Any<CancellationToken>())
+            .Returns((members, members.Count));
 
         _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = activeMemberUserId, FullName = "Active User", Email = "active@warptalk.vn" });
@@ -436,6 +512,30 @@ public class WorkspaceMemberServiceTests
     }
 
     [Fact]
+    public async Task ChangeMemberRoleAsync_ShouldFail_WhenAdminTriesToPromoteMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var targetUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId };
+        var admin = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+        var target = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(admin)), "", Arg.Any<CancellationToken>()).Returns(admin);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(target)), "", Arg.Any<CancellationToken>()).Returns(target);
+        StubRoleName(adminRoleId, "Admin");
+        StubRoleName(memberRoleId, "Member");
+
+        var result = await _workspaceMemberService.ChangeMemberRoleAsync(workspaceId, targetUserId, "Admin", adminUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    [Fact]
     public async Task ChangeMemberRoleAsync_ShouldFail_WhenLastOwnerTriesToDemoteSelf()
     {
         // Arrange
@@ -463,6 +563,136 @@ public class WorkspaceMemberServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task PreviewAndApplyRoleChange_ShouldUpdateExistingMembershipRole_WithoutChangingMeetingCapability()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var targetUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId };
+        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId, MembershipType = "Internal" };
+        var target = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = adminRoleId, MembershipType = "Internal", CanCreateMeetings = true };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(owner)), "", Arg.Any<CancellationToken>()).Returns(owner);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(target)), "", Arg.Any<CancellationToken>()).Returns(target);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _authIdentity.GetUserByIdAsync(targetUserId, Arg.Any<CancellationToken>()).Returns(new User { Id = targetUserId, FullName = "Target User", Email = "target@example.com" });
+
+        var preview = await _workspaceMemberService.PreviewMemberRoleChangeAsync(workspaceId, targetUserId, "Member", ownerUserId);
+        Assert.True(preview.IsSuccess);
+        Assert.False(string.IsNullOrWhiteSpace(preview.Value?.PreviewToken));
+
+        var apply = await _workspaceMemberService.ApplyMemberRoleChangeAsync(
+            workspaceId,
+            targetUserId,
+            new ApplyWorkspaceRoleChangeRequest("Member", Guid.NewGuid().ToString("N"), preview.Value!.PreviewToken!),
+            ownerUserId);
+
+        Assert.True(apply.IsSuccess);
+        Assert.Equal(memberRoleId, target.RoleId);
+        Assert.True(target.CanCreateMeetings);
+        Assert.Equal("Admin", apply.Value!.OldRole);
+        Assert.Equal("Member", apply.Value.NewRole);
+        Assert.NotEqual(Guid.Empty, apply.Value.AuditId);
+    }
+
+    [Fact]
+    public async Task ApplyMemberRoleChange_ShouldAcceptPreviewToken_FromAnotherServiceInstanceWithSameSigningKey()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var targetUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var sharedConfiguration = CreatePreviewSigningConfiguration("shared-role-preview-signing-key-with-at-least-32-characters");
+        var secondServiceInstance = new WorkspaceMemberService(
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceMemberService>>(),
+            _authIdentity,
+            Substitute.For<IWorkspaceEventPublisher>(),
+            sharedConfiguration);
+
+        var workspace = new Workspace { Id = workspaceId };
+        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId, MembershipType = "Internal" };
+        var target = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = adminRoleId, MembershipType = "Internal" };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(owner)), "", Arg.Any<CancellationToken>()).Returns(owner);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(target)), "", Arg.Any<CancellationToken>()).Returns(target);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _authIdentity.GetUserByIdAsync(targetUserId, Arg.Any<CancellationToken>()).Returns(new User { Id = targetUserId, FullName = "Target User", Email = "target@example.com" });
+
+        var firstServiceInstance = new WorkspaceMemberService(
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceMemberService>>(),
+            _authIdentity,
+            Substitute.For<IWorkspaceEventPublisher>(),
+            sharedConfiguration);
+
+        var preview = await firstServiceInstance.PreviewMemberRoleChangeAsync(workspaceId, targetUserId, "Member", ownerUserId);
+        Assert.True(preview.IsSuccess);
+
+        var apply = await secondServiceInstance.ApplyMemberRoleChangeAsync(
+            workspaceId,
+            targetUserId,
+            new ApplyWorkspaceRoleChangeRequest("Member", Guid.NewGuid().ToString("N"), preview.Value!.PreviewToken!),
+            ownerUserId);
+
+        Assert.True(apply.IsSuccess);
+        Assert.Equal(memberRoleId, target.RoleId);
+    }
+
+    [Fact]
+    public async Task ApplyMemberRoleChange_ShouldRejectStalePreview_WhenRoleChangedAfterPreview()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var targetUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId };
+        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId, MembershipType = "Internal" };
+        var target = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = adminRoleId, MembershipType = "Internal" };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(owner)), "", Arg.Any<CancellationToken>()).Returns(owner);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(target)), "", Arg.Any<CancellationToken>()).Returns(target);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>()).Returns(new Role { Id = memberRoleId, Name = "Member" });
+
+        var preview = await _workspaceMemberService.PreviewMemberRoleChangeAsync(workspaceId, targetUserId, "Member", ownerUserId);
+        Assert.True(preview.IsSuccess);
+
+        target.RoleId = memberRoleId;
+        var apply = await _workspaceMemberService.ApplyMemberRoleChangeAsync(
+            workspaceId,
+            targetUserId,
+            new ApplyWorkspaceRoleChangeRequest("Member", Guid.NewGuid().ToString("N"), preview.Value!.PreviewToken!),
+            ownerUserId);
+
+        Assert.False(apply.IsSuccess);
+        Assert.Equal(ErrorCodes.Conflict, apply.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.RoleChangeStale, apply.Error);
     }
 
     #endregion

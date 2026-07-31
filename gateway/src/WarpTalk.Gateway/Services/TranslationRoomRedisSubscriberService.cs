@@ -44,17 +44,6 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("ForceDisconnected", "This room has been cancelled.", stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ForceDisconnected to room {RoomId}", payload.RoomId);
                 }
-                // WT-191: TranslationRoomService publishes this from EndTranslationRoomAsync.
-                // The host ends the meeting over REST, so TranslationRoomHub.EndTranslationRoom
-                // never runs and nothing else emits "TranslationRoomEnded" — the event the room
-                // page has always listened for. Without this relay the remaining participants
-                // stayed in an ended room until they pressed Leave.
-                else if (payload.Command == "RoomEnded" && !string.IsNullOrEmpty(payload.RoomId))
-                {
-                    var groupName = $"translationRoom:{payload.RoomId}";
-                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomEnded", payload.RoomId, stoppingToken);
-                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomEnded to room {RoomId}", payload.RoomId);
-                }
                 else if (payload.Command == "Kick" && !string.IsNullOrEmpty(payload.UserId))
                 {
                     // Assuming ConnectionManager tracks users and we can broadcast to the user's specific connection.

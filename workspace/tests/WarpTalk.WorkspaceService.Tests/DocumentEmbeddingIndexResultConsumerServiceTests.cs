@@ -9,7 +9,7 @@ using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
-using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -17,16 +17,16 @@ namespace WarpTalk.WorkspaceService.Tests;
 public class DocumentEmbeddingIndexResultConsumerServiceTests
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IGenericRepository<WorkspaceDocument> _documentRepository;
-    private readonly IGenericRepository<WorkspaceDocumentAudit> _auditRepository;
+    private readonly IWorkspaceDocumentRepository _documentRepository;
+    private readonly IWorkspaceDocumentAuditRepository _auditRepository;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly DocumentEmbeddingResultProcessor _processor;
 
     public DocumentEmbeddingIndexResultConsumerServiceTests()
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
-        _documentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
-        _auditRepository = Substitute.For<IGenericRepository<WorkspaceDocumentAudit>>();
+        _documentRepository = Substitute.For<IWorkspaceDocumentRepository>();
+        _auditRepository = Substitute.For<IWorkspaceDocumentAuditRepository>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
 
         _unitOfWork.WorkspaceDocumentRepository.Returns(_documentRepository);

@@ -15,12 +15,14 @@ public record GetWorkspacesQuery
     public int Page { get; init; }
     public int PageSize { get; init; }
     public string? Search { get; init; }
+    public string? Kind { get; init; }
 
-    public GetWorkspacesQuery(int Page = 1, int PageSize = 10, string? Search = null)
+    public GetWorkspacesQuery(int Page = 1, int PageSize = 10, string? Search = null, string? Kind = null)
     {
         this.Page = Page <= 0 ? 1 : Page;
         this.PageSize = PageSize <= 0 ? 10 : PageSize;
         this.Search = Search;
+        this.Kind = Kind;
     }
 }
 
