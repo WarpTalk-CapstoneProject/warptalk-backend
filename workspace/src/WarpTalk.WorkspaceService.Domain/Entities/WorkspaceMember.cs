@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -17,12 +17,15 @@ public partial class WorkspaceMember
 
     public string Status { get; set; } = null!;
 
-    public bool CanCreateMeetings { get; set; } = true;
+    public bool CanCreateMeetings { get; set; }
 
     public DateTime JoinedAt { get; set; }
 
     public DateTime? RemovedAt { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid? RemovedBy { get; set; }
 
     public virtual Workspace Workspace { get; set; } = null!;

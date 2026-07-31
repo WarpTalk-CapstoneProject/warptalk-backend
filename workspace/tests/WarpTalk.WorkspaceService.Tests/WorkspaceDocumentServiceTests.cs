@@ -296,7 +296,8 @@ public class WorkspaceDocumentServiceTests
             FileName = "file.pdf",
             FileExtension = ".pdf",
             UploadedBy = Guid.NewGuid(),
-            ConfidentialityLevel = "general"
+            ConfidentialityLevel = "general",
+            IsAiAllowed = true
         };
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
