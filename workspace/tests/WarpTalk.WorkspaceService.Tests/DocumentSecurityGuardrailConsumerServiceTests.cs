@@ -54,8 +54,8 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _embeddingPublisher = Substitute.For<IEmbeddingIndexPublisher>();
-        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver(
-            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver>>());
+        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Adapters.AiPolicyResolver(
+            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Adapters.AiPolicyResolver>>());
         _database = Substitute.For<IDatabase>();
 
         _redis.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(_database);

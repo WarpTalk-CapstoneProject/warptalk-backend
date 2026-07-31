@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.WorkspaceService.Domain.Enums;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
 
@@ -29,7 +30,7 @@ public partial class WorkspaceInvitation
 
     public string Status { get; set; } = null!;
 
-    public string DeliveryStatus { get; set; } = "NotSent";
+    public string DeliveryStatus { get; set; } = null!;
 
     public string? ProviderMessageId { get; set; }
 

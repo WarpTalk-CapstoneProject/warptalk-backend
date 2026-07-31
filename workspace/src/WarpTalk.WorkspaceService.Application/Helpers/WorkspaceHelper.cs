@@ -197,4 +197,9 @@ public static class WorkspaceHelper
 
         return verifiedDomain?.WorkspaceId;
     }
+
+    public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
+    {
+        return await DetermineMembershipTypeAsync(unitOfWork, userEmail, workspace, ct);
+    }
 }
