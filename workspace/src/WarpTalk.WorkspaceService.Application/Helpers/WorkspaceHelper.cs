@@ -222,11 +222,6 @@ public static class WorkspaceHelper
         return verifiedDomain?.WorkspaceId;
     }
 
-    public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
-    {
-        return await DetermineMembershipTypeAsync(unitOfWork, userEmail, workspace, ct);
-    }
-
     public static bool AreEquivalentAiPolicies(AiUsagePolicyConfiguration? current, AiUsagePolicyConfiguration? requested)
     {
         var left = current ?? new AiUsagePolicyConfiguration(true, null, null, null, true);
@@ -241,6 +236,5 @@ public static class WorkspaceHelper
             && left.TranslationProfile?.LanguageSpecificRules?.VietnameseHonorificStyle == right.TranslationProfile?.LanguageSpecificRules?.VietnameseHonorificStyle
             && left.TranslationProfile?.LanguageSpecificRules?.JapaneseHonorificStyle == right.TranslationProfile?.LanguageSpecificRules?.JapaneseHonorificStyle
             && (left.UseGlobalGlossary ?? true) == (right.UseGlobalGlossary ?? true);
-    }
     }
 }
