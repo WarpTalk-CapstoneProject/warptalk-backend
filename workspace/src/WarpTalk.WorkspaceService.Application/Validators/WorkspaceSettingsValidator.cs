@@ -37,6 +37,12 @@ public static class WorkspaceSettingsValidator
             errors["artifactRetentionDays"] = [WorkspaceConstants.Errors.ArtifactRetentionDaysOutOfRange];
         }
 
+        if (settings.InvitationExpiryDays is < WorkspaceConstants.MinWorkspaceInvitationExpiryDays
+            or > WorkspaceConstants.MaxWorkspaceInvitationExpiryDays)
+        {
+            errors["invitationExpiryDays"] = [WorkspaceConstants.Errors.InvitationExpiryDaysOutOfRange];
+        }
+
         return new WorkspaceSettingsValidationResult(errors);
     }
 }

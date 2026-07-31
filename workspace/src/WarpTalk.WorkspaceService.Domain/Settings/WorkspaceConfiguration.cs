@@ -10,6 +10,7 @@ public class WorkspaceConfiguration
     private List<string> _allowedTargetLanguages = new();
     private int _maxActiveRooms = WorkspaceConstants.DefaultWorkspaceMaxActiveRooms;
     private int _artifactRetentionDays = WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays;
+    private int _invitationExpiryDays = WorkspaceConstants.DefaultInvitationExpiryDays;
     private AiUsagePolicyConfiguration? _aiUsagePolicy = NormalizeAiUsagePolicy(null);
 
     // 1. Localization & General
@@ -56,6 +57,12 @@ public class WorkspaceConfiguration
     // Keep this aligned with CreateWorkspaceAsync and the FE default.
     public bool RequireVerifiedDomainForInternal { get; set; } = false;
     public int? ExternalGracePeriodHours { get; set; }
+
+    public int InvitationExpiryDays
+    {
+        get => _invitationExpiryDays;
+        set => _invitationExpiryDays = value <= 0 ? WorkspaceConstants.DefaultInvitationExpiryDays : value;
+    }
 
     // 5. AI Ingestion & Security Guardrails
     public AiUsagePolicyConfiguration? AiUsagePolicy

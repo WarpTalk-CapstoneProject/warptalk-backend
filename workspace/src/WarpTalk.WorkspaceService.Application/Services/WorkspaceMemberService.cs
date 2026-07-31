@@ -237,7 +237,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _eventPublisher.PublishMemberRemovedAsync(workspaceId, executingUserId, executingUserId, ct);
                 await _unitOfWork.SaveChangesAsync(ct);
-                await _unitOfWork.CommitTransactionAsync(ct);
 
                 return Result.Success();
             }
@@ -268,7 +267,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
-            await _unitOfWork.CommitTransactionAsync(ct);
 
             return Result.Success();
         }

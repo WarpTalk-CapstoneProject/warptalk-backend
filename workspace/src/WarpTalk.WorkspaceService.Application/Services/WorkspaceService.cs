@@ -271,7 +271,6 @@ public class WorkspaceService : IWorkspaceService
             {
                 return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
-            }
 
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
             return Result.Success(settings.ToSettingsDto());

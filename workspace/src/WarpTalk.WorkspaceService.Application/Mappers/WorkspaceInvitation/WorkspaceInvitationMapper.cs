@@ -8,9 +8,13 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceInvitationMapper
 {
-    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null)
+    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null, int? expiryDays = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
+        var validExpiryDays = expiryDays.HasValue && expiryDays.Value > 0
+            ? expiryDays.Value
+            : WorkspaceConstants.DefaultInvitationExpiryDays;
+
         return new WorkspaceInvitation
         {
             Id = Guid.NewGuid(),
@@ -23,7 +27,7 @@ public static class WorkspaceInvitationMapper
             DeliveryStatus = "NotSent",
             SentCount = 0,
             MembershipType = membershipType,
-            ExpiresAt = now.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
+            ExpiresAt = now.AddDays(validExpiryDays),
             CreatedAt = now
         };
     }

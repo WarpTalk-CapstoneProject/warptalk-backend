@@ -14,6 +14,8 @@ public static class WorkspaceConstants
 
     // Invitation Defaults
     public const int DefaultInvitationExpiryDays = 7;
+    public const int MinWorkspaceInvitationExpiryDays = 1;
+    public const int MaxWorkspaceInvitationExpiryDays = 365;
 
     // Error Messages
     public static class Errors
@@ -37,6 +39,7 @@ public static class WorkspaceConstants
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 0 and 3650.";
+        public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";

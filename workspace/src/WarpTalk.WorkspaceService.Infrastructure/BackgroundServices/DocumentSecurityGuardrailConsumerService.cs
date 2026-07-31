@@ -150,7 +150,6 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 return true;
             }
 
-            // Set ingestion status to processing
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             document.UpdatedAt = DateTime.UtcNow;
             unitOfWork.WorkspaceDocumentRepository.Update(document);
@@ -168,14 +167,12 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // 1. Resolve Effective AI Usage Policy via IAiPolicyResolver
             var policy = await policyResolver.ResolvePolicySettingsAsync(unitOfWork, document, ct);
 
-            // 2. Read Document Content (Physical storage read + decryption)
             ExtractedDocumentContent content;
             using (var decryptedStream = await storage.GetDecryptedStreamAsync(document, ct))
             {
                 content = await textExtractor.ExtractTextAsync(decryptedStream, document.FileExtension, ct);
             }
 
-            // 2.5 Save the extracted structured content serialized as JSON on disk
             var jsonContent = JsonSerializer.Serialize(content);
             await storage.SaveExtractedTextAsync(document, jsonContent, ct);
 
@@ -212,7 +209,7 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
-            if (scanResult.PiiDetected || scanResult.DlpDetected)
+            if (scanResult.ViolationFound || scanResult.DlpDetected)
             {
                 document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
             }
@@ -222,41 +219,34 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 && !document.IsRestricted()
                 && isApproved
                 && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-                && !scanResult.DlpDetected;
+                && !scanResult.ViolationFound;
 
-            // Use masked text for Qdrant indexing when PII is present to ensure zero raw PII exposure
-            var textToIngest = !string.IsNullOrWhiteSpace(scanResult.MaskedContent) ? scanResult.MaskedContent : content.FullText;
-
-            // AiEligible means retrieval is ready, not merely that indexing may
-            // start. It is enabled only by DocumentEmbeddingResultProcessor after
-            // the embedding worker reports a successful Qdrant upsert.
             document.AiEligible = false;
-
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
 
-            // 4. Wire into the RAG pipeline via IEmbeddingIndexPublisher using Masked Text
             if (canIndex)
             {
+                var textToIngest = string.IsNullOrWhiteSpace(scanResult.MaskedContent)
+                    ? content.FullText
+                    : scanResult.MaskedContent;
                 try
                 {
-                    var embeddingJobId = await embeddingPublisher.PublishEmbeddingIndexRequestAsync(
+                    var jobId = await embeddingPublisher.PublishEmbeddingIndexRequestAsync(
                         document,
                         textToIngest,
                         policy.AllowExternalLlm,
                         ct);
 
-                    if (embeddingJobId == null)
+                    if (jobId is null)
                     {
-                        document.AiEligible = false;
                         document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to publish embedding index request for document {DocumentId}", documentId);
-                    document.AiEligible = false;
+                    _logger.LogError(ex, "Failed to publish embedding request for document {DocumentId}.", documentId);
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
                 }
             }
@@ -319,14 +309,17 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 return true;
             }
 
-            return false;
+            return document is not null;
         }
     }
 
     private static bool HasBasicIndexEligibility(WorkspaceDocument document)
     {
         return document.IsAiAllowed
-            && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(
+                document.Status,
+                WorkspaceDocumentStatus.@public.ToString(),
+                StringComparison.OrdinalIgnoreCase)
             && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
             && !document.IsRestricted();
     }
