@@ -177,7 +177,10 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             {
                 var user = userMap.GetValueOrDefault(m.UserId);
                 var fullName = user?.FullName ?? "Unknown";
-                var email = (isOwnerOrAdmin || m.UserId == userId) ? (user?.Email ?? string.Empty) : string.Empty;
+                // Internal workspace members can see each other's email — this list also
+                // backs the meeting-room invite picker (WT-181), which needs it to let a
+                // non-owner member pick a teammate instead of typing their email by hand.
+                var email = user?.Email ?? string.Empty;
                 var avatarUrl = user?.AvatarUrl;
                 var roleName = roleMap.GetValueOrDefault(m.RoleId, "Member");
 
