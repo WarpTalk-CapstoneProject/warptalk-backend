@@ -191,17 +191,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var documents = await _unitOfWork.WorkspaceDocumentRepository.FindAsync(
                 d => d.WorkspaceId == workspaceId && d.DeletedAt == null, "", ct);
-            var approvalAudits = await _unitOfWork.WorkspaceDocumentAuditRepository.FindAsync(
-                a => a.WorkspaceId == workspaceId &&
-                     a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument,
-                "",
-                ct);
-            var approvedByDocument = approvalAudits
-                .Where(a => a.ActorId.HasValue)
-                .GroupBy(a => a.DocumentId)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.OrderByDescending(a => a.ActionAt).First().ActorId);
+            var approvedByDocument = await _unitOfWork.WorkspaceDocumentAuditRepository.GetLatestApproverUserIdsByWorkspaceAsync(workspaceId, ct);
 
             var filteredDocs = documents.OrderByDescending(d => d.CreatedAt).AsEnumerable();
             if (!string.IsNullOrWhiteSpace(query.Search))
@@ -256,12 +246,6 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 }
             }
 
-            var approvalAudits = await _unitOfWork.WorkspaceDocumentAuditRepository.FindAsync(
-                a => a.WorkspaceId == workspaceId && a.Action == WorkspaceDocumentConstants.AuditActions.ApproveDocument, "", ct);
-            var approversByDoc = approvalAudits
-                .GroupBy(a => a.DocumentId)
-                .ToDictionary(g => g.Key, g => g.OrderByDescending(a => a.ActionAt).FirstOrDefault()?.ActorId);
-
             var allowedDtos = new List<WorkspaceDocumentDto>();
             foreach (var doc in filteredDocs)
             {
@@ -281,7 +265,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 if (accessResult.IsSuccess)
                 {
                     var downloadUrl = _urlProvider.GetDocumentDownloadUrl(workspaceId, doc.Id);
-                    approversByDoc.TryGetValue(doc.Id, out var approvedBy);
+                    approvedByDocument.TryGetValue(doc.Id, out var approvedBy);
                     allowedDtos.Add(doc.ToDto(downloadUrl, approvedBy));
                 }
             }

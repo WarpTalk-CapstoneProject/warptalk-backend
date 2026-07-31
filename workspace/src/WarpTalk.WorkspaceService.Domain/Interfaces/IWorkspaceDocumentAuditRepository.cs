@@ -14,4 +14,8 @@ public interface IWorkspaceDocumentAuditRepository : IGenericRepository<Workspac
         int pageSize,
         bool isDescending = true,
         CancellationToken ct = default);
+
+    Task<Dictionary<Guid, Guid?>> GetLatestApproverUserIdsByWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
 }

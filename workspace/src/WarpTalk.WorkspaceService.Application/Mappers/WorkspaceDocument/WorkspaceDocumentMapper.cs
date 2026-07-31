@@ -22,7 +22,6 @@ public static class WorkspaceDocumentMapper
             doc.UploadedBy,
             approvedBy,
             doc.OwnerId,
-            approvedBy,
             doc.Name,
             doc.FileName,
             doc.FileExtension,

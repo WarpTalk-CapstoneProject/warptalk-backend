@@ -8,7 +8,6 @@ public record WorkspaceDocumentDto(
     Guid? UploadedBy,
     Guid? ApprovedBy,
     Guid? OwnerId,
-    Guid? ApprovedBy,
     string Name,
     string FileName,
     string FileExtension,
