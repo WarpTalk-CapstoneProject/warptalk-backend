@@ -44,6 +44,25 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
+    /// <summary>
+    /// WT-187: the channel NotificationRedisSubscriberService relays to the
+    /// "workspace:{workspaceId}" SignalR group, which the web client's
+    /// RealtimeNotificationProvider joins via SubscribeWorkspace. Anything published here
+    /// reaches every connected workspace member as a "MeetingEvent" and makes them
+    /// invalidate their rooms list.
+    /// </summary>
+    private const string MeetingEventsChannel = "warptalk:meetings:events";
+
+    /// <summary>
+    /// WT-187: event type for "people were just invited to this room". Deliberately NOT one of
+    /// MeetingCreated/MeetingStatusChanged/MeetingStarted/MeetingDeleted: the Gateway relay
+    /// sends every event twice — once as "MeetingEvent" and once under its own eventType — and
+    /// the web client binds the same handler to both names, so reusing one of those would fire
+    /// the handler (and its toast) twice per publish. An unbound name arrives only via
+    /// "MeetingEvent", giving exactly one silent list refresh.
+    /// </summary>
+    private const string MeetingInvitedEventType = "MeetingInvited";
+
     public TranslationRoomService(
         IUnitOfWork unitOfWork,
         ILanguagePolicy languagePolicy,
@@ -67,6 +86,43 @@ public class TranslationRoomService : ITranslationRoomService
         _translationRoomSessionRepository = _unitOfWork.TranslationRoomSessionRepository;
         _logger = logger;
         _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl ?? "http://localhost:3000";
+    }
+
+    /// <summary>
+    /// WT-187: tell connected workspace members that this room's invitation list changed, so
+    /// their rooms list refetches instead of showing a stale list until a manual reload.
+    /// Invitations are keyed by email and this service cannot resolve an email to a user id, so
+    /// the event is workspace-scoped rather than addressed to the invitee: it only triggers a
+    /// refetch, and the list endpoint still applies its own authorization, so a member who
+    /// cannot see the room simply refetches the same list they already had.
+    /// Never throws — an unnotified client is stale, but the invitations are already persisted
+    /// and the invitation emails already sent, so failing the caller here would be worse.
+    /// </summary>
+    private async Task PublishRoomInvitationsChangedAsync(TranslationRoom room)
+    {
+        try
+        {
+            // camelCase deliberately: the Gateway relay reads these with
+            // JsonElement.TryGetProperty, which is an exact, case-sensitive match.
+            var payload = JsonSerializer.Serialize(new
+            {
+                eventType = MeetingInvitedEventType,
+                workspaceId = room.WorkspaceId.ToString(),
+                roomId = room.Id.ToString(),
+                title = room.Title,
+                status = room.Status
+            });
+
+            await _redisStateRepository.PublishAsync(MeetingEventsChannel, payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish {EventType} for RoomId: {RoomId}. Invitations are saved; workspace members' room lists will refresh on their next reload.",
+                MeetingInvitedEventType,
+                room.Id);
+        }
     }
 
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
@@ -172,7 +228,11 @@ public class TranslationRoomService : ITranslationRoomService
                 
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
-                
+
+                // WT-187: published after the invitations are committed, so a client that
+                // refetches the moment it receives the event cannot miss them.
+                await PublishRoomInvitationsChangedAsync(room);
+
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
@@ -723,12 +783,16 @@ public class TranslationRoomService : ITranslationRoomService
             if (request.ScheduledAt.HasValue)
                 translationRoom.ScheduledAt = request.ScheduledAt.Value;
 
+            // WT-187: only publish if this call actually adds someone. Re-sending the same
+            // invitee list is a no-op below, and must stay a no-op on the wire too.
+            var invitationsAdded = false;
+
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
                 var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.Repository<WarpTalk.TranslationRoomService.Domain.Entities.TranslationRoomInvitation>();
-                
+
                 var existingInvitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoom.Id, ct: ct);
                 var existingEmails = existingInvitations.Select(i => i.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -744,6 +808,7 @@ public class TranslationRoomService : ITranslationRoomService
                         }, ct);
 
                         await _emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, translationRoom.Title, scheduledTime, ct);
+                        invitationsAdded = true;
                     }
                 }
             }
@@ -784,6 +849,12 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-187: after the commit, and only for a call that really added invitees. This is
+            // the case the ticket describes literally — being invited to a room that already
+            // exists, where nothing previously told the invitee's client anything at all.
+            if (invitationsAdded)
+                await PublishRoomInvitationsChangedAsync(translationRoom);
 
             return Result.Success();
         }
