@@ -61,15 +61,44 @@ public static class WorkspaceInvitationHelper
                   && vd.RevokedAt == null, 
             ct);
         
-        if (string.Equals(invitation.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase))
+        // WT-179: gate on the membership type acceptance will ACTUALLY use, not the one stored
+        // on the invitation. ProcessAcceptInvitationAsync calls this same helper right after
+        // this method returns and overwrites invitation.MembershipType with the result, so the
+        // stored value has no bearing on the outcome — gating on it could only ever reject
+        // someone the very next line would have admitted.
+        //
+        // The two also disagreed on the rule itself. DetermineMembershipTypeAsync decides "does
+        // this workspace separate internal from external?" from the policy flags alone, while this
+        // gate also treated a non-empty config.VerifiedDomains as if the policy were on. A
+        // workspace with RequireVerifiedDomainForInternal = false but a leftover
+        // VerifiedDomains entry in its settings JSON therefore stored every invitee as
+        // Internal (flags off ⇒ Internal) and then refused every one of them at acceptance
+        // whose domain was not verified — with no workaround. That is exactly what happened to
+        // `testworkspace` on production: three pending invitations, all unacceptable.
+        // GetWorkspaceConfig already states the rule this restores — the dedicated columns are
+        // the authorization source of truth, and stale settings JSON must not change policy.
+        var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(unitOfWork, userEmail, workspace, ct);
+
+        if (membershipType == MembershipType.Internal)
         {
-            var requiresVerification = workspace.RequireVerifiedDomainForInternal || config.RequireVerifiedDomainForInternal || config.VerifiedDomains.Any();
-            if (requiresVerification && !isDomainVerified)
+            // Does Internal membership here require a verified domain? Policy flags only — the
+            // same rule DetermineMembershipTypeAsync applies, so this gate cannot contradict the
+            // type that method just derived. Defensive in practice: with the policy on, an
+            // unverified domain already resolves to External, so Internal-with-unverified-domain
+            // is unreachable — kept so the invariant still holds if the derivation changes.
+            var requiresVerifiedDomain = workspace.RequireVerifiedDomainForInternal || config.RequireVerifiedDomainForInternal;
+            if (requiresVerifiedDomain && !isDomainVerified)
             {
                 return Result.Failure(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
             }
 
-            if (requiresVerification)
+            // A separate question with a deliberately wider definition: is this an "enterprise"
+            // workspace, i.e. does the one-internal-workspace-per-user rule apply? Listing
+            // verified domains in the settings counts here even with the policy flag off, which
+            // matches how IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync classifies the *other*
+            // workspaces it scans. Conflating this with the question above is what broke WT-179.
+            var isEnterpriseWorkspace = requiresVerifiedDomain || config.VerifiedDomains.Any();
+            if (isEnterpriseWorkspace)
             {
                 var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(unitOfWork, userId, userEmail, ct);
                 if (isInternalElsewhere)

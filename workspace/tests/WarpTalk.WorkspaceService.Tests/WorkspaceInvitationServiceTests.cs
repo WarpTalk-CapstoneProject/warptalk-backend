@@ -463,6 +463,138 @@ public class WorkspaceInvitationServiceTests
         await _workspaceMemberRepository.Received(1).AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
 
+    // WT-179 — the acceptance gate used to read invitation.MembershipType, which
+    // ProcessAcceptInvitationAsync overwrites moments later, and to treat a workspace that
+    // merely LISTS verified domains as one that REQUIRES them. Together those two facts made
+    // every invitation to `testworkspace` on production permanently unacceptable.
+
+    /// <summary>Exactly production's `testworkspace`: policy flag off, one stale verified
+    /// domain in the settings JSON, and an invitee from a different domain.</summary>
+    private WorkspaceInvitation ArrangeWt179Repro(
+        Guid workspaceId,
+        string userEmail,
+        string storedMembershipType,
+        bool requireVerifiedDomainForInternal = false,
+        bool allowExternalCollaboration = true)
+    {
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = allowExternalCollaboration,
+            RequireVerifiedDomainForInternal = requireVerifiedDomainForInternal,
+            Settings = "{\"VerifiedDomains\":[\"warptalk.io.vn\"],\"RequireVerifiedDomainForInternal\":false}"
+        };
+
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            RoleId = Guid.NewGuid(),
+            Email = userEmail,
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = storedMembershipType,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+
+        _workspaceInvitationRepository.GetByIdAsync(invitation.Id, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+
+        // The invitee's domain is not in the verified-domain table, which is what used to make
+        // the gate fire.
+        _workspaceVerifiedDomainRepository.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        return invitation;
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldSucceed_WhenTheWorkspaceListsVerifiedDomainsButDoesNotRequireThem()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "dolar@hotmail.com";
+        var invitation = ArrangeWt179Repro(workspaceId, userEmail, MembershipType.Internal.ToString());
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        // Before the fix this was 400 VALIDATION_ERROR
+        // "Cannot invite as an Internal member because the email domain is not verified".
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
+        // Flags off means this workspace does not separate internal from external at all, so the
+        // derived type is Internal — and that is what the membership must be created with.
+        Assert.Equal(MembershipType.Internal.ToString(), invitation.MembershipType);
+        await _workspaceMemberRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceMember>(m => m.MembershipType == MembershipType.Internal.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldIgnoreTheStoredMembershipType_AndUseTheDerivedOne()
+    {
+        // The stored value is stale by construction — acceptance recomputes it. Pinning this
+        // keeps the gate and the recomputation from drifting apart again.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "dolar@hotmail.com";
+        var invitation = ArrangeWt179Repro(workspaceId, userEmail, MembershipType.External.ToString());
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MembershipType.Internal.ToString(), invitation.MembershipType);
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldAdmitAsExternal_WhenThePolicyIsOnAndTheDomainIsNotVerified()
+    {
+        // With the policy actually on, an unverified domain resolves to External rather than
+        // being refused — which is why the Internal-without-verified-domain rejection is now
+        // unreachable through the derive path and kept only as an invariant guard.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "dolar@hotmail.com";
+        var invitation = ArrangeWt179Repro(
+            workspaceId,
+            userEmail,
+            MembershipType.Internal.ToString(),
+            requireVerifiedDomainForInternal: true);
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MembershipType.External.ToString(), invitation.MembershipType);
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldFail_WhenThePolicyIsOnAndExternalCollaborationIsDisabled()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "dolar@hotmail.com";
+        var invitation = ArrangeWt179Repro(
+            workspaceId,
+            userEmail,
+            MembershipType.Internal.ToString(),
+            requireVerifiedDomainForInternal: true,
+            allowExternalCollaboration: false);
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task PreviewInvitationAsync_ShouldReturnMaskedEmailAndSafeInfo_WhenTokenValid()
     {
