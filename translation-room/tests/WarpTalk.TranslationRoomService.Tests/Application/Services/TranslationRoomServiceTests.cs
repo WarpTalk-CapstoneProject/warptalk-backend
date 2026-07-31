@@ -445,6 +445,176 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    // WT-187 — inviting someone wrote invitation rows and sent an email, but published nothing,
+    // so the invitee's rooms list stayed stale until they reloaded the page by hand.
+
+    private const string MeetingEventsChannel = "warptalk:meetings:events";
+
+    private Mock<IGenericRepository<TranslationRoomInvitation>> ArrangeInvitationRepo(
+        params TranslationRoomInvitation[] existing)
+    {
+        var repo = new Mock<IGenericRepository<TranslationRoomInvitation>>();
+        repo.Setup(r => r.FindAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(existing);
+        _mockUow.Setup(u => u.Repository<TranslationRoomInvitation>()).Returns(repo.Object);
+        return repo;
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_PublishesMeetingInvited_WhenTheRoomIsCreatedWithInvitees()
+    {
+        var workspaceId = Guid.NewGuid();
+        ArrangeInvitationRepo();
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var request = new CreateTranslationRoomRequest(
+            workspaceId, "Standup", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US" }, null, null,
+            new List<string> { "invitee@warptalk.io.vn" });
+
+        var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeTrue();
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(
+                MeetingEventsChannel,
+                It.Is<string>(payload =>
+                    // camelCase keys — the Gateway reads them with a case-sensitive
+                    // TryGetProperty, so PascalCase here would be silently ignored.
+                    payload.Contains("\"eventType\":\"MeetingInvited\"")
+                    && payload.Contains($"\"workspaceId\":\"{workspaceId}\""))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_DoesNotPublish_WhenNobodyIsInvited()
+    {
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var request = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Solo", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US" }, null, null, null);
+
+        var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeTrue();
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(MeetingEventsChannel, It.IsAny<string>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_StillCreatesTheRoom_WhenTheInviteEventPublishFails()
+    {
+        ArrangeInvitationRepo();
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        _mockRedisStateRepository
+            .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+
+        var request = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Standup", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US" }, null, null,
+            new List<string> { "invitee@warptalk.io.vn" });
+
+        var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
+
+        // The invitations are committed and the emails are out; a dead relay only costs the
+        // invitee a live refresh, so it must not fail the create.
+        result.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task UpdateTranslationRoomSettingsAsync_PublishesMeetingInvited_ForANewlyAddedInvitee()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            WorkspaceId = workspaceId,
+            HostId = hostId,
+            Status = "WAITING",
+            Title = "Standup",
+            TranslationRoomCode = "abc-defg-hij",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        ArrangeInvitationRepo();
+
+        var request = new UpdateRoomSettingsRequest(
+            null, null, null, null,
+            new List<string> { "invitee@warptalk.io.vn" },
+            null, null, null);
+
+        var result = await _service.UpdateTranslationRoomSettingsAsync(roomId, hostId, request);
+
+        result.IsSuccess.Should().BeTrue();
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(
+                MeetingEventsChannel,
+                It.Is<string>(payload =>
+                    payload.Contains("\"eventType\":\"MeetingInvited\"")
+                    && payload.Contains($"\"workspaceId\":\"{workspaceId}\"")
+                    && payload.Contains(roomId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task UpdateTranslationRoomSettingsAsync_DoesNotPublish_WhenEveryInviteeWasAlreadyInvited()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            WorkspaceId = Guid.NewGuid(),
+            HostId = hostId,
+            Status = "WAITING",
+            Title = "Standup",
+            TranslationRoomCode = "abc-defg-hij",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        // Case-insensitive on purpose: the dedupe uses OrdinalIgnoreCase, so re-submitting the
+        // same address in a different case must stay a no-op on the wire too.
+        ArrangeInvitationRepo(new TranslationRoomInvitation
+        {
+            TranslationRoomId = roomId,
+            Email = "Invitee@WarpTalk.io.vn",
+            Status = "PENDING"
+        });
+
+        var request = new UpdateRoomSettingsRequest(
+            null, null, null, null,
+            new List<string> { "invitee@warptalk.io.vn" },
+            null, null, null);
+
+        var result = await _service.UpdateTranslationRoomSettingsAsync(roomId, hostId, request);
+
+        result.IsSuccess.Should().BeTrue();
+        _mockEmailService.Verify(
+            e => e.SendMeetingInvitationAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(MeetingEventsChannel, It.IsAny<string>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task ExpireTranslationRoomAsync_Idempotent_ReturnsSuccess()
     {
