@@ -48,4 +48,9 @@ public static class SalesInquiryConstants
         public const string WorkspaceIdRequired = "WorkspaceId is required.";
         public const string EnterprisePlanNotFound = "Enterprise plan template was not found.";
     }
+
+    public static class Messages
+    {
+        public const string ConvertedToNewContract = "Converted to new Enterprise Contract";
+    }
 }

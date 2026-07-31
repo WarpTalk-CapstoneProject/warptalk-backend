@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
@@ -54,17 +55,7 @@ public class PersistentIdempotencyService : IIdempotencyService
                 return Result.Success();
             }
 
-            var record = new IdempotencyRecord
-            {
-                Id = Guid.NewGuid(),
-                Key = key.Key,
-                Operation = key.Operation,
-                WorkspaceId = workspaceId,
-                RequestHash = key.RequestHash,
-                ResponseJson = responseJson,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddDays(7)
-            };
+            var record = IdempotencyMapper.CreateRecord(key, responseJson, workspaceId);
 
             await _unitOfWork.IdempotencyRecords.AddAsync(record, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);

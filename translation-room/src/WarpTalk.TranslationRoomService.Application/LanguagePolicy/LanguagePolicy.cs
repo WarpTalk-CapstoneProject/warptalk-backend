@@ -25,25 +25,29 @@ public class LanguagePolicy : ILanguagePolicy
     public bool IsAllowedToSpeak(string language, TranslationRoom room)
     {
         if (string.IsNullOrWhiteSpace(language) || room == null) return false;
+        language = Helpers.LanguageHelper.NormalizeLanguageCode(language);
+        var sourceLang = Helpers.LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
 
         // Allowed to speak Source Language
-        if (language.Equals(room.SourceLanguage?.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (language.Equals(sourceLang, StringComparison.OrdinalIgnoreCase))
             return true;
 
         // Or any of the Target Languages
         var targets = Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
-        return targets.Any(t => t.Equals(language, StringComparison.OrdinalIgnoreCase));
+        return targets.Any(t => Helpers.LanguageHelper.NormalizeLanguageCode(t).Equals(language, StringComparison.OrdinalIgnoreCase));
     }
 
     public bool IsAllowedToListen(string language, TranslationRoom room)
     {
         if (string.IsNullOrWhiteSpace(language) || room == null) return false;
+        language = Helpers.LanguageHelper.NormalizeLanguageCode(language);
+        var sourceLang = Helpers.LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
 
-        if (language.Equals(room.SourceLanguage?.Trim(), StringComparison.OrdinalIgnoreCase))
+        if (language.Equals(sourceLang, StringComparison.OrdinalIgnoreCase))
             return true;
 
         var targets = Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
-        return targets.Any(t => t.Equals(language, StringComparison.OrdinalIgnoreCase));
+        return targets.Any(t => Helpers.LanguageHelper.NormalizeLanguageCode(t).Equals(language, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -61,6 +65,9 @@ public class LanguagePolicy : ILanguagePolicy
 
         if (string.IsNullOrWhiteSpace(listenLanguage))
             return TranslationRoomConstants.ValidationListenLanguageRequired;
+
+        speakLanguage = Helpers.LanguageHelper.NormalizeLanguageCode(speakLanguage);
+        listenLanguage = Helpers.LanguageHelper.NormalizeLanguageCode(listenLanguage);
 
         // 2. System-level validation: Ensure languages are supported by the platform
         if (!await IsSupportedAsync(speakLanguage))
@@ -84,6 +91,8 @@ public class LanguagePolicy : ILanguagePolicy
         if (string.IsNullOrWhiteSpace(speakLanguage) || string.IsNullOrWhiteSpace(listenLanguage))
             return false;
 
-        return !speakLanguage.Trim().Equals(listenLanguage.Trim(), StringComparison.OrdinalIgnoreCase);
+        speakLanguage = Helpers.LanguageHelper.NormalizeLanguageCode(speakLanguage);
+        listenLanguage = Helpers.LanguageHelper.NormalizeLanguageCode(listenLanguage);
+        return !speakLanguage.Equals(listenLanguage, StringComparison.OrdinalIgnoreCase);
     }
 }

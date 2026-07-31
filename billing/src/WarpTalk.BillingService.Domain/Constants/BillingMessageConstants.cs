@@ -54,10 +54,20 @@ public static class BillingMessageConstants
 
         public const string NameChanged = "Name changed from '{0}' to '{1}'";
         public const string UnknownPlan = "Unknown Plan";
+        public const string Created = "Plan Created";
+        public const string Updated = "Plan Updated";
+    }
+
+    public static class ValidationMessages
+    {
+        public const string EventIdRequired = "Event id is required.";
+        public const string ConsumerRequired = "Consumer is required.";
+        public const string EventTypeRequired = "Event type is required.";
     }
 
     public static class Plan
     {
+
         public static class Actions
         {
             public const string Created = "created";

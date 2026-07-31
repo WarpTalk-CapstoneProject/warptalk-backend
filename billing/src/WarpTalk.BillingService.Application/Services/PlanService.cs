@@ -42,36 +42,11 @@ public class PlanService : IPlanService
 
             if (!plans.Any())
             {
-                var defaultEnterprisePlan = new Plan
-                {
-                    Name = "Enterprise",
-                    Slug = "enterprise",
-                    Tier = "enterprise",
-                    Price = 1900000m,
-                    Currency = "VND",
-                    BillingCycle = "monthly",
-                    CreditsPerCycle = 700000,
-                    OverageCapCredits = 105000,
-                    OveragePricePerCredit = 4m,
-                    LowBalanceThresholdCredits = 140000,
-                    RolloverCapCredits = 700000,
-                    InvoiceTermsDays = 15,
-                    InvoiceGraceHours = 360,
-                    MaxParticipants = 500,
-                    MaxLanguages = 3,
-                    VoiceCloneEnabled = true,
-                    AiAssistantEnabled = true,
-                    GlossaryEnabled = true,
-                    DedicatedGpu = false,
-                    Features = SubscriptionConstants.FeatureAccess.EnterpriseFeaturesJson,
-                    SortOrder = 1,
-                    IsActive = true,
-                    CreatedAt = DateTime.UtcNow,
-                    UpdatedAt = DateTime.UtcNow
-                };
-
+                var defaultEnterprisePlan = PlanMapper.CreateDefaultEnterprisePlan();
+                
                 await _unitOfWork.PlanRepository.AddAsync(defaultEnterprisePlan, cancellationToken);
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
+                
                 plans.Add(defaultEnterprisePlan);
             }
 

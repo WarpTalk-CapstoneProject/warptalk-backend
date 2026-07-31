@@ -81,6 +81,9 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            sourceLang = LanguageHelper.NormalizeLanguageCode(sourceLang);
+            targetLangs = targetLangs?.Select(LanguageHelper.NormalizeLanguageCode).ToList();
+
             // WT-65: Validate Source Language
             if (string.IsNullOrWhiteSpace(sourceLang))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ValidationSourceLanguageRequired, ErrorCodes.ValidationError);
@@ -724,22 +727,24 @@ public class TranslationRoomService : ITranslationRoomService
             // WT-65: Update and Validate Source Language
             if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
             {
-                if (!await _languagePolicy.IsSupportedAsync(request.SourceLanguage))
+                var normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+                if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
                     return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
 
-                translationRoom.SourceLanguage = request.SourceLanguage;
+                translationRoom.SourceLanguage = normSourceLang;
             }
 
             // WT-65: Update and Validate Target Languages
             if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
             {
-                foreach (var lang in request.TargetLanguages)
+                var normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
+                foreach (var lang in normTargetLangs)
                 {
                     if (!await _languagePolicy.IsSupportedAsync(lang))
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
 
-                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
             }
 
             // Update Settings (RequiresApproval)

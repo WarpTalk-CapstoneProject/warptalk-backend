@@ -1,3 +1,5 @@
+using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 
@@ -16,11 +18,11 @@ public sealed class InboxDeduplicator(
         CancellationToken cancellationToken = default)
     {
         if (eventId == Guid.Empty)
-            throw new ArgumentException("Event id is required.", nameof(eventId));
+            throw new ArgumentException(BillingMessageConstants.ValidationMessages.EventIdRequired, nameof(eventId));
         if (string.IsNullOrWhiteSpace(consumer))
-            throw new ArgumentException("Consumer is required.", nameof(consumer));
+            throw new ArgumentException(BillingMessageConstants.ValidationMessages.ConsumerRequired, nameof(consumer));
         if (string.IsNullOrWhiteSpace(eventType))
-            throw new ArgumentException("Event type is required.", nameof(eventType));
+            throw new ArgumentException(BillingMessageConstants.ValidationMessages.EventTypeRequired, nameof(eventType));
 
         var exists = await unitOfWork.InboxMessages.AnyAsync(
             message => message.EventId == eventId && message.Consumer == consumer,
@@ -28,13 +30,8 @@ public sealed class InboxDeduplicator(
         if (exists)
             return false;
 
-        await unitOfWork.InboxMessages.AddAsync(new InboxMessage
-        {
-            EventId = eventId,
-            Consumer = consumer,
-            EventType = eventType,
-            ProcessedAt = _timeProvider.GetUtcNow().UtcDateTime
-        }, cancellationToken);
+        var messageEntity = InboxMessageMapper.ToEntity(eventId, consumer, eventType, _timeProvider.GetUtcNow().UtcDateTime);
+        await unitOfWork.InboxMessages.AddAsync(messageEntity, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         return true;
     }

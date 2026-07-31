@@ -180,23 +180,7 @@ public class SubscriptionService : ISubscriptionService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
                     ErrorCodes.BillingSubscriptionAlreadyActive);
 
-            var now = DateTime.UtcNow;
-            var subscription = new Subscription
-            {
-                Id = Guid.NewGuid(),
-                UserId = request.UserId ?? Guid.Empty,
-                WorkspaceId = request.WorkspaceId,
-                PlanId = request.PlanId,
-                Status = SubscriptionConstants.SubscriptionStatuses.Active,
-                CreditsRemaining = request.ContractTerms.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
-                CreditsUsedThisCycle = 0,
-                CurrentPeriodStart = now,
-                CurrentPeriodEnd = now.AddDays(30),
-                AutoRenew = true,
-                IsActive = true,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
+            var subscription = request.ToContractSubscriptionEntity(plan);
 
             var validation = ValidateContractTerms(subscription, plan, request.ContractTerms);
             if (!validation.IsSuccess)
@@ -300,7 +284,14 @@ public class SubscriptionService : ISubscriptionService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            sub.Cancel(reason);
+            if (sub.TrialEndsAt != null)
+            {
+                sub.CancelImmediately(reason);
+            }
+            else
+            {
+                sub.Cancel(reason);
+            }
 
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -589,7 +580,7 @@ public class SubscriptionService : ISubscriptionService
             nextContractPrice / nextCreditsPerCycle < SubscriptionConstants.PlanDefaults.PriceFloorPerCredit)
         {
             return Result.Failure(
-                BillingMessageConstants.ApiErrorMessages.BillingContractPriceBelowFloor,
+                $"nextContractPrice: {nextContractPrice}, nextCredits: {nextCreditsPerCycle}, floor: {SubscriptionConstants.PlanDefaults.PriceFloorPerCredit}, calc: {nextContractPrice / nextCreditsPerCycle}",
                 ErrorCodes.ValidationError);
         }
 
@@ -597,7 +588,7 @@ public class SubscriptionService : ISubscriptionService
             (nextOverageCap > 0 && nextOveragePrice < plan.OveragePricePerCredit))
         {
             return Result.Failure(
-                BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
+                $"nextOverageCap: {nextOverageCap}, nextCredits: {nextCreditsPerCycle}, nextOveragePrice: {nextOveragePrice}, planOveragePrice: {plan.OveragePricePerCredit}",
                 ErrorCodes.ValidationError);
         }
 

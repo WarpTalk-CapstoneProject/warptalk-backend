@@ -1,4 +1,5 @@
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 
 namespace WarpTalk.BillingService.Application.Mappers;
@@ -86,4 +87,33 @@ public static class PlanMapper
         plan.IsActive = request.IsActive;
         plan.UpdatedAt = DateTime.UtcNow;
     }
+
+    public static Plan CreateDefaultEnterprisePlan() => new()
+    {
+        Id = Guid.NewGuid(),
+        Name = "Enterprise",
+        Slug = "enterprise",
+        Tier = "enterprise",
+        Price = 1900000m,
+        Currency = "VND",
+        BillingCycle = "monthly",
+        CreditsPerCycle = 700000,
+        OverageCapCredits = 105000,
+        OveragePricePerCredit = 4m,
+        LowBalanceThresholdCredits = 140000,
+        RolloverCapCredits = 700000,
+        InvoiceTermsDays = 15,
+        InvoiceGraceHours = 360,
+        MaxParticipants = 500,
+        MaxLanguages = 3,
+        VoiceCloneEnabled = true,
+        AiAssistantEnabled = true,
+        GlossaryEnabled = true,
+        DedicatedGpu = false,
+        Features = SubscriptionConstants.FeatureAccess.EnterpriseFeaturesJson,
+        SortOrder = 1,
+        IsActive = true,
+        CreatedAt = DateTime.UtcNow,
+        UpdatedAt = DateTime.UtcNow
+    };
 }

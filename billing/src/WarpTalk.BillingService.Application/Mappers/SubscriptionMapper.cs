@@ -203,4 +203,26 @@ public static class SubscriptionMapper
         };
     }
 
+    public static Subscription ToContractSubscriptionEntity(
+        this CreateWorkspaceContractSubscriptionRequest request,
+        Plan plan)
+    {
+        var now = DateTime.UtcNow;
+        return new Subscription
+        {
+            Id = Guid.NewGuid(),
+            UserId = request.UserId ?? Guid.Empty,
+            WorkspaceId = request.WorkspaceId,
+            PlanId = request.PlanId,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            CreditsRemaining = request.ContractTerms.CreditsPerCycleOverride ?? plan.CreditsPerCycle,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodStart = now,
+            CurrentPeriodEnd = now.AddDays(30),
+            AutoRenew = true,
+            IsActive = true,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
 }

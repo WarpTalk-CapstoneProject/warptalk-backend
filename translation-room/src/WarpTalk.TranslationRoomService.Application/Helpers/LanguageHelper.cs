@@ -20,12 +20,20 @@ public static class LanguageHelper
 
         return list
             .Where(lang => !string.IsNullOrWhiteSpace(lang))
-            .Select(lang => lang.Trim())
+            .Select(lang => NormalizeLanguageCode(lang))
             .ToList();
     }
 
     public static string SerializeTargetLanguages(List<string>? languages)
     {
-        return JsonSerializer.Serialize(languages ?? new List<string>(), JsonOptions);
+        return JsonSerializer.Serialize(languages?.Select(NormalizeLanguageCode).ToList() ?? new List<string>(), JsonOptions);
+    }
+
+    public static string NormalizeLanguageCode(string? code)
+    {
+        if (string.IsNullOrWhiteSpace(code)) return string.Empty;
+        var trimmed = code.Trim();
+        var primaryCode = trimmed.Split('-')[0];
+        return primaryCode.ToLowerInvariant();
     }
 }

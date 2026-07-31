@@ -190,7 +190,18 @@ public class SalesInquiryService : ISalesInquiryService
         Result<SubscriptionDto> subscriptionResult;
         if (activeSubscription.IsSuccess)
         {
-            subscriptionResult = await _subscriptionService.UpdateContractTermsAsync(request.WorkspaceId, terms, cancellationToken);
+            if (activeSubscription.Value!.PlanId == plan.Id && activeSubscription.Value!.TrialEndsAt == null)
+            {
+                subscriptionResult = await _subscriptionService.UpdateContractTermsAsync(request.WorkspaceId, terms, cancellationToken);
+            }
+            else
+            {
+                // Deactivate the trial (or old) subscription immediately and start a new contract subscription
+                await _subscriptionService.CancelSubscriptionAsync(request.WorkspaceId, SalesInquiryConstants.Messages.ConvertedToNewContract, cancellationToken);
+                subscriptionResult = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(
+                    request.ToContractSubscriptionRequest(plan.Id, terms),
+                    cancellationToken);
+            }
         }
         else
         {

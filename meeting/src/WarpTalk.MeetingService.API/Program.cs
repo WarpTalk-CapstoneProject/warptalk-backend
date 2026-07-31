@@ -102,6 +102,7 @@ builder.Services.AddSignalR();
 
 builder.Services.AddScoped<ILiveKitTokenService, LiveKitTokenService>();
 builder.Services.AddHttpClient<ILiveKitEgressService, LiveKitEgressService>();
+builder.Services.AddHttpClient<ILiveKitRoomAdminService, LiveKitRoomAdminService>();
 builder.Services.AddScoped<ITranslationRoomGrpcService, TranslationRoomGrpcService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped<IMeetingRoomService, MeetingRoomService>();
