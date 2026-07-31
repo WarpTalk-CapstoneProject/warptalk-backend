@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace WarpTalk.WorkspaceService.Domain.Entities;
@@ -39,7 +39,6 @@ public partial class WorkspaceInvitation
     public DateTime? LastSentAt { get; set; }
 
     public int SentCount { get; set; }
-
     public Guid? RequestedBy { get; set; }
 
     public Guid? ReviewedBy { get; set; }
