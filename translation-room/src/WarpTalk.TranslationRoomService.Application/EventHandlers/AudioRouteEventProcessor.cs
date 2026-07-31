@@ -145,9 +145,6 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                 await _routeRepository.UpdateRoutesAsync(routesToUpdate, ct);
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // Publish updates through the standard pipeline (decoupled inside helper, handles external connection natively)
-                await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
-
                 if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.ENDING.ToString()))
                 {
                     _finalizationQueue.QueueFinalization(roomId);
@@ -166,6 +163,19 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                         _logger.LogError(ex, "Failed to perform proactive Redis cleanup for Room {RoomId} on route completion", roomId);
                     }
                 }
+            }
+
+            // Lifecycle state must reach every AI worker even when the room currently has no
+            // cross-language audio routes (for example, a host-only room). Otherwise ingress
+            // cannot distinguish a published meeting microphone from translation being active
+            // and starts transcribing before the host presses Start.
+            var isLifecycleEvent =
+                originalEventType == AudioRoutingEventType.session_starts ||
+                originalEventType == AudioRoutingEventType.room_pause ||
+                originalEventType == AudioRoutingEventType.room_resume;
+            if (routesToUpdate.Any() || isLifecycleEvent)
+            {
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
             }
 
             return Result.Success();

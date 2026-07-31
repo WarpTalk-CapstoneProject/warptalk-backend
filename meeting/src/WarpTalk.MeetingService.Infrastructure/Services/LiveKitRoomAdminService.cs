@@ -44,6 +44,7 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             "RemoveParticipant",
             new { room = roomName, identity = participantIdentity },
             roomName,
+            requiresRoomCreate: false,
             ct);
 
     public Task<Result<bool>> DeleteRoomAsync(
@@ -53,12 +54,14 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             "DeleteRoom",
             new { room = roomName },
             roomName,
+            requiresRoomCreate: true,
             ct);
 
     private async Task<Result<bool>> SendRoomCommandAsync(
         string command,
         object payload,
         string roomName,
+        bool requiresRoomCreate,
         CancellationToken ct)
     {
         try
@@ -71,7 +74,7 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             };
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
-                GenerateRoomAdminToken(roomName));
+                GenerateRoomServiceToken(roomName, requiresRoomCreate));
 
             using var response = await _httpClient.SendAsync(request, ct);
             if (response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound)
@@ -100,15 +103,20 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
         }
     }
 
-    private string GenerateRoomAdminToken(string roomName)
+    private string GenerateRoomServiceToken(string roomName, bool requiresRoomCreate)
     {
         var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_apiSecret));
         var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
-        var videoGrant = new Dictionary<string, object>
-        {
-            ["roomAdmin"] = true,
-            ["room"] = roomName
-        };
+        // LiveKit separates room lifecycle permission from participant administration:
+        // DeleteRoom requires roomCreate, while RemoveParticipant requires roomAdmin scoped
+        // to one room. Reusing roomAdmin for DeleteRoom is rejected as Unauthorized.
+        var videoGrant = requiresRoomCreate
+            ? new Dictionary<string, object> { ["roomCreate"] = true }
+            : new Dictionary<string, object>
+            {
+                ["roomAdmin"] = true,
+                ["room"] = roomName
+            };
         var payload = new JwtPayload(
             issuer: _apiKey,
             audience: null,

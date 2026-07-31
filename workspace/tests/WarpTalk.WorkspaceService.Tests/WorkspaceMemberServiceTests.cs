@@ -117,7 +117,7 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(1, result.Value.Total);
         Assert.Single(result.Value.Items);
         Assert.Equal("John Doe", result.Value.Items[0].FullName);
-        Assert.Equal(string.Empty, result.Value.Items[0].Email); // Email should be hidden for normal members
+        Assert.Equal("john@warptalk.vn", result.Value.Items[0].Email); // WT-181: internal members can see each other's email
     }
 
     [Fact]

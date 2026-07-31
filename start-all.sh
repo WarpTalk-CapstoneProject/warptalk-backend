@@ -147,6 +147,9 @@ start_redis() {
 }
 
 start_livekit() {
+    local livekit_api_key="${LIVEKIT_API_KEY:-devkey}"
+    local livekit_api_secret="${LIVEKIT_API_SECRET:-secret}"
+
     echo -e "${CYAN}📹 Starting LiveKit...${NC}"
     if docker ps --format '{{.Names}}' | grep -q "^warptalk-livekit$"; then
         echo -e "   ${GREEN}Already running${NC}"
@@ -157,7 +160,7 @@ start_livekit() {
         docker run -d \
             --name "warptalk-livekit" \
             -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
-            -e LIVEKIT_KEYS="APIBVnfFo9PzzoQ: wbB6j98H2jfF5nLTZYhaiYXQM8hM6nB3KoVoXfMNTPA" \
+            -e LIVEKIT_KEYS="${livekit_api_key}: ${livekit_api_secret}" \
             livekit/livekit-server:latest --dev --bind 0.0.0.0 > /dev/null
         echo -e "   ${GREEN}Created and started new container${NC}"
     fi

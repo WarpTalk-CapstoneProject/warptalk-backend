@@ -10,6 +10,10 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
 {
     public CreateTranslationRoomRequestValidator()
     {
+        RuleFor(x => x.WorkspaceId)
+            .Must(workspaceId => workspaceId.HasValue && workspaceId.Value != Guid.Empty)
+            .WithMessage(ApiMessageConstants.ValidationMessages.WorkspaceRequired);
+
         RuleFor(x => x.Title)
             .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.TitleRequired)
             .MaximumLength(255).WithMessage(ApiMessageConstants.ValidationMessages.TitleMaxLength);

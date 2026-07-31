@@ -193,8 +193,10 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant == null)
                 return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
+            var leftAt = DateTime.UtcNow;
             participant.Status = "LEFT";
-            participant.UpdatedAt = DateTime.UtcNow;
+            participant.LeftAt = leftAt;
+            participant.UpdatedAt = leftAt;
 
             _participantRepository.Update(participant);
             await _unitOfWork.SaveChangesAsync(ct);
