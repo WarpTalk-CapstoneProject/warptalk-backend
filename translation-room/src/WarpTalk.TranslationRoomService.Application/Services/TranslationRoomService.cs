@@ -33,8 +33,16 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
+    private readonly IRedisStateRepository _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
+
+    /// <summary>
+    /// Cross-process relay every room event already travels on. The SignalR hub lives in the
+    /// Gateway process, so this service cannot reach connected clients directly — it publishes
+    /// here and TranslationRoomRedisSubscriberService fans out to the room's group.
+    /// </summary>
+    private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
     public TranslationRoomService(
         IUnitOfWork unitOfWork,
@@ -43,6 +51,7 @@ public class TranslationRoomService : ITranslationRoomService
         ITranslationRoomAudioRouteService audioRouteService,
         IUserSettingsDirectory userSettingsDirectory,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
+        IRedisStateRepository redisStateRepository,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null)
     {
@@ -52,6 +61,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
         _emailService = emailService;
+        _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _translationRoomSessionRepository = _unitOfWork.TranslationRoomSessionRepository;
@@ -649,6 +659,30 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-191: tell everyone still in the room that it is over. The host ends the meeting
+            // over REST, so TranslationRoomHub.EndTranslationRoom (which broadcasts
+            // "TranslationRoomEnded") is never invoked — without this publish the other
+            // participants sat in an ended room until they pressed Leave themselves.
+            // Published after SaveChangesAsync so a client that refetches on the event cannot
+            // observe the room still IN_PROGRESS. Failure to notify must not fail the end
+            // itself: the room is already ENDED and persisted by this point.
+            try
+            {
+                var endedPayload = JsonSerializer.Serialize(new
+                {
+                    Command = "RoomEnded",
+                    RoomId = translationRoomId.ToString()
+                });
+                await _redisStateRepository.PublishAsync(GatewayCommandsChannel, endedPayload);
+            }
+            catch (Exception publishEx)
+            {
+                _logger.LogError(
+                    publishEx,
+                    "Failed to publish RoomEnded for RoomId: {RoomId}. Room is ended; connected clients will not be redirected automatically.",
+                    translationRoomId);
+            }
 
             // WT-67: Trigger Audio Routing State Machine
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", ct);

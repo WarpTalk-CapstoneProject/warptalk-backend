@@ -25,6 +25,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
+    private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
@@ -40,6 +41,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
+        _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
 
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
@@ -67,6 +69,7 @@ public class TranslationRoomServiceTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockEmailService.Object,
+            _mockRedisStateRepository.Object,
             _mockLogger.Object);
     }
 
@@ -392,6 +395,54 @@ public class TranslationRoomServiceTests
         room.EndedAt.Should().NotBeNull();
         room.DurationSeconds.Should().BeNull();
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default), Times.Once);
+    }
+
+    // WT-191 — participants used to sit in an ended room until they pressed Leave, because
+    // ending over REST never reached the SignalR hub in the Gateway process.
+
+    [Fact]
+    public async Task EndTranslationRoomAsync_PublishesRoomEndedToTheGatewayRelay()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{\"requires_approval\":true}" };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default)).ReturnsAsync(new List<TranslationRoomParticipant>());
+
+        var result = await _service.EndTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(
+                "warptalk:translation-room:commands",
+                It.Is<string>(payload =>
+                    payload.Contains("\"Command\":\"RoomEnded\"")
+                    && payload.Contains(roomId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task EndTranslationRoomAsync_StillEndsTheRoom_WhenTheRelayPublishFails()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS", Settings = "{\"requires_approval\":true}" };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default)).ReturnsAsync(new List<TranslationRoomParticipant>());
+        _mockRedisStateRepository
+            .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+
+        var result = await _service.EndTranslationRoomAsync(roomId, hostId);
+
+        // The room is already ENDED and persisted; a dead relay must not turn that into a failure.
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("ENDED");
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default),
+            Times.Once);
     }
 
     [Fact]
