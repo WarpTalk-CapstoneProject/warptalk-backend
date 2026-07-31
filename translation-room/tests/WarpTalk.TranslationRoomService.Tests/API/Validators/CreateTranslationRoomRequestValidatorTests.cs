@@ -25,6 +25,15 @@ public class CreateTranslationRoomRequestValidatorTests
     }
 
     [Fact]
+    public void Should_Have_Error_When_WorkspaceId_Is_Empty()
+    {
+        var model = new CreateTranslationRoomRequest(Guid.Empty, "Valid Title", "Description", "INSTANT", 10, "vi", new List<string> { "en" }, null, null, null);
+        var result = _validator.TestValidate(model);
+        result.ShouldHaveValidationErrorFor(x => x.WorkspaceId)
+              .WithErrorMessage(ApiMessageConstants.ValidationMessages.WorkspaceRequired);
+    }
+
+    [Fact]
     public void Should_Have_Error_When_Title_Exceeds_MaxLength()
     {
         var longTitle = new string('A', 256);
