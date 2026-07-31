@@ -19,6 +19,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepo;
     private readonly Mock<ITranslationRoomParticipantRepository> _mockParticipantRepo;
     private readonly Mock<ITranslationRoomAudioRouteRepository> _mockAudioRouteRepo;
+    private readonly Mock<ITranslationRoomSessionRepository> _mockSessionRepo;
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy;
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
@@ -33,6 +34,7 @@ public class TranslationRoomServiceTests
         _mockRoomRepo = new Mock<ITranslationRoomRepository>();
         _mockParticipantRepo = new Mock<ITranslationRoomParticipantRepository>();
         _mockAudioRouteRepo = new Mock<ITranslationRoomAudioRouteRepository>();
+        _mockSessionRepo = new Mock<ITranslationRoomSessionRepository>();
         _mockLanguagePolicy = new Mock<ILanguagePolicy>();
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
@@ -43,6 +45,7 @@ public class TranslationRoomServiceTests
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
+        _mockUow.Setup(u => u.TranslationRoomSessionRepository).Returns(_mockSessionRepo.Object);
 
         _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<TranslationRoomParticipant>());
