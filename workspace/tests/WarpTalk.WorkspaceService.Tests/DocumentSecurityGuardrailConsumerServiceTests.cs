@@ -30,7 +30,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     private readonly IServiceScope _serviceScope;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly IDocumentSecurityScanner _securityScanner;
@@ -48,7 +48,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
         _textExtractor = Substitute.For<IDocumentTextExtractor>();
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();

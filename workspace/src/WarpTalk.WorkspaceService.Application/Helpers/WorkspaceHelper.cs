@@ -122,6 +122,30 @@ public static class WorkspaceHelper
             workspace.AllowSubdomains);
     }
 
+    public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(
+        IUnitOfWork unitOfWork,
+        string? userEmail,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
+        var verifiedDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+            vd => vd.WorkspaceId == workspace.Id
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
+            "",
+            ct);
+
+        // Join Requests are deliberately conservative: without proof of a
+        // verified workspace domain, the request remains provisional External.
+        return ResolveMembershipType(
+            userEmail,
+            verifiedDomains.Select(vd => vd.Domain),
+            requireVerifiedDomain: true,
+            workspace.AllowSubdomains);
+    }
+
     public static MembershipType ResolveMembershipType(
         string? userEmail,
         IEnumerable<string> verifiedDomains,
@@ -201,5 +225,22 @@ public static class WorkspaceHelper
     public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
     {
         return await DetermineMembershipTypeAsync(unitOfWork, userEmail, workspace, ct);
+    }
+
+    public static bool AreEquivalentAiPolicies(AiUsagePolicyConfiguration? current, AiUsagePolicyConfiguration? requested)
+    {
+        var left = current ?? new AiUsagePolicyConfiguration(true, null, null, null, true);
+        var right = requested ?? new AiUsagePolicyConfiguration(true, null, null, null, true);
+        var leftDlp = left.Dlp;
+        var rightDlp = right.Dlp;
+        return left.AllowExternalLlm == right.AllowExternalLlm
+            && left.RedactPii?.Enabled == right.RedactPii?.Enabled
+            && leftDlp?.Enabled == rightDlp?.Enabled
+            && (leftDlp?.KeywordsBlacklist ?? new List<string>()).SequenceEqual(rightDlp?.KeywordsBlacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase)
+            && left.TranslationProfile?.TranslationTone == right.TranslationProfile?.TranslationTone
+            && left.TranslationProfile?.LanguageSpecificRules?.VietnameseHonorificStyle == right.TranslationProfile?.LanguageSpecificRules?.VietnameseHonorificStyle
+            && left.TranslationProfile?.LanguageSpecificRules?.JapaneseHonorificStyle == right.TranslationProfile?.LanguageSpecificRules?.JapaneseHonorificStyle
+            && (left.UseGlobalGlossary ?? true) == (right.UseGlobalGlossary ?? true);
+    }
     }
 }

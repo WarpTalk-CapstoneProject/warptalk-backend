@@ -136,7 +136,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var membershipType = membershipTypeEnum.ToString();
-            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(workspaceId, request, finalRoleId.Value, finalRoleName, inviterUserId, null, membershipType);
+            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(workspaceId, request, finalRoleId.Value, finalRoleName, inviterUserId, null, membershipType, expiryDays: config.InvitationExpiryDays);
 
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
             await _unitOfWork.SaveChangesAsync(ct);

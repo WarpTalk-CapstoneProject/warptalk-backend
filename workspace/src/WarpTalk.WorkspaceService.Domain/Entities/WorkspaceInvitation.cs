@@ -18,6 +18,9 @@ public partial class WorkspaceInvitation
 
     public Guid? MatchedDomainId { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid InvitedBy { get; set; }
 
     public Guid? RequestedBy { get; set; }

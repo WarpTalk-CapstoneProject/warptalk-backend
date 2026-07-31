@@ -36,6 +36,12 @@ public sealed class WorkspaceOutboxDelivery(
                     "workspace-events",
                     cancellationToken);
                 break;
+            case WorkspaceEventTypes.MemberRoleChanged:
+                await PublishAsync<MemberRoleChangedEventPayload>(
+                    message,
+                    "workspace-events",
+                    cancellationToken);
+                break;
             case WorkspaceEventTypes.DocumentIngestionRequested:
                 await PublishAsync<WorkspaceDocumentIngestionRequestedEventPayload>(
                     message,
@@ -129,6 +135,13 @@ public sealed class WorkspaceOutboxDelivery(
                 entries.Add(new("user_id", removed.UserId));
                 entries.Add(new("removed_by", removed.RemovedByUserId));
                 entries.Add(new("removed_at", removed.RemovedAt.ToString("O")));
+                break;
+            case MemberRoleChangedEventPayload roleChanged:
+                entries.Add(new("workspace_id", roleChanged.WorkspaceId));
+                entries.Add(new("target_user_id", roleChanged.TargetUserId));
+                entries.Add(new("old_role", roleChanged.OldRole));
+                entries.Add(new("new_role", roleChanged.NewRole));
+                entries.Add(new("changed_by_user_id", roleChanged.ChangedByUserId));
                 break;
             case WorkspaceDocumentIngestionRequestedEventPayload ingestion:
                 entries.Add(new("document_id", ingestion.DocumentId));

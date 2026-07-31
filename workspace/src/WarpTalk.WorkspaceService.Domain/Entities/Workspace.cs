@@ -11,6 +11,9 @@ public partial class Workspace
 
     public string Slug { get; set; } = null!;
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid OwnerId { get; set; }
 
     public string? LogoUrl { get; set; }
@@ -27,14 +30,23 @@ public partial class Workspace
 
     public DateTime CreatedAt { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid? CreatedBy { get; set; }
 
     public DateTime UpdatedAt { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid? UpdatedBy { get; set; }
 
     public DateTime? DeletedAt { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid? DeletedBy { get; set; }
 
     public virtual ICollection<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicies { get; set; } = new List<WorkspaceDocumentAccessPolicy>();

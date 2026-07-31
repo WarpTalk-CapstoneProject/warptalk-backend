@@ -231,7 +231,6 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // start. It is enabled only by DocumentEmbeddingResultProcessor after
             // the embedding worker reports a successful Qdrant upsert.
             document.AiEligible = false;
-
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);

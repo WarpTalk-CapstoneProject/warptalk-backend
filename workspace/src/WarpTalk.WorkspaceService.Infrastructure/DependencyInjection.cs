@@ -21,6 +21,7 @@ using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
 using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using WarpTalk.WorkspaceService.Infrastructure.Storage;
+using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Infrastructure.Outbox;
 
 namespace WarpTalk.WorkspaceService.Infrastructure;

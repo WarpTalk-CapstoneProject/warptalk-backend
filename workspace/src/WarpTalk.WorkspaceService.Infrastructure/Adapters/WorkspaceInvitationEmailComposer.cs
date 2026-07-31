@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -14,15 +13,18 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailComposer
 {
     private readonly IResendEmailClient _resendClient;
+    private readonly IEmailTemplateProvider _templateProvider;
     private readonly IConfiguration _configuration;
     private readonly ILogger<WorkspaceInvitationEmailComposer> _logger;
 
     public WorkspaceInvitationEmailComposer(
         IResendEmailClient resendClient,
+        IEmailTemplateProvider templateProvider,
         IConfiguration configuration,
         ILogger<WorkspaceInvitationEmailComposer> logger)
     {
         _resendClient = resendClient;
+        _templateProvider = templateProvider;
         _configuration = configuration;
         _logger = logger;
     }
@@ -42,7 +44,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         var joinUrl = $"{appBaseUrl}/{workspace.Slug}/home";
         var subject = $"You've been invited to join {workspace.Name} on WarpTalk";
 
-        var htmlTemplate = await LoadTemplateHtmlAsync(appBaseUrl, ct, "workspace-invitation-email.html");
+        var htmlTemplate = await _templateProvider.GetTemplateAsync("workspace-invitation-email", ct);
 
         var htmlBody = htmlTemplate
             .Replace("{{WorkspaceName}}", System.Net.WebUtility.HtmlEncode(workspace.Name))
@@ -65,6 +67,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         _logger.LogInformation("Dispatching invitation email to {Email} for workspace {WorkspaceName} via Resend", invitation.Email, workspace.Name);
         return await _resendClient.SendEmailAsync(request, ct);
     }
+<<<<<<< HEAD
 
     public async Task<SendEmailResponse> SendJoinRequestApprovedEmailAsync(
         WorkspaceInvitation invitation,
@@ -155,4 +158,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 </body>
 </html>";
     }
+=======
+>>>>>>> feat/configurable-invitation-expiry
 }
