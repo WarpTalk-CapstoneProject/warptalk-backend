@@ -36,4 +36,22 @@ public class WorkspaceDocumentAuditRepository : GenericRepository<WorkspaceDocum
 
         return (items, totalCount);
     }
+
+    public async Task<Dictionary<Guid, Guid?>> GetLatestApproverUserIdsByWorkspaceAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        var approvalAudits = await _dbSet.AsNoTracking()
+            .Where(a => a.WorkspaceId == workspaceId && 
+                        a.Action == Domain.Constants.WorkspaceDocumentConstants.AuditActions.ApproveDocument &&
+                        a.ActorId != null)
+            .Select(a => new { a.DocumentId, a.ActorId, a.ActionAt })
+            .ToListAsync(ct);
+
+        return approvalAudits
+            .GroupBy(a => a.DocumentId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(a => a.ActionAt).First().ActorId);
+    }
 }

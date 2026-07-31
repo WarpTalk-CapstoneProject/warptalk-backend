@@ -73,7 +73,9 @@ public sealed record MeetingRecordingCompletedEventPayload(
 
 public sealed record MeetingStartedEventPayload(
     [property: JsonPropertyName("translation_room_id")] Guid TranslationRoomId,
-    [property: JsonPropertyName("workspace_id")] Guid WorkspaceId
+    [property: JsonPropertyName("workspace_id")] Guid WorkspaceId,
+    [property: JsonPropertyName("title")] string? Title = null,
+    [property: JsonPropertyName("description")] string? Description = null
 );
 
 public sealed record MeetingTrackPublishedEventPayload(

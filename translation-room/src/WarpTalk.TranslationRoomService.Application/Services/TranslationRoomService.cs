@@ -27,6 +27,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
+    private readonly ITranslationRoomSessionRepository _translationRoomSessionRepository;
     private readonly ILanguagePolicy _languagePolicy;
     private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
@@ -53,6 +54,7 @@ public class TranslationRoomService : ITranslationRoomService
         _emailService = emailService;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
+        _translationRoomSessionRepository = _unitOfWork.TranslationRoomSessionRepository;
         _logger = logger;
         _frontendBaseUrl = appSettings?.Value.FrontendBaseUrl ?? "http://localhost:3000";
     }
@@ -423,6 +425,11 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.UpdatedBy = hostId;
 
             _translationRoomRepository.Update(translationRoom);
+
+            // Each Start/Resume opens a new numbered translation session — the transcript
+            // labels segments by which session they fall in ("Translation 1", "Translation 2"...).
+            await StartNewTranslationSessionAsync(translationRoom, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
@@ -452,6 +459,11 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
+
+            // Pausing closes the current translation session — Resume opens a fresh, newly
+            // numbered one rather than reopening this one.
+            await EndActiveTranslationSessionAsync(translationRoomId, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine to Pause
@@ -481,6 +493,10 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
             _translationRoomRepository.Update(translationRoom);
+
+            // See StartTranslationRoomAsync — Resume opens a new numbered session too.
+            await StartNewTranslationSessionAsync(translationRoom, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
@@ -610,12 +626,11 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.EndedAt = DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
 
-            if (translationRoom.StartedAt.HasValue)
-            {
-                translationRoom.DurationSeconds = (int)(translationRoom.EndedAt.Value - translationRoom.StartedAt.Value).TotalSeconds;
-            }
-
             _translationRoomRepository.Update(translationRoom);
+
+            // Room may end directly from IN_PROGRESS (no prior Pause) — close whatever
+            // translation session is still open so it gets an EndedAt.
+            await EndActiveTranslationSessionAsync(translationRoomId, ct);
 
             var participants = await _participantRepository.GetByRoomIdAsync(translationRoomId, ct);
             if (participants != null)
@@ -913,6 +928,32 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while generating calendar .ics. RoomId: {RoomId}", translationRoomId);
             return Result.Failure<string>("An unexpected error occurred while generating the calendar invite.", ErrorCodes.InternalServerError);
         }
+    }
+
+    private async Task StartNewTranslationSessionAsync(TranslationRoom translationRoom, CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        await _translationRoomSessionRepository.AddAsync(new TranslationRoomSession
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = translationRoom.Id,
+            MainLanguage = translationRoom.SourceLanguage,
+            Status = TranslationRoomSessionStatus.ACTIVE.ToString(),
+            StartedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        }, ct);
+    }
+
+    private async Task EndActiveTranslationSessionAsync(Guid translationRoomId, CancellationToken ct)
+    {
+        var activeSession = await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(translationRoomId, ct);
+        if (activeSession == null) return;
+
+        activeSession.Status = TranslationRoomSessionStatus.ENDED.ToString();
+        activeSession.EndedAt = DateTime.UtcNow;
+        activeSession.UpdatedAt = DateTime.UtcNow;
+        _translationRoomSessionRepository.Update(activeSession);
     }
 
     private IQueryable<TranslationRoom> BuildAccessibleRoomsQuery(Guid userId, string? userEmail)

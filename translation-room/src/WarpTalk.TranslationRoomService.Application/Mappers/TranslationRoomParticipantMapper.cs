@@ -48,10 +48,18 @@ public static class TranslationRoomParticipantMapper
         participant.ListenLanguage = listenLanguage;
         participant.SpeakLanguage = speakLanguage;
         
-        // Recovery logic: If they were DISCONNECTED or LEFT, move to active/pending status
+        // LEFT/DISCONNECTED means this participant was already admitted and later lost or
+        // closed their live connection. Admission belongs to the participant's room
+        // membership, not to each LiveKit connection, so a reconnect must not send them
+        // through the waiting room again. INVITED still represents a first admission.
         if (participant.Status == "DISCONNECTED" ||
-            participant.Status == "LEFT" ||
-            participant.Status == "INVITED")
+            participant.Status == "LEFT")
+        {
+            participant.Status = "CONNECTED";
+            participant.LeftAt = null;
+            participant.JoinedAt = DateTime.UtcNow;
+        }
+        else if (participant.Status == "INVITED")
         {
             participant.Status = (requiresApproval && !isHost) 
                 ? "WAITING" 

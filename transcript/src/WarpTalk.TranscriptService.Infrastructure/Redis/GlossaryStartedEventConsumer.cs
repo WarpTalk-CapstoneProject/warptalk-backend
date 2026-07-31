@@ -42,6 +42,7 @@ public class GlossaryStartedEventConsumer : BackgroundService
     // Terminology UI) always get first claim on this budget; global terms only fill what's
     // left over — see MergeTerms.
     private const int MaxTermsInPrompt = 60;
+    private const int MaxSttKeywords = 24;
     private static readonly TimeSpan PromptTtl = TimeSpan.FromHours(24);
 
     public GlossaryStartedEventConsumer(
@@ -70,6 +71,8 @@ public class GlossaryStartedEventConsumer : BackgroundService
                     await PublishGlossaryPromptsAsync(
                         payload!.TranslationRoomId.ToString(),
                         payload.WorkspaceId,
+                        payload.Title,
+                        payload.Description,
                         stoppingToken);
                 }
             }
@@ -93,7 +96,9 @@ public class GlossaryStartedEventConsumer : BackgroundService
                 envelope.EventType != MeetingEventTypes.Started ||
                 envelope.SchemaVersion != DomainEventEnvelope.CurrentSchemaVersion ||
                 envelope.Payload.TranslationRoomId == Guid.Empty ||
-                envelope.Payload.WorkspaceId == Guid.Empty)
+                (envelope.Payload.WorkspaceId == Guid.Empty &&
+                 string.IsNullOrWhiteSpace(envelope.Payload.Title) &&
+                 string.IsNullOrWhiteSpace(envelope.Payload.Description)))
             {
                 return false;
             }
@@ -113,7 +118,12 @@ public class GlossaryStartedEventConsumer : BackgroundService
     /// directly — see InternalsVisibleTo in this project's AssemblyInfo.cs.</summary>
     internal readonly record struct PromptTerm(string Source, string Target, int Priority);
 
-    public async Task PublishGlossaryPromptsAsync(string roomId, Guid workspaceId, CancellationToken ct)
+    public async Task PublishGlossaryPromptsAsync(
+        string roomId,
+        Guid workspaceId,
+        string? title,
+        string? description,
+        CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -130,37 +140,123 @@ public class GlossaryStartedEventConsumer : BackgroundService
         var globalTerms = await LoadGlobalTermsAsync(scope, workspaceId, ct);
 
         var (merged, droppedAsOverridden, droppedAsOverBudget) = MergeTerms(workspaceTerms, globalTerms, MaxTermsInPrompt);
+        var sttKeywords = BuildSttKeywords(workspaceTerms, MaxSttKeywords);
 
-        if (merged.Count == 0)
+        var meetingContext = BuildMeetingContext(title, description);
+        if (merged.Count == 0 && string.IsNullOrEmpty(meetingContext))
         {
             _logger.LogInformation(
-                "No workspace or global glossary terms for workspace {WorkspaceId}; skipping STT/MT prompt for room {RoomId}.",
+                "No meeting context or glossary terms for workspace {WorkspaceId}; skipping STT/MT prompt for room {RoomId}.",
                 workspaceId, roomId);
             return;
         }
 
         var db = _redis.GetDatabase();
 
-        // stt_worker._get_stt_prompt reads this as free text appended to its own generic
-        // anti-hallucination base — a natural sentence listing the terms, not a bare list,
-        // per OpenAI's transcription.prompt guidance.
-        var termList = string.Join(", ", merged.Select(t => t.Source));
-        var sttPrompt = $"Terms that may appear in this meeting: {termList}.";
+        // Short meeting context shapes ambiguous/code-switched speech without asking the model
+        // to invent content. Glossary terms remain a compact bias list rather than a keyword dump.
+        var sttPrompt = BuildSttPrompt(title, description, merged);
         await db.StringSetAsync($"translationRoom:{roomId}:stt_prompt", sttPrompt, PromptTtl);
+        if (sttKeywords.Count > 0)
+        {
+            await db.StringSetAsync(
+                $"translationRoom:{roomId}:stt_keywords",
+                JsonSerializer.Serialize(sttKeywords),
+                PromptTtl);
+        }
+        if (!string.IsNullOrEmpty(meetingContext))
+        {
+            await db.StringSetAsync(
+                $"translationRoom:{roomId}:meeting_context",
+                meetingContext,
+                PromptTtl);
+        }
 
         // translation_worker._get_mt_glossary parses this JSON to build exact source→target
         // mappings, or "keep verbatim" instructions when source == target.
-        var mtGlossary = JsonSerializer.Serialize(merged.Select(t => new { source = t.Source, target = t.Target }));
-        await db.StringSetAsync($"translationRoom:{roomId}:mt_glossary", mtGlossary, PromptTtl);
+        if (merged.Count > 0)
+        {
+            var mtGlossary = JsonSerializer.Serialize(merged.Select(t => new { source = t.Source, target = t.Target }));
+            await db.StringSetAsync($"translationRoom:{roomId}:mt_glossary", mtGlossary, PromptTtl);
+        }
 
         _logger.LogInformation(
-            "Published STT prompt + MT glossary for room {RoomId}: {TermCount} terms " +
+            "Published meeting context + {SttKeywordCount} workspace STT keywords + MT glossary for room {RoomId}: {TermCount} terms " +
             "({WorkspaceCount} workspace, {GlobalCount} global; {OverriddenCount} global terms " +
             "shadowed by a workspace override, {OverBudgetCount} global terms dropped over the " +
             "{MaxTerms}-term prompt budget).",
-            roomId, merged.Count,
+            sttKeywords.Count, roomId, merged.Count,
             workspaceTerms.Count, globalTerms.Count,
             droppedAsOverridden, droppedAsOverBudget, MaxTermsInPrompt);
+    }
+
+    internal static string BuildSttPrompt(
+        string? title,
+        string? description,
+        IReadOnlyCollection<PromptTerm> terms)
+    {
+        var parts = new List<string>();
+        var meetingContext = BuildMeetingContext(title, description);
+        if (!string.IsNullOrEmpty(meetingContext))
+            parts.Add(meetingContext);
+        if (terms.Count > 0)
+        {
+            var termList = string.Join(", ", terms.Select(t => t.Source));
+            parts.Add($"Terms that may appear in this meeting: {termList}.");
+        }
+        return string.Join(" ", parts);
+    }
+
+    internal static string BuildMeetingContext(string? title, string? description)
+    {
+        static string Normalize(string? value, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+            var normalized = string.Join(
+                " ",
+                value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            return normalized.Length <= maxLength
+                ? normalized
+                : normalized[..maxLength].TrimEnd();
+        }
+
+        var normalizedTitle = Normalize(title, 120);
+        var normalizedDescription = Normalize(description, 360);
+        var parts = new List<string>(2);
+        if (!string.IsNullOrEmpty(normalizedTitle))
+            parts.Add($"Meeting topic: {normalizedTitle}.");
+        if (!string.IsNullOrEmpty(normalizedDescription))
+            parts.Add($"Meeting context: {normalizedDescription}.");
+        return string.Join(" ", parts);
+    }
+
+    internal static List<string> BuildSttKeywords(
+        IReadOnlyCollection<PromptTerm> workspaceTerms,
+        int maxKeywords)
+    {
+        if (maxKeywords <= 0)
+            return new List<string>();
+
+        var keywords = new List<string>(maxKeywords);
+        var seen = new HashSet<string>();
+        foreach (var term in workspaceTerms.OrderByDescending(t => t.Priority))
+        {
+            foreach (var value in new[] { term.Source, term.Target })
+            {
+                var cleaned = string.Join(
+                    " ",
+                    value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                if (string.IsNullOrEmpty(cleaned) || !seen.Add(NormalizeKey(cleaned)))
+                    continue;
+
+                keywords.Add(cleaned);
+                if (keywords.Count >= maxKeywords)
+                    return keywords;
+            }
+        }
+
+        return keywords;
     }
 
     /// <summary>

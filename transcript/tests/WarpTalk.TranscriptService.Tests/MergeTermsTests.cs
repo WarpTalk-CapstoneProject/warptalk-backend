@@ -19,7 +19,11 @@ public class MergeTermsTests
             MeetingEventTypes.Started,
             "meeting-service",
             workspaceId.ToString(),
-            new MeetingStartedEventPayload(roomId, workspaceId));
+            new MeetingStartedEventPayload(
+                roomId,
+                workspaceId,
+                "Sprint planning",
+                "Review the WarpTalk realtime transcript pipeline."));
 
         var parsed = GlossaryStartedEventConsumer.TryParseStartedEvent(
             JsonSerializer.Serialize(envelope),
@@ -28,6 +32,56 @@ public class MergeTermsTests
         Assert.True(parsed);
         Assert.Equal(roomId, payload!.TranslationRoomId);
         Assert.Equal(workspaceId, payload.WorkspaceId);
+        Assert.Equal("Sprint planning", payload.Title);
+        Assert.Equal("Review the WarpTalk realtime transcript pipeline.", payload.Description);
+    }
+
+    [Fact]
+    public void TryParseStartedEvent_AcceptsContextOnlyRoomWithoutWorkspaceProjection()
+    {
+        var roomId = Guid.NewGuid();
+        var envelope = DomainEventEnvelope.Create(
+            MeetingEventTypes.Started,
+            "meeting-service",
+            workspaceId: null,
+            new MeetingStartedEventPayload(
+                roomId,
+                Guid.Empty,
+                "WarpTalk transcript review",
+                "Discuss Docker, Kubernetes, Redis, and LiveKit."));
+
+        var parsed = GlossaryStartedEventConsumer.TryParseStartedEvent(
+            JsonSerializer.Serialize(envelope),
+            out var payload);
+
+        Assert.True(parsed);
+        Assert.Equal(Guid.Empty, payload!.WorkspaceId);
+        Assert.Equal("WarpTalk transcript review", payload.Title);
+    }
+
+    [Fact]
+    public void BuildSttPrompt_IncludesMeetingContext_WhenGlossaryIsEmpty()
+    {
+        var prompt = GlossaryStartedEventConsumer.BuildSttPrompt(
+            "Sprint planning",
+            "Review the WarpTalk realtime transcript pipeline.",
+            new List<PromptTerm>());
+
+        Assert.Contains("Meeting topic: Sprint planning.", prompt);
+        Assert.Contains("Meeting context: Review the WarpTalk realtime transcript pipeline.", prompt);
+        Assert.DoesNotContain("Terms that may appear", prompt);
+    }
+
+    [Fact]
+    public void BuildMeetingContext_IsBoundedAndNormalizesWhitespace()
+    {
+        var context = GlossaryStartedEventConsumer.BuildMeetingContext(
+            "  Sprint   planning  ",
+            new string('x', 800));
+
+        Assert.StartsWith("Meeting topic: Sprint planning.", context);
+        Assert.Contains("Meeting context: ", context);
+        Assert.True(context.Length <= 560);
     }
 
     [Fact]
@@ -141,6 +195,26 @@ public class MergeTermsTests
         Assert.Empty(merged);
         Assert.Equal(0, droppedAsOverridden);
         Assert.Equal(0, droppedAsOverBudget);
+    }
+
+    [Fact]
+    public void BuildSttKeywords_UsesOnlyWorkspaceTermsAndBoundsProviderBias()
+    {
+        var workspaceTerms = new List<PromptTerm>
+        {
+            new("workspace-low", "workspace-low-vi", 1),
+            new("workspace-high", "workspace-high-vi", 10),
+            new("workspace-mid", "workspace-mid-vi", 5),
+        };
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            workspaceTerms,
+            maxKeywords: 4);
+
+        Assert.Equal(
+            new[] { "workspace-high", "workspace-high-vi", "workspace-mid", "workspace-mid-vi" },
+            keywords);
+        Assert.DoesNotContain("architecture", keywords);
     }
 
     [Theory]

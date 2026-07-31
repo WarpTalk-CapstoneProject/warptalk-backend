@@ -65,4 +65,53 @@ public sealed class OutboxWorkspaceEventPublisher(WorkspaceOutboxWriter writer) 
             occurredAt: occurredAt);
         return writer.EnqueueAsync(envelope, "MemberRemoved", ct);
     }
+
+    public Task PublishMemberRoleChangedAsync(
+        Guid workspaceId,
+        Guid targetUserId,
+        string oldRole,
+        string newRole,
+        Guid changedByUserId,
+        CancellationToken ct = default) =>
+        PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, Guid.NewGuid(), null, ct);
+
+    public Task PublishMemberRoleChangedAsync(
+        Guid workspaceId,
+        Guid targetUserId,
+        string oldRole,
+        string newRole,
+        Guid changedByUserId,
+        Guid eventId,
+        string? correlationId,
+        CancellationToken ct = default) =>
+        PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, eventId, correlationId, "Internal", "immediate", DateTime.UtcNow, null, ct);
+
+    public Task PublishMemberRoleChangedAsync(
+        Guid workspaceId,
+        Guid targetUserId,
+        string oldRole,
+        string newRole,
+        Guid changedByUserId,
+        Guid eventId,
+        string? correlationId,
+        string membershipType,
+        string effectiveBehavior,
+        DateTime effectiveAt,
+        string? idempotencyKey,
+        CancellationToken ct = default)
+    {
+        var occurredAt = effectiveAt;
+        var envelope = DomainEventEnvelope.Create(
+            "workspace.member.role_changed",
+            WorkspaceEventTypes.Producer,
+            workspaceId.ToString(),
+            new MemberRemovedEventPayload(
+                workspaceId.ToString(),
+                targetUserId.ToString(),
+                changedByUserId.ToString(),
+                occurredAt),
+            correlationId: correlationId,
+            occurredAt: occurredAt);
+        return writer.EnqueueAsync(envelope, "MemberRoleChanged", ct);
+    }
 }

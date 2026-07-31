@@ -99,21 +99,7 @@ public class WorkspaceDocumentsController : ControllerBase
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.ApproveDocumentAsync(workspaceId, documentId, request, userId.Value, ct);
-<<<<<<< HEAD
         return ToNoContentResult(result);
-=======
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.InternalServerError)
-                return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
->>>>>>> development
     }
 
     [Authorize]
@@ -177,21 +163,7 @@ public class WorkspaceDocumentsController : ControllerBase
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _documentService.DeleteDocumentAsync(workspaceId, documentId, userId.Value, ct);
-<<<<<<< HEAD
         return ToNoContentResult(result);
-=======
-        if (!result.IsSuccess)
-        {
-            if (result.ErrorCode == ErrorCodes.NotFound)
-                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
-            if (result.ErrorCode == ErrorCodes.InternalServerError)
-                return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return NoContent();
->>>>>>> development
     }
 
     [Authorize]
