@@ -13,6 +13,7 @@ public static class ApiMessageConstants
     {
         public const string TitleRequired = "Title is required.";
         public const string TitleMaxLength = "Title cannot exceed 255 characters.";
+        public const string WorkspaceRequired = "Workspace is required.";
 
         // Auth & Profiles
         public const string EmailRequired = "Email is required.";

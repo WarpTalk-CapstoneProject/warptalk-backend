@@ -169,6 +169,89 @@ public class MeetingRoomServiceTests
     }
 
     [Fact]
+    public async Task JoinMeetingAsync_IssuesToken_WhenWaitingRoomParticipantWasAdmitted()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "WAITING"
+        };
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    Status = "WAITING",
+                    WorkspaceId = Guid.NewGuid().ToString()
+                }));
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var meetingParticipant = new MeetingParticipant
+        {
+            Id = Guid.NewGuid(),
+            MeetingRoomId = meetingRoom.Id,
+            UserId = userId,
+            ProviderIdentity = userId.ToString(),
+            IsActive = true,
+            JoinedAt = DateTime.UtcNow
+        };
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(meetingParticipant);
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository)
+            .Returns(participantRepoMock.Object);
+
+        var invitationRepoMock = new Mock<IGenericRepository<MeetingInvitation>>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingInvitation?)null);
+        _unitOfWorkMock.Setup(u => u.Repository<MeetingInvitation>())
+            .Returns(invitationRepoMock.Object);
+
+        var translationParticipants = new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse();
+        translationParticipants.Participants.Add(new WarpTalk.Shared.Protos.Participant
+        {
+            Id = userId.ToString(),
+            DisplayName = "Admitted participant",
+            IsActive = true
+        });
+        _grpcServiceMock
+            .Setup(g => g.GetParticipantsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(translationParticipants));
+        _tokenServiceMock
+            .Setup(service => service.GenerateToken(
+                translationRoomId.ToString(),
+                userId.ToString(),
+                "Admitted participant",
+                true,
+                true))
+            .Returns(Result.Success("livekit-token"));
+
+        var result = await _sut.JoinMeetingAsync(
+            translationRoomId,
+            userId,
+            "Admitted participant");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsWaitingRoom);
+        Assert.Equal("livekit-token", result.Value.Token);
+    }
+
+    [Fact]
     public async Task SetRecordingAsync_StartsEgress_AndPersistsEgressId_WhenCallerIsHost()
     {
         var translationRoomId = Guid.NewGuid();
