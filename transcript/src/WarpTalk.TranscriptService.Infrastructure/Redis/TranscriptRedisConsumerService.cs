@@ -122,14 +122,19 @@ public class TranscriptRedisConsumerService : BackgroundService
 
     private async Task<bool> ProcessSttMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
     {
-        // Extract meeting ID from stream key
-        var roomIdStr = streamKey.Replace("stt:results:", "");
-        if (!Guid.TryParse(roomIdStr, out var roomId))
+        var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
+
+        // The room id comes from the message payload, NOT the stream key — see
+        // TranscriptConsumerPollingPolicy.TryResolveRoomId for why parsing it out of the key
+        // silently discarded every message once this consumer moved to the global streams.
+        if (!TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var roomId))
         {
+            _logger.LogWarning(
+                "Could not resolve a room id for STT message {MessageId} on stream {Stream}",
+                message.Id,
+                streamKey);
             return true; // Malformed room ID, discard
         }
-
-        var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
         
         if (!Guid.TryParse(values.GetValueOrDefault("segment_id"), out var segmentId) ||
             !Guid.TryParse(values.GetValueOrDefault("speaker_id"), out var speakerId))
@@ -174,7 +179,7 @@ public class TranscriptRedisConsumerService : BackgroundService
             {
                 // Fetch room details
                 var roomResponse = await roomClient.GetTranslationRoomByIdAsync(
-                    new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomIdStr },
+                    new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomId.ToString() },
                     cancellationToken: cancellationToken);
 
                 // A room can already have past (non-current) transcripts from an earlier
@@ -285,12 +290,10 @@ public class TranscriptRedisConsumerService : BackgroundService
 
     private async Task<bool> ProcessTranslateMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
     {
-        var roomIdStr = streamKey.Replace("translate:results:", "");
-        if (!Guid.TryParse(roomIdStr, out var roomId))
-        {
-            return true;
-        }
-
+        // No room-id gate here: everything below is keyed off segment_id, and the room id was
+        // never actually used. The old `streamKey.Replace("translate:results:", "")` parse could
+        // not succeed on the global stream, so it just ACKed and dropped every translation — see
+        // TranscriptConsumerPollingPolicy.TryResolveRoomId.
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
 
         // shared/schemas.py TranslationResultMessage.to_redis() field names — the previous
@@ -418,12 +421,9 @@ public class TranscriptRedisConsumerService : BackgroundService
 
     private async Task<bool> ProcessTtsMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
     {
-        var roomIdStr = streamKey.Replace("tts:results:", "");
-        if (!Guid.TryParse(roomIdStr, out _))
-        {
-            return true;
-        }
-
+        // No room-id gate here — same reasoning as ProcessTranslateMessageAsync above: the parsed
+        // room id was discarded into `out _` anyway, while the parse failure ACKed and dropped
+        // every TTS result. See TranscriptConsumerPollingPolicy.TryResolveRoomId.
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
 
         // shared/schemas.py TTSResultMessage.to_redis() field names. segment_id is the same

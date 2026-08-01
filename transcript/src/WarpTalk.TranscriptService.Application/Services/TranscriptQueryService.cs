@@ -55,9 +55,18 @@ public class TranscriptQueryService : ITranscriptQueryService
     {
         try
         {
-            var transcript = await _unitOfWork.Transcripts.FirstOrDefaultAsync(
-                t => t.TranslationRoomId == translationRoomId && t.DeletedAt == null,
-                cancellationToken);
+            // A room accumulates one transcript per recording session (see
+            // TranscriptRedisConsumerService.ProcessSttMessageAsync, which flips the old head's
+            // IsCurrent off before inserting a new one). An unordered FirstOrDefault over that set
+            // can hand back a superseded version, so ask for the head explicitly and only fall
+            // back to "most recent" if no row is flagged current.
+            var transcripts = (await _unitOfWork.Transcripts.FindAsync(
+                    t => t.TranslationRoomId == translationRoomId && t.DeletedAt == null,
+                    cancellationToken))
+                .ToList();
+
+            var transcript = transcripts.FirstOrDefault(t => t.IsCurrent)
+                ?? transcripts.OrderByDescending(t => t.CreatedAt).FirstOrDefault();
 
             if (transcript == null)
                 return Result.Failure<TranscriptDto>($"Transcript for room {translationRoomId} not found.", "NOT_FOUND");
