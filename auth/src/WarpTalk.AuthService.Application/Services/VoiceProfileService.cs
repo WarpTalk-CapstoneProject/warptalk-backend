@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -21,15 +22,135 @@ public class VoiceProfileService : IVoiceProfileService
         "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/ogg", "audio/webm"
     };
 
+    /// <summary>
+    /// The only provider a picked library voice can currently come from. Stored on the
+    /// profile so a future second provider can coexist without guessing what an
+    /// EmbeddingRef belongs to.
+    /// </summary>
+    private const string LibraryVoiceProvider = "cartesia";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
+    private readonly IVoiceCatalogDirectory _voiceCatalog;
     private readonly ILogger<VoiceProfileService> _logger;
 
-    public VoiceProfileService(IUnitOfWork unitOfWork, IVoiceSampleStorage storage, ILogger<VoiceProfileService> logger)
+    public VoiceProfileService(
+        IUnitOfWork unitOfWork,
+        IVoiceSampleStorage storage,
+        IVoiceCatalogDirectory voiceCatalog,
+        ILogger<VoiceProfileService> logger)
     {
         _unitOfWork = unitOfWork;
         _storage = storage;
+        _voiceCatalog = voiceCatalog;
         _logger = logger;
+    }
+
+    public async Task<Result<IReadOnlyList<VoiceCatalogItemDto>>> GetCatalogAsync(string language, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            return Result.Failure<IReadOnlyList<VoiceCatalogItemDto>>("Language is required.", ErrorCodes.ValidationError);
+        }
+
+        var voices = await _voiceCatalog.GetAsync(language, ct);
+        return Result.Success(voices);
+    }
+
+    public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Language))
+        {
+            return Result.Failure<VoiceProfileDto?>("Language is required.", ErrorCodes.ValidationError);
+        }
+
+        var language = request.Language.Trim();
+        var voiceId = request.VoiceId?.Trim();
+        var clearing = string.IsNullOrEmpty(voiceId);
+
+        try
+        {
+            // Reject an id that is not actually on offer for this language. Without this the
+            // stored preference would be round-tripped into SetVoicePreference and silently
+            // produce the wrong voice — or none — deep inside the TTS worker.
+            if (!clearing)
+            {
+                var catalog = await _voiceCatalog.GetAsync(language, ct);
+                if (catalog.Count == 0)
+                {
+                    return Result.Failure<VoiceProfileDto?>(
+                        "No voices are available for this language yet.",
+                        ErrorCodes.InvalidState);
+                }
+                if (!catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal)))
+                {
+                    return Result.Failure<VoiceProfileDto?>(
+                        "That voice is not offered for this language.",
+                        ErrorCodes.ValidationError);
+                }
+            }
+
+            var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            var existing = profiles.FirstOrDefault(p =>
+                string.Equals(p.Provider, LibraryVoiceProvider, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(p.Language, language, StringComparison.OrdinalIgnoreCase));
+
+            var now = DateTime.UtcNow;
+
+            if (clearing)
+            {
+                if (existing == null)
+                {
+                    // Already no preference — clearing twice is not an error.
+                    return Result.Success<VoiceProfileDto?>(null);
+                }
+
+                existing.DeletedAt = now;
+                existing.DeletedBy = userId;
+                existing.IsActive = false;
+                existing.UpdatedAt = now;
+                existing.UpdatedBy = userId;
+                _unitOfWork.VoiceProfileRepository.Update(existing);
+                await _unitOfWork.SaveChangesAsync(ct);
+                return Result.Success<VoiceProfileDto?>(null);
+            }
+
+            if (existing != null)
+            {
+                existing.EmbeddingRef = voiceId;
+                existing.IsActive = true;
+                existing.Status = "active";
+                existing.UpdatedAt = now;
+                existing.UpdatedBy = userId;
+                _unitOfWork.VoiceProfileRepository.Update(existing);
+                await _unitOfWork.SaveChangesAsync(ct);
+                return Result.Success<VoiceProfileDto?>(VoiceProfileMapper.ToDto(existing));
+            }
+
+            var created = new VoiceProfile
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                DisplayName = null,
+                Language = language,
+                Provider = LibraryVoiceProvider,
+                EmbeddingRef = voiceId,
+                Status = "active",
+                IsActive = true,
+                CreatedBy = userId,
+                UpdatedBy = userId,
+            };
+
+            _unitOfWork.VoiceProfileRepository.Add(created);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success<VoiceProfileDto?>(VoiceProfileMapper.ToDto(created));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while setting preferred voice. UserId: {UserId}, Language: {Language}", userId, language);
+            return Result.Failure<VoiceProfileDto?>("An unexpected error occurred while saving the preferred voice.", ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result<IReadOnlyList<VoiceProfileDto>>> GetProfilesAsync(Guid userId, CancellationToken ct = default)

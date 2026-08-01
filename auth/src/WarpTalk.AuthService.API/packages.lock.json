@@ -576,6 +576,7 @@
           "Grpc.Net.ClientFactory": "[2.76.0, )",
           "Microsoft.IdentityModel.Tokens": "[8.17.0, )",
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.1, )",
+          "StackExchange.Redis": "[3.0.17, )",
           "System.IdentityModel.Tokens.Jwt": "[8.17.0, )",
           "WarpTalk.AuthService.Application": "[1.0.0, )",
           "WarpTalk.AuthService.Domain": "[1.0.0, )",
