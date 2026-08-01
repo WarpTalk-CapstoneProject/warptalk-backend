@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
 using FluentValidation.AspNetCore;
+using StackExchange.Redis;
 using WarpTalk.AuthService.API.Extensions;
 using WarpTalk.AuthService.API.GrpcServices;
 using WarpTalk.AuthService.API.Validators;
@@ -65,6 +66,7 @@ if (string.IsNullOrWhiteSpace(redisConnectionString))
     }
 
     builder.Services.AddDistributedMemoryCache();
+    builder.Services.AddScoped<IVoiceCatalogDirectory, EmptyVoiceCatalogDirectory>();
 }
 else
 {
@@ -72,6 +74,13 @@ else
     {
         options.Configuration = redisConnectionString;
     });
+
+    // Separate from the IDistributedCache above on purpose: the voice catalog is a plain
+    // string key written by the Python TTS worker, and IDistributedCache can only read
+    // values it wrote itself (it wraps them in its own hash envelope).
+    builder.Services.AddSingleton<IConnectionMultiplexer>(
+        _ => ConnectionMultiplexer.Connect(redisConnectionString));
+    builder.Services.AddScoped<IVoiceCatalogDirectory, RedisVoiceCatalogDirectory>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
