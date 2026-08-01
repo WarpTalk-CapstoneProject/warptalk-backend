@@ -19,7 +19,29 @@ public record VoiceProfileDto(
     bool IsActive,
     bool HasSample,
     DateTime CreatedAt,
-    DateTime UpdatedAt
+    DateTime UpdatedAt,
+    // Which TTS provider this profile points at ("cartesia"), and that provider's own id for
+    // the voice. For a picked library voice, ProviderVoiceId is exactly the id the client
+    // round-trips into TranslationRoomHub.SetVoicePreference — the client needs it back out,
+    // which is why these are exposed rather than kept internal.
+    string? Provider = null,
+    string? ProviderVoiceId = null
+);
+
+/// <summary>One selectable voice from the provider's public library.</summary>
+public record VoiceCatalogItemDto(
+    string Id,
+    string Name,
+    string Gender
+);
+
+/// <summary>
+/// Pick (or clear) the library voice this user hears for one language. VoiceId null/empty
+/// clears the preference and falls back to the automatic per-speaker default.
+/// </summary>
+public record SetPreferredVoiceRequest(
+    string Language,
+    string? VoiceId
 );
 
 public class CreateVoiceProfileRequest
