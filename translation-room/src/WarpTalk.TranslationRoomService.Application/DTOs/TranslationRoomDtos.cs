@@ -6,15 +6,26 @@ using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Application.DTOs;
 
+/// <summary>
+/// Explicit room settings. Every field is nullable so "not sent" stays distinguishable from
+/// "sent false" — the meeting type seeds anything left unset (see TranslationRoomTypePolicy),
+/// and a non-null value here always wins over the type's default.
+/// </summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public record RoomSettingsRequest(
-    bool RequiresApproval = true,
-    string ArtifactAccess = "HOST_ONLY"
+    bool? RequiresApproval = null,
+    string? ArtifactAccess = null,
+    bool? MuteOnEntry = null,
+    bool? AutoRecord = null,
+    bool? BreakoutsEnabled = null
 );
 
 public record RoomSettingsResponse(
     bool RequiresApproval,
-    string ArtifactAccess
+    string ArtifactAccess,
+    bool MuteOnEntry,
+    bool AutoRecord,
+    bool BreakoutsEnabled
 );
 
 public record UpdateRoomSettingsRequest(
@@ -41,8 +52,9 @@ public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
     [Required] string Title,
     string? Description,
-    string TranslationRoomType, // e.g., Instant, Scheduled
-    int MaxParticipants,
+    string TranslationRoomType, // one of TranslationRoomTypes
+    // Optional: omit to let the meeting type decide the seat count.
+    int? MaxParticipants,
     string? SourceLanguage,
     List<string>? TargetLanguages,
     RoomSettingsRequest? Settings,
