@@ -834,15 +834,24 @@ public class TranslationRoomService : ITranslationRoomService
                 translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
             }
 
-            // Update Settings (RequiresApproval)
+            // Update settings. Every field is nullable, so this is a PATCH: an omitted field
+            // keeps whatever the room already has rather than being reset to a default. Before
+            // the meeting type seeded anything this distinction did not matter; now it does,
+            // because resetting would silently undo the type's profile on any unrelated edit.
             if (request.Settings != null)
             {
-                var newSettings = new TranslationRoomSettings 
-                { 
-                    RequiresApproval = request.Settings.RequiresApproval,
-                    ArtifactAccess = request.Settings.ArtifactAccess
-                };
-                translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(newSettings);
+                var current = System.Text.Json.JsonSerializer.Deserialize<TranslationRoomSettings>(
+                    string.IsNullOrEmpty(translationRoom.Settings) ? "{}" : translationRoom.Settings,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? new TranslationRoomSettings();
+
+                current.RequiresApproval = request.Settings.RequiresApproval ?? current.RequiresApproval;
+                current.ArtifactAccess = request.Settings.ArtifactAccess ?? current.ArtifactAccess;
+                current.MuteOnEntry = request.Settings.MuteOnEntry ?? current.MuteOnEntry;
+                current.AutoRecord = request.Settings.AutoRecord ?? current.AutoRecord;
+                current.BreakoutsEnabled = request.Settings.BreakoutsEnabled ?? current.BreakoutsEnabled;
+
+                translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(current);
             }
 
             translationRoom.UpdatedAt = DateTime.UtcNow;
@@ -1112,9 +1121,10 @@ public class TranslationRoomService : ITranslationRoomService
 
     private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId)
     {
-        var settings = !string.IsNullOrEmpty(room.Settings)
-            ? JsonSerializer.Deserialize<RoomSettingsResponse>(room.Settings)
-            : new RoomSettingsResponse(true, "HOST_ONLY");
+        // Same reader the detail endpoints use — the list used to deserialize the snake_case
+        // blob straight into the PascalCase response record (without even
+        // PropertyNameCaseInsensitive), so every room in the list reported default settings.
+        var settings = TranslationRoomMapper.ReadSettings(room.Settings);
 
         return new TranslationRoomListItemDto(
             room.Id,
@@ -1134,7 +1144,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.EndedAt,
             room.DurationSeconds,
             room.CreatedAt,
-            settings ?? new RoomSettingsResponse(true, "HOST_ONLY"),
+            settings,
             room.TranslationRoomParticipants.Count,
             room.HostId == userId
         );
