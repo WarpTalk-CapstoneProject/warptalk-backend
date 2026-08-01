@@ -12,7 +12,7 @@ RUN dotnet restore translation-room/src/WarpTalk.TranslationRoomService.API/Warp
 WORKDIR /src/translation-room/src/WarpTalk.TranslationRoomService.API
 RUN dotnet publish -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.7@sha256:55e37c7795bfaf6b9cc5d77c155811d9569f529d86e20647704bc1d7dd9741d4 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.10@sha256:bab27d29d13f9e903442c5fe83d7e162013747c6a101850f21049d17248afb85 AS final
 WORKDIR /app
 EXPOSE 5102 50052
 COPY --from=build --chown=$APP_UID:$APP_UID /app/publish .
