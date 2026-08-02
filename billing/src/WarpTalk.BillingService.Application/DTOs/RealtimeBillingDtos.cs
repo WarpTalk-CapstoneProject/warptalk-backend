@@ -2,20 +2,33 @@ using System;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
-public record ReserveCreditsRequest(
-    Guid HostWorkspaceId,
+public record CreateTempUsageLogRequest(
+    Guid SubscriptionId,
+    string? UserId,
+    Guid WorkspaceId,
+    string UsageType,
+    string ChargeType,
+    Guid? ReferenceId,
+    string ReferenceType,
+    decimal Quantity,
+    string Unit,
+    int CreditsConsumed,
     string IdempotencyKey,
-    int AudioSeconds,
-    int TokenCount,
-    int GpuInferenceMs,
-    bool IsVoiceClone
+    string Details,
+    string? TranslationRoomId = null,
+    Guid? TranscriptSegmentId = null,
+    Guid? PricingRateCardId = null,
+    decimal? UnitPriceSnapshot = null,
+    string? Provider = null,
+    string? Model = null
 );
 
-public record CreditReservationDto(
-    Guid Id,
+public record CreateAggregatedUsageRecordRequest(
     Guid SubscriptionId,
-    string IdempotencyKey,
-    int Amount,
-    string Status,
-    DateTime ExpiresAt
+    Guid WorkspaceId,
+    string UsageType,
+    decimal Quantity,
+    string Unit,
+    int CreditsConsumed,
+    string Details
 );

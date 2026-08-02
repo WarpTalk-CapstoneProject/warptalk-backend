@@ -7,11 +7,6 @@ namespace WarpTalk.BillingService.Application.DTOs;
 // REQUEST DTOs
 // ============================================================================
 
-public record SubscriptionRequest(
-    Guid WorkspaceId,
-    Guid PlanId,
-    Guid? UserId = null);
-
 public record RecordUsageRequest(
     Guid HostWorkspaceId,
     Guid UserId,
@@ -22,7 +17,8 @@ public record RecordUsageRequest(
     int? DurationSeconds,
     Guid? TranslationRoomId = null,
     Guid? SegmentId = null,
-    string? Details = null);
+    string? Details = null,
+    string? IdempotencyKey = null);
 
 // ============================================================================
 // USAGE / ANALYTICS RESPONSE DTOs
@@ -41,7 +37,7 @@ public record BillingReportDto(
     int EndingBalance,
     int TotalTopUpCredits,
     int TotalConsumedCredits,
-    decimal? AverageTranslationCostPerMinute,
+    decimal? AverageTranslationCostPer100Chars,
     int? AverageCostPerMeeting,
     IReadOnlyList<UsageBreakdownDto> UsageBreakdown);
 
@@ -74,11 +70,3 @@ public record TopWorkspaceDto(
     Guid WorkspaceId,
     string? WorkspaceName,
     int TotalCreditsConsumed);
-
-// ============================================================================
-// PAGINATION
-// ============================================================================
-
-public record PagedResult<T>(
-    int TotalCount,
-    IReadOnlyList<T> Items);

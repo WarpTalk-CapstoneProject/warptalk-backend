@@ -2,27 +2,32 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Interfaces;
 
-public class RedisCreditReservation
+public interface ISessionActivityStore
 {
-    public string IdempotencyKey { get; set; } = null!;
-    public Guid SubscriptionId { get; set; }
-    public Guid WorkspaceId { get; set; }
-    public int Amount { get; set; }
+    Task<Result> SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default);
+    Task<Result<bool>> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken = default);
+    Task<Result<IEnumerable<Guid>>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
+    Task<Result> RemoveSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
 }
 
-public interface IRedisBillingStore
+public interface IBillingUsageQueue
 {
-    Task SetReservationAsync(RedisCreditReservation reservation, TimeSpan ttl, CancellationToken cancellationToken = default);
-    Task<RedisCreditReservation?> GetAndRemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default);
-    Task<IEnumerable<RedisCreditReservation>> GetExpiredReservationsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
-    Task RemoveReservationAsync(string idempotencyKey, CancellationToken cancellationToken = default);
+    Task<Result> PushTempUsageLogDtoAsync(TempUsageLogDto log, CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<TempUsageLogDto>>> GetTempUsageLogBatchAsync(int batchSize, CancellationToken cancellationToken = default);
+    Task<Result> TrimTempUsageLogBatchAsync(int processedCount, CancellationToken cancellationToken = default);
+}
 
+public interface IAiServiceStateStore
+{
+    Task<Result> SetAiServiceStateAsync(Guid workspaceId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
+    Task<Result> SetAiServiceStateForRoomAsync(Guid translationRoomId, string serviceState, string? suspendedReason, CancellationToken cancellationToken = default);
+}
 
-    Task SetSessionActiveAsync(Guid sessionId, TimeSpan ttl, CancellationToken cancellationToken = default);
-    Task<bool> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken = default);
-    Task<IEnumerable<Guid>> GetExpiredSessionsAsync(DateTimeOffset now, CancellationToken cancellationToken = default);
-    Task RemoveSessionAsync(Guid sessionId, CancellationToken cancellationToken = default);
+public interface IRedisBillingStore : ISessionActivityStore, IBillingUsageQueue, IAiServiceStateStore
+{
 }

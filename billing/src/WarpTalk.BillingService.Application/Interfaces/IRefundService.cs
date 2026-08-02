@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.BillingService.Application.DTOs;
@@ -8,9 +8,5 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IRefundService
 {
-    Task<Result<RefundDto>> RefundPaymentAsync(
-        Guid paymentId,
-        decimal amount,
-        string reason,
-        CancellationToken cancellationToken = default);
+    Task<Result<RefundDto>> RefundPaymentAsync(Guid paymentId, RefundPaymentRequest request, CancellationToken cancellationToken = default);
 }

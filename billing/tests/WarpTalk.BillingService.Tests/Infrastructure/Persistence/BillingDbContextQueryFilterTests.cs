@@ -2,7 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
 using WarpTalk.BillingService.Domain.Entities;
-using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Infrastructure.Persistence;

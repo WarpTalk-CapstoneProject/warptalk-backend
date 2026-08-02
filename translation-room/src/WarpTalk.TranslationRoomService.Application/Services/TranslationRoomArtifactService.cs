@@ -39,8 +39,8 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         try
         {
             var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
-                r => r.Id == roomId, 
-                "TranslationRoomParticipants,TranslationRoomArtifacts", 
+                r => r.Id == roomId,
+                "TranslationRoomParticipants,TranslationRoomArtifacts",
                 ct);
 
             if (room == null) return Result.Failure<List<RoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
@@ -50,7 +50,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                 return Result.Failure<List<RoomArtifactDto>>("Artifacts are only available for finished rooms.", ErrorCodes.InvalidState);
             }
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId)) 
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
                 return Result.Failure<List<RoomArtifactDto>>("Unauthorized to view artifacts for this room.", ErrorCodes.Unauthorized);
 
             var artifacts = await _unitOfWork.TranslationRoomArtifactRepository.GetArtifactsByRoomIdAsync(roomId, ct);
@@ -72,7 +72,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId)) 
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
                 return Result.Failure<ArtifactDownloadDto>("Unauthorized to download this artifact.", ErrorCodes.Unauthorized);
 
             if (artifact.RetentionUntil.HasValue && DateTime.UtcNow > artifact.RetentionUntil.Value)
@@ -144,7 +144,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId)) 
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;

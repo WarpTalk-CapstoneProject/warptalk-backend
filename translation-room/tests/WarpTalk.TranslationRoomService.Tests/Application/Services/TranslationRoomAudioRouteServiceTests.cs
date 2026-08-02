@@ -59,16 +59,16 @@ public class TranslationRoomAudioRouteServiceTests
     private static TranslationRoomAudioRoute MakeRoute(
         Guid roomId, Guid sourceParticipantId, Guid targetParticipantId,
         bool voiceCloneEnabled = false, AudioRouteStatus status = AudioRouteStatus.PENDING) => new()
-    {
-        Id = Guid.NewGuid(),
-        TranslationRoomId = roomId,
-        SourceParticipantId = sourceParticipantId,
-        TargetParticipantId = targetParticipantId,
-        SourceLanguage = "vi",
-        TargetLanguage = "en",
-        VoiceCloneEnabled = voiceCloneEnabled,
-        Status = status.ToString(),
-    };
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            SourceParticipantId = sourceParticipantId,
+            TargetParticipantId = targetParticipantId,
+            SourceLanguage = "vi",
+            TargetLanguage = "en",
+            VoiceCloneEnabled = voiceCloneEnabled,
+            Status = status.ToString(),
+        };
 
     [Fact]
     public async Task SetVoiceCloneConsentAsync_ShouldEnableOnlyCallersOutgoingRoutes()

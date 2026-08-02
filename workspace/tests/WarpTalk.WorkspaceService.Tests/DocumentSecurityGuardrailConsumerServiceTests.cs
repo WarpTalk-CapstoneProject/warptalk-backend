@@ -137,7 +137,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         };
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Contact info: myemail@test.com and phone: 0912345678"));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -182,7 +182,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         };
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Báo cáo doanh thu quý 2 năm 2026."));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -238,7 +238,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Nội dung báo cáo có chứa doanh thu"));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -289,7 +289,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("This is clean content with no PII and no forbidden keywords."));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 

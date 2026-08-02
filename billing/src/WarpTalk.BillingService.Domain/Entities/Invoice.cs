@@ -1,5 +1,6 @@
 using System;
 
+
 namespace WarpTalk.BillingService.Domain.Entities;
 
 public partial class Invoice
@@ -20,7 +21,7 @@ public partial class Invoice
 
     public string Currency { get; set; } = null!;
 
-    public string Status { get; set; } = null!;
+    public string Status { get; set; } = "issued";
 
     public string? PdfUrl { get; set; }
 

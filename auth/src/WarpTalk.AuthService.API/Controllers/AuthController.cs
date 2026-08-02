@@ -50,7 +50,7 @@ public class AuthController : ControllerBase
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
             DeviceInfo = Request.Headers.UserAgent.ToString()
         };
-        
+
         var result = await _authService.LoginAsync(loginRequest, ct);
         if (!result.IsSuccess)
         {

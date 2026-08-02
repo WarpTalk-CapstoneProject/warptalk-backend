@@ -1,4 +1,6 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
+
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -14,7 +16,7 @@ public partial class Refund
 
     public string? Reason { get; set; }
 
-    public string Status { get; set; } = null!;
+    public string Status { get; set; } = TransactionConstants.RefundStatuses.Pending;
 
     public string? ProviderRefundId { get; set; }
 

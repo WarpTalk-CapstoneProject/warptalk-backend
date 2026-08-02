@@ -8,7 +8,7 @@ public record EmailAddress
 {
     private static readonly HashSet<string> PublicDomains = new(StringComparer.OrdinalIgnoreCase)
     {
-        "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com", 
+        "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
         "aol.com", "zoho.com", "proton.me", "protonmail.com", "mail.com",
         "live.com", "yandex.com", "gmx.com"
     };
@@ -21,7 +21,7 @@ public record EmailAddress
         return PublicDomains.Contains(domain.Trim());
     }
 
-    private static readonly Regex EmailRegex = 
+    private static readonly Regex EmailRegex =
         new(@"^(?i)[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", RegexOptions.Compiled);
 
     public string Value { get; }

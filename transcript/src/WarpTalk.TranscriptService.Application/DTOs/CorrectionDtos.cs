@@ -5,17 +5,17 @@ using WarpTalk.TranscriptService.Domain.Enums;
 namespace WarpTalk.TranscriptService.Application.DTOs;
 
 public record CreateCorrectionDto(
-    [Required(ErrorMessage = "UserId is required.")] 
+    [Required(ErrorMessage = "UserId is required.")]
     Guid UserId,
-    
-    [Required(ErrorMessage = "OriginalText is required.")] 
+
+    [Required(ErrorMessage = "OriginalText is required.")]
     [MaxLength(2000, ErrorMessage = "OriginalText cannot exceed 2000 characters.")]
     string OriginalText,
-    
-    [Required(ErrorMessage = "CorrectedText is required.")] 
+
+    [Required(ErrorMessage = "CorrectedText is required.")]
     [MaxLength(2000, ErrorMessage = "CorrectedText cannot exceed 2000 characters.")]
     string CorrectedText,
-    
+
     [Required(ErrorMessage = "CorrectionType is required.")]
     string CorrectionType,
 

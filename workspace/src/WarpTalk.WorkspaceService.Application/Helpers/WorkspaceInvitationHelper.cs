@@ -53,13 +53,12 @@ public static class WorkspaceInvitationHelper
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
         var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLower();
         var isDomainVerified = await unitOfWork.WorkspaceVerifiedDomainRepository.AnyAsync(
-            vd => vd.WorkspaceId == invitation.WorkspaceId 
-                  && vd.Domain.ToLower() == userDomain.ToLower() 
-                  && vd.Status == verifiedStatus 
-                  && vd.VerifiedAt != null 
-                  && vd.RevokedAt == null, 
+            vd => vd.WorkspaceId == invitation.WorkspaceId
+                  && vd.Domain.ToLower() == userDomain.ToLower()
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
             ct);
-        
         // WT-179: gate on the membership type acceptance will ACTUALLY use, not the one stored
         // on the invitation. ProcessAcceptInvitationAsync calls this same helper right after
         // this method returns and overwrites invitation.MembershipType with the result, so the
@@ -109,7 +108,7 @@ public static class WorkspaceInvitationHelper
 
         var existingMember = await unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
-        
+
         if (existingMember != null)
         {
             return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);

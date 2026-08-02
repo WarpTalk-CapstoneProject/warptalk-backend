@@ -10,4 +10,5 @@ public class AuthSettings
     public string DefaultRole { get; set; } = AuthConstants.DefaultRole;
     public int VerificationTokenLifetimeMinutes { get; set; } = 60;
     public int PasswordResetTokenLifetimeMinutes { get; set; } = 30;
+    public bool AutoVerifySelfRegistration { get; set; } = true;
 }

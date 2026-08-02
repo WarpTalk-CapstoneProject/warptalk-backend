@@ -61,23 +61,23 @@ public sealed class BillingNotificationEventHandler(IUnitOfWork unitOfWork)
     private static (string Type, string Title, string Content) NotificationCopy(
         string eventType,
         BillingPaymentEventPayload payload) => eventType switch
-    {
-        BillingEventTypes.PaymentSucceeded => (
-            "BILLING_PAYMENT_SUCCEEDED",
-            "Payment successful",
-            $"Your {payload.PlanSlug} subscription payment was completed."),
-        BillingEventTypes.PaymentFailed => (
-            "BILLING_PAYMENT_FAILED",
-            "Payment failed",
-            payload.FailureReason ?? "Your subscription payment could not be completed."),
-        BillingEventTypes.PaymentRefunded => (
-            "BILLING_PAYMENT_REFUNDED",
-            "Payment refunded",
-            "Your payment refund has been processed."),
-        BillingEventTypes.PaymentDisputed => (
-            "BILLING_PAYMENT_DISPUTED",
-            "Payment disputed",
-            "A dispute was opened for your payment."),
-        _ => throw new InvalidOperationException($"Unsupported Billing event type: {eventType}")
-    };
+        {
+            BillingEventTypes.PaymentSucceeded => (
+                "BILLING_PAYMENT_SUCCEEDED",
+                "Payment successful",
+                $"Your {payload.PlanSlug} subscription payment was completed."),
+            BillingEventTypes.PaymentFailed => (
+                "BILLING_PAYMENT_FAILED",
+                "Payment failed",
+                payload.FailureReason ?? "Your subscription payment could not be completed."),
+            BillingEventTypes.PaymentRefunded => (
+                "BILLING_PAYMENT_REFUNDED",
+                "Payment refunded",
+                "Your payment refund has been processed."),
+            BillingEventTypes.PaymentDisputed => (
+                "BILLING_PAYMENT_DISPUTED",
+                "Payment disputed",
+                "A dispute was opened for your payment."),
+            _ => throw new InvalidOperationException($"Unsupported Billing event type: {eventType}")
+        };
 }

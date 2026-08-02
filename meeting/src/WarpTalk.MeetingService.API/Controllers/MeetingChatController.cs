@@ -33,7 +33,7 @@ public class MeetingChatController : ControllerBase
             if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
         }
-            
+
         return Ok(result.Value);
     }
 
@@ -48,7 +48,7 @@ public class MeetingChatController : ControllerBase
             if (result.ErrorCode == "FORBIDDEN") return Forbid();
             return BadRequest(result.Error);
         }
-            
+
         return Ok(result.Value);
     }
 

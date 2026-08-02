@@ -32,8 +32,8 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
-        IUnitOfWork unitOfWork, 
-        IWorkspaceCacheService workspaceCache, 
+        IUnitOfWork unitOfWork,
+        IWorkspaceCacheService workspaceCache,
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher)
@@ -217,6 +217,25 @@ public class WorkspaceService : IWorkspaceService
         }
     }
 
+    public async Task<Result<WorkspaceDto>> GetWorkspaceByIdForAdminAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            return Result.Success(workspace.ToDto("admin"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while fetching workspace by ID for system admin. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<SelectWorkspaceResponse>> SelectWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try
@@ -371,7 +390,7 @@ public class WorkspaceService : IWorkspaceService
 
             workspace.DeletedAt = DateTime.UtcNow;
             workspace.UpdatedBy = userId;
-            
+
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
             await _unitOfWork.SaveChangesAsync(ct);

@@ -26,7 +26,7 @@ public class NotificationHubTests
     {
         _mockConnectionManager = new Mock<IConnectionManager>();
         _mockLogger = new Mock<ILogger<NotificationHub>>();
-        
+
         // Mock gRPC Client
         var mockCallInvoker = new Mock<CallInvoker>();
         _mockGrpcClient = new Mock<NotificationGrpcService.NotificationGrpcServiceClient>(mockCallInvoker.Object);
@@ -65,7 +65,7 @@ public class NotificationHubTests
         // Arrange
         var notificationId = Guid.NewGuid();
         var response = new MarkAsReadResponse { Success = true };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(
                 It.Is<MarkAsReadRequest>(r => r.UserId == _userId.ToString() && r.NotificationId == notificationId.ToString()),
@@ -93,7 +93,7 @@ public class NotificationHubTests
         // Arrange
         var notificationId = Guid.NewGuid();
         var response = new MarkAsReadResponse { Success = false, ErrorMessage = "Not Found" };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(It.IsAny<MarkAsReadRequest>(), null, null, default))
             .Returns(new Grpc.Core.AsyncUnaryCall<MarkAsReadResponse>(
@@ -118,7 +118,7 @@ public class NotificationHubTests
     {
         // Arrange
         var notificationId = Guid.NewGuid();
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(It.IsAny<MarkAsReadRequest>(), null, null, default))
             .Throws(new RpcException(new Status(StatusCode.Unavailable, "Service down")));
@@ -138,7 +138,7 @@ public class NotificationHubTests
     {
         // Arrange
         var response = new MarkAllAsReadResponse { Success = true };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAllAsReadAsync(
                 It.Is<MarkAllAsReadRequest>(r => r.UserId == _userId.ToString()),

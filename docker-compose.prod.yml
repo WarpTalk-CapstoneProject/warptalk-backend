@@ -62,3 +62,12 @@ services:
         limits:
           cpus: '0.5'
           memory: 512M
+
+  billing-service:
+    <<: *restart-prod
+    logging: *logging-prod
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M

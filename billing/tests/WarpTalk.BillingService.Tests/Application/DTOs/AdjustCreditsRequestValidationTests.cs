@@ -10,7 +10,7 @@ public sealed class AdjustCreditsRequestValidationTests
     [InlineData(-1_000_001)]
     public void Amount_OutsideAdministrativeLimit_IsRejected(int amount)
     {
-        var request = new AdjustCreditsRequest(amount, "Manual correction");
+        var request = new ManualAdjustCreditsRequest(Guid.NewGuid(), amount, "Manual correction", Guid.NewGuid().ToString());
         var results = new List<ValidationResult>();
 
         var isValid = Validator.TryValidateObject(

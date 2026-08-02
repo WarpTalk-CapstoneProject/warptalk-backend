@@ -27,7 +27,7 @@ public class PasswordHasherTests
         // Assert
         Assert.NotNull(result);
         Assert.StartsWith("v2$", result);
-        
+
         var parts = result.Split('$');
         Assert.Equal(6, parts.Length);
         Assert.Equal("v2", parts[0]);

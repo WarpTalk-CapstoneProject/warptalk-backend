@@ -50,7 +50,7 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     var mockRedis = new Mock<IConnectionMultiplexer>();
                     var mockDatabase = new Mock<IDatabase>();
                     var mockSubscriber = new Mock<ISubscriber>();
-                    
+
                     mockDatabase.Setup(d => d.StreamCreateConsumerGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
                         .ReturnsAsync(true);
                     mockDatabase.Setup(d => d.StreamReadGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
@@ -76,7 +76,7 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     // Add Test Auth
                     services.AddAuthentication("Test")
                         .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", options => { });
-                    
+
                     services.AddAuthorization(options =>
                     {
                         options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder("Test")

@@ -37,16 +37,16 @@ public class TranslationRoomEventConsumerService : BackgroundService
 
             var consumerName = $"backend-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
             _logger.LogInformation("Starting Redis stream consumer with name: {ConsumerName}", consumerName);
-            
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
                     var messages = await _redisStreamRepository.ReadGroupAsync(
-                        streamName, 
-                        groupName, 
-                        consumerName, 
-                        ">", 
+                        streamName,
+                        groupName,
+                        consumerName,
+                        ">",
                         count: 10);
 
                     foreach (var message in messages)
@@ -93,7 +93,7 @@ public class TranslationRoomEventConsumerService : BackgroundService
 
                     using var scope = _scopeFactory.CreateScope();
                     var processorService = scope.ServiceProvider.GetRequiredService<IAudioRouteEventProcessor>();
-                    
+
                     var result = await processorService.ProcessEventAsync(roomId, routeId, eventTypeStr, payloadStr, ct);
 
                     if (result.IsSuccess)
@@ -103,7 +103,7 @@ public class TranslationRoomEventConsumerService : BackgroundService
                     else
                     {
                         lastError = result.Error ?? "Unknown event processing error";
-                        _logger.LogWarning("Attempt {Attempt}/{MaxRetries} failed to process event {EventType} for room {RoomId}. Error: {Error}", 
+                        _logger.LogWarning("Attempt {Attempt}/{MaxRetries} failed to process event {EventType} for room {RoomId}. Error: {Error}",
                             attempt, maxRetries, eventTypeStr, roomId, lastError);
                     }
                 }
@@ -116,7 +116,7 @@ public class TranslationRoomEventConsumerService : BackgroundService
             catch (Exception ex)
             {
                 lastError = ex.Message;
-                _logger.LogWarning(ex, "Attempt {Attempt}/{MaxRetries} threw exception processing stream message {MessageId}", 
+                _logger.LogWarning(ex, "Attempt {Attempt}/{MaxRetries} threw exception processing stream message {MessageId}",
                     attempt, maxRetries, message.Id);
             }
 

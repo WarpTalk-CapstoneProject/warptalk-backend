@@ -43,10 +43,17 @@ public class NotificationRedisSubscriberService : BackgroundService
                 var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
                 if (payload == null || string.IsNullOrEmpty(payload.UserId)) return;
 
-                var groupName = RealtimeConstants.Groups.User(payload.UserId);
-                await _hubContext.Clients.Group(groupName).SendAsync(RealtimeConstants.ClientMethods.NewNotification, payload, stoppingToken);
-
-                _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {GroupName}", groupName);
+                if (payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase) || payload.UserId.Equals("*", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _hubContext.Clients.All.SendAsync(RealtimeConstants.ClientMethods.NewNotification, payload, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to ALL clients");
+                }
+                else
+                {
+                    var groupName = RealtimeConstants.Groups.User(payload.UserId);
+                    await _hubContext.Clients.Group(groupName).SendAsync(RealtimeConstants.ClientMethods.NewNotification, payload, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted NewNotification to {GroupName}", groupName);
+                }
             }
             catch (Exception ex)
             {
@@ -63,7 +70,7 @@ public class NotificationRedisSubscriberService : BackgroundService
 
                 using var doc = JsonDocument.Parse(message.ToString());
                 var root = doc.RootElement;
-                
+
                 var eventType = root.TryGetProperty("eventType", out var et) ? et.GetString() : "MeetingUpdated";
                 var workspaceId = root.TryGetProperty("workspaceId", out var ws) ? ws.GetString() : null;
                 var userId = root.TryGetProperty("userId", out var u) ? u.GetString() : null;

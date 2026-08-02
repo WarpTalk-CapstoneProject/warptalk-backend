@@ -1,172 +1,194 @@
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Extensions;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.BillingService.API.Filters;
-using WarpTalk.BillingService.API.GrpcServices;
-using WarpTalk.BillingService.API.Services;
 using WarpTalk.Shared.Extensions;
-using Stripe;
+
+using WarpTalk.BillingService.Domain.Interfaces;
+
 
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
 [ApiController]
-[Route("api/v1/payments")]
+[Route("api/v1/[controller]")]
 public class PaymentsController : ControllerBase
 {
-    private readonly IPaymentAndLedgerService _paymentService;
-    private readonly ICheckoutPricingService _checkoutPricingService;
-    private readonly IStripeBillingGateway _stripe;
-    private readonly BillingGrpcService _billingEvents;
+    private readonly IPaymentService _paymentService;
+    private readonly IPaymentAppService _paymentAppService;
+    private readonly IStripeWebhookService _stripeWebhookService;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public PaymentsController(
-        IPaymentAndLedgerService paymentService,
-        ICheckoutPricingService checkoutPricingService,
-        IStripeBillingGateway stripe,
-        BillingGrpcService billingEvents)
+        IPaymentService paymentService,
+        IPaymentAppService paymentAppService,
+        IStripeWebhookService stripeWebhookService,
+        IWorkspaceClient workspaceClient)
     {
         _paymentService = paymentService;
-        _checkoutPricingService = checkoutPricingService;
-        _stripe = stripe;
-        _billingEvents = billingEvents;
+        _paymentAppService = paymentAppService;
+        _stripeWebhookService = stripeWebhookService;
+        _workspaceClient = workspaceClient;
     }
 
-    /// <summary>
-    /// Paginated payment/transaction history for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}/history")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<PagedResult<PaymentTransactionDto>>> GetPaymentHistory(
+    [HttpGet("workspace/{workspaceId}/history")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<ActionResult<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
+        [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
     {
-        var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
+        var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, query, cancellationToken);
+        return result.ToActionResult(this);
     }
 
-
-
-
-    /// <summary>
-    /// Create a pending payment checkout for a subscription.
-    /// </summary>
     [HttpPost]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<PaymentTransactionDto>> CreatePayment(
-        [FromBody] CreatePaymentRequest request,
-        CancellationToken cancellationToken)
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
+        if (!result.IsSuccess)
+        {
+            return this.ToBadRequest(result.Error, result.ErrorCode);
+        }
 
         return StatusCode(201, result.Value);
     }
 
     [HttpPost("checkout")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<IActionResult> CreateCheckoutSession(
-        [FromBody] CreateCheckoutSessionRequest request,
-        CancellationToken cancellationToken)
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
-        var userId = User.GetUserId();
-        if (userId is null)
-            return Unauthorized(new { message = "Invalid or missing user identity." });
+        try
+        {
+            var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
+            if (!createResult.IsSuccess)
+            {
+                return this.ToBadRequest(createResult.Error, createResult.ErrorCode);
+            }
 
-        var resolved = await _checkoutPricingService.ResolveAsync(
-            request,
-            userId.Value,
-            cancellationToken);
-
-        if (!resolved.IsSuccess)
-            return HandleFailure(resolved);
-
-        var url = await _stripe.CreateCheckoutAsync(resolved.Value!, cancellationToken);
-        return Ok(new { url });
+            string url = createResult.Value!;
+            return Ok(new { url });
+        }
+        catch (ArgumentException ex)
+        {
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+        }
     }
 
     [HttpGet("checkout-session/{sessionId}")]
-    public async Task<IActionResult> GetCheckoutSession(
-        string sessionId,
-        CancellationToken cancellationToken)
+    [Authorize]
+    public async Task<IActionResult> GetCheckoutSession(string sessionId)
     {
         var userId = User.GetUserId();
-        if (userId is null)
-            return Unauthorized(new { message = "Invalid or missing user identity." });
-
-        var session = await _stripe.GetCheckoutSessionAsync(sessionId, cancellationToken);
-        if (session is null)
-            return NotFound(new { message = "Checkout session was not found." });
-
-        if (!session.Metadata.TryGetValue("UserId", out var sessionUserId)
-            || !Guid.TryParse(sessionUserId, out var ownerId)
-            || ownerId != userId.Value)
-        {
-            return Forbid();
-        }
-
-        return Ok(new
-        {
-            id = session.Id,
-            amountTotal = session.AmountTotal,
-            currency = session.Currency,
-            metadata = session.Metadata,
-            paymentStatus = session.PaymentStatus,
-            status = session.Status,
-            paymentIntentId = session.PaymentIntentId
-        });
-    }
-
-    /// <summary>
-    /// Receives signed Stripe events. Credit and subscription state are changed
-    /// only after signature validation succeeds.
-    /// </summary>
-    [HttpPost("webhook")]
-    [AllowAnonymous]
-    public async Task<IActionResult> HandleWebhook(
-        CancellationToken cancellationToken)
-    {
-        string payload;
-        using (var reader = new StreamReader(Request.Body))
-            payload = await reader.ReadToEndAsync(cancellationToken);
+        if (userId == null) return Unauthorized();
 
         try
         {
-            var paymentEvent = _stripe.ParseWebhook(
-                payload,
-                Request.Headers["Stripe-Signature"].ToString());
+            var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
+            if (!sessionResult.IsSuccess)
+            {
+                return this.ToBadRequest(sessionResult.Error, sessionResult.ErrorCode);
+            }
 
-            if (paymentEvent is null)
-                return Ok();
+            var session = sessionResult.Value!;
 
-            var result = await _billingEvents.ProcessPaymentEventCoreAsync(
-                paymentEvent,
-                cancellationToken);
+            // Validate workspace ID from session metadata
+            string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
+            if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
+            {
+                return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
+            }
 
-            if (!result.Success)
-                return StatusCode(500, new { message = result.ErrorMessage });
+            // Verify the requesting user is a system admin or an Owner/Admin of this workspace.
+            var isSystemAdmin =
+                User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
+                User.IsInRole(WorkspaceRoleConstants.Admin);
+            if (!isSystemAdmin)
+            {
+                var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                    workspaceId,
+                    userId.Value,
+                    WorkspaceRoleConstants.Owner,
+                    WorkspaceRoleConstants.Admin);
+                if (!accessResult.IsSuccess || !accessResult.Value)
+                {
+                    return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
+                }
+            }
 
-            return Ok();
+            // Fallback: process payment event inline if session already marked as paid
+            if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
+            {
+                bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
+                decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+
+                var processResult = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                    StripeSessionId: session.Id,
+                    PaymentIntentId: !string.IsNullOrEmpty(session.PaymentIntentId) ? session.PaymentIntentId : string.Empty,
+                    Amount: finalAmount,
+                    Currency: session.Currency,
+                    UserIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.UserId, string.Empty),
+                    WorkspaceIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty),
+                    PaymentType: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PaymentType, string.Empty),
+                    Status: PaymentConstants.Payments.StatusPaid,
+                    PlanSlug: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PlanSlug, string.Empty),
+                    BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
+                ));
+                if (!processResult.IsSuccess)
+                {
+                    return this.ToBadRequest(processResult.Error, processResult.ErrorCode);
+                }
+            }
+
+            return Ok(session);
         }
-        catch (StripeException)
+        catch (ArgumentException ex)
         {
-            return BadRequest(new { message = "Invalid Stripe webhook signature or payload." });
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return this.ToErrorResult(StatusCodes.Status404NotFound, ex.Message, ErrorCodes.NotFound);
+        }
+        catch (Exception ex)
+        {
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
         }
     }
 
-    private ActionResult HandleFailure<T>(Result<T> result) =>
-        result.ErrorCode switch
+    [HttpPost("webhook/stripe")]
+    [AllowAnonymous]
+    public async Task<IActionResult> Webhook()
+    {
+        var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
+        var stripeSignature = Request.Headers[BillingMessageConstants.Webhook.StripeSignatureHeader].ToString();
+
+        try
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = result.Error }),
-            ErrorCodes.BillingPlanNotFound => BadRequest(new { message = result.Error }),
-            ErrorCodes.Forbidden => StatusCode(403, new { message = result.Error }),
-            ErrorCodes.ValidationError => BadRequest(new { message = result.Error }),
-            "FEATURE_NOT_AVAILABLE" => StatusCode(403, new { message = result.Error }),
-            _ => StatusCode(500, new { message = result.Error })
-        };
+            var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
+            if (!result.IsSuccess)
+            {
+                return this.ToBadRequest(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError);
+            }
+
+            return Ok();
+        }
+        catch (Stripe.StripeException ex)
+        {
+            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+        }
+        catch (Exception ex)
+        {
+            return this.ToErrorResult(StatusCodes.Status500InternalServerError, ex.Message, ErrorCodes.InternalServerError);
+        }
+    }
 }

@@ -75,6 +75,8 @@ public static class TranslationRoomMapper
 
     public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
     {
+        if (!request.WorkspaceId.HasValue || request.WorkspaceId.Value == Guid.Empty)
+            throw new ArgumentException("WorkspaceId must be a valid workspace.", nameof(request));
         // Unknown types are rejected by the validator; this normalization only folds spelling
         // ("Channel Meeting" → CHANNEL_MEETING) and defaults an omitted type to EVENT.
         var roomType = TranslationRoomTypes.Normalize(request.TranslationRoomType) ?? TranslationRoomTypes.Event;
@@ -83,7 +85,7 @@ public static class TranslationRoomMapper
         return new TranslationRoom
         {
             Id = Guid.CreateVersion7(),
-            WorkspaceId = request.WorkspaceId ?? Guid.Empty,
+            WorkspaceId = request.WorkspaceId.Value,
             HostId = hostId,
             Title = request.Title,
             Description = request.Description,

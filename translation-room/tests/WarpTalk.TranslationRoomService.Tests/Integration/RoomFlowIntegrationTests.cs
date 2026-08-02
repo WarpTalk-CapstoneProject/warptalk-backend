@@ -34,7 +34,7 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
         var body = await createResponse.Content.ReadAsStringAsync();
         createResponse.StatusCode.Should().Be(HttpStatusCode.Created, body);
-        
+
         var createdRoom = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
         createdRoom.Should().NotBeNull();
         createdRoom!.TranslationRoomCode.Should().NotBeNullOrWhiteSpace();
@@ -55,11 +55,11 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
 
         var joinResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms/join", joinRequest);
         var joinBody = await joinResponse.Content.ReadAsStringAsync();
-        
+
         // 4. Assert: Join Success
         joinResponse.StatusCode.Should().Be(HttpStatusCode.OK, joinBody);
         var joinData = await joinResponse.Content.ReadFromJsonAsync<JoinTranslationRoomResponse>();
-        
+
         joinData.Should().NotBeNull();
         joinData!.Room.Id.Should().Be(createdRoom.Id);
         joinData.Participant.UserId.Should().Be(memberId);
