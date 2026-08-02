@@ -25,20 +25,20 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly ILogger<WorkspaceMemberService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
-    private readonly IConfiguration? _configuration;
+    private readonly IConfiguration _configuration;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceMemberService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
-        IConfiguration? configuration = null)
+        IConfiguration configuration)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
-        _configuration = configuration;
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
     }
 
 
@@ -255,7 +255,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
                 executingMember.RemovedAt = DateTime.UtcNow;
                 executingMember.RemovedBy = executingUserId;
-                executingMember.Status = WorkspaceMemberStatus.Removed.ToString();
+                executingMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _eventPublisher.PublishMemberRemovedAsync(workspaceId, executingUserId, executingUserId, ct);
@@ -285,7 +285,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             targetMember.RemovedAt = DateTime.UtcNow;
             targetMember.RemovedBy = executingUserId;
-            targetMember.Status = WorkspaceMemberStatus.Removed.ToString();
+            targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);

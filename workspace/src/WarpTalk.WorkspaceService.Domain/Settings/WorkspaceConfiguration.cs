@@ -44,7 +44,9 @@ public class WorkspaceConfiguration
     public int ArtifactRetentionDays
     {
         get => _artifactRetentionDays;
-        set => _artifactRetentionDays = value < 0 ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays : value;
+        set => _artifactRetentionDays = value < WorkspaceConstants.MinWorkspaceArtifactRetentionDays
+            ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays
+            : value;
     }
 
     public bool EnforceHostApprovalDefault { get; set; } = true;

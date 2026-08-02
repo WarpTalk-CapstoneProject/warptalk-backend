@@ -79,7 +79,7 @@ public static class WorkspaceMapper
             MaxActiveRooms = dto.MaxActiveRooms,
             ArtifactRetentionDays = dto.ArtifactRetentionDays,
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
-            VerifiedDomains = dto.VerifiedDomains,
+            VerifiedDomains = dto.VerifiedDomains ?? new List<string>(),
             AllowExternalCollaboration = dto.AllowExternalCollaboration,
             RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
             AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),

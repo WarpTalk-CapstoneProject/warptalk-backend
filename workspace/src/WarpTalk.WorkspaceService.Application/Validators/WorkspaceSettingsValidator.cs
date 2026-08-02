@@ -37,6 +37,13 @@ public static class WorkspaceSettingsValidator
             errors["artifactRetentionDays"] = [WorkspaceConstants.Errors.ArtifactRetentionDaysOutOfRange];
         }
 
+        if (settings.RequireVerifiedDomainForInternal
+            && (settings.VerifiedDomains is null
+                || !settings.VerifiedDomains.Any(domain => !string.IsNullOrWhiteSpace(domain))))
+        {
+            errors["verifiedDomains"] = [WorkspaceConstants.Errors.VerifiedDomainsRequired];
+        }
+
         return new WorkspaceSettingsValidationResult(errors);
     }
 }

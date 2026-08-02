@@ -18,6 +18,8 @@ using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.Shared;
 using WarpTalk.WorkspaceService.Domain.Constants;
+using WarpTalk.WorkspaceService.Application.Mappers;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using Xunit;
 
 namespace WarpTalk.WorkspaceService.Tests;
@@ -68,6 +70,33 @@ public class WorkspaceMemberServiceTests
             _authIdentity,
             _eventPublisher,
             new ConfigurationBuilder().Build());
+    }
+
+    [Fact]
+    public void Constructor_ShouldRejectNullConfiguration()
+    {
+        var ex = Assert.Throws<ArgumentNullException>(() => new WorkspaceMemberService(
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceMemberService>>(),
+            _authIdentity,
+            _eventPublisher,
+            null!));
+
+        Assert.Equal("configuration", ex.ParamName);
+    }
+
+    [Fact]
+    public void CreateMemberMappers_ShouldWriteLowercaseActiveStatus()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+
+        var owner = WorkspaceMemberMapper.CreateOwnerMember(workspaceId, userId, roleId);
+        var invited = WorkspaceMemberMapper.CreateInvitationMember(workspaceId, Guid.NewGuid(), roleId, "Internal");
+
+        Assert.Equal(WorkspaceMemberStatus.Active.ToStorageValue(), owner.Status);
+        Assert.Equal(WorkspaceMemberStatus.Active.ToStorageValue(), invited.Status);
     }
 
     private void StubRoleName(Guid roleId, string roleName)
@@ -350,7 +379,7 @@ public class WorkspaceMemberServiceTests
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(targetMember.RemovedAt);
-        Assert.Equal("Removed", targetMember.Status);
+        Assert.Equal(WorkspaceMemberStatus.Removed.ToStorageValue(), targetMember.Status);
         Assert.Equal(ownerUserId, targetMember.RemovedBy);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }

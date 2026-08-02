@@ -148,7 +148,7 @@ public class DlpSecurityGuardrailE2ETests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             new AiUsagePolicyDto(
@@ -217,6 +217,157 @@ public class DlpSecurityGuardrailE2ETests
         Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
 
         // Verify document embedding request was NOT published due to DLP violation
+        await _embeddingPublisher.DidNotReceive().PublishEmbeddingIndexRequestAsync(
+            Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task E2E_PiiDetected_WithMaskedContent_ShouldPublishOnlyMaskedText()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var wsConfig = new WorkspaceConfiguration
+        {
+            AiUsagePolicy = new AiUsagePolicyConfiguration(
+                AllowExternalLlm: true,
+                RedactPii: new PiiRedactionConfiguration(Enabled: true),
+                Dlp: new DlpConfiguration(Enabled: false, KeywordsBlacklist: new List<string>()),
+                TranslationProfile: null
+            )
+        };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = JsonSerializer.Serialize(wsConfig)
+        };
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            FileName = "employee_profile.pdf",
+            FileExtension = ".pdf",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
+            IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString()
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        var rawText = "Employee Alice can be reached at alice@example.com.";
+        var maskedText = "Employee Alice can be reached at [EMAIL].";
+        _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>())
+            .Returns(new MemoryStream(Encoding.UTF8.GetBytes(rawText)));
+
+        _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".pdf", Arg.Any<CancellationToken>())
+            .Returns(new ExtractedDocumentContent { FullText = rawText });
+
+        _securityScanner.ScanAsync(
+                rawText,
+                true,
+                false,
+                Arg.Any<List<string>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new DocumentSecurityScanResult(
+                ViolationFound: true,
+                PiiDetected: true,
+                DlpDetected: false,
+                MaskedContent: maskedText
+            )));
+
+        _embeddingPublisher.PublishEmbeddingIndexRequestAsync(
+                Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns("job-456");
+
+        // Act
+        var handled = await _consumerService.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
+
+        // Assert
+        Assert.True(handled);
+        Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.processing.ToString(), document.IngestionStatus);
+
+        await _embeddingPublisher.Received(1).PublishEmbeddingIndexRequestAsync(
+            document, maskedText, true, Arg.Any<CancellationToken>());
+        await _embeddingPublisher.DidNotReceive().PublishEmbeddingIndexRequestAsync(
+            document, rawText, Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task E2E_PiiDetected_WithoutMaskedContent_ShouldSkipEmbedding(string? maskedContent)
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var wsConfig = new WorkspaceConfiguration
+        {
+            AiUsagePolicy = new AiUsagePolicyConfiguration(
+                AllowExternalLlm: true,
+                RedactPii: new PiiRedactionConfiguration(Enabled: true),
+                Dlp: new DlpConfiguration(Enabled: false, KeywordsBlacklist: new List<string>()),
+                TranslationProfile: null
+            )
+        };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Settings = JsonSerializer.Serialize(wsConfig)
+        };
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            FileName = "employee_profile.pdf",
+            FileExtension = ".pdf",
+            ConfidentialityLevel = WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel,
+            IsAiAllowed = true,
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            RetentionState = "active",
+            IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString()
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        var rawText = "Employee Alice can be reached at alice@example.com.";
+        _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>())
+            .Returns(new MemoryStream(Encoding.UTF8.GetBytes(rawText)));
+
+        _textExtractor.ExtractTextAsync(Arg.Any<Stream>(), ".pdf", Arg.Any<CancellationToken>())
+            .Returns(new ExtractedDocumentContent { FullText = rawText });
+
+        _securityScanner.ScanAsync(
+                rawText,
+                true,
+                false,
+                Arg.Any<List<string>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new DocumentSecurityScanResult(
+                ViolationFound: true,
+                PiiDetected: true,
+                DlpDetected: false,
+                MaskedContent: maskedContent
+            )));
+
+        // Act
+        var handled = await _consumerService.ProcessDocumentUploadAsync(documentId, new Dictionary<string, string>(), CancellationToken.None);
+
+        // Assert
+        Assert.True(handled);
+        Assert.Equal(WorkspaceDocumentConstants.SensitiveConfidentialityLevel, document.ConfidentialityLevel);
+        Assert.False(document.AiEligible);
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+
         await _embeddingPublisher.DidNotReceive().PublishEmbeddingIndexRequestAsync(
             Arg.Any<WorkspaceDocument>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }

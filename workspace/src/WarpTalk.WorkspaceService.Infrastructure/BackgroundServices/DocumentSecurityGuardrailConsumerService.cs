@@ -213,20 +213,32 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
+            var wasRestrictedBeforeScan = document.IsRestricted();
+
             if (scanResult.PiiDetected || scanResult.DlpDetected)
             {
                 document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
             }
 
             var isApproved = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
+            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent);
             var canIndex = document.IsAiAllowed
-                && !document.IsRestricted()
+                && !wasRestrictedBeforeScan
                 && isApproved
                 && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-                && !scanResult.DlpDetected;
+                && !scanResult.DlpDetected
+                && (!scanResult.PiiDetected || hasMaskedContent);
 
-            // Use masked text for Qdrant indexing when PII is present to ensure zero raw PII exposure
-            var textToIngest = !string.IsNullOrWhiteSpace(scanResult.MaskedContent) ? scanResult.MaskedContent : content.FullText;
+            if (scanResult.PiiDetected && !hasMaskedContent)
+            {
+                _logger.LogWarning(
+                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable.",
+                    documentId);
+            }
+
+            var textToIngest = scanResult.PiiDetected
+                ? scanResult.MaskedContent!
+                : content.FullText;
 
             // AiEligible means retrieval is ready, not merely that indexing may
             // start. It is enabled only by DocumentEmbeddingResultProcessor after

@@ -657,7 +657,7 @@ public class WorkspaceServiceTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "warptalk.vn" },
             true,
             true,
             new AiUsagePolicyDto(
@@ -864,6 +864,45 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenStrictDomainVerificationHasNoDomains()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var settings = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string>(),
+            true,
+            true,
+            null,
+            false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId });
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

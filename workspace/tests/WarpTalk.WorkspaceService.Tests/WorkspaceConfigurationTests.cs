@@ -57,13 +57,13 @@ public class WorkspaceConfigurationTests
     }
 
     [Fact]
-    public void WorkspaceConfiguration_ShouldPreserveZeroRetentionAsIndefinite()
+    public void WorkspaceConfiguration_ShouldDefaultZeroRetention_WhenDeserialized()
     {
         var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(
             "{\"ArtifactRetentionDays\":0}");
 
         Assert.NotNull(config);
-        Assert.Equal(0, config.ArtifactRetentionDays);
+        Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
     }
 
     [Fact]

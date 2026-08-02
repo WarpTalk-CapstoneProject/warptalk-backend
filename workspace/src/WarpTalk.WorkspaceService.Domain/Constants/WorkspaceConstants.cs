@@ -9,7 +9,7 @@ public static class WorkspaceConstants
     public const int DefaultWorkspaceArtifactRetentionDays = 30;
     public const int MinWorkspaceMaxActiveRooms = 1;
     public const int MaxWorkspaceMaxActiveRooms = 50;
-    public const int MinWorkspaceArtifactRetentionDays = 0;
+    public const int MinWorkspaceArtifactRetentionDays = 1;
     public const int MaxWorkspaceArtifactRetentionDays = 3650;
 
     // Invitation Defaults
@@ -38,7 +38,8 @@ public static class WorkspaceConstants
         public const string OnlyOwnerAdminCanUpdateSettings = "Only Owner or Admin can update workspace settings.";
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
-        public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 0 and 3650.";
+        public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 1 and 3650.";
+        public const string VerifiedDomainsRequired = "Verified domains are required when internal members must use verified domains.";
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
