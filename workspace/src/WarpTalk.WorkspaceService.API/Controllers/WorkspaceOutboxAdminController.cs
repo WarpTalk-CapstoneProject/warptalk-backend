@@ -1,3 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +24,7 @@ public sealed class WorkspaceOutboxAdminController(
         CancellationToken cancellationToken = default)
     {
         limit = Math.Clamp(limit, 1, 500);
-        var messages = await dbContext.WorkspaceOutboxMessages
+        var messages = await dbContext.OutboxMessages
             .AsNoTracking()
             .Where(message => message.DeadLetteredAt != null)
             .OrderByDescending(message => message.DeadLetteredAt)
@@ -42,12 +47,11 @@ public sealed class WorkspaceOutboxAdminController(
     [HttpPost("{eventId:guid}/replay")]
     public async Task<IActionResult> Replay(
         Guid eventId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
-        var message = await dbContext.WorkspaceOutboxMessages
+        var message = await dbContext.OutboxMessages
             .SingleOrDefaultAsync(
-                candidate => candidate.Id == eventId
-                             && candidate.DeadLetteredAt != null,
+                candidate => candidate.Id == eventId && candidate.DeadLetteredAt != null,
                 cancellationToken);
         if (message is null)
             return NotFound(new { eventId, error = "dead-letter event not found" });

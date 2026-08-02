@@ -4,9 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
-using WarpTalk.WorkspaceService.Application.Interfaces;
-using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
+using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
@@ -21,15 +20,48 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
     public async Task<List<WorkspaceMember>> GetActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
     {
         return await _dbSet
-            .Where(m => m.WorkspaceId == workspaceId && m.RemovedAt == null)
+            .AsNoTracking()
+            .Where(m => m.WorkspaceId == workspaceId 
+                        && m.Status == WorkspaceMemberStatus.Active.ToString() 
+                        && m.RemovedAt == null)
             .OrderBy(m => m.JoinedAt)
             .ToListAsync(ct);
     }
 
     public async Task<int> CountActiveOwnersAsync(Guid workspaceId, Guid ownerRoleId, CancellationToken ct = default)
     {
-        return await _dbSet.CountAsync(
-            m => m.WorkspaceId == workspaceId && m.RoleId == ownerRoleId && m.RemovedAt == null,
-            ct);
+        return await _dbSet
+            .AsNoTracking()
+            .CountAsync(m => m.WorkspaceId == workspaceId 
+                             && m.RoleId == ownerRoleId 
+                             && m.Status == WorkspaceMemberStatus.Active.ToString() 
+                             && m.RemovedAt == null, ct);
+    }
+
+    public async Task<(List<WorkspaceMember> Items, int TotalCount)> GetPagedMembersAsync(
+        Guid workspaceId,
+        int page,
+        int pageSize,
+        bool includeInactiveAndBanned = false,
+        bool isDescending = true,
+        CancellationToken ct = default)
+    {
+        var query = _dbSet.AsNoTracking().Where(m => m.WorkspaceId == workspaceId);
+
+        if (!includeInactiveAndBanned)
+        {
+            query = query.Where(m => m.Status == WorkspaceMemberStatus.Active.ToString() && m.RemovedAt == null);
+        }
+
+        var totalCount = await query.CountAsync(ct);
+
+        query = isDescending 
+            ? query.OrderByDescending(m => m.JoinedAt) 
+            : query.OrderBy(m => m.JoinedAt);
+
+        var skip = Math.Max(0, (page - 1) * pageSize);
+        var items = await query.Skip(skip).Take(pageSize).ToListAsync(ct);
+
+        return (items, totalCount);
     }
 }

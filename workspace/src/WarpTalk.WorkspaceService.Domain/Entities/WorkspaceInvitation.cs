@@ -17,25 +17,33 @@ public partial class WorkspaceInvitation
 
     public Guid? MatchedDomainId { get; set; }
 
+    /// <summary>
+    /// Internal auth user reference.
+    /// </summary>
     public Guid InvitedBy { get; set; }
 
     public string? TokenHash { get; set; }
 
     public string Status { get; set; } = null!;
 
-    public string DeliveryStatus { get; set; } = "NotSent";
+    public DateTime ExpiresAt { get; set; }
+
+    public DateTime? AcceptedAt { get; set; }
+
+    public DateTime CreatedAt { get; set; }
+
+    public string DeliveryStatus { get; set; } = null!;
 
     public string? ProviderMessageId { get; set; }
 
     public DateTime? LastSentAt { get; set; }
 
     public int SentCount { get; set; }
+    public Guid? RequestedBy { get; set; }
 
-    public DateTime ExpiresAt { get; set; }
+    public Guid? ReviewedBy { get; set; }
 
-    public DateTime? AcceptedAt { get; set; }
-
-    public DateTime CreatedAt { get; set; }
+    public DateTime? ReviewedAt { get; set; }
 
     public virtual Workspace Workspace { get; set; } = null!;
 }

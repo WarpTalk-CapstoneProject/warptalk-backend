@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using StackExchange.Redis;
-using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 namespace WarpTalk.WorkspaceService.Tests;
 
