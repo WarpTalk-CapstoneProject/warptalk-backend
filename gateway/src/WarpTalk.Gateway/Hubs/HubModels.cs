@@ -71,6 +71,29 @@ public record AiAssistantResultDto(
     string Content,
     DateTime CreatedAt);
 
+/// <summary>
+/// An unprompted one-line hint about a live transcript segment, produced by
+/// warptalk-ai/suggestion_worker and delivered as "AiSuggestionReceived".
+///
+/// Shares the ai_assistant:results stream with AiAssistantResultDto — the stream's
+/// `type` field is what separates them, so a suggestion never reaches the summary /
+/// action-items path and vice versa.
+///
+/// SegmentId is the STT segment that triggered the hint. The client anchors the strip to
+/// the transcript bubble containing that id; because the client merges consecutive
+/// segments from one speaker into a single bubble, that is not necessarily the bubble's
+/// own id. Ephemeral — nothing about this is persisted anywhere.
+/// </summary>
+public record AiSuggestionDto(
+    string TranslationRoomId,
+    string SegmentId,
+    string Category,
+    string Content,
+    string? Detail,
+    float Confidence,
+    string Language,
+    DateTime CreatedAt);
+
 public record TranslationTextDto(
     string SegmentId,
     Guid SpeakerId,

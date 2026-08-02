@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Grpc.Core;
 using Microsoft.AspNetCore.SignalR;
+using StackExchange.Redis;
 using WarpTalk.Gateway.Hubs;
 
 namespace WarpTalk.Gateway.Services;
@@ -15,6 +17,7 @@ namespace WarpTalk.Gateway.Services;
 ///   - stt:results:{translationRoomId}     → TranscriptSegmentReceived (original transcript)
 ///   - tts:results:{translationRoomId}     → TranslatedAudioReceived (translated + cloned voice) 
 ///   - ai_assistant:results:{translationRoomId} → AiAssistantResult (summaries, action items)
+///                                              → AiSuggestionReceived when type="suggestion"
 ///
 /// Design: AI Assistant runs on its own consumer group on stt:results,
 /// completely isolated from the Translation → TTS pipeline.
@@ -31,8 +34,17 @@ public sealed class AiResultConsumerService : BackgroundService
     private const string ConsumerGroupName = "gateway-consumers";
     private readonly string _consumerName = $"gateway-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
 
-    // Cache profanity settings: translationRoomId -> isProfanityFilterEnabled
-    private readonly ConcurrentDictionary<string, bool> _profanityFilterCache = new();
+    // Cache workspace-derived AI policy per translationRoomId. Resolving it costs two gRPC
+    // hops (room -> workspace -> settings), so it is fetched once per room and reused by
+    // every consumer loop below.
+    private readonly ConcurrentDictionary<string, RoomAiPolicy> _roomPolicyCache = new();
+
+    /// <summary>Workspace settings that govern what the AI pipeline may do in one room.</summary>
+    private sealed record RoomAiPolicy(bool IsProfanityFilterEnabled, bool AllowExternalLlm);
+
+    // Long enough to outlive any realistic meeting, so suggestion_worker never loses the
+    // policy mid-session, and short enough that a stale room's key expires on its own.
+    private static readonly TimeSpan AiPolicyTtl = TimeSpan.FromHours(4);
 
     // translationRoomId → CancellationTokenSource (for stopping consumers when translationRoom ends)
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _translationRoomCts = new();
@@ -83,31 +95,77 @@ public sealed class AiResultConsumerService : BackgroundService
     // ── Profanity Masking ────────────────────────────────────
 
     private async Task<bool> IsProfanityFilterEnabledAsync(string translationRoomId, CancellationToken ct)
-    {
-        if (_profanityFilterCache.TryGetValue(translationRoomId, out var isEnabled))
-            return isEnabled;
+        => (await ResolveRoomPolicyAsync(translationRoomId, ct)).IsProfanityFilterEnabled;
 
+    /// <summary>
+    /// Resolve (and cache) the workspace settings that govern this room's AI behaviour,
+    /// then project the parts the Python workers need into Redis.
+    ///
+    /// The projection exists because suggestion_worker must decide whether it may send
+    /// transcript text to an external LLM *before* it calls one, and it has no gRPC client
+    /// or service credentials to ask WorkspaceService itself. This gateway already makes
+    /// the same two-hop lookup for profanity masking, so publishing the answer is nearly
+    /// free — and it is written on the FIRST result of a room, before any suggestion could
+    /// realistically fire (a suggestion needs several segments of context first).
+    ///
+    /// On failure this mirrors the pre-existing behaviour for profanity — default to
+    /// "no masking" — but deliberately does NOT publish an allow-external-LLM key, so a
+    /// WorkspaceService outage leaves suggestion_worker silent rather than sending
+    /// transcript text to a provider a workspace may have opted out of.
+    /// </summary>
+    private async Task<RoomAiPolicy> ResolveRoomPolicyAsync(string translationRoomId, CancellationToken ct)
+    {
+        if (_roomPolicyCache.TryGetValue(translationRoomId, out var cached))
+            return cached;
+
+        RoomAiPolicy policy;
         try
         {
             var roomResponse = await _roomClient.GetTranslationRoomByIdAsync(
                 new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = translationRoomId }, cancellationToken: ct);
-            
+
             var workspaceResponse = await _workspaceClient.GetWorkspaceSettingsAsync(
                 new WarpTalk.Shared.Protos.GetWorkspaceSettingsRequest { WorkspaceId = roomResponse.WorkspaceId }, cancellationToken: ct);
-            
-            isEnabled = workspaceResponse.IsProfanityFilterEnabled;
-            _profanityFilterCache.TryAdd(translationRoomId, isEnabled);
-            return isEnabled;
+
+            policy = new RoomAiPolicy(
+                workspaceResponse.IsProfanityFilterEnabled,
+                workspaceResponse.AllowExternalLlm);
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
         {
-            _profanityFilterCache.TryAdd(translationRoomId, false);
-            return false;
+            // A room or workspace that no longer exists has no policy to honour, and no
+            // AI work should be started on its behalf.
+            policy = new RoomAiPolicy(IsProfanityFilterEnabled: false, AllowExternalLlm: false);
+            _roomPolicyCache.TryAdd(translationRoomId, policy);
+            return policy;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get profanity filter setting for room {RoomId}", translationRoomId);
-            return false;
+            _logger.LogWarning(ex, "Failed to resolve AI policy for room {RoomId}", translationRoomId);
+            // Not cached: a transient WorkspaceService failure must not pin this room to a
+            // fail-closed policy for the rest of the process's life.
+            return new RoomAiPolicy(IsProfanityFilterEnabled: false, AllowExternalLlm: false);
+        }
+
+        _roomPolicyCache.TryAdd(translationRoomId, policy);
+        await PublishAiPolicyAsync(translationRoomId, policy, ct);
+        return policy;
+    }
+
+    private async Task PublishAiPolicyAsync(string translationRoomId, RoomAiPolicy policy, CancellationToken ct)
+    {
+        try
+        {
+            await _streamService.SetWithTtlAsync(
+                $"translationRoom:{translationRoomId}:ai_policy",
+                JsonSerializer.Serialize(new { allow_external_llm = policy.AllowExternalLlm }),
+                AiPolicyTtl);
+        }
+        catch (Exception ex)
+        {
+            // Never let this break result delivery — the workers reading it fail closed on
+            // a missing key, which is the safe outcome.
+            _logger.LogWarning(ex, "Failed to publish AI policy for room {RoomId}", translationRoomId);
         }
     }
 
@@ -313,6 +371,34 @@ public sealed class AiResultConsumerService : BackgroundService
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
                     if (string.IsNullOrEmpty(translationRoomId)) continue;
+
+                    // Inline transcript suggestions ride this same stream but are a different
+                    // client event with a different shape. Route them out FIRST and leave the
+                    // legacy branch below byte-identical: before this split, an unrecognised
+                    // `type` still went out as "AiAssistantResult", so a suggestion reaching a
+                    // gateway that predates this code would surface inside the summary panel.
+                    var suggestion = TryReadSuggestion(entry, translationRoomId);
+                    if (suggestion is not null)
+                    {
+                        if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
+                        {
+                            suggestion = suggestion with
+                            {
+                                Content = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(suggestion.Content),
+                                Detail = suggestion.Detail is null
+                                    ? null
+                                    : WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(suggestion.Detail),
+                            };
+                        }
+
+                        await _hubContext.Clients
+                            .Group($"translationRoom:{translationRoomId}")
+                            .SendAsync("AiSuggestionReceived", suggestion, ct);
+
+                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        continue;
+                    }
+
                     var result = new AiAssistantResultDto(
                         TranslationRoomId: translationRoomId,
                         Type: RedisStreamService.GetField(entry, "type") ?? "summary",
@@ -336,5 +422,53 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(2000, ct);
             }
         }
+    }
+
+    /// <summary>
+    /// Reads an ai_assistant:results entry as a suggestion, or returns null when the entry
+    /// is anything else (a summary, action items, a future message type) so the caller falls
+    /// through to the legacy AiAssistantResult path.
+    ///
+    /// Pure and static so the routing rule is testable without a Redis server or a running
+    /// BackgroundService — see warptalk-ai/shared/schemas.py SuggestionResultMessage for the
+    /// producing contract.
+    ///
+    /// An entry that claims type="suggestion" but cannot anchor to a bubble (no segment id)
+    /// or has nothing to say (no content) is dropped rather than forwarded: the client has
+    /// no way to render either case, and falling through to the legacy branch would put it
+    /// in the summary panel instead.
+    /// </summary>
+    public static AiSuggestionDto? TryReadSuggestion(StreamEntry entry, string translationRoomId)
+    {
+        if (RedisStreamService.GetField(entry, "type") != "suggestion")
+            return null;
+
+        var segmentId = RedisStreamService.GetField(entry, "segment_id") ?? "";
+        var content = RedisStreamService.GetField(entry, "content") ?? "";
+        if (string.IsNullOrWhiteSpace(segmentId) || string.IsNullOrWhiteSpace(content))
+            return null;
+
+        var detail = RedisStreamService.GetField(entry, "detail");
+
+        // InvariantCulture is required, not cosmetic: the producer always writes "0.82",
+        // and a host whose current culture uses "," as the decimal separator parses that
+        // as the integer 82 — a low-confidence hint would arrive looking maximally certain.
+        var confidence = float.TryParse(
+            RedisStreamService.GetField(entry, "confidence"),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out var parsedConfidence)
+                ? parsedConfidence
+                : 0f;
+
+        return new AiSuggestionDto(
+            TranslationRoomId: translationRoomId,
+            SegmentId: segmentId,
+            Category: RedisStreamService.GetField(entry, "category") ?? "",
+            Content: content,
+            Detail: string.IsNullOrWhiteSpace(detail) ? null : detail,
+            Confidence: confidence,
+            Language: RedisStreamService.GetField(entry, "language") ?? "",
+            CreatedAt: DateTime.UtcNow);
     }
 }
