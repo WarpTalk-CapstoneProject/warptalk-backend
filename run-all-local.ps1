@@ -63,14 +63,14 @@ if (Test-Path $envFile) {
 # Set default credentials if not found in .env
 if (-not $env:POSTGRES_USER) { $env:POSTGRES_USER = "postgres" }
 if (-not $env:POSTGRES_DB) { $env:POSTGRES_DB = "warptalk" }
-if (-not $env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD = "postgres" }
-if (-not $env:REDIS_PASSWORD) { $env:REDIS_PASSWORD = "CHANGE_ME_REDIS_PASSWORD" }
+if (-not $env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD = "" }
+if (-not $env:REDIS_PASSWORD) { $env:REDIS_PASSWORD = "" }
 
 # Override connection variables for local native run
 $env:Redis__ConnectionString = "localhost:6379,password=$($env:REDIS_PASSWORD)"
 $env:RabbitMQ__Host = "localhost"
-$env:RabbitMQ__Username = "warptalk"
-$env:RabbitMQ__Password = "warptalk-dev-rabbitmq"
+$env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
+$env:RabbitMQ__Password = if ($env:RABBITMQ_PASSWORD) { $env:RABBITMQ_PASSWORD } else { "" }
 
 $env:ConnectionStrings__AuthDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=auth,public"
 $env:ConnectionStrings__WorkspaceDb = "Host=localhost;Database=$env:POSTGRES_DB;Username=$env:POSTGRES_USER;Password=$env:POSTGRES_PASSWORD;Search Path=workspace,public"
