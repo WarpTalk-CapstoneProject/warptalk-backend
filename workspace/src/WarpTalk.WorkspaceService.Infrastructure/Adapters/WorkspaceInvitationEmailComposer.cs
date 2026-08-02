@@ -34,6 +34,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         Workspace workspace,
         string inviterName,
         string roleName,
+        string invitationToken,
         CancellationToken ct = default)
     {
         var appBaseUrl = _configuration["AppBaseUrl"]?.TrimEnd('/') ?? "http://localhost:3000";
@@ -41,7 +42,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         var fromName = _configuration["Resend:FromName"] ?? "WarpTalk";
         var from = $"{fromName} <{fromEmail}>";
 
-        var joinUrl = $"{appBaseUrl}/{workspace.Slug}/home";
+        var joinUrl = $"{appBaseUrl}/invitations/{Uri.EscapeDataString(invitationToken)}";
         var subject = $"You've been invited to join {workspace.Name} on WarpTalk";
 
         var htmlTemplate = await _templateProvider.GetTemplateAsync("workspace-invitation-email", ct);

@@ -54,6 +54,7 @@ public class WorkspaceInvitationServiceTests
                 Arg.Any<Workspace>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
+                Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(new SendEmailResponse(true, "message-id", null));
 
@@ -126,6 +127,74 @@ public class WorkspaceInvitationServiceTests
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
         Assert.Equal("invitee@warptalk.vn", result.Value.Invitation.Email);
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldSendEmailWithInviterNameAndInvitationToken()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws" };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+        _authIdentity.GetUserByIdAsync(inviterUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = inviterUserId, FullName = "Real Inviter", Email = "owner@warptalk.vn" });
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+        await _emailComposer.Received(1).SendInvitationEmailAsync(
+            Arg.Any<WorkspaceInvitation>(),
+            workspace,
+            "Real Inviter",
+            "Member",
+            Arg.Is<string>(token => token.Length == 64),
+            Arg.Any<CancellationToken>());
+        await _authIdentity.DidNotReceive().GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldUseConfiguredExpiryDaysAndPersistTokenHash()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Business WS",
+            Slug = "business-ws",
+            Settings = "{\"InvitationExpiryDays\":3}"
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
+        WorkspaceInvitation? addedInvitation = null;
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        _workspaceInvitationRepository
+            .AddAsync(Arg.Do<WorkspaceInvitation>(invitation => addedInvitation = invitation), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+
+        var before = DateTime.UtcNow;
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+        var after = DateTime.UtcNow;
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(addedInvitation);
+        Assert.False(string.IsNullOrWhiteSpace(addedInvitation!.TokenHash));
+        Assert.InRange(
+            addedInvitation.ExpiresAt,
+            before.AddDays(3).AddSeconds(-1),
+            after.AddDays(3).AddSeconds(1));
     }
 
     [Fact]

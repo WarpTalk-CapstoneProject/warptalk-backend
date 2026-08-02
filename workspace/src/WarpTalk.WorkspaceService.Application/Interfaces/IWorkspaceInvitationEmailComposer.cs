@@ -12,5 +12,6 @@ public interface IWorkspaceInvitationEmailComposer
         Workspace workspace,
         string inviterName,
         string roleName,
+        string invitationToken,
         CancellationToken ct = default);
 }

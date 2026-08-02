@@ -6,7 +6,10 @@ namespace WarpTalk.WorkspaceService.Tests;
 
 public class WorkspaceSettingsValidatorTests
 {
-    private static WorkspaceSettingsDto Settings(int maxActiveRooms = 5, int artifactRetentionDays = 30) =>
+    private static WorkspaceSettingsDto Settings(
+        int maxActiveRooms = 5,
+        int artifactRetentionDays = 30,
+        int invitationExpiryDays = 7) =>
         new(
             "en",
             "UTC",
@@ -19,14 +22,15 @@ public class WorkspaceSettingsValidatorTests
             true,
             false,
             null,
-            false);
+            false,
+            invitationExpiryDays);
 
     [Theory]
-    [InlineData(1, 0)]
-    [InlineData(50, 3650)]
-    public void AcceptsSupportedNumericBoundaries(int maxActiveRooms, int artifactRetentionDays)
+    [InlineData(1, 0, 1)]
+    [InlineData(50, 3650, 365)]
+    public void AcceptsSupportedNumericBoundaries(int maxActiveRooms, int artifactRetentionDays, int invitationExpiryDays)
     {
-        var result = WorkspaceSettingsValidator.Validate(Settings(maxActiveRooms, artifactRetentionDays));
+        var result = WorkspaceSettingsValidator.Validate(Settings(maxActiveRooms, artifactRetentionDays, invitationExpiryDays));
 
         Assert.True(result.IsValid);
     }
@@ -42,5 +46,16 @@ public class WorkspaceSettingsValidatorTests
 
         Assert.False(result.IsValid);
         Assert.Contains(field, result.Errors.Keys);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(366)]
+    public void RejectsOutOfRangeInvitationExpiryDays(int invitationExpiryDays)
+    {
+        var result = WorkspaceSettingsValidator.Validate(Settings(invitationExpiryDays: invitationExpiryDays));
+
+        Assert.False(result.IsValid);
+        Assert.Contains("invitationExpiryDays", result.Errors.Keys);
     }
 }

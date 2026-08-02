@@ -48,6 +48,17 @@ public class WorkspaceConfiguration
         set => _artifactRetentionDays = value < 0 ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays : value;
     }
 
+    public int InvitationExpiryDays
+    {
+        get => _invitationExpiryDays;
+        set => _invitationExpiryDays = value switch
+        {
+            < WorkspaceConstants.MinWorkspaceInvitationExpiryDays => WorkspaceConstants.DefaultInvitationExpiryDays,
+            > WorkspaceConstants.MaxWorkspaceInvitationExpiryDays => WorkspaceConstants.MaxWorkspaceInvitationExpiryDays,
+            _ => value
+        };
+    }
+
     public bool EnforceHostApprovalDefault { get; set; } = true;
 
     // 4. Enterprise & External Collaboration
@@ -57,12 +68,6 @@ public class WorkspaceConfiguration
     // Keep this aligned with CreateWorkspaceAsync and the FE default.
     public bool RequireVerifiedDomainForInternal { get; set; } = false;
     public int? ExternalGracePeriodHours { get; set; }
-
-    public int InvitationExpiryDays
-    {
-        get => _invitationExpiryDays;
-        set => _invitationExpiryDays = value <= 0 ? WorkspaceConstants.DefaultInvitationExpiryDays : value;
-    }
 
     // 5. AI Ingestion & Security Guardrails
     public AiUsagePolicyConfiguration? AiUsagePolicy

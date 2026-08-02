@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -128,17 +129,25 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var membershipType = membershipTypeEnum.ToString();
-            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(workspaceId, request, finalRoleId.Value, finalRoleName, inviterUserId, null, membershipType, expiryDays: config.InvitationExpiryDays);
+            var invitationToken = GenerateInvitationToken();
+            var newInvitation = WorkspaceInvitationMapper.CreateInvitation(
+                workspaceId,
+                request,
+                finalRoleId.Value,
+                finalRoleName,
+                inviterUserId,
+                TokenHasher.Hash(invitationToken),
+                membershipType,
+                expiryDays: config.InvitationExpiryDays);
 
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            // Fetch inviter user profile name for email template
-            var inviterUser = await _authIdentity.GetUserByEmailAsync(request.Email, ct);
+            var inviterUser = await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
             var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
 
             // Attempt transactional email send via Resend
-            var emailResult = await _emailComposer.SendInvitationEmailAsync(newInvitation, workspace, inviterName, finalRoleName, ct);
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(newInvitation, workspace, inviterName, finalRoleName, invitationToken, ct);
 
             string? warning = null;
             if (emailResult.IsSuccess)
@@ -212,7 +221,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
-            var emailResult = await _emailComposer.SendInvitationEmailAsync(invitation, workspace, "A Workspace Admin", roleName, ct);
+            var invitationToken = GenerateInvitationToken();
+            invitation.TokenHash = TokenHasher.Hash(invitationToken);
+            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            var inviterUser = await _authIdentity.GetUserByIdAsync(invitation.InvitedBy, ct);
+            var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(invitation, workspace, inviterName, roleName, invitationToken, ct);
 
             invitation.LastSentAt = DateTime.UtcNow;
             invitation.SentCount++;
@@ -721,5 +737,10 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _logger.LogError(ex, "Error occurred while rejecting join request.");
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    private static string GenerateInvitationToken()
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
     }
 }

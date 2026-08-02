@@ -11,9 +11,13 @@ public static class WorkspaceInvitationMapper
     public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null, int? expiryDays = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
-        var validExpiryDays = expiryDays.HasValue && expiryDays.Value > 0
-            ? expiryDays.Value
-            : WorkspaceConstants.DefaultInvitationExpiryDays;
+        var validExpiryDays = expiryDays switch
+        {
+            null => WorkspaceConstants.DefaultInvitationExpiryDays,
+            < WorkspaceConstants.MinWorkspaceInvitationExpiryDays => WorkspaceConstants.DefaultInvitationExpiryDays,
+            > WorkspaceConstants.MaxWorkspaceInvitationExpiryDays => WorkspaceConstants.MaxWorkspaceInvitationExpiryDays,
+            _ => expiryDays.Value
+        };
 
         return new WorkspaceInvitation
         {
