@@ -113,6 +113,7 @@ builder.Services.AddHostedService<ReminderNotificationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
+builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.AppSettings>(builder.Configuration.GetSection("App"));
 builder.Services.Configure<WarpTalk.Shared.Configuration.SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<WarpTalk.Shared.Interfaces.IEmailService, WarpTalk.Shared.Services.SmtpEmailService>();
@@ -177,6 +178,16 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.Transcri
         builder.Environment,
         "GrpcSettings:TranscriptServiceUrl",
         "http://localhost:50055");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+// WT-188: resolves the caller's workspace role so a workspace Owner/Admin can admit participants
+// into rooms they do not personally host (see TranslationRoomParticipantService.AdmitParticipantAsync).
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 // WT-14: reused by ReminderNotificationWorker to push reminder notifications through the

@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Services;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -20,6 +21,7 @@ public class ParticipantManagementServiceTests
     private readonly Mock<ITranslationRoomRepository> _roomRepositoryMock;
     private readonly Mock<ITranslationRoomParticipantRepository> _participantRepositoryMock;
     private readonly Mock<IUnitOfWork> _unitOfWorkMock;
+    private readonly Mock<IWorkspaceMemberDirectory> _workspaceMemberDirectoryMock;
     private readonly Mock<ILogger<TranslationRoomParticipantService>> _loggerMock;
     private readonly TranslationRoomParticipantService _sut;
 
@@ -28,13 +30,20 @@ public class ParticipantManagementServiceTests
         _roomRepositoryMock = new Mock<ITranslationRoomRepository>();
         _participantRepositoryMock = new Mock<ITranslationRoomParticipantRepository>();
         _unitOfWorkMock = new Mock<IUnitOfWork>();
+        _workspaceMemberDirectoryMock = new Mock<IWorkspaceMemberDirectory>();
         _loggerMock = new Mock<ILogger<TranslationRoomParticipantService>>();
 
         _unitOfWorkMock.Setup(uow => uow.TranslationRoomRepository).Returns(_roomRepositoryMock.Object);
         _unitOfWorkMock.Setup(uow => uow.TranslationRoomParticipantRepository).Returns(_participantRepositoryMock.Object);
 
+        // Default: caller has no workspace-level privilege, so host identity alone decides.
+        _workspaceMemberDirectoryMock
+            .Setup(d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
         _sut = new TranslationRoomParticipantService(
             _unitOfWorkMock.Object,
+            _workspaceMemberDirectoryMock.Object,
             _loggerMock.Object
         );
     }
@@ -173,5 +182,90 @@ public class ParticipantManagementServiceTests
         result.Value.Should().HaveCount(2);
         result.Value![0].DisplayName.Should().Be("Charlie");
         result.Value![1].DisplayName.Should().Be("Alice");
+    }
+
+    // WT-188 — admission is "room host OR workspace Owner/Admin", not host-only.
+
+    [Fact]
+    public async Task AdmitParticipantAsync_ShouldAdmit_WhenRequesterIsRoomHost()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, WorkspaceId = Guid.NewGuid() };
+        var participant = new TranslationRoomParticipant
+        {
+            Id = participantId,
+            TranslationRoomId = roomId,
+            Status = "WAITING"
+        };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByIdAsync(participantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participant);
+
+        var result = await _sut.AdmitParticipantAsync(roomId, participantId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        participant.Status.Should().Be("CONNECTED");
+        // The host path must not depend on WorkspaceService being reachable at all.
+        _workspaceMemberDirectoryMock.Verify(
+            d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AdmitParticipantAsync_ShouldAdmit_WhenRequesterIsWorkspaceOwnerOrAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var workspaceOwnerId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, WorkspaceId = workspaceId };
+        var participant = new TranslationRoomParticipant
+        {
+            Id = participantId,
+            TranslationRoomId = roomId,
+            Status = "WAITING"
+        };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByIdAsync(participantId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participant);
+        _workspaceMemberDirectoryMock
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, workspaceOwnerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _sut.AdmitParticipantAsync(roomId, participantId, workspaceOwnerId);
+
+        result.IsSuccess.Should().BeTrue();
+        participant.Status.Should().Be("CONNECTED");
+        _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AdmitParticipantAsync_ShouldReturnForbidden_WhenRequesterIsPlainMember()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid()
+        };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+
+        var result = await _sut.AdmitParticipantAsync(roomId, Guid.NewGuid(), Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 }
