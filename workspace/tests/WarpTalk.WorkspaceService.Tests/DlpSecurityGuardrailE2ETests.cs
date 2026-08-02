@@ -164,8 +164,8 @@ public class DlpSecurityGuardrailE2ETests
         Assert.True(updateResult.IsSuccess);
         Assert.NotNull(savedConfig);
         Assert.True(savedConfig!.AiUsagePolicy!.Dlp!.Enabled);
-        Assert.NotNull(savedConfig.AiUsagePolicy.Dlp.KeywordsBlacklist);
-        Assert.Contains("Project-Alpha-Secret", savedConfig.AiUsagePolicy.Dlp.KeywordsBlacklist);
+        Assert.NotNull(savedConfig.AiUsagePolicy!.Dlp!.KeywordsBlacklist);
+        Assert.Contains("Project-Alpha-Secret", savedConfig.AiUsagePolicy!.Dlp!.KeywordsBlacklist!);
 
         // Update workspace in mock repository with saved settings
         workspace.Settings = JsonSerializer.Serialize(savedConfig);

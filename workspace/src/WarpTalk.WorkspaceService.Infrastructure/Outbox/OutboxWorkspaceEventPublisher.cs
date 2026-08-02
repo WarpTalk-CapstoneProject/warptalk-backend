@@ -72,8 +72,12 @@ public sealed class OutboxWorkspaceEventPublisher(WorkspaceOutboxWriter writer) 
         string oldRole,
         string newRole,
         Guid changedByUserId,
-        CancellationToken ct = default) =>
-        PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, Guid.NewGuid(), null, ct);
+        CancellationToken ct = default)
+    {
+        return PublishMemberRoleChangedAsync(
+            workspaceId, targetUserId, oldRole, newRole, changedByUserId,
+            Guid.NewGuid(), null, "Standard", "immediate", DateTime.UtcNow, null, ct);
+    }
 
     public Task PublishMemberRoleChangedAsync(
         Guid workspaceId,
@@ -83,8 +87,12 @@ public sealed class OutboxWorkspaceEventPublisher(WorkspaceOutboxWriter writer) 
         Guid changedByUserId,
         Guid eventId,
         string? correlationId,
-        CancellationToken ct = default) =>
-        PublishMemberRoleChangedAsync(workspaceId, targetUserId, oldRole, newRole, changedByUserId, eventId, correlationId, "Internal", "immediate", DateTime.UtcNow, null, ct);
+        CancellationToken ct = default)
+    {
+        return PublishMemberRoleChangedAsync(
+            workspaceId, targetUserId, oldRole, newRole, changedByUserId,
+            eventId, correlationId, "Standard", "immediate", DateTime.UtcNow, null, ct);
+    }
 
     public Task PublishMemberRoleChangedAsync(
         Guid workspaceId,
@@ -100,18 +108,25 @@ public sealed class OutboxWorkspaceEventPublisher(WorkspaceOutboxWriter writer) 
         string? idempotencyKey,
         CancellationToken ct = default)
     {
-        var occurredAt = effectiveAt;
         var envelope = DomainEventEnvelope.Create(
-            "workspace.member.role_changed",
+            WorkspaceEventTypes.MemberRoleChanged,
             WorkspaceEventTypes.Producer,
             workspaceId.ToString(),
-            new MemberRemovedEventPayload(
+            new MemberRoleChangedEventPayload(
                 workspaceId.ToString(),
                 targetUserId.ToString(),
+                oldRole,
+                newRole,
                 changedByUserId.ToString(),
-                occurredAt),
+                membershipType,
+                effectiveBehavior,
+                eventId.ToString(),
+                correlationId,
+                idempotencyKey,
+                effectiveAt,
+                effectiveAt),
             correlationId: correlationId,
-            occurredAt: occurredAt);
+            occurredAt: effectiveAt);
         return writer.EnqueueAsync(envelope, "MemberRoleChanged", ct);
     }
 }

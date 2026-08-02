@@ -14,6 +14,8 @@ public static class WorkspaceConstants
 
     // Invitation Defaults
     public const int DefaultInvitationExpiryDays = 7;
+    public const int MinWorkspaceInvitationExpiryDays = 1;
+    public const int MaxWorkspaceInvitationExpiryDays = 365;
 
     // Error Messages
     public static class Errors
@@ -37,6 +39,8 @@ public static class WorkspaceConstants
         public const string InvalidSettingsPayload = "Invalid settings payload.";
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 0 and 3650.";
+        public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
+        public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
         
@@ -49,17 +53,20 @@ public static class WorkspaceConstants
         public const string TargetMemberNotFoundOrRemoved = "Target member not found or already removed.";
         public const string CannotRemoveOwner = "Cannot remove the Owner of the workspace.";
         public const string RoleMustBeAdminOrMember = "Role name must be Admin or Member.";
-        public const string OnlyOwnerCanChangeRoles = "Only the workspace Owner can change member roles.";
+        public const string OnlyOwnerAdminCanChangeRoles = "Only the workspace Owner can change member roles.";
         public const string ExternalRoleImmutable = "External members can only retain the Member role.";
         public const string RoleChangeStale = "Role change preview is stale. Reload the member and preview again.";
         public const string CoolingOffNotComplete = "Promotion cooling-off has not completed.";
         public const string RoleChangePreviewExpired = "Role change preview has expired.";
         public const string InvalidRoleChangePreview = "Role change preview is invalid.";
+        public const string RolePreviewSigningKeyNotConfigured = "Role preview signing key is not configured.";
         public const string InvalidIdempotencyKey = "A valid idempotency key is required.";
         public const string CannotDemoteLastOwner = "Cannot demote the last owner. Please transfer ownership first.";
         public const string CannotChangeOwnerRole = "Cannot change the Owner's role.";
         public const string CannotChangeOwnRole = "Members cannot change their own workspace role.";
+        public const string AdminCannotChangeAdminRole = "Admin cannot change another Admin's role.";
         public const string AdminCannotModifyPeerAdmin = "Admin cannot modify settings of other Admins.";
+        public const string AdminCannotPromoteToAdmin = "Admin cannot promote members to Admin role.";
         public const string RoleNotFound = "Role not found.";
 
         public const string OnlyOwnerAdminCanInvite = "Only Owner or Admin can invite members.";
@@ -95,7 +102,7 @@ public static class WorkspaceConstants
         public const string DomainAlreadyAddedToWorkspace = "This domain has already been added to this workspace.";
         public const string CannotRevokeLastDomain = "Cannot revoke the last verified domain while the workspace requires domain verification for Internal members. Add another domain first or disable the requirement.";
         public const string CannotRevokeDomainWithActiveMembers = "Cannot revoke domain because active internal members are still using this domain. Please update or remove these members first.";
-        public const string OnlyOwnerCanManageDomains = "Only workspace Owner or Admin can add or revoke verified domains.";
+        public const string OnlyOwnerCanManageDomains = "Only the workspace Owner can add or revoke verified domains.";
 
         // Document specific errors
         public const string DocumentNotFound = "Document not found.";

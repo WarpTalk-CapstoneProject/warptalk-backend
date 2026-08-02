@@ -8,7 +8,7 @@ namespace WarpTalk.WorkspaceService.Application.Helpers;
 
 public static class RolePreviewSigningKeyHelper
 {
-    public static byte[] Resolve(IConfiguration? configuration)
+    public static bool TryResolve(IConfiguration? configuration, out byte[] signingKey)
     {
         var configuredKey = new[]
             {
@@ -20,10 +20,12 @@ public static class RolePreviewSigningKeyHelper
 
         if (configuredKey == null)
         {
-            throw new InvalidOperationException("Security:RolePreviewSigningKey must be configured with a stable non-placeholder secret.");
+            signingKey = [];
+            return false;
         }
 
-        return SHA256.HashData(Encoding.UTF8.GetBytes(configuredKey));
+        signingKey = SHA256.HashData(Encoding.UTF8.GetBytes(configuredKey));
+        return true;
     }
 
     public static bool IsUsable(string? configuredKey)

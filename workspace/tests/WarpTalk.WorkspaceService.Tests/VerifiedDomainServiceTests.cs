@@ -93,15 +93,12 @@ public class VerifiedDomainServiceTests
             .Returns(member);
     }
 
-    [Theory]
-    [InlineData("Owner")]
-    [InlineData("Admin")]
-    public async Task AddDomainAsync_ShouldSucceed_WhenValidCorporateDomain_ByOwnerOrAdmin(string roleName)
+    [Fact]
+    public async Task AddDomainAsync_ShouldSucceed_WhenValidCorporateDomain_ByOwner()
     {
         // Arrange
         SetupWorkspace();
-        var roleId = roleName == "Owner" ? _ownerRoleId : _adminRoleId;
-        SetupMember(roleId);
+        SetupMember(_ownerRoleId);
 
         _verifiedDomainRepo.AnyAsync(
             Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
@@ -119,7 +116,8 @@ public class VerifiedDomainServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.Equal("enterprise.com", result.Value!.Domain);
+        Assert.NotNull(result.Value);
+        Assert.Equal("enterprise.com", result.Value.Domain);
         Assert.Equal("verified", result.Value.Status);
         await _verifiedDomainRepo.Received(1).AddAsync(
             Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "enterprise.com" && vd.WorkspaceId == _workspaceId),
@@ -160,6 +158,53 @@ public class VerifiedDomainServiceTests
 
         Assert.False(revokeResult.IsSuccess);
         Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, revokeResult.Error);
+    }
+
+    [Fact]
+    [Trait("Category", "RBAC")]
+    public async Task AddDomainAsync_ShouldFail_WhenCallerIsAdmin()
+    {
+        SetupWorkspace();
+        SetupMember(_adminRoleId);
+
+        var result = await _service.AddDomainAsync(_workspaceId, "company.com", _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, result.Error);
+        await _verifiedDomainRepo.DidNotReceive().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    [Trait("Category", "RBAC")]
+    public async Task RevokeDomainAsync_ShouldFail_WhenCallerIsAdmin()
+    {
+        SetupWorkspace();
+        SetupMember(_adminRoleId);
+
+        var result = await _service.RevokeDomainAsync(_workspaceId, Guid.NewGuid(), _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, result.Error);
+        _verifiedDomainRepo.DidNotReceive().Update(Arg.Any<WorkspaceVerifiedDomain>());
+    }
+
+    [Fact]
+    [Trait("Category", "RBAC")]
+    public async Task ListDomainsAsync_ShouldSucceed_WhenCallerIsAdmin()
+    {
+        SetupWorkspace();
+        SetupMember(_adminRoleId);
+        _verifiedDomainRepo.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var result = await _service.ListDomainsAsync(_workspaceId, _userId);
+
+        Assert.True(result.IsSuccess);
     }
 
     [Fact]

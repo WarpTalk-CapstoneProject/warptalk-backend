@@ -25,7 +25,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly ILogger<WorkspaceMemberService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
-    private readonly byte[] _previewSigningKey;
+    private readonly IConfiguration? _configuration;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
@@ -38,7 +38,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
-        _previewSigningKey = RolePreviewSigningKeyHelper.Resolve(configuration);
+        _configuration = configuration;
     }
 
 
@@ -103,8 +103,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             newOwnerMember.RoleId = ownerRoleId.Value;
             _unitOfWork.WorkspaceMemberRepository.Update(newOwnerMember);
 
-            await _unitOfWork.SaveChangesAsync(ct);
-
             var demotionId = Guid.NewGuid();
             var promotionId = Guid.NewGuid();
             var transferEffectiveAt = DateTime.UtcNow;
@@ -114,6 +112,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             await _eventPublisher.PublishMemberRoleChangedAsync(
                 workspaceId, newOwnerId, targetOldRoleName, ownerRoleName, executingUserId,
                 promotionId, null, newOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{promotionId:N}", ct);
+
+            await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
@@ -328,7 +328,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
             if (!execRoleName.IsOwner())
             {
-                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanChangeRoles, ErrorCodes.Forbidden);
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
             }
 
             var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
@@ -342,12 +342,18 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             if (request != null)
             {
+                if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+                {
+                    _logger.LogError("Role preview signing key is not configured.");
+                    return Result.Failure(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+                }
+
                 if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
                 {
                     return Result.Failure(WorkspaceConstants.Errors.InvalidIdempotencyKey, ErrorCodes.ValidationError);
                 }
 
-                if (!RolePreviewTokenHelper.TryReadPreviewToken(request.PreviewToken, _previewSigningKey, out var preview)
+                if (!RolePreviewTokenHelper.TryReadPreviewToken(request.PreviewToken, previewSigningKey, out var preview)
                     || preview.WorkspaceId != workspaceId
                     || preview.TargetUserId != memberUserId)
                 {
@@ -384,6 +390,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
             }
 
+            if (string.Equals(targetRoleName, roleName, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Success();
+            }
+
             var newRoleId = await _authIdentity.GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
@@ -393,13 +404,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             targetMember.RoleId = newRoleId.Value;
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
-            await _unitOfWork.SaveChangesAsync(ct);
 
             var committedEventId = eventId ?? Guid.NewGuid();
             await _eventPublisher.PublishMemberRoleChangedAsync(
                 workspaceId, memberUserId, targetRoleName, roleName, executingUserId,
                 committedEventId, request?.CorrelationId, targetMember.MembershipType,
                 "next-request-or-session", DateTime.UtcNow, request?.IdempotencyKey, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
@@ -446,7 +457,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         var actor = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
         if (actor == null) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
         var actorRole = await _authIdentity.GetRoleNameByIdAsync(actor.RoleId, ct);
-        if (!actorRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.OnlyOwnerCanChangeRoles, ErrorCodes.Forbidden);
+        if (!actorRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
         var target = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
         if (target == null) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
         var currentRole = await _authIdentity.GetRoleNameByIdAsync(target.RoleId, ct);
@@ -454,6 +465,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         if (currentRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
         if (!string.Equals(target.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.ExternalRoleImmutable, ErrorCodes.ValidationError);
         if (!roleName.IsAdmin() && !roleName.IsMember()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
+        if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+        {
+            _logger.LogError("Role preview signing key is not configured.");
+            return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+        }
+
         var now = DateTime.UtcNow;
         var expiresAt = now.AddMinutes(15);
         var coolingOffUntil = roleName.IsAdmin() ? now.AddSeconds(60) : (DateTime?)null;
@@ -464,7 +481,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             roleName,
             new DateTimeOffset(expiresAt).ToUnixTimeSeconds(),
             new DateTimeOffset(coolingOffUntil ?? now).ToUnixTimeSeconds(),
-            _previewSigningKey);
+            previewSigningKey);
 
         return Result.Success(new WorkspaceRoleChangePreviewDto(memberUserId, currentRole, roleName, target.MembershipType, target.CanCreateMeetings, [], expiresAt, previewToken, coolingOffUntil));
     }
@@ -518,5 +535,4 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
-
 }

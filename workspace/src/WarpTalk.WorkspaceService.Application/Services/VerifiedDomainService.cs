@@ -55,7 +55,7 @@ public class VerifiedDomainService : IVerifiedDomainService
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            if (!roleName.IsOwnerOrAdmin())
+            if (!roleName.IsOwner())
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, ErrorCodes.Forbidden);
 
             // 3. Normalise and validate domain
@@ -149,7 +149,7 @@ public class VerifiedDomainService : IVerifiedDomainService
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            if (!roleName.IsOwnerOrAdmin())
+            if (!roleName.IsOwner())
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, ErrorCodes.Forbidden);
 
             // 3. Domain entry must exist and be active
@@ -193,10 +193,9 @@ public class VerifiedDomainService : IVerifiedDomainService
                     if (user != null && !string.IsNullOrWhiteSpace(user.Email))
                     {
                         var memberEmailDomain = user.Email.Split('@').LastOrDefault()?.Trim().ToLowerInvariant();
-                        if (!string.IsNullOrWhiteSpace(memberEmailDomain)
-                            && string.Equals(memberEmailDomain, targetDomain, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(memberEmailDomain, targetDomain, StringComparison.OrdinalIgnoreCase))
                         {
-                            if (!remainingActiveDomains.Contains(memberEmailDomain))
+                            if (memberEmailDomain != null && !remainingActiveDomains.Contains(memberEmailDomain))
                             {
                                 return Result.Failure(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, ErrorCodes.ValidationError);
                             }
