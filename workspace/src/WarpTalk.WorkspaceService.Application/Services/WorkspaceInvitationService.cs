@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -137,7 +136,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var membershipType = membershipTypeEnum.ToString();
-            var invitationToken = GenerateInvitationToken();
+            var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
             var newInvitation = WorkspaceInvitationMapper.CreateInvitation(
                 workspaceId,
                 request,
@@ -229,7 +228,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
-            var invitationToken = GenerateInvitationToken();
+            var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
             invitation.TokenHash = TokenHasher.Hash(invitationToken);
             _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -313,7 +312,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             foreach (var invite in items)
             {
                 var roleName = await _authIdentity.GetRoleNameByIdAsync(invite.RoleId, ct);
-                dtos.Add(invite.ToDto(roleName));
+                dtos.Add(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, invite, roleName, ct));
             }
 
             var pagedResult = new PagedResult<WorkspaceInvitationDto>(dtos, query.Page, query.PageSize, totalCount);
@@ -503,7 +502,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             foreach (var request in requests)
             {
                 var roleName = await _authIdentity.GetRoleNameByIdAsync(request.RoleId, ct);
-                result.Add(request.ToDto(roleName));
+                result.Add(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, request, roleName, ct));
             }
 
             return Result.Success(result);
@@ -591,7 +590,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             if (existingPendingRequest != null)
             {
                 var memberRoleName = await _authIdentity.GetRoleNameByIdAsync(existingPendingRequest.RoleId, ct);
-                return Result.Success(existingPendingRequest.ToDto(memberRoleName));
+                return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, existingPendingRequest, memberRoleName, ct));
             }
 
             var defaultMemberRoleId = await _authIdentity.GetRoleIdByNameAsync("Member", ct);
@@ -610,13 +609,14 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            var membershipType = await WorkspaceHelper.DetermineJoinRequestMembershipTypeAsync(
+            var eligibility = await WorkspaceHelper.EvaluateJoinRequestEligibilityAsync(
                 _unitOfWork,
                 userEmail,
+                userId,
                 workspaceForClassification,
                 ct);
 
-            var request = new InviteMemberRequest(userEmail, "Member", membershipType.ToString());
+            var request = new InviteMemberRequest(userEmail, "Member", eligibility.InferredMembershipType.ToString());
             var joinRequest = WorkspaceInvitationMapper.CreateInvitation(
                 workspaceId,
                 request,
@@ -624,14 +624,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 "Member",
                 userId,
                 TokenHasher.Hash($"join-request:{userId:N}:{Guid.NewGuid():N}"),
-                membershipType.ToString());
+                eligibility.InferredMembershipType.ToString());
             joinRequest.Status = InvitationStatus.REQUESTED.ToString();
             joinRequest.RequestedBy = userId;
+            joinRequest.Workspace = workspaceForClassification;
 
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(joinRequest, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(joinRequest.ToDto("Member"));
+            return Result.Success(joinRequest.ToDto("Member", eligibility));
         }
         catch (Exception ex)
         {
@@ -681,10 +682,20 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
             invitation.Workspace = workspace;
 
+            var requesterId = invitation.RequestedBy ?? invitation.InvitedBy;
+            var eligibility = await WorkspaceHelper.EvaluateJoinRequestEligibilityAsync(
+                _unitOfWork,
+                invitation.Email,
+                requesterId,
+                workspace,
+                ct);
+
             var selectedMembershipType = request?.MembershipType;
             if (string.IsNullOrWhiteSpace(selectedMembershipType))
             {
-                selectedMembershipType = invitation.MembershipType;
+                selectedMembershipType = eligibility.AllowedFinalMembershipTypes.Count == 1
+                    ? eligibility.AllowedFinalMembershipTypes[0]
+                    : invitation.MembershipType;
             }
 
             if (!Enum.TryParse<MembershipType>(selectedMembershipType, true, out var membershipType))
@@ -692,13 +703,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
             }
 
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
+            var isAllowedMembershipType = eligibility.AllowedFinalMembershipTypes.Any(
+                allowed => string.Equals(allowed, membershipType.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (!isAllowedMembershipType)
             {
-                return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
+                return Result.Failure<ApproveJoinRequestResponse>(
+                    eligibility.PolicyReason ?? WorkspaceConstants.Errors.InvalidMembershipType,
+                    ErrorCodes.ValidationError);
             }
 
-            var requesterId = invitation.RequestedBy ?? invitation.InvitedBy;
             var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == requesterId && m.RemovedAt == null, "", ct);
             if (existingMember != null)
@@ -813,8 +826,4 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         }
     }
 
-    private static string GenerateInvitationToken()
-    {
-        return Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-    }
 }

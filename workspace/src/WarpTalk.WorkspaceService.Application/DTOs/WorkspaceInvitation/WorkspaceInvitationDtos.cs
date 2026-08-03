@@ -40,7 +40,11 @@ public record WorkspaceInvitationDto(
     Guid? ReviewedBy = null,
     DateTime? ReviewedAt = null,
     string? WorkspaceName = null,
-    string? WorkspaceSlug = null
+    string? WorkspaceSlug = null,
+    IReadOnlyList<string>? AllowedFinalMembershipTypes = null,
+    bool? RequiresPolicyAction = null,
+    string? PolicyReason = null,
+    IReadOnlyList<string>? SuggestedActions = null
 );
 
 public record ApproveJoinRequestResponse(

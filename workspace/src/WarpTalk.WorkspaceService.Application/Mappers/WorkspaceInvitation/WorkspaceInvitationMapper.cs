@@ -1,5 +1,6 @@
 using System;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -36,7 +37,7 @@ public static class WorkspaceInvitationMapper
         };
     }
 
-    public static WorkspaceInvitationDto ToDto(this WorkspaceInvitation invitation, string roleName)
+    public static WorkspaceInvitationDto ToDto(this WorkspaceInvitation invitation, string roleName, JoinRequestEligibility? eligibility = null)
     {
         ArgumentNullException.ThrowIfNull(invitation);
         if (string.IsNullOrWhiteSpace(roleName))
@@ -62,7 +63,11 @@ public static class WorkspaceInvitationMapper
             invitation.ReviewedBy,
             invitation.ReviewedAt,
             invitation.Workspace?.Name,
-            invitation.Workspace?.Slug
+            invitation.Workspace?.Slug,
+            eligibility?.AllowedFinalMembershipTypes,
+            eligibility?.RequiresPolicyAction,
+            eligibility?.PolicyReason,
+            eligibility?.SuggestedActions
         );
     }
 
