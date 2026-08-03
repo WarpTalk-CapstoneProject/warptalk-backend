@@ -7,7 +7,6 @@ public static class BillingMessageConstants
         public const string CreditsAddedTitle = "Credits Added";
         public const string CreditsAddedContent = "Top-up processed successfully. Added {0} credits.";
         public const string SubscriptionActivationTopUp = "Subscription activation top-up";
-        public const string StripeCreditTopUp = "Stripe Credit Top-Up";
         public const string SubscriptionPlanActivationTemplate = "Subscription Plan Activation: {0}";
         public const string SubscriptionPlanRenewalTemplate = "{0} — Renewal {1:yyyy-MM-dd}";
     }
@@ -287,6 +286,8 @@ public static class BillingMessageConstants
         public const string BillingCheckoutSessionCreateFailed = "Failed to create checkout session";
         public const string BillingCheckoutSessionGetFailed = "Failed to get checkout session";
         public const string BillingPaymentEventFailed = "Failed to process payment event";
+        public const string BillingInvoiceNotFound = "Invoice not found.";
+        public const string BillingInvoiceAlreadyPaid = "Invoice is already paid.";
 
         public const string BillingOwnerEmailInvalid = "Owner email is invalid.";
         public const string BillingTrialAlreadyExistsForOwnerDomain = "Trial already exists for this owner email domain.";

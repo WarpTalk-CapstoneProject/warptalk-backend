@@ -1,9 +1,14 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Nodes;
+using System.Text.Json;
+using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -43,72 +48,11 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction ToEntity(this TopUpRequest request, Subscription sub) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        UserId = sub.UserId,
-        Amount = request.Amount,
-        Type = TransactionConstants.TransactionTypes.TopUp,
-        ReferenceType = request.ReferenceType.ToString(),
-        ReferenceId = request.ReferenceId,
-        BalanceAfter = sub.CreditsRemaining,
-        CreatedAt = DateTime.UtcNow
-    };
 
-    public static GrantCreditsRequest ToGrantCreditsRequest(
-        this TopUpRequest request,
-        Guid? userId,
-        string? description = null) => new(
-        request.WorkspaceId,
-        request.Amount,
-        request.ReferenceType,
-        request.ReferenceId,
-        userId,
-        description);
 
-    public static CreditTransaction ToEntity(this GrantCreditsRequest request, Subscription sub) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        WorkspaceId = request.WorkspaceId,
-        UserId = request.UserId ?? sub.UserId,
-        Amount = request.Amount,
-        Type = TransactionConstants.TransactionTypes.TopUp,
-        Description = request.Description ?? BillingMessageConstants.SuccessMessages.StripeCreditTopUp,
-        ReferenceType = request.ReferenceType,
-        ReferenceId = request.ReferenceId,
-        BalanceAfter = sub.CreditsRemaining,
-        CreatedAt = DateTime.UtcNow
-    };
 
-    public static CreditTransaction ToEntity(this ManualAdjustCreditsRequest request, Subscription sub) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        UserId = sub.UserId,
-        Amount = request.Amount,
-        Type = TransactionConstants.TransactionTypes.Adjustment,
-        Description = string.IsNullOrEmpty(request.Reason) ? BillingMessageConstants.AdjustmentMessages.DefaultReason : request.Reason,
-        ReferenceType = TransactionConstants.ReferenceTypes.ManualAdjustment,
-        ReferenceId = null,
-        BalanceAfter = sub.CreditsRemaining,
-        CreatedAt = DateTime.UtcNow
-    };
 
-    public static CreditTransaction CreateStripeTopUpTransaction(this Subscription sub, int creditsAdded, Guid userId, Guid referenceId) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = sub.Id,
-        UserId = userId,
-        Amount = creditsAdded,
-        Type = TransactionConstants.TransactionTypes.TopUp,
-        Description = BillingMessageConstants.SuccessMessages.StripeCreditTopUp,
-        ReferenceId = referenceId,
-        ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
-        BalanceAfter = sub.CreditsRemaining,
-        CreatedAt = DateTime.UtcNow
-    };
+
 
     public static CreditTransaction CreateStripeSubscriptionTransaction(StripeSubscriptionTransactionRequest request) => new()
     {
@@ -143,18 +87,7 @@ public static class CreditMapper
         CreatedAt = DateTime.UtcNow
     };
 
-    public static CreditTransaction CreateAggregatedTransaction(Guid subscriptionId, int amount, string chargeType, string description) => new()
-    {
-        Id = Guid.NewGuid(),
-        SubscriptionId = subscriptionId,
-        UserId = Guid.Empty, // Aggregated transactions do not belong to a specific user
-        WorkspaceId = Guid.Empty, // Or could pass workspaceId if needed
-        Amount = amount,
-        Type = TransactionConstants.TransactionTypes.Consume,
-        ChargeType = chargeType,
-        Description = description,
-        CreatedAt = DateTime.UtcNow
-    };
+
 
     public static CreditTransactionDto ToDto(this CreditTransaction t, Guid defaultWorkspaceId = default)
     {

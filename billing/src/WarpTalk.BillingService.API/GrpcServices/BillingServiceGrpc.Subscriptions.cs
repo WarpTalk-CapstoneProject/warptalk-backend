@@ -1,5 +1,5 @@
 using WarpTalk.BillingService.Domain.Constants;
-using WarpTalk.BillingService.API.Extensions;
+
 using WarpTalk.BillingService.API.Mappers;
 using System;
 using System.Threading.Tasks;
@@ -10,26 +10,6 @@ namespace WarpTalk.BillingService.API.GrpcServices;
 
 public partial class BillingServiceGrpc
 {
-    public override async Task<SubscriptionResponse> CreateSubscription(CreateSubscriptionRequest request, ServerCallContext context)
-    {
-        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
-            throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Workspace);
-
-        await _workspaceAuthService.AuthorizeWorkspaceAsync(workspaceId, context);
-
-        if (!Guid.TryParse(request.PlanId, out var planId))
-            throw GrpcErrors.InvalidId(BillingMessageConstants.Grpc.Plan);
-
-        var result = await _subscriptionService.CreateSubscriptionAsync(request.ToDto(workspaceId, planId), context.CancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            throw new RpcException(new Status(StatusCode.Internal, result.Error ?? BillingMessageConstants.Grpc.FailedToCreateSubscription));
-        }
-
-        return result.Value!.ToGrpc();
-    }
-
     public override async Task<SubscriptionResponse> GetActiveSubscription(GetActiveSubscriptionRequest request, ServerCallContext context)
     {
         if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
@@ -63,7 +43,7 @@ public partial class BillingServiceGrpc
 
         if (latestSub != null)
         {
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(latestSub.PlanId, context.CancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(latestSub.PlanId, context.CancellationToken);
             return latestSub.ToGrpc(plan?.Name ?? BillingMessageConstants.Grpc.UnknownPlan);
         }
 
@@ -84,7 +64,7 @@ public partial class BillingServiceGrpc
             return GrpcBillingMapper.ToEmptyFeatureAccessResponse();
         }
 
-        var plan = await _unitOfWork.PlanRepository.GetByIdAsync(latestSub.PlanId, context.CancellationToken);
+        var plan = await _unitOfWork.Plans.GetByIdAsync(latestSub.PlanId, context.CancellationToken);
 
         return latestSub.ToFeatureAccessResponse(plan);
     }

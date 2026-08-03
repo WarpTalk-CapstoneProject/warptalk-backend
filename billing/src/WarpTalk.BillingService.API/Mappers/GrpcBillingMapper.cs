@@ -61,8 +61,7 @@ internal static class GrpcBillingMapper
         return new ConsumeCreditsRequest(workspaceId, request.Amount, request.ReferenceType, referenceId);
     }
 
-    public static TopUpRequest ToDto(this Protos.TopUpRequest request, Guid workspaceId)
-        => new(workspaceId, request.Amount, request.ReferenceType, null);
+
 
     public static CreditHistoryQuery ToCreditHistoryQuery(this Protos.GetHistoryRequest request)
     {
@@ -158,9 +157,6 @@ internal static class GrpcBillingMapper
             CancelledAt = dto.CancelledAt?.ToString("o") ?? string.Empty
         };
     }
-
-    public static SubscriptionRequest ToDto(this Protos.CreateSubscriptionRequest request, Guid workspaceId, Guid planId)
-        => new(workspaceId, planId, Guid.Empty);
 
     public static Protos.SubscriptionResponse ToEmptySubscriptionResponse(string errorMessage)
     {

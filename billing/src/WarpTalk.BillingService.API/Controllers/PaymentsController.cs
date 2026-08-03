@@ -1,11 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -47,7 +46,11 @@ public class PaymentsController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _paymentService.GetPaymentHistoryAsync(workspaceId, query, cancellationToken);
-        return result.ToActionResult(this);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [HttpPost]
@@ -57,7 +60,7 @@ public class PaymentsController : ControllerBase
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
         if (!result.IsSuccess)
         {
-            return this.ToBadRequest(result.Error, result.ErrorCode);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
         return StatusCode(201, result.Value);
@@ -72,7 +75,7 @@ public class PaymentsController : ControllerBase
             var createResult = await _paymentAppService.CreateCheckoutSessionAsync(request);
             if (!createResult.IsSuccess)
             {
-                return this.ToBadRequest(createResult.Error, createResult.ErrorCode);
+                return BadRequest(new ApiErrorResponse(createResult.Error, createResult.ErrorCode));
             }
 
             string url = createResult.Value!;
@@ -80,7 +83,7 @@ public class PaymentsController : ControllerBase
         }
         catch (ArgumentException ex)
         {
-            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
     }
 
@@ -96,7 +99,7 @@ public class PaymentsController : ControllerBase
             var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
             if (!sessionResult.IsSuccess)
             {
-                return this.ToBadRequest(sessionResult.Error, sessionResult.ErrorCode);
+                return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
             }
 
             var session = sessionResult.Value!;
@@ -105,7 +108,7 @@ public class PaymentsController : ControllerBase
             string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
             if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
             {
-                return this.ToBadRequest(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
+                return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError));
             }
 
             // Verify the requesting user is a system admin or an Owner/Admin of this workspace.
@@ -121,7 +124,7 @@ public class PaymentsController : ControllerBase
                     WorkspaceRoleConstants.Admin);
                 if (!accessResult.IsSuccess || !accessResult.Value)
                 {
-                    return this.ToErrorResult(StatusCodes.Status403Forbidden, ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
+                    return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden));
                 }
             }
 
@@ -145,7 +148,7 @@ public class PaymentsController : ControllerBase
                 ));
                 if (!processResult.IsSuccess)
                 {
-                    return this.ToBadRequest(processResult.Error, processResult.ErrorCode);
+                    return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
                 }
             }
 
@@ -153,15 +156,15 @@ public class PaymentsController : ControllerBase
         }
         catch (ArgumentException ex)
         {
-            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
         catch (KeyNotFoundException ex)
         {
-            return this.ToErrorResult(StatusCodes.Status404NotFound, ex.Message, ErrorCodes.NotFound);
+            return StatusCode(StatusCodes.Status404NotFound, new ApiErrorResponse(ex.Message, ErrorCodes.NotFound));
         }
         catch (Exception ex)
         {
-            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
     }
 
@@ -177,18 +180,18 @@ public class PaymentsController : ControllerBase
             var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
             if (!result.IsSuccess)
             {
-                return this.ToBadRequest(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError);
+                return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
             }
 
             return Ok();
         }
         catch (Stripe.StripeException ex)
         {
-            return this.ToBadRequest(ex.Message, ErrorCodes.ValidationError);
+            return BadRequest(new ApiErrorResponse(ex.Message, ErrorCodes.ValidationError));
         }
         catch (Exception ex)
         {
-            return this.ToErrorResult(StatusCodes.Status500InternalServerError, ex.Message, ErrorCodes.InternalServerError);
+            return StatusCode(StatusCodes.Status500InternalServerError, new ApiErrorResponse(ex.Message, ErrorCodes.InternalServerError));
         }
     }
 }

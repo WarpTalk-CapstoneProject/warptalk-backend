@@ -5,7 +5,6 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -31,7 +30,11 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
-        return result.ToActionResult(this);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [HttpPost("consume-direct")]
@@ -39,24 +42,10 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditTransactionDto>> ConsumeCreditsDirectly([FromBody] ConsumeCreditsRequest request, CancellationToken cancellationToken)
     {
         var result = await _creditService.ConsumeCreditsDirectlyAsync(request.WorkspaceId, request, cancellationToken);
-        return result.ToActionResult(this);
-    }
-
-    [HttpPost("topup")]
-    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner)]
-    public async Task<ActionResult<CreditBalanceDto>> TopUpCredits([FromBody] TopUpRequest request, CancellationToken cancellationToken)
-    {
-        var result = await _creditService.TopUpCreditsAsync(request.WorkspaceId, request, cancellationToken);
         if (!result.IsSuccess)
         {
-            if (result.ErrorCode == ErrorCodes.Forbidden)
-            {
-                return this.ToErrorResult(StatusCodes.Status410Gone, result.Error, result.ErrorCode);
-            }
-
-            return this.ToBadRequest(result.Error, result.ErrorCode);
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
         }
-
         return Ok(result.Value);
     }
 
@@ -65,18 +54,11 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
-        return result.ToActionResult(this);
-    }
-
-    [HttpPost("manual-adjust")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<CreditTransactionDto>> ManualAdjustCredits([FromBody] ManualAdjustCreditsRequest request, CancellationToken cancellationToken)
-    {
-        var adminUserId = User.GetUserId()?.ToString() ?? Guid.Empty.ToString();
-
-        var adjustRequest = request with { AdminUserId = adminUserId };
-        var result = await _creditService.ManualAdjustCreditsAsync(adjustRequest.WorkspaceId, adjustRequest, cancellationToken);
-        return result.ToActionResult(this);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [HttpGet("history/global")]
@@ -86,7 +68,7 @@ public class CreditsController : ControllerBase
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
         if (!result.IsSuccess)
         {
-            return this.ToBadRequest(result.Error, result.ErrorCode);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return Ok(result.Value);
     }

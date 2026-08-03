@@ -20,7 +20,7 @@ public class PaymentAppServiceTests
     private readonly Mock<IPaymentRepository> _paymentRepository = new();
     private readonly Mock<ISubscriptionRepository> _subscriptionRepository = new();
     private readonly Mock<IInvoiceRepository> _invoiceRepository = new();
-    private readonly Mock<ICreditGrantService> _creditGrantService = new();
+
     private readonly Mock<IBillingMessagePublisher> _messagePublisher = new();
 
     public PaymentAppServiceTests()
@@ -38,33 +38,6 @@ public class PaymentAppServiceTests
             .ReturnsAsync((Payment?)null);
     }
 
-    [Fact]
-    public async Task ProcessPaymentEventAsync_CreditTopUpWithoutActiveSubscription_FailsWithoutPersisting()
-    {
-        _subscriptionRepository
-            .Setup(r => r.FirstOrDefaultAsync(
-                It.IsAny<Expression<Func<Subscription, bool>>>(),
-                It.IsAny<string>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Subscription?)null);
-
-        var service = CreateService(new CreditTopUpPaymentEventHandler(
-            _unitOfWork.Object,
-            _creditGrantService.Object,
-            Mock.Of<ILogger<CreditTopUpPaymentEventHandler>>()));
-
-        var result = await service.ProcessPaymentEventAsync(CreateEvent(PaymentConstants.PaymentTypes.CreditTopUp));
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.BillingSubscriptionNotFound, result.ErrorCode);
-        _unitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
-        _creditGrantService.Verify(
-            s => s.QueueCreditGrantAsync(
-                It.IsAny<Subscription>(),
-                It.IsAny<GrantCreditsRequest>(),
-                It.IsAny<CancellationToken>()),
-            Times.Never);
-    }
 
     [Fact]
     public async Task ProcessPaymentEventAsync_UnknownPaidPaymentType_PersistsPaymentAndInvoice()

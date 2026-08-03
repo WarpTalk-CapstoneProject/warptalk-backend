@@ -29,7 +29,7 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
     public async Task<Result> HandleAsync(PaymentEventContext context, CancellationToken cancellationToken = default)
     {
         var request = context.Request;
-        var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+        var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
             p => p.Slug.ToLower() == request.PlanSlug.ToLower() && p.DeletedAt == null,
             cancellationToken);
 
@@ -87,7 +87,13 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         context.Subscription.PlanId = plan.Id;
         context.Subscription.Status = SubscriptionConstants.SubscriptionStatuses.Active;
         context.Subscription.IsActive = true;
-        context.Subscription.ApplyCycleAllocation(plan.CreditsPerCycle);
+        context.Subscription.CreditsRemaining += plan.CreditsPerCycle;
+        if (context.Subscription.CreditsRemaining >= 0)
+        {
+            context.Subscription.OverageStartedAt = null;
+            context.Subscription.ServiceState = SubscriptionConstants.ServiceStates.Healthy;
+            context.Subscription.SuspendedReason = null;
+        }
         context.Subscription.CreditsUsedThisCycle = 0;
         context.Subscription.CurrentPeriodStart = DateTime.UtcNow;
         context.Subscription.CurrentPeriodEnd = periodEnd;

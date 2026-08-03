@@ -80,11 +80,9 @@ public class StripePaymentService : IStripePaymentService
                             Currency = request.Currency,
                             ProductData = new SessionLineItemPriceDataProductDataOptions
                             {
-                                Name = request.PaymentType == PaymentConstants.PaymentTypes.CreditTopUp
-                                    ? PaymentConstants.ProductNames.CreditTopUp
-                                    : request.PaymentType == PaymentConstants.PaymentTypes.InvoicePayment
-                                        ? PaymentConstants.ProductNames.InvoicePayment
-                                        : PaymentConstants.ProductNames.SubscriptionPlan,
+                                Name = request.PaymentType == PaymentConstants.PaymentTypes.InvoicePayment
+                                    ? PaymentConstants.ProductNames.InvoicePayment
+                                    : PaymentConstants.ProductNames.SubscriptionPlan,
                             },
                             Recurring = isSubscription ? new SessionLineItemPriceDataRecurringOptions
                             {
@@ -118,83 +116,6 @@ public class StripePaymentService : IStripePaymentService
         catch (Exception ex)
         {
             return Result.Failure<string>(ex.Message, ErrorCodes.InternalServerError);
-        }
-    }
-
-    public async Task<Result<bool>> UpdateSubscriptionAsync(UpdateStripeSubscriptionRequest request, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var searchOptions = new SubscriptionSearchOptions
-            {
-                Query = string.Format(PaymentConstants.StripeSearchQueries.SubscriptionSearchTemplate, PaymentConstants.StripeMetadata.WorkspaceId, request.WorkspaceId, PaymentConstants.StripeStatuses.Active)
-            };
-
-            var searchResults = await _stripeSdkClient.SearchSubscriptionsAsync(searchOptions, cancellationToken);
-
-            if (searchResults.Data.Count == 0)
-                return Result.Success(false);
-
-            var subscription = searchResults.Data.First();
-            var subscriptionItemId = subscription.Items.Data[0].Id;
-
-            var productList = await _stripeSdkClient.ListProductsAsync(new ProductListOptions { Active = true, Limit = 100 }, cancellationToken);
-            var existingProduct = productList.Data.FirstOrDefault(p => p.Name == request.PlanSlug);
-
-            string productId;
-            if (existingProduct != null)
-            {
-                productId = existingProduct.Id;
-            }
-            else
-            {
-                var newProduct = await _stripeSdkClient.CreateProductAsync(new ProductCreateOptions
-                {
-                    Name = request.PlanSlug,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        { PaymentConstants.StripeMetadata.PlanSlug, request.PlanSlug.ToLowerInvariant() }
-                    }
-                }, cancellationToken);
-                productId = newProduct.Id;
-            }
-
-            var newPrice = await _stripeSdkClient.CreatePriceAsync(new PriceCreateOptions
-            {
-                Product = productId,
-                UnitAmount = string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
-                    ? (long)request.NewAmount
-                    : (long)(request.NewAmount * 100),
-                Currency = request.Currency,
-                Recurring = new PriceRecurringOptions
-                {
-                    Interval = PaymentConstants.PriceIntervals.Month
-                }
-            }, cancellationToken);
-
-            var options = new SubscriptionUpdateOptions
-            {
-                Items = new List<SubscriptionItemOptions>
-                {
-                    new SubscriptionItemOptions
-                    {
-                        Id = subscriptionItemId,
-                        Price = newPrice.Id
-                    }
-                },
-                Metadata = new Dictionary<string, string>
-                {
-                    { PaymentConstants.StripeMetadata.PlanSlug, request.PlanSlug.ToLowerInvariant() }
-                },
-                ProrationBehavior = PaymentConstants.StripeProrationBehaviors.AlwaysInvoice
-            };
-
-            await _stripeSdkClient.UpdateSubscriptionAsync(subscription.Id, options, cancellationToken);
-            return Result.Success(true);
-        }
-        catch (Exception ex)
-        {
-            return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
     }
 

@@ -68,8 +68,11 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IBillingMessagePublisher, RedisBillingMessagePublisher>();
         services.AddScoped<IBillingCycleClosingService, BillingCycleClosingService>();
         services.AddScoped<IBillingOperationalAlertService, BillingOperationalAlertService>();
+        services.AddScoped<IBillingPolicyRepository, BillingPolicyRepository>();
         services.AddScoped<IBillingPolicyService, BillingPolicyService>();
+        services.AddScoped<IUsageRateCardRepository, UsageRateCardRepository>();
         services.AddScoped<IUsageRateCardAdminService, UsageRateCardAdminService>();
+        services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 

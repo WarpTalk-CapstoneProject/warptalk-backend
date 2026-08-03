@@ -45,11 +45,11 @@ public class UnitOfWorkTests
         var unitOfWork = new UnitOfWork(dbContextMock.Object);
 
         // Act
-        var planRepository = unitOfWork.PlanRepository;
-        var planRepository2 = unitOfWork.PlanRepository;
+        var Plans = unitOfWork.Plans;
+        var Plans2 = unitOfWork.Plans;
 
         // Assert
-        planRepository.Should().NotBeNull();
-        planRepository.Should().BeSameAs(planRepository2); // Singleton per UnitOfWork instance
+        Plans.Should().NotBeNull();
+        Plans.Should().BeSameAs(Plans2); // Singleton per UnitOfWork instance
     }
 }

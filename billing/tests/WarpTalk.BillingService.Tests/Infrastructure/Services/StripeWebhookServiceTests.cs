@@ -73,7 +73,7 @@ public class StripeWebhookServiceTests
               "metadata": {
                 "{{PaymentConstants.StripeMetadata.UserId}}": "{{Guid.NewGuid()}}",
                 "{{PaymentConstants.StripeMetadata.WorkspaceId}}": "{{Guid.NewGuid()}}",
-                "{{PaymentConstants.StripeMetadata.PaymentType}}": "{{PaymentConstants.PaymentTypes.CreditTopUp}}"
+                "{{PaymentConstants.StripeMetadata.PaymentType}}": "{{PaymentConstants.PaymentTypes.Subscription}}"
               },
               "last_payment_error": {
                 "message": "Card declined"

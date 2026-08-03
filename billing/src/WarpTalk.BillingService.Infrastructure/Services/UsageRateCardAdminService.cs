@@ -1,10 +1,11 @@
-using System.Data;
-using Microsoft.EntityFrameworkCore;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
-using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
@@ -44,14 +45,14 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         CreateRateCardIdentity("VOICE_CLONE_ENROLLMENT", "profile", DefaultCurrency, "cartesia", "cartesia-localizing-voice"),
     };
 
-    private readonly BillingDbContext _dbContext;
+    private readonly IUsageRateCardRepository _repository;
     private readonly ILogger<UsageRateCardAdminService> _logger;
 
     public UsageRateCardAdminService(
-        BillingDbContext dbContext,
+        IUsageRateCardRepository repository,
         ILogger<UsageRateCardAdminService> logger)
     {
-        _dbContext = dbContext;
+        _repository = repository;
         _logger = logger;
     }
 
@@ -59,39 +60,9 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         try
         {
-            var connection = (System.Data.Common.DbConnection)_dbContext.Database.GetDbConnection();
-            await EnsureOpenAsync(connection, cancellationToken);
-            await EnsureTablesExistAsync(connection, cancellationToken);
 
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT id,
-                       charge_type,
-                       COALESCE(unit, '') AS unit,
-                       COALESCE(provider, '') AS provider,
-                       COALESCE(model, '') AS model,
-                       source_language_code,
-                       target_language_code,
-                       unit_price,
-                       currency,
-                       provider_unit_cost,
-                       markup_multiplier,
-                       effective_from,
-                       effective_to,
-                       is_active
-                FROM subscription.usage_rate_card
-                WHERE effective_to IS NULL
-                ORDER BY charge_type, unit, provider, model, source_language_code NULLS LAST, target_language_code NULLS LAST
-                """;
-
-            var rows = new List<UsageRateCardDto>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                rows.Add(ReadRateCard(reader));
-            }
-
-            return Result.Success<IReadOnlyList<UsageRateCardDto>>(rows);
+            var rows = await _repository.GetActiveRateCardsAsync(cancellationToken);
+            return Result.Success(rows);
         }
         catch (Exception ex)
         {
@@ -114,130 +85,25 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
         try
         {
-            var connection = (System.Data.Common.DbConnection)_dbContext.Database.GetDbConnection();
-            await EnsureOpenAsync(connection, cancellationToken);
-            await EnsureTablesExistAsync(connection, cancellationToken);
 
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await _repository.BeginTransactionAsync(cancellationToken);
 
-            var identityExists = await RateCardIdentityExistsAsync(
-                connection,
-                transaction,
-                request,
-                cancellationToken);
+            var identityExists = await _repository.RateCardIdentityExistsAsync(request, cancellationToken);
             if (!identityExists)
             {
-                await transaction.RollbackAsync(cancellationToken);
+                await _repository.RollbackTransactionAsync(cancellationToken);
                 return Result.Failure<UsageRateCardDto>(
                     "Usage rate-card identity is not registered. Add new billing identities through a migration/backend release first.",
                     ErrorCodes.ValidationError);
             }
 
-            await using (var deactivate = connection.CreateCommand())
-            {
-                deactivate.Transaction = transaction;
-                deactivate.CommandText = """
-                    UPDATE subscription.usage_rate_card
-                       SET is_active = false,
-                           effective_to = NOW()
-                     WHERE is_active = true
-                       AND effective_to IS NULL
-                       AND charge_type = @charge_type
-                       AND unit = @unit
-                       AND currency = @currency
-                       AND provider = @provider
-                       AND model = @model
-                       AND source_language_code IS NOT DISTINCT FROM @source_language_code
-                       AND target_language_code IS NOT DISTINCT FROM @target_language_code
-                    """;
-
-                AddParameter(deactivate, "charge_type", request.ChargeType.Trim());
-                AddParameter(deactivate, "unit", request.Unit.Trim());
-                AddParameter(deactivate, "currency", NormalizeCurrency(request.Currency));
-                AddParameter(deactivate, "provider", request.Provider.Trim());
-                AddParameter(deactivate, "model", request.Model.Trim());
-                AddParameter(deactivate, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-                AddParameter(deactivate, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-                await deactivate.ExecuteNonQueryAsync(cancellationToken);
-            }
-
-            UsageRateCardDto inserted;
-            await using (var insert = connection.CreateCommand())
-            {
-                insert.Transaction = transaction;
-                insert.CommandText = """
-                    INSERT INTO subscription.usage_rate_card (
-                        id,
-                        charge_type,
-                        unit,
-                        currency,
-                        provider,
-                        model,
-                        source_language_code,
-                        target_language_code,
-                        provider_unit_cost,
-                        markup_multiplier,
-                        unit_price,
-                        effective_from,
-                        is_active,
-                        notes
-                    )
-                    VALUES (
-                        uuidv7(),
-                        @charge_type,
-                        @unit,
-                        @currency,
-                        @provider,
-                        @model,
-                        @source_language_code,
-                        @target_language_code,
-                        @provider_unit_cost,
-                        @markup_multiplier,
-                        @unit_price,
-                        NOW(),
-                        @is_active,
-                        'Updated from admin pricing controls'
-                    )
-                    RETURNING id,
-                              charge_type,
-                              unit,
-                              provider,
-                              model,
-                              source_language_code,
-                              target_language_code,
-                              unit_price,
-                              currency,
-                              provider_unit_cost,
-                              markup_multiplier,
-                              effective_from,
-                              effective_to,
-                              is_active
-                    """;
-
-                AddParameter(insert, "charge_type", request.ChargeType.Trim());
-                AddParameter(insert, "unit", request.Unit.Trim());
-                AddParameter(insert, "currency", NormalizeCurrency(request.Currency));
-                AddParameter(insert, "provider", request.Provider.Trim());
-                AddParameter(insert, "model", request.Model.Trim());
-                AddParameter(insert, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-                AddParameter(insert, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-                AddParameter(insert, "provider_unit_cost", request.ProviderUnitCostUsd ?? (object)DBNull.Value);
-                AddParameter(insert, "markup_multiplier", request.MarkupMultiplier ?? (object)DBNull.Value);
-                AddParameter(insert, "unit_price", request.UnitPrice);
-                AddParameter(insert, "is_active", request.IsActive ?? true);
-
-                await using var reader = await insert.ExecuteReaderAsync(cancellationToken);
-                if (!await reader.ReadAsync(cancellationToken))
-                    return Result.Failure<UsageRateCardDto>("Unable to create usage rate card.", ErrorCodes.InternalServerError);
-
-                inserted = ReadRateCard(reader);
-            }
-
-            await transaction.CommitAsync(cancellationToken);
+            var inserted = await _repository.UpsertRateCardAsync(request, cancellationToken);
+            await _repository.CommitTransactionAsync(cancellationToken);
             return Result.Success(inserted);
         }
         catch (Exception ex)
         {
+            await _repository.RollbackTransactionAsync(cancellationToken);
             _logger.LogError(ex, "Error updating usage rate card");
             return Result.Failure<UsageRateCardDto>("Unable to update usage rate card.", ErrorCodes.InternalServerError);
         }
@@ -247,22 +113,20 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
     {
         try
         {
-            var connection = (System.Data.Common.DbConnection)_dbContext.Database.GetDbConnection();
-            await EnsureOpenAsync(connection, cancellationToken);
-            await EnsureTablesExistAsync(connection, cancellationToken);
 
-            var fxRate = await ReadPricingConfigValueAsync(connection, FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
-            var creditValue = await ReadPricingConfigValueAsync(connection, CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
-            var minimumPricePerCredit = await ReadPricingConfigValueAsync(connection, MinimumPricePerCreditVndConfigKey, SubscriptionConstants.PlanDefaults.PriceFloorPerCredit, cancellationToken);
-            var minimumContractPrice = await ReadPricingConfigValueAsync(connection, MinimumContractPriceVndConfigKey, SubscriptionConstants.PlanDefaults.MinimumVndPlanPrice, cancellationToken);
-            var minimumContractPriceUsd = await ReadPricingConfigValueAsync(connection, MinimumContractPriceUsdConfigKey, SubscriptionConstants.PlanDefaults.MinimumUsdPlanPrice, cancellationToken);
-            var salesUsageWeight = await ReadPricingConfigValueAsync(connection, SalesUsageWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesUsageWeight, cancellationToken);
-            var salesMembersWeight = await ReadPricingConfigValueAsync(connection, SalesMembersWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesMembersWeight, cancellationToken);
-            var salesLanguagesWeight = await ReadPricingConfigValueAsync(connection, SalesLanguagesWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesLanguagesWeight, cancellationToken);
-            var salesAiServicesWeight = await ReadPricingConfigValueAsync(connection, SalesAiServicesWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesAiServicesWeight, cancellationToken);
-            var defaultOverageCapRatio = await ReadPricingConfigValueAsync(connection, DefaultOverageCapRatioConfigKey, SubscriptionConstants.RateCardDefaults.DefaultOverageCapRatio, cancellationToken);
-            var defaultInvoiceTermsDays = await ReadPricingConfigValueAsync(connection, DefaultInvoiceTermsDaysConfigKey, SubscriptionConstants.PlanDefaults.InvoiceTermsDays, cancellationToken);
-            var defaultInvoiceGraceHours = await ReadPricingConfigValueAsync(connection, DefaultInvoiceGraceHoursConfigKey, SubscriptionConstants.PlanDefaults.InvoiceGraceHours, cancellationToken);
+
+            var fxRate = await _repository.ReadPricingConfigValueAsync(FxRateConfigKey, SubscriptionConstants.RateCardDefaults.FxRateUsdVnd, cancellationToken);
+            var creditValue = await _repository.ReadPricingConfigValueAsync(CreditValueConfigKey, SubscriptionConstants.RateCardDefaults.CreditValueVnd, cancellationToken);
+            var minimumPricePerCredit = await _repository.ReadPricingConfigValueAsync(MinimumPricePerCreditVndConfigKey, SubscriptionConstants.PlanDefaults.PriceFloorPerCredit, cancellationToken);
+            var minimumContractPrice = await _repository.ReadPricingConfigValueAsync(MinimumContractPriceVndConfigKey, SubscriptionConstants.PlanDefaults.MinimumVndPlanPrice, cancellationToken);
+            var minimumContractPriceUsd = await _repository.ReadPricingConfigValueAsync(MinimumContractPriceUsdConfigKey, SubscriptionConstants.PlanDefaults.MinimumUsdPlanPrice, cancellationToken);
+            var salesUsageWeight = await _repository.ReadPricingConfigValueAsync(SalesUsageWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesUsageWeight, cancellationToken);
+            var salesMembersWeight = await _repository.ReadPricingConfigValueAsync(SalesMembersWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesMembersWeight, cancellationToken);
+            var salesLanguagesWeight = await _repository.ReadPricingConfigValueAsync(SalesLanguagesWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesLanguagesWeight, cancellationToken);
+            var salesAiServicesWeight = await _repository.ReadPricingConfigValueAsync(SalesAiServicesWeightConfigKey, SubscriptionConstants.RateCardDefaults.SalesAiServicesWeight, cancellationToken);
+            var defaultOverageCapRatio = await _repository.ReadPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, SubscriptionConstants.RateCardDefaults.DefaultOverageCapRatio, cancellationToken);
+            var defaultInvoiceTermsDays = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, SubscriptionConstants.PlanDefaults.InvoiceTermsDays, cancellationToken);
+            var defaultInvoiceGraceHours = await _repository.ReadPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, SubscriptionConstants.PlanDefaults.InvoiceGraceHours, cancellationToken);
 
             return Result.Success(CreatePricingConfig(
                 fxRate,
@@ -308,24 +172,21 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
 
         try
         {
-            var connection = (System.Data.Common.DbConnection)_dbContext.Database.GetDbConnection();
-            await EnsureOpenAsync(connection, cancellationToken);
-            await EnsureTablesExistAsync(connection, cancellationToken);
 
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, FxRateConfigKey, request.FxRateUsdVnd, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, CreditValueConfigKey, request.CreditValueVnd, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, MinimumPricePerCreditVndConfigKey, request.MinimumPricePerCreditVnd, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, MinimumContractPriceVndConfigKey, request.MinimumContractPriceVnd, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, MinimumContractPriceUsdConfigKey, request.MinimumContractPriceUsd, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, SalesUsageWeightConfigKey, request.SalesUsageWeight, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, SalesMembersWeightConfigKey, request.SalesMembersWeight, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, SalesLanguagesWeightConfigKey, request.SalesLanguagesWeight, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, SalesAiServicesWeightConfigKey, request.SalesAiServicesWeight, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, DefaultOverageCapRatioConfigKey, request.DefaultOverageCapRatio, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, DefaultInvoiceTermsDaysConfigKey, request.DefaultInvoiceTermsDays, cancellationToken);
-            await UpsertPricingConfigValueAsync(connection, transaction, DefaultInvoiceGraceHoursConfigKey, request.DefaultInvoiceGraceHours, cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
+            await _repository.BeginTransactionAsync(cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(FxRateConfigKey, request.FxRateUsdVnd, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(CreditValueConfigKey, request.CreditValueVnd, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(MinimumPricePerCreditVndConfigKey, request.MinimumPricePerCreditVnd, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceVndConfigKey, request.MinimumContractPriceVnd, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(MinimumContractPriceUsdConfigKey, request.MinimumContractPriceUsd, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(SalesUsageWeightConfigKey, request.SalesUsageWeight, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(SalesMembersWeightConfigKey, request.SalesMembersWeight, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(SalesLanguagesWeightConfigKey, request.SalesLanguagesWeight, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(SalesAiServicesWeightConfigKey, request.SalesAiServicesWeight, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(DefaultOverageCapRatioConfigKey, request.DefaultOverageCapRatio, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceTermsDaysConfigKey, request.DefaultInvoiceTermsDays, cancellationToken);
+            await _repository.UpsertPricingConfigValueAsync(DefaultInvoiceGraceHoursConfigKey, request.DefaultInvoiceGraceHours, cancellationToken);
+            await _repository.CommitTransactionAsync(cancellationToken);
 
             return Result.Success(CreatePricingConfig(
                 request.FxRateUsdVnd,
@@ -343,88 +204,10 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
         }
         catch (Exception ex)
         {
+            await _repository.RollbackTransactionAsync(cancellationToken);
             _logger.LogError(ex, "Error updating billing pricing config");
             return Result.Failure<PricingConfigDto>("Unable to update billing pricing config.", ErrorCodes.InternalServerError);
         }
-    }
-
-    private static async Task EnsureTablesExistAsync(System.Data.Common.DbConnection connection, CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            CREATE SCHEMA IF NOT EXISTS subscription;
-
-            CREATE TABLE IF NOT EXISTS subscription.billing_pricing_config (
-                key VARCHAR(100) PRIMARY KEY,
-                value NUMERIC(18, 6) NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS subscription.usage_rate_card (
-                id UUID PRIMARY KEY DEFAULT uuidv7(),
-                charge_type VARCHAR(50) NOT NULL,
-                unit VARCHAR(20) NOT NULL,
-                currency VARCHAR(3) NOT NULL DEFAULT 'VND',
-                provider VARCHAR(50) NOT NULL,
-                model VARCHAR(50) NOT NULL,
-                source_language_code VARCHAR(10),
-                target_language_code VARCHAR(10),
-                provider_unit_cost NUMERIC(18, 12),
-                markup_multiplier NUMERIC(8, 4),
-                unit_price NUMERIC(18, 6) NOT NULL,
-                effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                effective_to TIMESTAMPTZ,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                notes TEXT
-            );
-
-            ALTER TABLE subscription.usage_rate_card
-                ADD COLUMN IF NOT EXISTS source_language_code VARCHAR(10),
-                ADD COLUMN IF NOT EXISTS target_language_code VARCHAR(10);
-            """;
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static async Task EnsureOpenAsync(IDbConnection connection, CancellationToken cancellationToken)
-    {
-        if (connection.State == ConnectionState.Open)
-            return;
-
-        if (connection is System.Data.Common.DbConnection dbConnection)
-            await dbConnection.OpenAsync(cancellationToken);
-        else
-            connection.Open();
-    }
-
-    private static UsageRateCardDto ReadRateCard(IDataRecord reader)
-    {
-        return new UsageRateCardDto(
-            reader.GetGuid(reader.GetOrdinal("id")),
-            reader.GetString(reader.GetOrdinal("charge_type")),
-            reader.GetString(reader.GetOrdinal("unit")),
-            reader.GetString(reader.GetOrdinal("provider")),
-            reader.GetString(reader.GetOrdinal("model")),
-            ReadNullableString(reader, "source_language_code"),
-            ReadNullableString(reader, "target_language_code"),
-            reader.GetDecimal(reader.GetOrdinal("unit_price")),
-            reader.GetString(reader.GetOrdinal("currency")),
-            ReadNullableDecimal(reader, "provider_unit_cost"),
-            ReadNullableDecimal(reader, "markup_multiplier"),
-            reader.GetDateTime(reader.GetOrdinal("effective_from")),
-            reader.IsDBNull(reader.GetOrdinal("effective_to")) ? null : reader.GetDateTime(reader.GetOrdinal("effective_to")),
-            reader.GetBoolean(reader.GetOrdinal("is_active")));
-    }
-
-    private static decimal? ReadNullableDecimal(IDataRecord reader, string columnName)
-    {
-        var ordinal = reader.GetOrdinal(columnName);
-        return reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
-    }
-
-    private static string? ReadNullableString(IDataRecord reader, string columnName)
-    {
-        var ordinal = reader.GetOrdinal(columnName);
-        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
     }
 
     private static bool IsValid(UpsertUsageRateCardRequest request)
@@ -436,40 +219,6 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
                request.UnitPrice >= 0 &&
                (request.ProviderUnitCostUsd is null or >= 0) &&
                (request.MarkupMultiplier is null or >= 0);
-    }
-
-    private static async Task<bool> RateCardIdentityExistsAsync(
-        System.Data.Common.DbConnection connection,
-        System.Data.Common.DbTransaction transaction,
-        UpsertUsageRateCardRequest request,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            SELECT EXISTS (
-                SELECT 1
-                FROM subscription.usage_rate_card
-                WHERE charge_type = @charge_type
-                  AND unit = @unit
-                  AND currency = @currency
-                  AND provider = @provider
-                  AND model = @model
-                  AND source_language_code IS NOT DISTINCT FROM @source_language_code
-                  AND target_language_code IS NOT DISTINCT FROM @target_language_code
-            )
-            """;
-
-        AddParameter(command, "charge_type", request.ChargeType.Trim());
-        AddParameter(command, "unit", request.Unit.Trim());
-        AddParameter(command, "currency", NormalizeCurrency(request.Currency));
-        AddParameter(command, "provider", request.Provider.Trim());
-        AddParameter(command, "model", request.Model.Trim());
-        AddParameter(command, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-        AddParameter(command, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is bool exists && exists;
     }
 
     private static string? NormalizeLanguageCode(string? languageCode)
@@ -546,55 +295,6 @@ public sealed class UsageRateCardAdminService : IUsageRateCardAdminService
             defaultInvoiceGraceHours,
             PricingFormula,
             ResolverKey);
-    }
-
-    private static async Task<decimal> ReadPricingConfigValueAsync(
-        System.Data.Common.DbConnection connection,
-        string key,
-        decimal defaultValue,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT value
-            FROM subscription.billing_pricing_config
-            WHERE key = @key
-            """;
-        AddParameter(command, "key", key);
-
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null || value == DBNull.Value
-            ? defaultValue
-            : Convert.ToDecimal(value);
-    }
-
-    private static async Task UpsertPricingConfigValueAsync(
-        System.Data.Common.DbConnection connection,
-        System.Data.Common.DbTransaction transaction,
-        string key,
-        decimal value,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            INSERT INTO subscription.billing_pricing_config (key, value, updated_at)
-            VALUES (@key, @value, NOW())
-            ON CONFLICT (key)
-            DO UPDATE SET value = EXCLUDED.value,
-                          updated_at = NOW()
-            """;
-        AddParameter(command, "key", key);
-        AddParameter(command, "value", value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static void AddParameter(IDbCommand command, string name, object value)
-    {
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.Value = value;
-        command.Parameters.Add(parameter);
     }
 
     private readonly record struct RateCardIdentity(

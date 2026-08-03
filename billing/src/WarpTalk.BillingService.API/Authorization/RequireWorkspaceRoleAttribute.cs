@@ -3,7 +3,6 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
@@ -46,7 +45,7 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
         var userId = context.HttpContext.User.GetUserId();
         if (userId == null)
         {
-            context.Result = new UnauthorizedObjectResult(ControllerResultExtensions.ToErrorResponse(
+            context.Result = new UnauthorizedObjectResult(new ApiErrorResponse(
                 ApiMessageConstants.ErrorMessages.UnauthorizedTokenDetail,
                 ErrorCodes.Unauthorized));
             return;
@@ -54,7 +53,7 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
 
         if (!TryGetWorkspaceId(context, out var workspaceId))
         {
-            context.Result = new BadRequestObjectResult(ControllerResultExtensions.ToErrorResponse(
+            context.Result = new BadRequestObjectResult(new ApiErrorResponse(
                 ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                 ErrorCodes.ValidationError));
             return;
@@ -63,7 +62,7 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
         var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(workspaceId, userId.Value, _allowedRoles);
         if (!accessResult.IsSuccess)
         {
-            context.Result = new ObjectResult(ControllerResultExtensions.ToErrorResponse(
+            context.Result = new ObjectResult(new ApiErrorResponse(
                 accessResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
                 accessResult.ErrorCode ?? ErrorCodes.InternalServerError))
             {
@@ -74,7 +73,7 @@ internal sealed class RequireWorkspaceRoleFilter : IAsyncActionFilter
 
         if (!accessResult.Value)
         {
-            context.Result = new ObjectResult(ControllerResultExtensions.ToErrorResponse(
+            context.Result = new ObjectResult(new ApiErrorResponse(
                 ApiMessageConstants.ErrorMessages.BillingAccessDenied,
                 ErrorCodes.Forbidden))
             {

@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Services;
+using WarpTalk.BillingService.Infrastructure.Repositories;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Integration;
@@ -28,8 +29,9 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         _db = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         
+        var repository = new UsageSettlementRepository(unitOfWork);
         _settlementService = new PostgresUsageSettlementService(
-            unitOfWork,
+            repository,
             scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgresUsageSettlementService>>());
     }
 

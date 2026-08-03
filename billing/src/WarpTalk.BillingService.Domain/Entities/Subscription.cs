@@ -104,4 +104,5 @@ public partial class Subscription
     public virtual ICollection<Payment> Payments { get; set; } = new List<Payment>();
 
     public uint Version { get; set; }
+
 }

@@ -43,6 +43,4 @@ public partial class Payment
     public DateTime UpdatedAt { get; set; }
 
     public virtual Subscription Subscription { get; set; } = null!;
-
-    public virtual ICollection<Refund> Refunds { get; set; } = new List<Refund>();
 }

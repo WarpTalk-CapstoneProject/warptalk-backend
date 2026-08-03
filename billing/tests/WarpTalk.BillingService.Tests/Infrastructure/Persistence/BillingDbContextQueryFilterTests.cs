@@ -24,8 +24,7 @@ public sealed class BillingDbContextQueryFilterTests
             typeof(UsageRecord),
             typeof(Payment),
             typeof(Transaction),
-            typeof(Invoice),
-            typeof(Refund)
+            typeof(Invoice)
         };
 
         foreach (var dependentType in dependentTypes)

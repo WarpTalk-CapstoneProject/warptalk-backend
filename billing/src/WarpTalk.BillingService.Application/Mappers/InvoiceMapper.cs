@@ -1,8 +1,14 @@
-using WarpTalk.BillingService.Domain.Constants;
-using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
+using System.Text.Json;
+using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
+using WarpTalk.BillingService.Application.Interfaces;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -28,29 +34,6 @@ public static class InvoiceMapper
             WorkspaceName: workspaceName
         );
     }
-
-    public static Invoice ToEntity(this TopUpRequest request, Payment payment) => new()
-    {
-        Id = Guid.NewGuid(),
-        UserId = payment.UserId,
-        PaymentId = payment.Id,
-        InvoiceNumber = payment.ProviderTransactionId ?? payment.Id.ToString("N"),
-        Subtotal = payment.Amount,
-        Tax = payment.TaxAmount,
-        Total = payment.TotalAmount,
-        Currency = payment.Currency,
-        Status = InvoiceConstants.InvoiceStatuses.Paid,
-        PdfUrl = string.Empty,
-        LineItems = System.Text.Json.JsonSerializer.Serialize(new[] {
-            new {
-                description = string.Format(BillingMessageConstants.InvoiceMessages.TopUpPackageTemplate, request.Amount),
-                quantity = 1,
-                amount = payment.Amount
-            }
-        }),
-        IssuedAt = DateTime.UtcNow,
-        CreatedAt = DateTime.UtcNow
-    };
 
     public static Invoice CreateStripeInvoice(StripeInvoiceCreationRequest request)
     {

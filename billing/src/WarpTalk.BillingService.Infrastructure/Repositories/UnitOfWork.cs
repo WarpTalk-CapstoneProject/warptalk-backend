@@ -14,28 +14,28 @@ public class UnitOfWork : IUnitOfWork
     public UnitOfWork(BillingDbContext db)
     {
         _db = db;
-        PlanRepository = new PlanRepository(db);
+        Plans = new GenericRepository<Plan>(db);
         SubscriptionRepository = new SubscriptionRepository(db);
         CreditTransactionRepository = new CreditTransactionRepository(db);
         CreditBalanceSnapshotRepository = new CreditBalanceSnapshotRepository(db);
         UsageRecordRepository = new GenericRepository<UsageRecord>(db);
         PaymentRepository = new PaymentRepository(db);
         InvoiceRepository = new InvoiceRepository(db);
-        RefundRepository = new RefundRepository(db);
+
         SalesInquiryRepository = new GenericRepository<SalesInquiry>(db);
         IdempotencyRecords = new IdempotencyRepository(db);
         OutboxMessages = new GenericRepository<OutboxMessage>(db);
         InboxMessages = new GenericRepository<InboxMessage>(db);
     }
 
-    public IPlanRepository PlanRepository { get; }
+    public IGenericRepository<Plan> Plans { get; }
     public ISubscriptionRepository SubscriptionRepository { get; }
     public ICreditTransactionRepository CreditTransactionRepository { get; }
     public ICreditBalanceSnapshotRepository CreditBalanceSnapshotRepository { get; }
     public IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     public IPaymentRepository PaymentRepository { get; }
     public IInvoiceRepository InvoiceRepository { get; }
-    public IRefundRepository RefundRepository { get; }
+
     public IGenericRepository<SalesInquiry> SalesInquiryRepository { get; }
     public IIdempotencyRepository IdempotencyRecords { get; }
     public IGenericRepository<OutboxMessage> OutboxMessages { get; }

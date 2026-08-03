@@ -12,4 +12,5 @@ public interface ISubscriptionRepository : IGenericRepository<Subscription>
     Task<IReadOnlyList<Subscription>> GetActiveSubscriptionsAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetDueForRenewalAsync(DateTime renewalThreshold, DateTime lowerBound, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Subscription>> GetExpiredActiveSubscriptionsAsync(DateTime now, CancellationToken cancellationToken = default);
+    Task<Subscription?> GetActiveByWorkspaceIdAsync(Guid workspaceId, bool includePlan = true, bool requireActivePeriod = false, CancellationToken cancellationToken = default);
 }

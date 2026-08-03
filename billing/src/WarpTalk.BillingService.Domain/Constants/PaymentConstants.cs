@@ -10,7 +10,6 @@ public static class PaymentConstants
 
     public static class PaymentTypes
     {
-        public const string CreditTopUp = "CreditTopUp";
         public const string Subscription = "Subscription";
         public const string SubscriptionRenewal = "SubscriptionRenewal";
         public const string SubscriptionUpdate = "SubscriptionUpdate";
@@ -112,7 +111,6 @@ public static class PaymentConstants
 
     public static class ProductNames
     {
-        public const string CreditTopUp = "Credit Top-Up";
         public const string SubscriptionPlan = "Subscription Plan";
         public const string InvoicePayment = "Invoice Payment";
     }

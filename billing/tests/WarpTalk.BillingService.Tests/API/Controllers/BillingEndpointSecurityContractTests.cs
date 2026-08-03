@@ -45,13 +45,6 @@ public class BillingEndpointSecurityContractTests
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 
-    [Fact]
-    public void RecordUsage_IsNotAvailableToOrdinaryWorkspaceUsers()
-    {
-        AssertAdminOnly(
-            typeof(UsagesController),
-            nameof(UsagesController.RecordUsage));
-    }
 
     [Fact]
     public void GlobalInvoiceHistory_IsSystemAdminOnly()
@@ -72,8 +65,7 @@ public class BillingEndpointSecurityContractTests
     }
 
     [Theory]
-    [InlineData(typeof(PlansController), nameof(PlansController.CreatePlan))]
-    [InlineData(typeof(CreditsController), nameof(CreditsController.ManualAdjustCredits))]
+    [InlineData(typeof(PlansController), nameof(PlansController.UpdatePlan))]
     [InlineData(typeof(SubscriptionsController), nameof(SubscriptionsController.GetGlobalSubscriptions))]
     public void GlobalBillingMutationAndReportingActions_AreSystemAdminOnly(
         Type controller,
@@ -83,11 +75,11 @@ public class BillingEndpointSecurityContractTests
     }
 
     [Fact]
-    public void CreateSubscription_RequiresWorkspaceBillingRole()
+    public void CreateTrialSubscription_RequiresWorkspaceBillingRole()
     {
         AssertWorkspaceBillingRole(
             typeof(SubscriptionsController),
-            nameof(SubscriptionsController.CreateSubscription));
+            nameof(SubscriptionsController.CreateTrialSubscription));
     }
 
     [Fact]
@@ -95,12 +87,12 @@ public class BillingEndpointSecurityContractTests
     {
         var action = GetAction(
             typeof(SalesInquiriesController),
-            nameof(SalesInquiriesController.CreateWorkspace));
+            nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
 
         Assert.NotNull(action.GetCustomAttribute<AuthorizeAttribute>());
         AssertWorkspaceBillingRole(
             typeof(SalesInquiriesController),
-            nameof(SalesInquiriesController.CreateWorkspace));
+            nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
     }
 
     private static void AssertAdminOnly(Type controller, string actionName)

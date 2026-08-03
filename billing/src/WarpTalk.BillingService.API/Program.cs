@@ -10,7 +10,7 @@ using WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
 using WarpTalk.BillingService.Infrastructure.Extensions;
 using WarpTalk.BillingService.Infrastructure.Services;
 using WarpTalk.BillingService.Infrastructure.Workers;
-using WarpTalk.BillingService.API.Extensions;
+
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.Shared.Extensions;
@@ -64,19 +64,18 @@ try
 
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
-    builder.Services.AddScoped<ICreditGrantService, CreditGrantService>();
+
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
     builder.Services.AddScoped<IPaymentService, PaymentService>();
-    builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
+
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
-    builder.Services.AddScoped<IRefundService, RefundService>();
+
     builder.Services.AddScoped<IUsageService, UsageService>();
     builder.Services.AddScoped<IBillingAnalyticsService, BillingAnalyticsService>();
     builder.Services.AddScoped<IWorkspaceAuthorizationService, WorkspaceAuthorizationService>();
-    builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddScoped<IPaymentAppService, PaymentAppService>();
     builder.Services.AddScoped<WarpTalk.BillingService.Domain.Services.ISubscriptionDomainService, WarpTalk.BillingService.Domain.Services.SubscriptionDomainService>();
     builder.Services.AddScoped<IUsageSettlementService, WarpTalk.BillingService.Infrastructure.Services.PostgresUsageSettlementService>();

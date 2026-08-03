@@ -51,7 +51,7 @@ public class CreditService : ICreditService
     {
         try
         {
-            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
+            var subResult = await GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditBalanceDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
             var sub = subResult.Value!;
@@ -73,7 +73,7 @@ public class CreditService : ICreditService
             if (request.Amount <= 0)
                 return Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount);
 
-            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
+            var subResult = await GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
             if (!subResult.IsSuccess)
                 return Result.Failure<CreditTransactionDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
             var sub = subResult.Value!;
@@ -92,13 +92,7 @@ public class CreditService : ICreditService
         }, cancellationToken);
     }
 
-    public Task<Result<CreditBalanceDto>> TopUpCreditsAsync(
-        Guid workspaceId, TopUpRequest request, CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(Result.Failure<CreditBalanceDto>(
-            ApiMessageConstants.ErrorMessages.BillingDirectTopUpDisabled,
-            ErrorCodes.Forbidden));
-    }
+
 
     public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(
         Guid workspaceId,
@@ -135,12 +129,12 @@ public class CreditService : ICreditService
 
         try
         {
-            var workspaceIds = BillingQueryHelper.GetWorkspaceIds(dtos);
+            var workspaceIds = BillingQueryHelper.GetWorkspaceIds(dtos, d => d.WorkspaceId);
 
             if (workspaceIds.Length > 0)
             {
                 var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames);
+                dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames, d => d.WorkspaceId, (d, name) => d with { WorkspaceName = name });
             }
         }
         catch (Exception wsEx)
@@ -151,52 +145,22 @@ public class CreditService : ICreditService
         return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, page.TotalCount, page.PageNumber, page.PageSize));
     }
 
-    public Task<Result<CreditTransactionDto>> ManualAdjustCreditsAsync(
+
+
+
+
+
+    private static async Task<Result<Subscription>> GetActiveSubscriptionAsync(
+        IUnitOfWork unitOfWork,
         Guid workspaceId,
-        ManualAdjustCreditsRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
-        if (request.Amount == 0)
-            return Task.FromResult(Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingInvalidAmount, ErrorCodes.BillingInvalidAmount));
-        if (string.IsNullOrWhiteSpace(request.AdminUserId))
-            return Task.FromResult(Result.Failure<CreditTransactionDto>(ApiMessageConstants.ErrorMessages.BillingAccessDenied, ErrorCodes.Forbidden));
+        var sub = await unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(workspaceId, cancellationToken: cancellationToken);
+        if (sub is null)
+            return Result.Failure<Subscription>(
+                ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                ErrorCodes.BillingSubscriptionNotFound);
 
-        return ConcurrencyRetryHelper.ExecuteWithConcurrencyRetryAsync(_unitOfWork, _logger, workspaceId, async () =>
-        {
-            var subResult = await SubscriptionHelper.GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
-            if (!subResult.IsSuccess)
-                return Result.Failure<CreditTransactionDto>(subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, subResult.ErrorCode);
-            var sub = subResult.Value!;
-
-            sub.ApplyAdjustment(request.Amount);
-            _unitOfWork.SubscriptionRepository.Update(sub);
-
-            var adjustmentTransaction = request.ToEntity(sub);
-
-            await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTransaction, cancellationToken);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-            var notificationTitle = request.Amount > 0
-                ? BillingMessageConstants.AdjustmentMessages.AddedTitle
-                : BillingMessageConstants.AdjustmentMessages.DeductedTitle;
-
-            var notificationContent = string.Format(
-                BillingMessageConstants.AdjustmentMessages.ContentTemplate,
-                request.Amount > 0 ? "+" : "",
-                request.Amount,
-                adjustmentTransaction.Description);
-
-            await BillingNotificationHelper.PublishCreditUpdateAsync(
-                _messagePublisher,
-                _logger,
-                NotificationMapper.ToCreditsUpdatedMessage(sub.UserId, sub.CreditsRemaining, notificationTitle, notificationContent),
-                cancellationToken);
-
-            return Result.Success(adjustmentTransaction.ToDto());
-        }, cancellationToken);
+        return Result.Success(sub);
     }
-
-
-
-
 }

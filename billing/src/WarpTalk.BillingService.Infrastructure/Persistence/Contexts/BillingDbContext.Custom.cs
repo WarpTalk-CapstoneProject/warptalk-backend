@@ -69,8 +69,7 @@ public partial class BillingDbContext
             .HasQueryFilter(t => t.Subscription!.DeletedAt == null);
         modelBuilder.Entity<Invoice>()
             .HasQueryFilter(i => i.Payment.Subscription.DeletedAt == null);
-        modelBuilder.Entity<Refund>()
-            .HasQueryFilter(r => r.Payment.Subscription.DeletedAt == null);
+
 
         modelBuilder.Entity<Subscription>(entity =>
         {

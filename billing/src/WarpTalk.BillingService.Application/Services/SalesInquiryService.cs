@@ -3,8 +3,12 @@ using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.Shared;
+using System.Linq.Expressions;
+using System.Text.Json;
+
 
 namespace WarpTalk.BillingService.Application.Services;
 
@@ -21,9 +25,9 @@ public class SalesInquiryService : ISalesInquiryService
         _subscriptionService = subscriptionService;
     }
 
-    public async Task<Result<SalesInquiryDto>> CreateAsync(CreateSalesInquiryRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<SalesInquiryDto>> CreatePublicInquiryAsync(CreateSalesInquiryRequest request, CancellationToken cancellationToken = default)
     {
-        var validation = SalesInquiryHelper.ValidateCreate(request);
+        var validation = ValidateCreate(request);
         if (!validation.IsSuccess)
             return Result.Failure<SalesInquiryDto>(validation.Error!, validation.ErrorCode);
 
@@ -47,7 +51,7 @@ public class SalesInquiryService : ISalesInquiryService
         return Result.Success(inquiry.ToDto());
     }
 
-    public async Task<Result<SalesInquiryDto>> CreateWorkspaceAsync(
+    public async Task<Result<SalesInquiryDto>> CreateWorkspaceInquiryAsync(
         CreateWorkspaceSalesInquiryRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -55,7 +59,7 @@ public class SalesInquiryService : ISalesInquiryService
             return Result.Failure<SalesInquiryDto>(SalesInquiryConstants.Errors.WorkspaceIdRequired, ErrorCodes.ValidationError);
 
         var createRequest = request.ToCreateRequest();
-        var validation = SalesInquiryHelper.ValidateCreate(createRequest);
+        var validation = ValidateCreate(createRequest);
         if (!validation.IsSuccess)
             return Result.Failure<SalesInquiryDto>(validation.Error!, validation.ErrorCode);
 
@@ -89,11 +93,11 @@ public class SalesInquiryService : ISalesInquiryService
         return Result.Success(inquiry.ToDto());
     }
 
-    public async Task<Result<PaginatedResponse<SalesInquiryDto>>> GetAsync(SalesInquiryQuery query, CancellationToken cancellationToken = default)
+    public async Task<Result<PaginatedResponse<SalesInquiryDto>>> GetSalesInquiriesAsync(SalesInquiryQuery query, CancellationToken cancellationToken = default)
     {
-        var (page, pageSize, skip) = SalesInquiryHelper.NormalizePagination(query);
-        var normalizedStatus = SalesInquiryHelper.NormalizeStatus(query.Status);
-        var predicate = SalesInquiryHelper.BuildQueryPredicate(query, normalizedStatus);
+        var (page, pageSize, skip) = NormalizePagination(query);
+        var normalizedStatus = NormalizeStatus(query.Status);
+        var predicate = BuildQueryPredicate(query, normalizedStatus);
 
         var totalCount = await _unitOfWork.SalesInquiryRepository.CountAsync(predicate, cancellationToken);
         var pageItems = await _unitOfWork.SalesInquiryRepository.GetPagedAsync(
@@ -118,7 +122,7 @@ public class SalesInquiryService : ISalesInquiryService
         return Result.Success(PaginatedResponse<SalesInquiryDto>.Create(dtos, totalCount, page, pageSize));
     }
 
-    public async Task<Result<SalesInquiryDto>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<Result<SalesInquiryDto>> GetSalesInquiryByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var inquiry = await _unitOfWork.SalesInquiryRepository.GetByIdAsync(id, cancellationToken);
         return inquiry is null
@@ -126,9 +130,9 @@ public class SalesInquiryService : ISalesInquiryService
             : Result.Success(inquiry.ToDto());
     }
 
-    public async Task<Result<SalesInquiryDto>> UpdateStatusAsync(Guid id, UpdateSalesInquiryStatusRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<SalesInquiryDto>> UpdateSalesInquiryStatusAsync(Guid id, UpdateSalesInquiryStatusRequest request, CancellationToken cancellationToken = default)
     {
-        var status = SalesInquiryHelper.NormalizeStatus(request.Status);
+        var status = NormalizeStatus(request.Status);
         if (status is null)
             return Result.Failure<SalesInquiryDto>(SalesInquiryConstants.Errors.StatusInvalid, ErrorCodes.ValidationError);
 
@@ -136,14 +140,26 @@ public class SalesInquiryService : ISalesInquiryService
         if (inquiry is null)
             return Result.Failure<SalesInquiryDto>(SalesInquiryConstants.Errors.NotFound, ErrorCodes.NotFound);
 
-        SalesInquiryHelper.ApplyStatus(inquiry, status);
+        var now = DateTime.UtcNow;
+        inquiry.Status = status;
+        inquiry.UpdatedAt = now;
+
+        if (status == SalesInquiryConstants.Statuses.Converted)
+        {
+            inquiry.ConvertedAt ??= now;
+            inquiry.ClosedAt = null;
+        }
+        else if (status == SalesInquiryConstants.Statuses.Closed)
+        {
+            inquiry.ClosedAt ??= now;
+        }
         _unitOfWork.SalesInquiryRepository.Update(inquiry);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         return Result.Success(inquiry.ToDto());
     }
 
-    public async Task<Result<SalesInquiryDto>> LinkWorkspaceAsync(
+    public async Task<Result<SalesInquiryDto>> LinkSalesInquiryWorkspaceAsync(
         Guid id,
         LinkSalesInquiryWorkspaceRequest request,
         CancellationToken cancellationToken = default)
@@ -163,7 +179,7 @@ public class SalesInquiryService : ISalesInquiryService
         return Result.Success(inquiry.ToDto());
     }
 
-    public async Task<Result<SalesInquiryDto>> ConvertToContractAsync(
+    public async Task<Result<SalesInquiryDto>> ConvertSalesInquiryToContractAsync(
         Guid id,
         ConvertSalesInquiryToContractRequest request,
         CancellationToken cancellationToken = default)
@@ -176,8 +192,8 @@ public class SalesInquiryService : ISalesInquiryService
             return Result.Failure<SalesInquiryDto>(SalesInquiryConstants.Errors.NotFound, ErrorCodes.NotFound);
 
         var plan = request.PlanId is Guid planId && planId != Guid.Empty
-            ? await _unitOfWork.PlanRepository.FirstOrDefaultAsync(p => p.Id == planId && p.IsActive && p.DeletedAt == null, cancellationToken)
-            : await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+            ? await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Id == planId && p.IsActive && p.DeletedAt == null, cancellationToken)
+            : await _unitOfWork.Plans.FirstOrDefaultAsync(
                 p => p.Slug == SubscriptionConstants.PlanSlugs.Enterprise && p.IsActive && p.DeletedAt == null,
                 cancellationToken);
 
@@ -215,10 +231,134 @@ public class SalesInquiryService : ISalesInquiryService
 
         inquiry.WorkspaceId = request.WorkspaceId;
         inquiry.SubscriptionId = subscriptionResult.Value!.Id;
-        SalesInquiryHelper.ApplyStatus(inquiry, SalesInquiryConstants.Statuses.Converted);
+        var convertedNow = DateTime.UtcNow;
+        inquiry.Status = SalesInquiryConstants.Statuses.Converted;
+        inquiry.UpdatedAt = convertedNow;
+        inquiry.ConvertedAt ??= convertedNow;
+        inquiry.ClosedAt = null;
         _unitOfWork.SalesInquiryRepository.Update(inquiry);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         return Result.Success(inquiry.ToDto());
+    }
+
+    private static Result ValidateCreate(CreateSalesInquiryRequest request)
+    {
+        if (!request.Consent)
+            return Result.Failure(SalesInquiryConstants.Errors.ConsentRequired, ErrorCodes.ValidationError);
+
+        if (request.FeatureInterests is null || request.FeatureInterests.Count == 0)
+            return Result.Failure(SalesInquiryConstants.Errors.FeatureInterestRequired, ErrorCodes.ValidationError);
+
+        if (request.TargetLanguages is null || request.TargetLanguages.Count == 0)
+            return Result.Failure(SalesInquiryConstants.Errors.TargetLanguageRequired, ErrorCodes.ValidationError);
+
+        if (string.IsNullOrWhiteSpace(request.FirstName) ||
+            string.IsNullOrWhiteSpace(request.LastName) ||
+            string.IsNullOrWhiteSpace(request.WorkEmail) ||
+            string.IsNullOrWhiteSpace(request.Company) ||
+            string.IsNullOrWhiteSpace(request.RequestType) ||
+            string.IsNullOrWhiteSpace(request.CurrentMonthlyMeetingVolume))
+        {
+            return Result.Failure(SalesInquiryConstants.Errors.RequiredFieldsMissing, ErrorCodes.ValidationError);
+        }
+
+        var requestedMonthlyCredits = TryReadLong(request.PricingEstimate, "requestedMonthlyCredits");
+        if (requestedMonthlyCredits is { } credits &&
+            (credits < 1 || credits > SalesInquiryConstants.Defaults.MaxRequestedMonthlyCredits))
+        {
+            return Result.Failure(SalesInquiryConstants.Errors.RequestedMonthlyCreditsInvalid, ErrorCodes.ValidationError);
+        }
+
+        var requestedWorkspaceMembers = TryReadLong(request.PricingEstimate, "requestedWorkspaceMembers");
+        if (requestedWorkspaceMembers is { } members &&
+            (members < 1 || members > SalesInquiryConstants.Defaults.MaxRequestedWorkspaceMembers))
+        {
+            return Result.Failure(SalesInquiryConstants.Errors.RequestedWorkspaceMembersInvalid, ErrorCodes.ValidationError);
+        }
+
+        return Result.Success();
+    }
+
+    private static (int Page, int PageSize, int Skip) NormalizePagination(SalesInquiryQuery query)
+    {
+        var page = Math.Max(query.Page, 1);
+        var pageSize = Math.Clamp(query.PageSize, 1, SalesInquiryConstants.Defaults.MaxPageSize);
+        return (page, pageSize, (page - 1) * pageSize);
+    }
+
+    private static Expression<Func<WarpTalk.BillingService.Domain.Entities.SalesInquiry, bool>> BuildQueryPredicate(SalesInquiryQuery query, string? normalizedStatus)
+    {
+        var search = query.Search?.Trim().ToLowerInvariant();
+        var workspaceId = query.WorkspaceId;
+
+        return inquiry =>
+            (normalizedStatus == null || inquiry.Status == normalizedStatus) &&
+            (workspaceId == null || inquiry.WorkspaceId == workspaceId) &&
+            (search == null ||
+             inquiry.WorkEmail.ToLower().Contains(search) ||
+             inquiry.Company.ToLower().Contains(search) ||
+             inquiry.FirstName.ToLower().Contains(search) ||
+             inquiry.LastName.ToLower().Contains(search));
+    }
+
+    private static long? TryReadLong(object? source, string propertyName)
+    {
+        if (source is null)
+            return null;
+
+        if (source is JsonElement element)
+            return TryReadLong(element, propertyName);
+
+        if (source is IDictionary<string, object?> dictionary &&
+            dictionary.TryGetValue(propertyName, out var value))
+        {
+            return TryReadLongValue(value);
+        }
+
+        try
+        {
+            return TryReadLong(JsonSerializer.SerializeToElement(source), propertyName);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static long? TryReadLong(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        return TryReadLongValue(property);
+    }
+
+    private static long? TryReadLongValue(object? value)
+    {
+        return value switch
+        {
+            null => null,
+            long longValue => longValue,
+            int intValue => intValue,
+            decimal decimalValue when decimalValue == decimal.Truncate(decimalValue) => (long)decimalValue,
+            double doubleValue when doubleValue % 1 == 0 => (long)doubleValue,
+            string stringValue when long.TryParse(stringValue, out var parsed) => parsed,
+            JsonElement { ValueKind: JsonValueKind.Number } number when number.TryGetInt64(out var parsed) => parsed,
+            JsonElement { ValueKind: JsonValueKind.String } text when long.TryParse(text.GetString(), out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static string? NormalizeStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+            return null;
+
+        var normalized = status.Trim().ToLowerInvariant();
+        return SalesInquiryConstants.Statuses.All.Contains(normalized) ? normalized : null;
     }
 }

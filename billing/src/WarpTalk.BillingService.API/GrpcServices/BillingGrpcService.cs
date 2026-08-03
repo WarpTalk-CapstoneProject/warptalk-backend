@@ -42,7 +42,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         _logger = logger;
     }
 
-    // â”€â”€â”€ Credits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public override async Task<Shared.Protos.GetCreditsResponse> GetWorkspaceCredits(
         Shared.Protos.GetCreditsRequest request, ServerCallContext context)
@@ -212,26 +211,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
 
     // â”€â”€â”€ Subscriptions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    public override async Task<Shared.Protos.SubscriptionResponse> CreateSubscription(
-        Shared.Protos.CreateSubscriptionRequest request, ServerCallContext context)
-    {
-        if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid workspace_id."));
-        if (!Guid.TryParse(request.PlanId, out var planId))
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid plan_id."));
-
-        Guid.TryParse(request.UserId, out var userId);
-
-        var result = await _subscriptionService.CreateSubscriptionAsync(
-            new SubscriptionRequest(workspaceId, planId, userId),
-            context.CancellationToken);
-
-        if (!result.IsSuccess)
-            return new Shared.Protos.SubscriptionResponse { ErrorMessage = result.Error };
-
-        return ToSubscriptionResponse(result.Value!);
-    }
-
     public override async Task<Shared.Protos.SubscriptionResponse> GetActiveSubscription(
         Shared.Protos.GetActiveSubscriptionRequest request, ServerCallContext context)
     {
@@ -296,7 +275,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         };
     }
 
-    // â”€â”€â”€ Plans â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public override async Task<Shared.Protos.GetPlansResponse> GetPlans(
         Shared.Protos.GetPlansRequest request, ServerCallContext context)
@@ -326,7 +304,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
         return ToPlanResponse(result.Value!);
     }
 
-    // â”€â”€â”€ Payments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public override async Task<Shared.Protos.TransactionHistoryResponse> GetTransactionHistory(
         Shared.Protos.GetHistoryRequest request, ServerCallContext context)
@@ -411,7 +388,6 @@ public class BillingGrpcService : Shared.Protos.BillingService.BillingServiceBas
     }
 
 
-    // â”€â”€â”€ Private helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private async Task EnqueuePaymentEventAsync(
         Shared.Protos.ProcessPaymentEventRequest request,

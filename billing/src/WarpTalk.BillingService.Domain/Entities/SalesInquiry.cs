@@ -45,4 +45,5 @@ public class SalesInquiry
     public DateTime? ConvertedAt { get; set; }
 
     public DateTime? ClosedAt { get; set; }
+
 }

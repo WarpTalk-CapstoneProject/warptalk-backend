@@ -71,4 +71,26 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
             .Where(s => s.IsActive && s.DeletedAt == null && s.CurrentPeriodEnd < now)
             .ToListAsync(cancellationToken);
     }
+
+    public async Task<Subscription?> GetActiveByWorkspaceIdAsync(
+        Guid workspaceId,
+        bool includePlan = true,
+        bool requireActivePeriod = false,
+        CancellationToken cancellationToken = default)
+    {
+        var query = _dbSet.AsQueryable();
+
+        if (includePlan)
+        {
+            query = query.Include(s => s.Plan);
+        }
+
+        return await query
+            .OrderByDescending(s => s.CreatedAt)
+            .FirstOrDefaultAsync(s =>
+                s.WorkspaceId == workspaceId &&
+                s.IsActive &&
+                s.DeletedAt == null &&
+                (!requireActivePeriod || s.CurrentPeriodEnd >= DateTime.UtcNow), cancellationToken);
+    }
 }

@@ -3,7 +3,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using WarpTalk.BillingService.API.Extensions;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
@@ -30,7 +29,11 @@ public class InvoicesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetInvoicesAsync(workspaceId, query, cancellationToken);
-        return result.ToActionResult(this);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [HttpGet("global")]
@@ -40,7 +43,11 @@ public class InvoicesController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
-        return result.ToActionResult(this);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
     }
 
     [HttpPost("{invoiceId}/checkout")]
@@ -52,7 +59,7 @@ public class InvoicesController : ControllerBase
         var result = await _invoiceService.CreateInvoiceCheckoutSessionAsync(invoiceId, cancellationToken);
         if (!result.IsSuccess)
         {
-            return this.ToBadRequest(result.Error, result.ErrorCode);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
         return Ok(new { url = result.Value });
@@ -67,7 +74,7 @@ public class InvoicesController : ControllerBase
         var result = await _invoiceService.MarkInvoicePaidAsync(invoiceId, cancellationToken);
         if (!result.IsSuccess)
         {
-            return this.ToBadRequest(result.Error, result.ErrorCode);
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 
         return Ok(result.Value);

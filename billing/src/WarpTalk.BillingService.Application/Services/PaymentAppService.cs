@@ -235,7 +235,7 @@ public class PaymentAppService : IPaymentAppService
         try
         {
             var planName = string.Empty;
-            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(p => p.Id == context.Subscription.PlanId);
+            var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(p => p.Id == context.Subscription.PlanId);
             if (plan != null)
             {
                 planName = plan.Name;

@@ -22,9 +22,6 @@ service BillingService {
   rpc GetCreditHistory (GetHistoryRequest) returns (CreditHistoryResponse);
 
   // ── Subscriptions ─────────────────────────────────────────
-  // Provision a new subscription for a workspace
-  rpc CreateSubscription (CreateSubscriptionRequest) returns (SubscriptionResponse);
-
   // Get active subscription of a workspace
   rpc GetActiveSubscription (GetActiveSubscriptionRequest) returns (SubscriptionResponse);
 
@@ -179,12 +176,6 @@ message RecordUsageGrpcResponse {
 // ─────────────────────────────────────────────────────────────
 // Subscriptions
 // ─────────────────────────────────────────────────────────────
-
-message CreateSubscriptionRequest {
-  string workspace_id = 1;
-  string plan_id      = 2;
-  string user_id      = 3; // owning user
-}
 
 message GetActiveSubscriptionRequest {
   string workspace_id = 1;

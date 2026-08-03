@@ -24,7 +24,7 @@ public class CreditServiceTests
     private readonly Mock<IBillingMessagePublisher> _mockMessagePublisher;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
-    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IConfiguration> _mockConfig;
     private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
@@ -36,14 +36,14 @@ public class CreditServiceTests
         _mockMessagePublisher = new Mock<IBillingMessagePublisher>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
-        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
         _mockConfig = new Mock<IConfiguration>();
         _mockWorkspaceClient = new Mock<IWorkspaceClient>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
-        _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
+        _mockUnitOfWork.Setup(u => u.Plans).Returns(_mockPlanRepo.Object);
 
         _creditService = new CreditService(
             _mockUnitOfWork.Object,
@@ -58,7 +58,7 @@ public class CreditServiceTests
     public async Task GetWorkspaceCreditsAsync_SubscriptionNotFound_ShouldReturnFailure()
     {
         var workspaceId = Guid.NewGuid();
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(workspaceId, true, false, It.IsAny<CancellationToken>()))
             .ReturnsAsync((Subscription?)null);
 
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId);
@@ -72,7 +72,7 @@ public class CreditServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var sub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, CreditsRemaining = 1200, IsActive = true };
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(workspaceId, true, false, It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
 
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId);
@@ -86,7 +86,7 @@ public class CreditServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var sub = new Subscription { Id = Guid.NewGuid(), WorkspaceId = workspaceId, CreditsRemaining = 50, IsActive = true, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5) };
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>()))
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(workspaceId, true, false, It.IsAny<CancellationToken>()))
             .ReturnsAsync(sub);
         _mockSettlementService
             .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))

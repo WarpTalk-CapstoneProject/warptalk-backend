@@ -32,28 +32,7 @@ public record ConsumeCreditsRequest(
     string? IdempotencyKey = null
 ) : IWorkspaceScopedRequest;
 
-public record TopUpRequest(
-    [Required]
-    Guid WorkspaceId,
 
-    [Required]
-    [Range(1, int.MaxValue, ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.AmountGreaterThanZero)]
-    int Amount,
-
-    [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
-    string ReferenceType,
-
-    Guid? ReferenceId
-) : IWorkspaceScopedRequest;
-
-public record GrantCreditsRequest(
-    Guid WorkspaceId,
-    int Amount,
-    string ReferenceType,
-    Guid? ReferenceId,
-    Guid? UserId,
-    string? Description = null
-) : IWorkspaceScopedRequest;
 
 public record CreditTransactionDto(
     Guid Id,
@@ -83,33 +62,7 @@ public record CreditTransactionDto(
     }
 }
 
-public record ManualAdjustCreditsRequest : IWorkspaceScopedRequest
-{
-    [Required]
-    public Guid WorkspaceId { get; init; }
 
-    [Required]
-    [Range(-1_000_000, 1_000_000)]
-    public int Amount { get; init; }
-
-    [Required]
-    public string Reason { get; init; } = string.Empty;
-
-    [Required]
-    public string AdminUserId { get; init; } = string.Empty;
-
-    public ManualAdjustCreditsRequest()
-    {
-    }
-
-    public ManualAdjustCreditsRequest(Guid workspaceId, int amount, string reason, string adminUserId)
-    {
-        WorkspaceId = workspaceId;
-        Amount = amount;
-        Reason = reason;
-        AdminUserId = adminUserId;
-    }
-}
 
 public record UsageAlertDto(
     Guid WorkspaceId,

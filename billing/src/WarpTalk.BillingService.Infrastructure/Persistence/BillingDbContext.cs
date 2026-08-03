@@ -32,7 +32,7 @@ public partial class BillingDbContext : DbContext
 
     public virtual DbSet<Invoice> Invoices { get; set; }
 
-    public virtual DbSet<Refund> Refunds { get; set; }
+
 
     public virtual DbSet<SalesInquiry> SalesInquiries { get; set; }
 
@@ -530,38 +530,7 @@ public partial class BillingDbContext : DbContext
                 .HasConstraintName("invoices_payment_id_fkey");
         });
 
-        modelBuilder.Entity<Refund>(entity =>
-        {
-            entity.HasKey(e => e.Id).HasName("refunds_pkey");
-            entity.ToTable("refunds", "subscription");
 
-            entity.Property(e => e.Id)
-                .HasDefaultValueSql("uuidv7()")
-                .HasColumnName("id");
-            entity.Property(e => e.PaymentId).HasColumnName("payment_id");
-            entity.Property(e => e.UserId).HasColumnName("user_id");
-            entity.Property(e => e.Amount)
-                .HasPrecision(12, 2)
-                .HasColumnName("amount");
-            entity.Property(e => e.Reason)
-                .HasMaxLength(500)
-                .HasColumnName("reason");
-            entity.Property(e => e.Status)
-                .HasMaxLength(20)
-                .HasColumnName("status");
-            entity.Property(e => e.ProviderRefundId)
-                .HasMaxLength(255)
-                .HasColumnName("provider_refund_id");
-            entity.Property(e => e.CreatedAt)
-                .HasDefaultValueSql("now()")
-                .HasColumnName("created_at");
-            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
-
-            entity.HasOne(d => d.Payment).WithMany(p => p.Refunds)
-                .HasForeignKey(d => d.PaymentId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("refunds_payment_id_fkey");
-        });
 
         modelBuilder.Entity<SalesInquiry>(entity =>
         {

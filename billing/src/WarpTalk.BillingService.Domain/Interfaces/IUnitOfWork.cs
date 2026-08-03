@@ -5,8 +5,7 @@ namespace WarpTalk.BillingService.Domain.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
-    IPlanRepository PlanRepository { get; }
-    IPlanRepository Plans => PlanRepository;
+    IGenericRepository<Plan> Plans { get; }
     ISubscriptionRepository SubscriptionRepository { get; }
     ISubscriptionRepository Subscriptions => SubscriptionRepository;
     ICreditTransactionRepository CreditTransactionRepository { get; }
@@ -15,7 +14,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<UsageRecord> UsageRecordRepository { get; }
     IPaymentRepository PaymentRepository { get; }
     IInvoiceRepository InvoiceRepository { get; }
-    IRefundRepository RefundRepository { get; }
+
     IGenericRepository<SalesInquiry> SalesInquiryRepository { get; }
     IIdempotencyRepository IdempotencyRecords { get; }
     IGenericRepository<OutboxMessage> OutboxMessages { get; }

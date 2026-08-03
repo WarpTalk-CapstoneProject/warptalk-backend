@@ -67,11 +67,11 @@ public class InvoiceService : IInvoiceService
             // Resolve workspace names cross-schema
             try
             {
-                var workspaceIds = BillingQueryHelper.GetWorkspaceIds(page.Items);
+                var workspaceIds = BillingQueryHelper.GetWorkspaceIds(page.Items, i => i.Payment.Subscription.WorkspaceId);
                 if (workspaceIds.Length > 0)
                 {
                     var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                    dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames);
+                    dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames, i => Guid.TryParse(i.WorkspaceId, out var wId) ? wId : (Guid?)null, (i, name) => i with { WorkspaceName = name });
                 }
             }
             catch (Exception ex)
@@ -102,14 +102,14 @@ public class InvoiceService : IInvoiceService
             if (invoice is null)
             {
                 return Result.Failure<string>(
-                    "Invoice not found.",
+                    BillingMessageConstants.ApiErrorMessages.BillingInvoiceNotFound,
                     ErrorCodes.NotFound);
             }
 
             if (invoice.Status == InvoiceConstants.InvoiceStatuses.Paid)
             {
                 return Result.Failure<string>(
-                    "Invoice is already paid.",
+                    BillingMessageConstants.ApiErrorMessages.BillingInvoiceAlreadyPaid,
                     ErrorCodes.ValidationError);
             }
 
@@ -164,7 +164,7 @@ public class InvoiceService : IInvoiceService
             if (invoice is null)
             {
                 return Result.Failure<InvoiceDto>(
-                    "Invoice not found.",
+                    BillingMessageConstants.ApiErrorMessages.BillingInvoiceNotFound,
                     ErrorCodes.NotFound);
             }
 

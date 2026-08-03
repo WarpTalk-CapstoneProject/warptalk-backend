@@ -11,7 +11,6 @@ public record CreateCheckoutSessionRequest(
     string PlanSlug = "",
     string BillingCycle = ""
 );
-
 public record StripePaymentEventRequest(
     string StripeSessionId,
     string PaymentIntentId,
@@ -36,15 +35,4 @@ public record CheckoutSessionDto(
     string PaymentStatus,
     string Status,
     string PaymentIntentId
-);
-
-public record ResolvedCheckout(
-    Guid UserId,
-    Guid WorkspaceId,
-    decimal Amount,
-    string Currency,
-    string PaymentType,
-    string PlanSlug,
-    string BillingCycle,
-    string ProductName
 );

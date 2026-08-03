@@ -1,7 +1,14 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
+using System.Text.Json;
 using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
+using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.BillingService.Application.Mappers;
 
@@ -69,48 +76,6 @@ public static class SubscriptionMapper
         SuspendedReason: sub.SuspendedReason,
         TrialEndsAt: sub.TrialEndsAt
     );
-
-    public static Subscription ToEntity(this SubscriptionRequest request, Plan plan)
-    {
-        var now = DateTime.UtcNow;
-        return new Subscription
-        {
-            Id = Guid.NewGuid(),
-            UserId = request.UserId ?? Guid.Empty,
-            WorkspaceId = request.WorkspaceId,
-            PlanId = request.PlanId,
-            Status = SubscriptionConstants.SubscriptionStatuses.Pending,
-            CreditsRemaining = 0,
-            CreditsUsedThisCycle = 0,
-            CurrentPeriodStart = now,
-            CurrentPeriodEnd = now,
-            AutoRenew = true,
-            IsActive = false,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-    }
-
-    public static Subscription ToEntity(this SubscriptionRequest request, Subscription oldSub, Plan newPlan)
-    {
-        var now = DateTime.UtcNow;
-        return new Subscription
-        {
-            Id = Guid.NewGuid(),
-            UserId = oldSub.UserId,
-            WorkspaceId = oldSub.WorkspaceId,
-            PlanId = newPlan.Id,
-            Status = SubscriptionConstants.SubscriptionStatuses.Pending,
-            CreditsRemaining = oldSub.CreditsRemaining,
-            CreditsUsedThisCycle = 0,
-            CurrentPeriodStart = now,
-            CurrentPeriodEnd = now,
-            AutoRenew = true,
-            IsActive = false,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-    }
 
     public static void Cancel(this Subscription sub, string? reason)
     {

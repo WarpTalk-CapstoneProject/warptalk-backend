@@ -59,7 +59,7 @@ public class SubscriptionService : ISubscriptionService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
             return Result.Success(plan is null
                 ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
                 : sub.ToDto(plan));
@@ -83,7 +83,7 @@ public class SubscriptionService : ISubscriptionService
             var items = new List<SubscriptionDto>();
             foreach (var sub in page.Items)
             {
-                var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+                var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
                 items.Add(plan is null
                     ? sub.ToDto(BillingMessageConstants.PlanAuditMessages.UnknownPlan, 0m)
                     : sub.ToDto(plan));
@@ -92,12 +92,12 @@ public class SubscriptionService : ISubscriptionService
             // Resolve workspace names cross-schema
             try
             {
-                var workspaceIds = BillingQueryHelper.GetWorkspaceIds(items);
+                var workspaceIds = BillingQueryHelper.GetWorkspaceIds(items, i => i.WorkspaceId);
 
                 if (workspaceIds.Length > 0)
                 {
                     var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                    items = BillingQueryHelper.ApplyWorkspaceNames(items, workspaceNames);
+                    items = BillingQueryHelper.ApplyWorkspaceNames(items, workspaceNames, i => i.WorkspaceId, (i, name) => i with { WorkspaceName = name });
                 }
             }
             catch (Exception wsEx)
@@ -114,58 +114,13 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
-    public async Task<Result<SubscriptionDto>> CreateSubscriptionAsync(
-        SubscriptionRequest request, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
-                p => p.Id == request.PlanId && p.IsActive && p.DeletedAt == null,
-                cancellationToken);
-
-            if (plan is null)
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
-                    ErrorCodes.BillingPlanNotFound);
-
-            var existing = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
-
-            if (existing is not null)
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
-                    ErrorCodes.BillingSubscriptionAlreadyActive);
-
-            var subscription = request.ToEntity(plan);
-
-            await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
-                _messagePublisher,
-                _logger,
-                subscription.UserId,
-                BillingMessageConstants.Notifications.ActionCreated,
-                plan.Name,
-                cancellationToken);
-
-            return Result.Success(subscription.ToDto(plan));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorCreatingSubscription, request.WorkspaceId, request.PlanId);
-            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
-        }
-    }
-
     public async Task<Result<SubscriptionDto>> CreateWorkspaceContractSubscriptionAsync(
         CreateWorkspaceContractSubscriptionRequest request,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+            var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
                 p => p.Id == request.PlanId && p.IsActive && p.DeletedAt == null,
                 cancellationToken);
 
@@ -224,7 +179,7 @@ public class SubscriptionService : ISubscriptionService
             if (ownerDomain is null)
                 return Result.Failure<SubscriptionDto>(BillingMessageConstants.ApiErrorMessages.BillingOwnerEmailInvalid, ErrorCodes.ValidationError);
 
-            var plan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
+            var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
                 p => p.Slug == SubscriptionConstants.PlanSlugs.Enterprise && p.IsActive && p.DeletedAt == null,
                 cancellationToken);
 
@@ -300,7 +255,7 @@ public class SubscriptionService : ISubscriptionService
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
 
             // Call Stripe service to cancel Stripe Subscription
             try
@@ -377,7 +332,7 @@ public class SubscriptionService : ISubscriptionService
                 sub.Id,
                 request.Reason);
 
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
             return Result.Success(plan is null
                 ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
                 : sub.ToDto(plan));
@@ -405,7 +360,7 @@ public class SubscriptionService : ISubscriptionService
                     ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
                     ErrorCodes.BillingSubscriptionNotFound);
 
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
             if (plan is null)
                 return Result.Failure<SubscriptionDto>(
                     ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
@@ -437,123 +392,6 @@ public class SubscriptionService : ISubscriptionService
             _logger.LogError(ex, "Error updating contract terms for WorkspaceId {WorkspaceId}", workspaceId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
-    }
-
-    public async Task<Result<SubscriptionDto>> ChangeSubscriptionAsync(
-        SubscriptionRequest request, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var oldSub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == request.WorkspaceId && s.IsActive && s.DeletedAt == null,
-                cancellationToken);
-
-            if (oldSub is null)
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
-                    ErrorCodes.BillingSubscriptionNotFound);
-
-            if (oldSub.PlanId == request.PlanId)
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingSubscriptionAlreadyActive,
-                    ErrorCodes.BillingSubscriptionAlreadyActive);
-
-            var newPlan = await _unitOfWork.PlanRepository.FirstOrDefaultAsync(
-                p => p.Id == request.PlanId && p.IsActive && p.DeletedAt == null,
-                cancellationToken);
-
-            if (newPlan is null)
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
-                    ErrorCodes.BillingPlanNotFound);
-
-            // Try to update the Stripe subscription directly with proration
-            bool stripeUpdated = false;
-            try
-            {
-                var updateResult = await _stripePaymentService.UpdateSubscriptionAsync(
-                    new UpdateStripeSubscriptionRequest(request.WorkspaceId, newPlan.Price, newPlan.Currency, newPlan.Slug),
-                    cancellationToken);
-                if (updateResult.IsSuccess)
-                    stripeUpdated = updateResult.Value;
-                else
-                    _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToUpdateStripeSubChangePlan, request.WorkspaceId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, BillingMessageConstants.LogMessages.FailedToUpdateStripeSubChangePlan, request.WorkspaceId);
-            }
-
-            if (!stripeUpdated)
-            {
-                return Result.Failure<SubscriptionDto>(
-                    ApiMessageConstants.ErrorMessages.BillingStripeUpdateFailed,
-                    ErrorCodes.InternalServerError);
-            }
-
-            // With Webhook architecture, we do not update local DB synchronously.
-            // The local DB will be updated when Stripe sends the customer.subscription.updated webhook.
-            // We return a "Pending" DTO to the client so the UI can show a loading state.
-            var pendingSub = request.ToEntity(oldSub, newPlan);
-            pendingSub.Status = SubscriptionConstants.SubscriptionStatuses.Pending;
-
-            return Result.Success(pendingSub.ToDto(newPlan));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorChangingSubscription, request.WorkspaceId, request.PlanId);
-            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
-        }
-    }
-
-    public async Task<Result<bool>> ActivateSubscriptionAsync(Guid workspaceId, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
-                s => s.WorkspaceId == workspaceId && s.Status == SubscriptionConstants.SubscriptionStatuses.Pending && s.DeletedAt == null,
-                cancellationToken);
-
-            if (sub is null)
-                return Result.Failure<bool>(
-                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
-                    ErrorCodes.BillingSubscriptionNotFound);
-
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
-            if (plan is null)
-                return Result.Failure<bool>(
-                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
-                    ErrorCodes.BillingPlanNotFound);
-
-            sub.IsActive = true;
-            sub.Status = SubscriptionConstants.SubscriptionStatuses.Active;
-            sub.ApplyCycleAllocation(plan.CreditsPerCycle);
-            sub.CurrentPeriodEnd = CalculatePeriodEnd(DateTime.UtcNow, plan.BillingCycle);
-            sub.UpdatedAt = DateTime.UtcNow;
-
-            _unitOfWork.SubscriptionRepository.Update(sub);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-            await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
-                _messagePublisher,
-                _logger,
-                sub.UserId,
-                BillingMessageConstants.Subscription.Actions.Activated,
-                plan.Name,
-                cancellationToken);
-
-            return Result.Success(true);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorActivatingSubscription, workspaceId);
-            return Result.Failure<bool>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
-        }
-    }
-
-    private static DateTime CalculatePeriodEnd(DateTime start, string billingCycle)
-    {
-        return start.AddMonths(1);
     }
 
     private static Result ValidateContractTerms(

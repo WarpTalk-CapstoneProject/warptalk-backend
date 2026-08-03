@@ -38,7 +38,7 @@ public class UsageService : IUsageService
             if (request.CreditsConsumed <= 0)
                 return Result.Failure<CreditBalanceDto>(BillingMessageConstants.ApiErrorMessages.BillingCreditsConsumedInvalid, ErrorCodes.ValidationError);
 
-            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(request.HostWorkspaceId, true, cancellationToken);
+            var sub = await _unitOfWork.SubscriptionRepository.GetActiveByWorkspaceIdAsync(request.HostWorkspaceId, includePlan: true, cancellationToken: cancellationToken);
 
             if (sub is null)
             {
@@ -47,7 +47,7 @@ public class UsageService : IUsageService
                     ErrorCodes.BillingSubscriptionNotFound);
             }
 
-            var plan = await _unitOfWork.PlanRepository.GetByIdAsync(sub.PlanId, cancellationToken);
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
             if (plan is null)
                 return Result.Failure<CreditBalanceDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 

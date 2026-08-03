@@ -25,7 +25,7 @@ public class UsageServiceTests
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
-    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly UsageService _usageService;
 
@@ -35,13 +35,13 @@ public class UsageServiceTests
         _mockSubRepo = new Mock<ISubscriptionRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
-        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
         _mockUnitOfWork.Setup(u => u.UsageRecordRepository).Returns(_mockUsageRepo.Object);
-        _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
+        _mockUnitOfWork.Setup(u => u.Plans).Returns(_mockPlanRepo.Object);
 
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
@@ -66,7 +66,7 @@ public class UsageServiceTests
         };
         var plan = new Plan { Id = planId, Name = "Pro" };
 
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
         _mockSettlementService
             .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
@@ -103,7 +103,7 @@ public class UsageServiceTests
         var plan = new Plan { Id = planId, Name = "Pro" };
         var segmentId = Guid.NewGuid();
 
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
         _mockSettlementService
             .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))

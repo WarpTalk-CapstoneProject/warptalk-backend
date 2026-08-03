@@ -1,9 +1,19 @@
-using System;
+using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text;
+using System.Threading.Tasks;
+using System.Threading;
+using System;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Mappers;
+using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.Shared.Models;
+using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Helpers;
 
@@ -27,62 +37,32 @@ public static class BillingQueryHelper
             query.MaxAmount);
     }
 
-    public static Guid[] GetWorkspaceIds(IEnumerable<Invoice> invoices)
+    public static Guid[] GetWorkspaceIds<T>(IEnumerable<T> items, Func<T, Guid?> getWorkspaceId)
     {
-        return invoices
-            .Select(i => i.Payment.Subscription.WorkspaceId)
+        return items
+            .Select(getWorkspaceId)
+            .Where(id => id.HasValue && id.Value != Guid.Empty)
+            .Select(id => id!.Value)
             .Distinct()
             .ToArray();
     }
 
-    public static Guid[] GetWorkspaceIds(IEnumerable<CreditTransactionDto> transactions)
+    public static List<T> ApplyWorkspaceNames<T>(
+        IReadOnlyList<T> items,
+        IReadOnlyDictionary<Guid, string> workspaceNames,
+        Func<T, Guid?> getWorkspaceId,
+        Func<T, string, T> withWorkspaceName)
     {
-        return transactions
-            .Where(d => d.WorkspaceId.HasValue && d.WorkspaceId != Guid.Empty)
-            .Select(d => d.WorkspaceId!.Value)
-            .Distinct()
-            .ToArray();
-    }
-
-    public static Guid[] GetWorkspaceIds(IEnumerable<SubscriptionDto> subscriptions)
-    {
-        return subscriptions
-            .Where(i => i.WorkspaceId.HasValue && i.WorkspaceId != Guid.Empty)
-            .Select(i => i.WorkspaceId!.Value)
-            .Distinct()
-            .ToArray();
-    }
-
-    public static List<InvoiceDto> ApplyWorkspaceNames(
-        IReadOnlyList<InvoiceDto> invoices,
-        IReadOnlyDictionary<Guid, string> workspaceNames)
-    {
-        return invoices
-            .Select(i => Guid.TryParse(i.WorkspaceId, out var workspaceId) && workspaceNames.TryGetValue(workspaceId, out var workspaceName)
-                ? i with { WorkspaceName = workspaceName }
-                : i)
-            .ToList();
-    }
-
-    public static List<CreditTransactionDto> ApplyWorkspaceNames(
-        IReadOnlyList<CreditTransactionDto> transactions,
-        IReadOnlyDictionary<Guid, string> workspaceNames)
-    {
-        return transactions
-            .Select(d => d.WorkspaceId.HasValue && workspaceNames.TryGetValue(d.WorkspaceId.Value, out var workspaceName)
-                ? d with { WorkspaceName = workspaceName }
-                : d)
-            .ToList();
-    }
-
-    public static List<SubscriptionDto> ApplyWorkspaceNames(
-        IReadOnlyList<SubscriptionDto> subscriptions,
-        IReadOnlyDictionary<Guid, string> workspaceNames)
-    {
-        return subscriptions
-            .Select(i => i.WorkspaceId.HasValue && workspaceNames.TryGetValue(i.WorkspaceId.Value, out var workspaceName)
-                ? i with { WorkspaceName = workspaceName }
-                : i)
+        return items
+            .Select(i =>
+            {
+                var id = getWorkspaceId(i);
+                if (id.HasValue && workspaceNames.TryGetValue(id.Value, out var workspaceName))
+                {
+                    return withWorkspaceName(i, workspaceName);
+                }
+                return i;
+            })
             .ToList();
     }
 

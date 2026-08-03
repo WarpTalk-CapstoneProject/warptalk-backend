@@ -74,13 +74,6 @@ public record SendSingleNotificationRequest(
     Dictionary<string, string>? Metadata = null
 );
 
-public record UpdateStripeSubscriptionRequest(
-    Guid WorkspaceId,
-    decimal NewAmount,
-    string Currency,
-    string PlanSlug
-);
-
 public record StripePaymentCreationRequest(
     Guid? SubscriptionId,
     Guid UserId,
