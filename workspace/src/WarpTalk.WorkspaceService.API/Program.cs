@@ -1,6 +1,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.WorkspaceService.API.Providers;
@@ -47,6 +48,7 @@ builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
 // --- Authentication & Framework Services ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

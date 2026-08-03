@@ -10,6 +10,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using NSubstitute;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.WorkspaceService.API.Controllers;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Interfaces;
@@ -62,14 +64,16 @@ public class AdminWorkspacesControllerTests
         LifecycleHistory: Array.Empty<AdminWorkspaceLifecycleEventDto>());
 
     [Fact]
-    public void Controller_IsGatedOnThePlatformAdminRole()
+    public void Controller_IsGatedOnTheSharedSystemAdminPolicy()
     {
         var authorize = typeof(AdminWorkspacesController)
             .GetCustomAttributes<AuthorizeAttribute>(inherit: true)
             .SingleOrDefault();
 
         Assert.NotNull(authorize);
-        Assert.Equal("admin", authorize!.Roles);
+        Assert.Equal(SystemAdminAuthorization.PolicyName, authorize!.Policy);
+        // The shared policy is the single gate — no per-controller role string alongside it.
+        Assert.Null(authorize.Roles);
     }
 
     [Fact]
