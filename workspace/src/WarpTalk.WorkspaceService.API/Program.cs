@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.WorkspaceService.API.Consumers;
 using WarpTalk.WorkspaceService.API.Providers;
 using WarpTalk.WorkspaceService.Application.Evaluators;
 using WarpTalk.WorkspaceService.Application.Interfaces;
@@ -31,6 +32,7 @@ builder.Services.AddScoped<IWorkspaceDocumentService, WarpTalk.WorkspaceService.
 builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.Application.Services.VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
+builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
 
 // --- Infrastructure Layer Services (DbContext, Repositories, Storage, Redis, gRPC Clients, Consumers) ---
 builder.Services.AddInfrastructureServices(builder.Configuration, builder.Environment);
@@ -40,7 +42,11 @@ builder.Services.AddWarpTalkServiceHealthChecks<
 
 // --- Cross-Cutting & Core Extensions ---
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
-builder.Services.AddWarpTalkMassTransit(builder.Configuration);
+// Consumes admin.action_recorded from the other services: they own separate logical
+// databases, so the bus is how their admin actions reach the audit store here (WT-210).
+builder.Services.AddWarpTalkMassTransit(
+    builder.Configuration,
+    registration => registration.AddConsumer<AdminActionRecordedConsumer>());
 builder.Services.AddHttpClient();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IWorkspaceUrlProvider, WorkspaceUrlProvider>();
