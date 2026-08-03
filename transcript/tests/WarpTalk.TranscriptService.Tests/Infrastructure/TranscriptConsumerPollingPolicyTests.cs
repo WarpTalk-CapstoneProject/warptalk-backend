@@ -90,4 +90,43 @@ public class TranscriptConsumerPollingPolicyTests
         Assert.False(TranscriptConsumerPollingPolicy.TryResolveRoomId("stt:results", values, out var roomId));
         Assert.Equal(Guid.Empty, roomId);
     }
+
+    [Fact]
+    public void TryResolveSpeaker_AcceptsSystemWithoutInventingAParticipantGuid()
+    {
+        var values = new Dictionary<string, string> { ["speaker_id"] = "system" };
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
+        Assert.Null(speakerId);
+        Assert.Equal("System", speakerName);
+    }
+
+    [Fact]
+    public void TryResolveSpeaker_AcceptsParticipantGuid()
+    {
+        var expected = Guid.NewGuid();
+        var values = new Dictionary<string, string> { ["speaker_id"] = expected.ToString() };
+
+        Assert.True(TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName));
+        Assert.Equal(expected, speakerId);
+        Assert.Equal(expected.ToString(), speakerName);
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(4, false)]
+    [InlineData(5, true)]
+    [InlineData(8, true)]
+    public void ShouldDeadLetter_UsesBoundedDeliveryPolicy(long attempts, bool expected)
+    {
+        Assert.Equal(expected, TranscriptConsumerPollingPolicy.ShouldDeadLetter(attempts));
+    }
+
+    [Fact]
+    public void DeadLetterStream_IsIsolatedPerSourceStreamAndConsumerGroup()
+    {
+        Assert.Equal(
+            "translate:results:transcript-persistence:dead-letter",
+            TranscriptConsumerPollingPolicy.DeadLetterStream("translate:results"));
+    }
 }

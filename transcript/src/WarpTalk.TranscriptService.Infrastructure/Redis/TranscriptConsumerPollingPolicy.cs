@@ -11,6 +11,10 @@ public enum TranscriptResultStreamKind
 public static class TranscriptConsumerPollingPolicy
 {
     private static readonly TimeSpan IdleDelay = TimeSpan.FromMilliseconds(250);
+    public static TimeSpan PendingClaimIdle { get; } = TimeSpan.FromMinutes(1);
+    public static TimeSpan PendingRecoveryInterval { get; } = TimeSpan.FromSeconds(30);
+    public const int RecoveryBatchSize = 10;
+    public const long MaxDeliveryAttempts = 5;
 
     public static IReadOnlyList<string> InputStreams { get; } =
         ["stt:results", "translate:results", "tts:results"];
@@ -59,4 +63,35 @@ public static class TranscriptConsumerPollingPolicy
 
         return Guid.TryParse(suffix, out roomId);
     }
+
+    public static bool TryResolveSpeaker(
+        IReadOnlyDictionary<string, string> values,
+        out Guid? speakerId,
+        out string speakerName)
+    {
+        var rawSpeakerId = values.GetValueOrDefault("speaker_id");
+        if (string.Equals(rawSpeakerId, "system", StringComparison.OrdinalIgnoreCase))
+        {
+            speakerId = null;
+            speakerName = "System";
+            return true;
+        }
+
+        if (Guid.TryParse(rawSpeakerId, out var participantId))
+        {
+            speakerId = participantId;
+            speakerName = participantId.ToString();
+            return true;
+        }
+
+        speakerId = null;
+        speakerName = string.Empty;
+        return false;
+    }
+
+    public static bool ShouldDeadLetter(long deliveryAttempts) =>
+        deliveryAttempts >= MaxDeliveryAttempts;
+
+    public static string DeadLetterStream(string sourceStream) =>
+        $"{sourceStream}:transcript-persistence:dead-letter";
 }
