@@ -48,7 +48,7 @@ public class BillingArchitectureTests
     public void Billing_Api_Should_Not_Expose_Demo_Or_Simulation_Endpoints()
     {
         var repoRoot = FindRepoRoot();
-        var apiSource = Path.Combine(repoRoot, "billing", "src", "WarpTalk.BillingService.API");
+        var apiSource = Path.Combine(repoRoot, "billing", "src", "WarpTalk.BillingService.API", "Controllers");
         var forbiddenTokens = new[] { "simulate", "simulation", "demo" };
 
         var offenders = Directory
@@ -60,6 +60,24 @@ public class BillingArchitectureTests
             .ToArray();
 
         offenders.Should().BeEmpty("production API controllers should not expose demo or simulation endpoints");
+    }
+
+    [Fact]
+    public void Billing_Api_Should_Not_Expose_Direct_Credit_Consumption_Endpoint()
+    {
+        var repoRoot = FindRepoRoot();
+        var apiSource = Path.Combine(repoRoot, "billing", "src", "WarpTalk.BillingService.API", "Controllers");
+        var forbiddenTokens = new[] { "consume-direct", "ConsumeCreditsDirectly" };
+
+        var offenders = Directory
+            .EnumerateFiles(apiSource, "*.cs", SearchOption.AllDirectories)
+            .Where(file => !IsBuildOutput(file))
+            .SelectMany(file => forbiddenTokens
+                .Where(token => File.ReadAllText(file).Contains(token, StringComparison.Ordinal))
+                .Select(token => $"{Path.GetRelativePath(repoRoot, file)} contains {token}"))
+            .ToArray();
+
+        offenders.Should().BeEmpty("credit consumption should stay behind gRPC/internal service boundaries, not a direct public REST controller action");
     }
 
     [Fact]

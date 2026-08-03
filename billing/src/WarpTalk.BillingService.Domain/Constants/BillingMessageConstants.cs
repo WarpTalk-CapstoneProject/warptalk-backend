@@ -4,9 +4,6 @@ public static class BillingMessageConstants
 {
     public static class SuccessMessages
     {
-        public const string CreditsAddedTitle = "Credits Added";
-        public const string CreditsAddedContent = "Top-up processed successfully. Added {0} credits.";
-        public const string SubscriptionActivationTopUp = "Subscription activation top-up";
         public const string SubscriptionPlanActivationTemplate = "Subscription Plan Activation: {0}";
         public const string SubscriptionPlanRenewalTemplate = "{0} — Renewal {1:yyyy-MM-dd}";
     }
@@ -25,17 +22,7 @@ public static class BillingMessageConstants
 
     public static class AdjustmentMessages
     {
-        public const string DefaultReason = "Manual credit adjustment";
-        public const string AddedTitle = "Credits Added";
-        public const string DeductedTitle = "Credits Deducted";
-        public const string ContentTemplate = "Admin adjusted credit balance by {0}{1} credits. Reason: {2}";
-        public const string ReasonUpgradedDowngraded = "upgraded/downgraded";
         public const string PlanUpgradeDirect = "Plan upgrade to {0} (Stripe Direct)";
-    }
-
-    public static class InvoiceMessages
-    {
-        public const string TopUpPackageTemplate = "{0} cr Credit Top-Up Package";
     }
 
     public static class UsageMessages
