@@ -75,8 +75,3 @@ public record UpdateSubscriptionContractTermsRequest(
     decimal? OveragePricePerCreditOverride = null,
     int? InvoiceTermsDaysOverride = null,
     string? BillingContactEmail = null);
-
-
-
-public record CancelSubscriptionRequest(
-    string? CancellationReason = null);

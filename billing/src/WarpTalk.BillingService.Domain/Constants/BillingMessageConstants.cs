@@ -31,7 +31,6 @@ public static class BillingMessageConstants
         public const string ContentTemplate = "Admin adjusted credit balance by {0}{1} credits. Reason: {2}";
         public const string ReasonUpgradedDowngraded = "upgraded/downgraded";
         public const string PlanUpgradeDirect = "Plan upgrade to {0} (Stripe Direct)";
-        public const string PlanUpgradeSimulation = "Plan upgrade to {0} (Simulation)";
     }
 
     public static class InvoiceMessages
@@ -147,7 +146,6 @@ public static class BillingMessageConstants
         public const string ErrorUpdatingPlan = "Error updating plan";
         public const string ErrorDeactivatingPlan = "Error deactivating plan";
         public const string ErrorConsumingCredits = "Error consuming credits for {IdempotencyKey}";
-        public const string ErrorProcessingRefund = "Error processing refund for PaymentId {PaymentId}";
         public const string ErrorFetchingActiveSubscription = "Error fetching active subscription for WorkspaceId {WorkspaceId}";
         public const string ErrorCancellingSubscription = "Error cancelling subscription for WorkspaceId {WorkspaceId}";
         public const string ErrorChangingSubscription = "Error changing subscription for WorkspaceId {WorkspaceId} to PlanId {PlanId}";
@@ -238,7 +236,6 @@ public static class BillingMessageConstants
     {
         public const string Workspace = "Workspace";
         public const string Plan = "Plan";
-        public const string FailedToTopUpCredits = "Failed to top up credits";
         public const string DirectTopUpDisabled = "Direct credit top-up is disabled. Credits can only be granted by verified payment processing.";
         public const string AuthenticationRequired = "Authentication required";
         public const string AccessDenied = "Access denied";
@@ -265,8 +262,6 @@ public static class BillingMessageConstants
         public const string BillingWorkspaceAuthError = "An error occurred during workspace authorization.";
         public const string BillingCreditsConsumedInvalid = "Credits consumed must be greater than zero.";
         public const string BillingTransactionNotFound = "Payment transaction not found.";
-        public const string BillingRefundOnlyPaid = "Only paid transactions can be refunded.";
-        public const string BillingRefundAmountInvalid = "Refund amount must be positive and cannot exceed original payment amount.";
         public const string BillingSessionInactive = "Session is inactive or expired.";
         public const string BillingSubscriptionInvalid = "Subscription invalid.";
         public const string BillingIdempotencyKeyReused = "Idempotency key was reused with a different request payload.";
@@ -282,7 +277,6 @@ public static class BillingMessageConstants
         public const string BillingAnalyticsTopWorkspacesFailed = "Failed to get top workspaces.";
 
         public const string BillingWorkspaceIdInvalid = "Invalid workspace id";
-        public const string BillingTopUpSubscriptionNotFound = "No active subscription found for top-up";
         public const string BillingCheckoutSessionCreateFailed = "Failed to create checkout session";
         public const string BillingCheckoutSessionGetFailed = "Failed to get checkout session";
         public const string BillingPaymentEventFailed = "Failed to process payment event";

@@ -2,14 +2,6 @@ namespace WarpTalk.BillingService.Domain.Constants;
 
 public static class TransactionConstants
 {
-    public static class RefundStatuses
-    {
-        public const string Pending = "pending";
-        public const string Succeeded = "succeeded";
-        public const string Failed = "failed";
-        public const string Cancelled = "cancelled";
-    }
-
     public static class TransactionStatuses
     {
         public const string Pending = "pending";
@@ -33,6 +25,5 @@ public static class TransactionConstants
         public const string Consume = "consume";
         public const string TopUp = "top_up";
         public const string Adjustment = "adjustment";
-        public const string Refund = "refund";
     }
 }

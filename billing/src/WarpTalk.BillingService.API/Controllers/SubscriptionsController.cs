@@ -13,14 +13,10 @@ namespace WarpTalk.BillingService.API.Controllers;
 public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
-    private readonly IBillingCycleClosingService _billingCycleClosingService;
 
-    public SubscriptionsController(
-        ISubscriptionService subscriptionService,
-        IBillingCycleClosingService billingCycleClosingService)
+    public SubscriptionsController(ISubscriptionService subscriptionService)
     {
         _subscriptionService = subscriptionService;
-        _billingCycleClosingService = billingCycleClosingService;
     }
 
     [HttpPost("contract")]
@@ -103,25 +99,6 @@ public class SubscriptionsController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
         }
         return Ok(result.Value);
-    }
-
-    [HttpPost("workspace/{workspaceId}/simulate-cycle-close")]
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    public async Task<ActionResult<object>> SimulateCycleClose(
-        Guid workspaceId,
-        CancellationToken cancellationToken)
-    {
-        var result = await _billingCycleClosingService.CloseWorkspaceCycleAsync(
-            workspaceId,
-            DateTime.UtcNow,
-            cancellationToken);
-
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-
-        return Ok(new { closedCycles = result.Value });
     }
 
     [HttpPut("workspace/{workspaceId}/contract-terms")]

@@ -14,5 +14,4 @@ public interface IStripeSdkClient
     Task<Price> CreatePriceAsync(PriceCreateOptions options, CancellationToken cancellationToken = default);
     Task<PaymentIntent> GetPaymentIntentAsync(string paymentIntentId, CancellationToken cancellationToken = default);
     Task<Invoice> GetInvoiceAsync(string invoiceId, CancellationToken cancellationToken = default);
-    Task<Refund> CreateRefundAsync(RefundCreateOptions options, CancellationToken cancellationToken = default);
 }

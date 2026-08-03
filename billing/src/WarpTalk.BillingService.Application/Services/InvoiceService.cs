@@ -17,18 +17,15 @@ public class InvoiceService : IInvoiceService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<InvoiceService> _logger;
-    private readonly IWorkspaceClient _workspaceClient;
     private readonly IStripePaymentService _stripePaymentService;
 
     public InvoiceService(
         IUnitOfWork unitOfWork,
         ILogger<InvoiceService> logger,
-        IWorkspaceClient workspaceClient,
         IStripePaymentService stripePaymentService)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
-        _workspaceClient = workspaceClient;
         _stripePaymentService = stripePaymentService;
     }
 
@@ -194,13 +191,6 @@ public class InvoiceService : IInvoiceService
 
     private static string ExtractCheckoutSessionId(string checkoutUrl)
     {
-        const string mockToken = "mock_session_";
-        var mockIndex = checkoutUrl.IndexOf(mockToken, StringComparison.OrdinalIgnoreCase);
-        if (mockIndex >= 0)
-        {
-            return checkoutUrl[mockIndex..];
-        }
-
         var sessionIndex = checkoutUrl.IndexOf("cs_", StringComparison.OrdinalIgnoreCase);
         if (sessionIndex < 0)
         {

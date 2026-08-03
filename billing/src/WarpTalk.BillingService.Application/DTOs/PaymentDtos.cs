@@ -28,28 +28,6 @@ public record CreatePaymentRequest(
     string Provider
 );
 
-public record PaymentWebhookRequest(
-    string OrderCode, // Maps to Payment.Id
-    string Status,    // "PAID", "CANCELLED", etc.
-    string TransactionId
-);
-
-public record RefundDto(
-    string Id,
-    string PaymentId,
-    decimal Amount,
-    string Reason,
-    string Status,
-    DateTime CreatedAt,
-    DateTime? CompletedAt
-);
-
-public record RefundPaymentRequest(
-    Guid PaymentId,
-    decimal Amount,
-    string Reason
-);
-
 public record UpdatePaymentStatusRequest(
     string Status,
     string? ProviderTransactionId,

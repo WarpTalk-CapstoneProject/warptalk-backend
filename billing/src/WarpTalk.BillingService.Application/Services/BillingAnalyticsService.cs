@@ -17,16 +17,13 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<BillingAnalyticsService> _logger;
-    private readonly IWorkspaceClient _workspaceClient;
 
     public BillingAnalyticsService(
         IUnitOfWork unitOfWork,
-        ILogger<BillingAnalyticsService> logger,
-        IWorkspaceClient workspaceClient)
+        ILogger<BillingAnalyticsService> logger)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
-        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<BillingReportDto>> GetBillingReportAsync(Guid workspaceId, BillingReportQuery query, CancellationToken cancellationToken = default)

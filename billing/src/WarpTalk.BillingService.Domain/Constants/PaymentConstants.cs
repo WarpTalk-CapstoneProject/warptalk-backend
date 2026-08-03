@@ -38,15 +38,11 @@ public static class PaymentConstants
     {
         public const string Card = "card";
         public const string Invoice = "invoice";
-        public const string StripeUpgradeDirect = "Stripe Upgrade (Direct)";
-        public const string StripeUpgradeSimulation = "Stripe Upgrade (Simulation)";
     }
 
     public static class Payments
     {
         public const string StatusPaid = "paid";
-        public const string StatusUnpaid = "unpaid";
-        public const string StatusNoPaymentRequired = "no_payment_required";
     }
 
     public static class Currencies
@@ -81,8 +77,6 @@ public static class PaymentConstants
         public const string Session = "cs_";
         public const string Invoice = "in_";
         public const string PaymentIntent = "pi_";
-        public const string MockSession = "mock_session_";
-        public const string MockPaymentIntent = "mock_pi_";
     }
 
     public static class StripeStatuses
@@ -121,11 +115,6 @@ public static class PaymentConstants
         public const string Year = "year";
     }
 
-    public static class StripeLimits
-    {
-        public const int MinimumTopUpCredits = 1500;
-    }
-
     public static class StripeConfigKeys
     {
         public const string SecretKey = "Stripe:SecretKey";
@@ -150,17 +139,11 @@ public static class PaymentConstants
         public const string SubscriptionSearchTemplate = "metadata['{0}']:'{1}' AND status:'{2}'";
     }
 
-    public static class StripeDefaultUrls
-    {
-        public const string MockSuccessUrl = "http://localhost:3000/workspace/payment/success?session_id={CHECKOUT_SESSION_ID}";
-        public const string SandboxSuccessUrl = "http://localhost:3000/sandbox/workspace-billing?session_id={CHECKOUT_SESSION_ID}";
-        public const string CancelUrl = "http://localhost:3000/payment-cancelled";
-    }
-
     public static class StripeErrorMessages
     {
         public const string InvalidProviderTxIdFormat = "Invalid provider transaction ID format";
-        public const string InvalidMockSessionPayload = "Invalid mock session payload.";
         public const string SessionNotFound = "Session not found.";
+        public const string SecretKeyNotConfigured = "Stripe secret key is not configured.";
+        public const string CheckoutUrlsNotConfigured = "Stripe checkout success and cancel URLs are not configured.";
     }
 }

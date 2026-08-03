@@ -12,7 +12,6 @@ using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using Microsoft.Extensions.Configuration;
 using WarpTalk.Shared;
 using Xunit;
 
@@ -21,24 +20,18 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 public class CreditServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IBillingMessagePublisher> _mockMessagePublisher;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
-    private readonly Mock<IConfiguration> _mockConfig;
-    private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly CreditService _creditService;
 
     public CreditServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockMessagePublisher = new Mock<IBillingMessagePublisher>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
-        _mockConfig = new Mock<IConfiguration>();
-        _mockWorkspaceClient = new Mock<IWorkspaceClient>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
 
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
@@ -48,9 +41,6 @@ public class CreditServiceTests
         _creditService = new CreditService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<CreditService>>().Object,
-            _mockMessagePublisher.Object,
-            _mockConfig.Object,
-            _mockWorkspaceClient.Object,
             _mockSettlementService.Object);
     }
 

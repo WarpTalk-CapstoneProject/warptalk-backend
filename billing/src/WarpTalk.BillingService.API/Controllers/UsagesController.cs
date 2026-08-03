@@ -18,16 +18,13 @@ namespace WarpTalk.BillingService.API.Controllers;
 [Route("api/v1/[controller]")]
 public class UsagesController : ControllerBase
 {
-    private readonly IUsageService _usageService;
     private readonly IBillingAnalyticsService _analyticsService;
     private readonly IUsageRateCardAdminService _rateCardAdminService;
 
     public UsagesController(
-        IUsageService usageService,
         IBillingAnalyticsService analyticsService,
         IUsageRateCardAdminService rateCardAdminService)
     {
-        _usageService = usageService;
         _analyticsService = analyticsService;
         _rateCardAdminService = rateCardAdminService;
     }

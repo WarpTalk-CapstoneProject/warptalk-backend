@@ -24,7 +24,6 @@ public class SubscriptionServiceTests
     private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IStripePaymentService> _mockStripePaymentService;
-    private readonly Mock<IWorkspaceClient> _mockWorkspaceClient;
     private readonly Mock<IAiServiceStateStore> _mockAiServiceStateStore;
     private readonly SubscriptionService _subscriptionService;
 
@@ -35,7 +34,6 @@ public class SubscriptionServiceTests
         _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockStripePaymentService = new Mock<IStripePaymentService>();
-        _mockWorkspaceClient = new Mock<IWorkspaceClient>();
         _mockAiServiceStateStore = new Mock<IAiServiceStateStore>();
 
         var mockPaymentRepo = new Mock<IPaymentRepository>();
@@ -52,7 +50,6 @@ public class SubscriptionServiceTests
             new Mock<ILogger<SubscriptionService>>().Object,
             new Mock<IBillingMessagePublisher>().Object,
             _mockStripePaymentService.Object,
-            _mockWorkspaceClient.Object,
             CreatePricingConfigService(),
             _mockAiServiceStateStore.Object);
     }

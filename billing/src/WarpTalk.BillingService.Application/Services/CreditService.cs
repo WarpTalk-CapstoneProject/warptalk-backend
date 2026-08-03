@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -20,28 +19,16 @@ public class CreditService : ICreditService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditService> _logger;
-    private readonly IBillingMessagePublisher _messagePublisher;
-    private readonly IConfiguration _configuration;
-    private readonly IWorkspaceClient _workspaceClient;
-    private readonly INotificationClient? _notificationClient;
     private readonly IUsageSettlementService _settlementService;
 
     public CreditService(
         IUnitOfWork unitOfWork,
         ILogger<CreditService> logger,
-        IBillingMessagePublisher messagePublisher,
-        IConfiguration configuration,
-        IWorkspaceClient workspaceClient,
-        IUsageSettlementService settlementService,
-        INotificationClient? notificationClient = null)
+        IUsageSettlementService settlementService)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
-        _messagePublisher = messagePublisher;
-        _configuration = configuration;
-        _workspaceClient = workspaceClient;
         _settlementService = settlementService;
-        _notificationClient = notificationClient;
     }
 
 

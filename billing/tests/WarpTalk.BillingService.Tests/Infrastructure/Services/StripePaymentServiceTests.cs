@@ -11,14 +11,15 @@ namespace WarpTalk.BillingService.Tests.Infrastructure.Services;
 public class StripePaymentServiceTests
 {
     [Fact]
-    public async Task PlaceholderSecret_Should_Create_And_Read_MockPaidCheckoutSession()
+    public async Task PlaceholderSecret_Should_Fail_CheckoutSession_Creation()
     {
         var stripeClient = new Mock<IStripeSdkClient>();
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 [PaymentConstants.StripeConfigKeys.SecretKey] = PaymentConstants.StripePlaceholders.SecretKeyPlaceholder,
-                [PaymentConstants.StripeConfigKeys.SuccessUrl] = PaymentConstants.StripeDefaultUrls.MockSuccessUrl
+                [PaymentConstants.StripeConfigKeys.SuccessUrl] = "https://app.example.test/billing/success?session_id={CHECKOUT_SESSION_ID}",
+                [PaymentConstants.StripeConfigKeys.CancelUrl] = "https://app.example.test/billing/cancel"
             })
             .Build();
         var service = new StripePaymentService(configuration, stripeClient.Object);
@@ -32,18 +33,8 @@ public class StripePaymentServiceTests
             "monthly");
 
         var checkoutResult = await service.CreateCheckoutSessionAsync(request);
-        checkoutResult.IsSuccess.Should().BeTrue();
-        checkoutResult.Value.Should().Contain(PaymentConstants.StripePrefixes.MockSession);
-
-        var sessionId = checkoutResult.Value![(checkoutResult.Value.IndexOf(PaymentConstants.StripePrefixes.MockSession, StringComparison.Ordinal))..];
-        var sessionResult = await service.GetCheckoutSessionAsync(sessionId);
-
-        sessionResult.IsSuccess.Should().BeTrue();
-        sessionResult.Value.Should().NotBeNull();
-        var session = sessionResult.Value!;
-        session.PaymentStatus.Should().Be(PaymentConstants.StripeStatuses.Paid);
-        session.Status.Should().Be(PaymentConstants.StripeStatuses.Complete);
-        session.Metadata[PaymentConstants.StripeMetadata.WorkspaceId].Should().Be(request.WorkspaceId.ToString());
+        checkoutResult.IsSuccess.Should().BeFalse();
+        checkoutResult.Error.Should().Be(PaymentConstants.StripeErrorMessages.SecretKeyNotConfigured);
         stripeClient.VerifyNoOtherCalls();
     }
 

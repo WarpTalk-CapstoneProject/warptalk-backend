@@ -54,8 +54,12 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         var redisConnectionString = configuration.GetConnectionString("Redis")
-            ?? configuration["Redis:ConnectionString"]
-            ?? "localhost:6379";
+            ?? configuration["Redis:ConnectionString"];
+
+        if (string.IsNullOrWhiteSpace(redisConnectionString))
+        {
+            throw new InvalidOperationException("Billing Redis connection string is not configured.");
+        }
 
         services.AddSingleton<IConnectionMultiplexer>(_ =>
             ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));

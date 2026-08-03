@@ -11,7 +11,6 @@ public sealed class StripeSdkClient : IStripeSdkClient
     private readonly PriceService _priceService = new();
     private readonly PaymentIntentService _paymentIntentService = new();
     private readonly Stripe.InvoiceService _invoiceService = new();
-    private readonly Stripe.RefundService _refundService = new();
 
     public Task<Session> CreateCheckoutSessionAsync(SessionCreateOptions options, CancellationToken cancellationToken = default)
         => _sessionService.CreateAsync(options, cancellationToken: cancellationToken);
@@ -39,7 +38,4 @@ public sealed class StripeSdkClient : IStripeSdkClient
 
     public Task<Invoice> GetInvoiceAsync(string invoiceId, CancellationToken cancellationToken = default)
         => _invoiceService.GetAsync(invoiceId, cancellationToken: cancellationToken);
-
-    public Task<Refund> CreateRefundAsync(RefundCreateOptions options, CancellationToken cancellationToken = default)
-        => _refundService.CreateAsync(options, cancellationToken: cancellationToken);
 }

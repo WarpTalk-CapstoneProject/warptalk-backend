@@ -33,21 +33,18 @@ public class StripePaymentService : IStripePaymentService
 
             if (isPlaceholder)
             {
-                var payload = new
-                {
-                    UserId = request.UserId,
-                    WorkspaceId = request.WorkspaceId,
-                    Amount = request.Amount,
-                    Currency = request.Currency,
-                    PaymentType = request.PaymentType,
-                    PlanSlug = request.PlanSlug,
-                    BillingCycle = request.BillingCycle
-                };
+                return Result.Failure<string>(
+                    PaymentConstants.StripeErrorMessages.SecretKeyNotConfigured,
+                    ErrorCodes.InternalServerError);
+            }
 
-                string payloadJson = System.Text.Json.JsonSerializer.Serialize(payload);
-                string payloadBase64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(payloadJson));
-                string successUrl = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl] ?? PaymentConstants.StripeDefaultUrls.MockSuccessUrl;
-                return Result.Success(successUrl.Replace(PaymentConstants.StripePlaceholders.UnknownWebhookSessionUrlToken, PaymentConstants.StripePrefixes.MockSession + payloadBase64));
+            var successUrl = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl];
+            var cancelUrl = _configuration[PaymentConstants.StripeConfigKeys.CancelUrl];
+            if (string.IsNullOrWhiteSpace(successUrl) || string.IsNullOrWhiteSpace(cancelUrl))
+            {
+                return Result.Failure<string>(
+                    PaymentConstants.StripeErrorMessages.CheckoutUrlsNotConfigured,
+                    ErrorCodes.InternalServerError);
             }
 
             bool isSubscription = request.PaymentType == PaymentConstants.PaymentTypes.Subscription;
@@ -95,8 +92,8 @@ public class StripePaymentService : IStripePaymentService
                     },
                 },
                 Mode = isSubscription ? PaymentConstants.StripeModes.Subscription : PaymentConstants.StripeModes.Payment,
-                SuccessUrl = _configuration[PaymentConstants.StripeConfigKeys.SuccessUrl] ?? PaymentConstants.StripeDefaultUrls.SandboxSuccessUrl,
-                CancelUrl = _configuration[PaymentConstants.StripeConfigKeys.CancelUrl] ?? PaymentConstants.StripeDefaultUrls.CancelUrl,
+                SuccessUrl = successUrl,
+                CancelUrl = cancelUrl,
                 Metadata = metadata
             };
 
@@ -191,113 +188,31 @@ public class StripePaymentService : IStripePaymentService
         }
     }
 
-    public async Task<Result<bool>> RefundPaymentAsync(string providerTransactionId, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            string paymentIntentId = providerTransactionId;
-
-            if (providerTransactionId.StartsWith(PaymentConstants.StripePrefixes.Session))
-            {
-                var session = await _stripeSdkClient.GetCheckoutSessionAsync(providerTransactionId, cancellationToken);
-                if (session is null)
-                    return Result.Success(false);
-
-                paymentIntentId = session.PaymentIntentId;
-
-                if (string.IsNullOrEmpty(paymentIntentId))
-                {
-                    if (!string.IsNullOrEmpty(session.InvoiceId))
-                    {
-                        var invoice = await _stripeSdkClient.GetInvoiceAsync(session.InvoiceId, cancellationToken);
-                        paymentIntentId = ((dynamic)invoice).PaymentIntentId;
-                    }
-                }
-            }
-
-            if (string.IsNullOrEmpty(paymentIntentId))
-                return Result.Success(false);
-
-            var options = new RefundCreateOptions
-            {
-                PaymentIntent = paymentIntentId
-            };
-
-            await _stripeSdkClient.CreateRefundAsync(options, cancellationToken);
-            return Result.Success(true);
-        }
-        catch (Exception ex)
-        {
-            return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
-        }
-    }
-
     public async Task<Result<CheckoutSessionDto>> GetCheckoutSessionAsync(string sessionId, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (sessionId.StartsWith(PaymentConstants.StripePrefixes.MockSession))
-            {
-                var payloadBase64 = sessionId.Substring(PaymentConstants.StripePrefixes.MockSession.Length);
-                var payloadJson = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(payloadBase64));
-                var payload = System.Text.Json.JsonSerializer.Deserialize<MockSessionPayload>(payloadJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                if (payload == null)
-                    return Result.Failure<CheckoutSessionDto>(PaymentConstants.StripeErrorMessages.InvalidMockSessionPayload, ErrorCodes.ValidationError);
+            var session = await _stripeSdkClient.GetCheckoutSessionAsync(sessionId, cancellationToken);
+            if (session == null)
+                return Result.Failure<CheckoutSessionDto>(PaymentConstants.StripeErrorMessages.SessionNotFound, ErrorCodes.NotFound);
 
-                var metadata = new Dictionary<string, string>
-                {
-                    { PaymentConstants.StripeMetadata.UserId, payload.UserId.ToString() },
-                    { PaymentConstants.StripeMetadata.WorkspaceId, payload.WorkspaceId.ToString() },
-                    { PaymentConstants.StripeMetadata.PaymentType, payload.PaymentType },
-                    { PaymentConstants.StripeMetadata.PlanSlug, payload.PlanSlug ?? "" },
-                    { PaymentConstants.StripeMetadata.BillingCycle, payload.BillingCycle ?? "" }
-                };
+            var metadata = session.Metadata != null
+                ? session.Metadata.ToDictionary(k => k.Key, v => v.Value)
+                : new Dictionary<string, string>();
 
-                return Result.Success(new CheckoutSessionDto(
-                    sessionId,
-                    (long)(string.Equals(payload.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase) ? payload.Amount : payload.Amount * 100),
-                    payload.Currency,
-                    metadata,
-                    PaymentConstants.StripeStatuses.Paid,
-                    PaymentConstants.StripeStatuses.Complete,
-                    PaymentConstants.StripePrefixes.MockPaymentIntent + Guid.NewGuid().ToString("N")
-                ));
-            }
-            else
-            {
-                var session = await _stripeSdkClient.GetCheckoutSessionAsync(sessionId, cancellationToken);
-                if (session == null)
-                    return Result.Failure<CheckoutSessionDto>(PaymentConstants.StripeErrorMessages.SessionNotFound, ErrorCodes.NotFound);
-
-                var metadata = session.Metadata != null
-                    ? session.Metadata.ToDictionary(k => k.Key, v => v.Value)
-                    : new Dictionary<string, string>();
-
-                return Result.Success(new CheckoutSessionDto(
-                    session.Id,
-                    session.AmountTotal,
-                    session.Currency,
-                    metadata,
-                    session.PaymentStatus,
-                    session.Status,
-                    session.PaymentIntentId
-                ));
-            }
+            return Result.Success(new CheckoutSessionDto(
+                session.Id,
+                session.AmountTotal,
+                session.Currency,
+                metadata,
+                session.PaymentStatus,
+                session.Status,
+                session.PaymentIntentId
+            ));
         }
         catch (Exception ex)
         {
             return Result.Failure<CheckoutSessionDto>(ex.Message, ErrorCodes.InternalServerError);
         }
-    }
-
-    private class MockSessionPayload
-    {
-        public Guid UserId { get; set; }
-        public Guid WorkspaceId { get; set; }
-        public decimal Amount { get; set; }
-        public string Currency { get; set; } = PaymentConstants.Currencies.Usd;
-        public string PaymentType { get; set; } = string.Empty;
-        public string PlanSlug { get; set; } = string.Empty;
-        public string BillingCycle { get; set; } = string.Empty;
     }
 }

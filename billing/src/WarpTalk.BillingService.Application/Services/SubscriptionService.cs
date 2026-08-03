@@ -23,7 +23,6 @@ public class SubscriptionService : ISubscriptionService
     private readonly ILogger<SubscriptionService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IStripePaymentService _stripePaymentService;
-    private readonly IWorkspaceClient _workspaceClient;
     private readonly IAiServiceStateStore? _aiServiceStateStore;
     private readonly IUsageRateCardAdminService _pricingConfigService;
 
@@ -32,7 +31,6 @@ public class SubscriptionService : ISubscriptionService
         ILogger<SubscriptionService> logger,
         IBillingMessagePublisher messagePublisher,
         IStripePaymentService stripePaymentService,
-        IWorkspaceClient workspaceClient,
         IUsageRateCardAdminService pricingConfigService,
         IAiServiceStateStore? aiServiceStateStore = null)
     {
@@ -40,7 +38,6 @@ public class SubscriptionService : ISubscriptionService
         _logger = logger;
         _messagePublisher = messagePublisher;
         _stripePaymentService = stripePaymentService;
-        _workspaceClient = workspaceClient;
         _pricingConfigService = pricingConfigService;
         _aiServiceStateStore = aiServiceStateStore;
     }
