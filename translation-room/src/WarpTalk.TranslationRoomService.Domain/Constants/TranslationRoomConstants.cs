@@ -60,6 +60,7 @@ public static class TranslationRoomConstants
     public const string ValidationSourceLanguageRequired = "Source language is required.";
     public const string ValidationTargetLanguagesRequired = "Target languages are required.";
     public const string ValidationMaxParticipantsGreaterThanZero = "Max participants must be strictly greater than 0.";
+    public const string ValidationRoomTypeUnsupported = "Unsupported meeting type.";
     public const string ValidationScheduledTimeMustBeFuture = "Scheduled time must be strictly greater than the current time.";
     public const string ValidationTranslationRoomCodeRequired = "Translation room code is required.";
     public const string ValidationTranslationRoomCodeLength = "Translation room code must be exactly 12 characters.";

@@ -16,7 +16,12 @@ public static class VoiceProfileMapper
             profile.IsActive,
             profile.VoiceSamples.Any(s => s.DeletedAt == null),
             profile.CreatedAt,
-            profile.UpdatedAt
+            profile.UpdatedAt,
+            profile.Provider,
+            // EmbeddingRef is the provider's own reference for the voice. For a picked
+            // library voice that is the Cartesia voice id; for a future cloned profile it
+            // would be the cloned voice's id. Same column either way.
+            profile.EmbeddingRef
         );
     }
 }

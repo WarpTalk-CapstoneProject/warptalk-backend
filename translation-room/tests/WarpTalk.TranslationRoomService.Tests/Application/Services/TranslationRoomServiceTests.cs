@@ -74,6 +74,36 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
+    public async Task GetTranslationRoomHistoryAsync_ShouldReject_WhenWorkspaceIdIsMissing()
+    {
+        var request = new GetTranslationRoomsRequest(Status: "ENDED,CANCELLED");
+
+        var result = await _service.GetTranslationRoomHistoryAsync(request, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        _mockUow.Verify(u => u.Repository<TranslationRoom>(), Times.Never);
+    }
+
+    [Fact]
+    public void ApplyRoomFilters_ShouldReturnOnlyRequestedWorkspace()
+    {
+        var workspaceId = Guid.NewGuid();
+        var rooms = new[]
+        {
+            new TranslationRoom { Id = Guid.NewGuid(), WorkspaceId = workspaceId, Status = "ENDED" },
+            new TranslationRoom { Id = Guid.NewGuid(), WorkspaceId = Guid.NewGuid(), Status = "ENDED" },
+        }.AsQueryable();
+        var request = new GetTranslationRoomsRequest(Status: "ENDED", WorkspaceId: workspaceId);
+        var method = typeof(WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService)
+            .GetMethod("ApplyRoomFilters", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        var result = (IQueryable<TranslationRoom>)method.Invoke(null, [rooms, request])!;
+
+        result.Select(room => room.WorkspaceId).Should().Equal(workspaceId);
+    }
+
+    [Fact]
     public async Task JoinTranslationRoomAsync_ShouldAssignHostRole_WhenUserIsHost()
     {
         // Arrange
