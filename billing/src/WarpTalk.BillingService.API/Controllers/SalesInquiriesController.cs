@@ -18,19 +18,6 @@ public class SalesInquiriesController : ControllerBase
         _salesInquiryService = salesInquiryService;
     }
 
-    [AllowAnonymous]
-    [HttpPost]
-    public async Task<ActionResult<SalesInquiryDto>> SubmitPublicSalesInquiry(
-        [FromBody] CreateSalesInquiryRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _salesInquiryService.CreatePublicInquiryAsync(request, cancellationToken);
-        if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        return CreatedAtAction(nameof(GetSalesInquiryById), new { id = result.Value!.Id }, result.Value);
-    }
-
     [Authorize]
     [HttpPost("workspace")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
@@ -42,85 +29,20 @@ public class SalesInquiriesController : ControllerBase
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
-        return CreatedAtAction(nameof(GetSalesInquiryById), new { id = result.Value!.Id }, result.Value);
+        return Created($"/api/v1/sales-inquiries/workspace/{request.WorkspaceId}", result.Value);
     }
 
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    [HttpGet]
-    public async Task<ActionResult<PaginatedResponse<SalesInquiryDto>>> GetSalesInquiries(
-        [FromQuery] SalesInquiryQuery query,
-        CancellationToken cancellationToken)
+    [Authorize]
+    [HttpGet("workspace/{workspaceId:guid}")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<PaginatedResponse<SalesInquiryDto>>> GetWorkspaceSalesInquiries(
+        Guid workspaceId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
     {
+        var query = new SalesInquiryQuery(page, pageSize, WorkspaceId: workspaceId);
         var result = await _salesInquiryService.GetSalesInquiriesAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
-    }
-
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    [HttpGet("{id:guid}")]
-    public async Task<ActionResult<SalesInquiryDto>> GetSalesInquiryById(Guid id, CancellationToken cancellationToken)
-    {
-        var result = await _salesInquiryService.GetSalesInquiryByIdAsync(id, cancellationToken);
-        if (!result.IsSuccess && result.ErrorCode == ErrorCodes.NotFound)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
-    }
-
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    [HttpPatch("{id:guid}/status")]
-    public async Task<ActionResult<SalesInquiryDto>> UpdateSalesInquiryStatus(
-        Guid id,
-        [FromBody] UpdateSalesInquiryStatusRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _salesInquiryService.UpdateSalesInquiryStatusAsync(id, request, cancellationToken);
-        if (!result.IsSuccess && result.ErrorCode == ErrorCodes.NotFound)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
-    }
-
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    [HttpPatch("{id:guid}/workspace")]
-    public async Task<ActionResult<SalesInquiryDto>> LinkSalesInquiryWorkspace(
-        Guid id,
-        [FromBody] LinkSalesInquiryWorkspaceRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _salesInquiryService.LinkSalesInquiryWorkspaceAsync(id, request, cancellationToken);
-        if (!result.IsSuccess && result.ErrorCode == ErrorCodes.NotFound)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
-    }
-
-    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
-    [HttpPost("{id:guid}/convert-to-contract")]
-    public async Task<ActionResult<SalesInquiryDto>> ConvertSalesInquiryToContract(
-        Guid id,
-        [FromBody] ConvertSalesInquiryToContractRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _salesInquiryService.ConvertSalesInquiryToContractAsync(id, request, cancellationToken);
-        if (!result.IsSuccess && result.ErrorCode == ErrorCodes.NotFound)
-            return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
-
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));

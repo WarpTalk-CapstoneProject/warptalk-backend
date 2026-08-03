@@ -53,11 +53,14 @@ try
 
     builder.WebHost.ConfigureKestrel(options =>
     {
+        var httpPort = builder.Configuration.GetValue<int?>("Billing:HttpPort") ?? 5107;
+        var grpcPort = builder.Configuration.GetValue<int?>("Billing:GrpcPort") ?? 50057;
+
         // HTTP 1.1 for Swagger/REST
-        options.ListenAnyIP(5107, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
+        options.ListenAnyIP(httpPort, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http1);
 
         // HTTP/2 for gRPC
-        options.ListenAnyIP(50057, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
+        options.ListenAnyIP(grpcPort, listenOptions => listenOptions.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
     });
 
     builder.Services.AddBillingPersistence(builder.Configuration);

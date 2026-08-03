@@ -53,6 +53,7 @@ public static class BillingInfrastructureServiceCollectionExtensions
                 }));
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped(sp => sp.GetRequiredService<IUnitOfWork>().SubscriptionRepository);
 
         var redisConnectionString = configuration.GetConnectionString("Redis")
             ?? configuration["Redis:ConnectionString"];

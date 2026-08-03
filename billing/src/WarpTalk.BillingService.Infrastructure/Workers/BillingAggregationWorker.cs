@@ -162,11 +162,15 @@ public class BillingAggregationWorker : BackgroundService
             {
                 l.SubscriptionId,
                 l.WorkspaceId,
+                l.TranslationRoomId,
                 l.UsageType,
                 l.ChargeType,
                 l.Unit,
                 l.Provider,
                 l.Model,
+                l.SourceLanguageCode,
+                l.TargetLanguageCode,
+                l.PricingScope,
                 l.PricingRateCardId,
                 l.UnitPriceSnapshot,
                 l.ReferenceType
