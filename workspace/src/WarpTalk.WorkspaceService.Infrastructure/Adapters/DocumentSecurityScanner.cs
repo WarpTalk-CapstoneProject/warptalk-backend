@@ -1,10 +1,14 @@
+using System;
+using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 /// <summary>
 /// Sends document PII/DLP scans to the security worker through Redis Streams.
@@ -37,6 +41,7 @@ public sealed class DocumentSecurityScanner : IDocumentSecurityScanner
         var database = _redis.GetDatabase();
         var scanId = Guid.NewGuid().ToString("N");
         var resultKey = $"security:scan_result:{scanId}";
+
         var entries = new NameValueEntry[]
         {
             new("scan_id", scanId),

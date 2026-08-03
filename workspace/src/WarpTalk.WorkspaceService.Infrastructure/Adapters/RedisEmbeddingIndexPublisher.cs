@@ -11,7 +11,7 @@ using StackExchange.Redis;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Entities;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 public class RedisEmbeddingIndexPublisher : IEmbeddingIndexPublisher
 {

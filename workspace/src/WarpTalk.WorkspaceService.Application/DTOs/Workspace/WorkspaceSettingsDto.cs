@@ -14,5 +14,6 @@ public record WorkspaceSettingsDto(
     bool AllowExternalCollaboration,
     bool RequireVerifiedDomainForInternal,
     AiUsagePolicyDto? AiUsagePolicy,
-    bool IsProfanityFilterEnabled
+    bool IsProfanityFilterEnabled,
+    int InvitationExpiryDays = 7
 );

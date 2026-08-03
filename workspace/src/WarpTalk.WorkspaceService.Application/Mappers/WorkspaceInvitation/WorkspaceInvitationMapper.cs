@@ -8,9 +8,17 @@ namespace WarpTalk.WorkspaceService.Application.Mappers;
 
 public static class WorkspaceInvitationMapper
 {
-    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null)
+    public static WorkspaceInvitation CreateInvitation(Guid workspaceId, InviteMemberRequest request, Guid roleId, string roleName, Guid inviterUserId, string? tokenHash, string membershipType, DateTime? utcNow = null, int? expiryDays = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
+        var validExpiryDays = expiryDays switch
+        {
+            null => WorkspaceConstants.DefaultInvitationExpiryDays,
+            < WorkspaceConstants.MinWorkspaceInvitationExpiryDays => WorkspaceConstants.DefaultInvitationExpiryDays,
+            > WorkspaceConstants.MaxWorkspaceInvitationExpiryDays => WorkspaceConstants.MaxWorkspaceInvitationExpiryDays,
+            _ => expiryDays.Value
+        };
+
         return new WorkspaceInvitation
         {
             Id = Guid.NewGuid(),
@@ -20,10 +28,10 @@ public static class WorkspaceInvitationMapper
             InvitedBy = inviterUserId,
             TokenHash = tokenHash,
             Status = InvitationStatus.PENDING.ToString(),
-            DeliveryStatus = "NotSent",
+            DeliveryStatus = InvitationDeliveryStatus.NotSent.ToString(),
             SentCount = 0,
             MembershipType = membershipType,
-            ExpiresAt = now.AddDays(WorkspaceConstants.DefaultInvitationExpiryDays),
+            ExpiresAt = now.AddDays(validExpiryDays),
             CreatedAt = now
         };
     }
@@ -43,13 +51,18 @@ public static class WorkspaceInvitationMapper
             roleName,
             invitation.Status,
             invitation.MembershipType,
-            invitation.DeliveryStatus ?? "NotSent",
+            invitation.DeliveryStatus ?? InvitationDeliveryStatus.NotSent.ToString(),
             invitation.ProviderMessageId,
             invitation.LastSentAt,
             invitation.SentCount,
             invitation.ExpiresAt,
             invitation.CreatedAt,
-            invitation.AcceptedAt
+            invitation.AcceptedAt,
+            invitation.RequestedBy,
+            invitation.ReviewedBy,
+            invitation.ReviewedAt,
+            invitation.Workspace?.Name,
+            invitation.Workspace?.Slug
         );
     }
 

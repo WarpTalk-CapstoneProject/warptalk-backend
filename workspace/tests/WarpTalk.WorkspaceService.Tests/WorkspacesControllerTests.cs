@@ -262,4 +262,5 @@ public class WorkspacesControllerTests
         var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
+
 }

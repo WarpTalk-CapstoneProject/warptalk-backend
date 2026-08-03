@@ -34,7 +34,10 @@ public static class ResendServiceCollectionExtensions
             options.FromName = section["FromName"] ?? Environment.GetEnvironmentVariable("RESEND_FROM_NAME") ?? "WarpTalk";
         });
 
+        services.AddMemoryCache();
+        services.AddHttpClient();
         services.AddHttpClient<IResendEmailClient, ResendEmailClient>();
+        services.AddScoped<IEmailTemplateProvider, EmailTemplateProvider>();
 
         return services;
     }
