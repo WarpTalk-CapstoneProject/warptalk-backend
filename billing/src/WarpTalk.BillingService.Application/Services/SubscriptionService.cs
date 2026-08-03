@@ -370,9 +370,36 @@ public class SubscriptionService : ISubscriptionService
                     validation.Error ?? BillingMessageConstants.ApiErrorMessages.BillingContractTermsInvalid,
                     validation.ErrorCode);
 
+            bool wasSuspendedForOverage = sub.ServiceState == SubscriptionConstants.ServiceStates.Suspended &&
+                                          sub.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap;
+
             sub.ApplyContractTerms(request);
+
+            bool isResumed = false;
+            if (wasSuspendedForOverage)
+            {
+                var currentOverageCap = sub.OverageCapCreditsOverride ?? plan.OverageCapCredits;
+                if (sub.CreditsRemaining > 0 || sub.OverageCreditsThisCycle < currentOverageCap)
+                {
+                    sub.ResumeAiService();
+                    isResumed = true;
+                }
+            }
+
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            if (isResumed && _aiServiceStateStore is not null)
+            {
+                var redisResult = await _aiServiceStateStore.SetAiServiceStateAsync(
+                    workspaceId,
+                    sub.ServiceState,
+                    sub.SuspendedReason,
+                    cancellationToken);
+
+                if (!redisResult.IsSuccess)
+                    _logger.LogWarning("Failed to push auto-resumed AI state to Redis for WorkspaceId {WorkspaceId}", workspaceId);
+            }
 
             await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
                 _messagePublisher,

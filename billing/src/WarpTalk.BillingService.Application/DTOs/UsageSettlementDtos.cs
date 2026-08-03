@@ -25,4 +25,5 @@ public sealed record SettleUsageChargeResult(
     Guid? UsageRecordId,
     int? BalanceAfter,
     string? ServiceState,
-    string? SuspendedReason);
+    string? SuspendedReason,
+    bool JustEnteredOverage = false);

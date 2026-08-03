@@ -64,7 +64,10 @@ public static class UsageSettlementMapper
             throw new ArgumentException("Aggregated usage logs cannot be empty.", nameof(logs));
 
         var first = items[0];
-        var totalCredits = items.Sum(x => x.CreditsConsumed);
+
+        long totalMicroCredits = items.Sum(x => x.MicroCredits ?? (x.CreditsConsumed * UsageConstants.MicroCreditsPerCredit));
+        int totalCreditsCeil = (int)Math.Ceiling((double)totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
+
         var totalQuantity = items.Sum(x => x.Quantity);
 
         return new SettleUsageChargeRequest(
@@ -79,7 +82,7 @@ public static class UsageSettlementMapper
             TranscriptSegmentId: first.TranscriptSegmentId,
             Quantity: (decimal)totalQuantity,
             Unit: first.Unit,
-            CreditsConsumed: totalCredits,
+            CreditsConsumed: totalCreditsCeil,
             IdempotencyKey: BillingIdempotencyKeyHelper.ForAggregate(items.Select(x => x.IdempotencyKey)),
             PricingRateCardId: first.PricingRateCardId,
             UnitPriceSnapshot: first.UnitPriceSnapshot,

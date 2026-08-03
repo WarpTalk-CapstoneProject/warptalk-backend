@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using StackExchange.Redis;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Options;
+using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Messaging;
 using WarpTalk.BillingService.Infrastructure.Options;
@@ -74,8 +75,10 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IBillingOperationalAlertService, BillingOperationalAlertService>();
         services.AddScoped<IBillingPolicyRepository, BillingPolicyRepository>();
         services.AddScoped<IBillingPolicyService, BillingPolicyService>();
+        services.AddMemoryCache();
         services.AddScoped<IUsageRateCardRepository, UsageRateCardRepository>();
         services.AddScoped<IUsageRateCardAdminService, UsageRateCardAdminService>();
+        services.AddScoped<IUsageRateCardResolverService, UsageRateCardResolverService>();
         services.AddScoped<IUsageSettlementRepository, UsageSettlementRepository>();
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();

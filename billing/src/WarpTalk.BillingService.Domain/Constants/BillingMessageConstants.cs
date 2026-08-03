@@ -176,6 +176,7 @@ public static class BillingMessageConstants
             public const string SubscriptionChanged = "billing.subscription_changed";
             public const string PlanChanged = "billing.plan_changed";
             public const string RateChange = "billing.rate_change";
+            public const string OverageStarted = "billing.overage_started";
         }
 
         public static class MetadataKeys
@@ -208,6 +209,7 @@ public static class BillingMessageConstants
             public const string SubscriptionUpdated = "Subscription Updated";
             public const string PlanUpdated = "System Plan Update";
             public const string RatesUpdated = "AI Service Rates Updated";
+            public const string OverageStarted = "Workspace Overage Alert";
         }
 
         public static class Templates
@@ -216,8 +218,8 @@ public static class BillingMessageConstants
             public const string PlanChangedContent = "The subscription package '{0}' has been {1}.";
             public const string PlanChangedDetails = " Details: {0}";
             public const string RatesUpdatedBody = "WarpTalk has updated the AI service credit rates that apply to your workspace:\n\n{0}\n\nNew rates are effective immediately for all future sessions.";
+            public const string OverageStartedContent = "Your workspace '{0}' has consumed all allocated credits for the current billing cycle and is now using overage credits. Your overage usage will be billed at the end of the cycle.";
         }
-
     }
     public static class Grpc
     {

@@ -89,7 +89,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         var result = await _settlementService.SettleUsageChargeAsync(req);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Applied.Should().BeTrue();
         result.Value.BalanceAfter.Should().Be(-10);
         result.Value.ServiceState.Should().Be("suspended"); // Assuming it hits the cap and gets suspended
@@ -109,7 +109,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         var result = await _settlementService.SettleUsageChargeAsync(req);
 
         // Assert
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Applied.Should().BeFalse();
         
         // Ensure no transaction was recorded
@@ -134,6 +134,8 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         var res2 = await _settlementService.SettleUsageChargeAsync(req2);
 
         // Assert
+        res1.IsSuccess.Should().BeTrue(res1.Error);
+        res2.IsSuccess.Should().BeTrue(res2.Error);
         res1.Value!.Applied.Should().BeTrue();
         res1.Value.BalanceAfter.Should().Be(0);
         res1.Value.ServiceState.Should().Be("low_balance");
@@ -182,6 +184,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         // Case 1: still positive (+0 overage)
         var req1 = CreateRequest(sub, 4, "k1");
         var res1 = await _settlementService.SettleUsageChargeAsync(req1);
+        res1.IsSuccess.Should().BeTrue(res1.Error);
         res1.Value!.Applied.Should().BeTrue();
         
         var subAfter1 = await _db.Subscriptions.AsNoTracking().FirstAsync(s => s.Id == sub.Id);
@@ -191,6 +194,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         // Case 2: crosses zero (only part exceeding zero added)
         var req2 = CreateRequest(sub, 10, "k2");
         var res2 = await _settlementService.SettleUsageChargeAsync(req2);
+        res2.IsSuccess.Should().BeTrue(res2.Error);
         res2.Value!.Applied.Should().BeTrue();
 
         var subAfter2 = await _db.Subscriptions.AsNoTracking().FirstAsync(s => s.Id == sub.Id);
@@ -200,6 +204,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         // Case 3: already negative (all added)
         var req3 = CreateRequest(sub, 5, "k3");
         var res3 = await _settlementService.SettleUsageChargeAsync(req3);
+        res3.IsSuccess.Should().BeTrue(res3.Error);
         res3.Value!.Applied.Should().BeTrue();
 
         var subAfter3 = await _db.Subscriptions.AsNoTracking().FirstAsync(s => s.Id == sub.Id);
@@ -217,11 +222,13 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         // Healthy -> Low Balance
         var req1 = CreateRequest(sub, 15, "state-1");
         var res1 = await _settlementService.SettleUsageChargeAsync(req1);
+        res1.IsSuccess.Should().BeTrue(res1.Error);
         res1.Value!.ServiceState.Should().Be("low_balance");
 
         // Low Balance -> In Overage
         var req2 = CreateRequest(sub, 10, "state-2");
         var res2 = await _settlementService.SettleUsageChargeAsync(req2);
+        res2.IsSuccess.Should().BeTrue(res2.Error);
         res2.Value!.ServiceState.Should().Be("in_overage");
 
         var updatedSub = await _db.Subscriptions.AsNoTracking().FirstAsync(s => s.Id == sub.Id);
@@ -230,6 +237,7 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         // In Overage -> Suspended
         var req3 = CreateRequest(sub, 5, "state-3");
         var res3 = await _settlementService.SettleUsageChargeAsync(req3);
+        res3.IsSuccess.Should().BeTrue(res3.Error);
         res3.Value!.ServiceState.Should().Be("suspended");
         res3.Value.SuspendedReason.Should().Be("overage_cap");
     }

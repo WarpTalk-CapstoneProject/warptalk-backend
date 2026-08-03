@@ -123,6 +123,46 @@ public class SubscriptionServiceTests
     }
 
     [Fact]
+    public async Task CreateWorkspaceContractSubscriptionAsync_Should_Fallback_To_Plan_Price_If_Not_Provided()
+    {
+        var request = new CreateWorkspaceContractSubscriptionRequest(
+            WorkspaceId: Guid.NewGuid(),
+            PlanId: Guid.NewGuid(),
+            ContractTerms: new UpdateSubscriptionContractTermsRequest(
+                CreditsPerCycleOverride: null,
+                ContractPriceVnd: null,
+                OverageCapCreditsOverride: null,
+                OveragePricePerCreditOverride: null,
+                InvoiceTermsDaysOverride: null,
+                BillingContactEmail: null),
+            UserId: Guid.NewGuid());
+        var plan = new Plan
+        {
+            Id = request.PlanId,
+            Name = "Enterprise",
+            Price = 2_500_000m,
+            CreditsPerCycle = 800_000,
+            OverageCapCredits = 100_000,
+            OveragePricePerCredit = 5m,
+        };
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+
+        var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        // ContractPriceVnd override is null (not provided) -- correct
+        result.Value!.ContractPriceVnd.Should().BeNull();
+        // But the EFFECTIVE price must fallback to plan.Price
+        result.Value.EffectiveContractPriceVnd.Should().Be(2_500_000m);
+        result.Value.CreditsRemaining.Should().Be(800_000);
+
+        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s =>
+            s.ContractPriceVnd == null && s.CreditsRemaining == 800_000), default), Times.Once);
+    }
+
+    [Fact]
     public async Task CancelSubscriptionAsync_Should_MarkAsCancelled_ButNotDeactivateImmediately()
     {
         var workspaceId = Guid.NewGuid();
@@ -401,4 +441,187 @@ public class SubscriptionServiceTests
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Never);
     }
 
+
+    // ========================================================================
+    // Contract Price Invariant: Đổi plans.price không ảnh hưởng hợp đồng đã ký
+    // ========================================================================
+
+    [Fact]
+    public async Task UpdateContractTerms_ChangingPlanPrice_DoesNotAffectExistingContractPrice()
+    {
+        // Arrange: existing contract has ContractPriceVnd locked at 1,900,000
+        var workspaceId = Guid.NewGuid();
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 1_900_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            IsActive = true,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            CreditsRemaining = 700_000,
+            ContractPriceVnd = 1_900_000m, // Locked at signing time
+            CreditsPerCycleOverride = 700_000,
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default))
+            // Simulate plan.Price was bumped to 2,200,000 after contract signed
+            .ReturnsAsync(new Plan { Id = plan.Id, Name = plan.Name, Price = 2_200_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m });
+
+        // Act: update contract terms without changing price
+        var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId,
+            new UpdateSubscriptionContractTermsRequest(ContractPriceVnd: 1_900_000m));
+
+        // Assert: success, and entity still has the original locked price
+        result.IsSuccess.Should().BeTrue();
+        // The subscription entity's ContractPriceVnd is the field that matters for invoice generation
+        subscription.ContractPriceVnd.Should().Be(1_900_000m, "contract price is locked at signing, plan.Price bump should not override it");
+    }
+
+    // ========================================================================
+    // Sàn giá: contract_price / credits < 2.60 → DB từ chối
+    // ========================================================================
+
+    [Fact]
+    public async Task CreateContractSubscription_PriceBelowFloor_ShouldReturnValidationError()
+    {
+        // Floor = 2.60 VND/credit. 500_000 credits at 1,200,000 VND = 2.40 VND/credit < floor
+        var request = new CreateWorkspaceContractSubscriptionRequest(
+            WorkspaceId: Guid.NewGuid(),
+            PlanId: Guid.NewGuid(),
+            ContractTerms: new UpdateSubscriptionContractTermsRequest(
+                CreditsPerCycleOverride: 500_000,
+                ContractPriceVnd: 1_200_000m), // 2.40 VND/credit < 2.60 floor
+            UserId: Guid.NewGuid());
+        var plan = new Plan { Id = request.PlanId, Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+
+        var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateContractSubscription_PriceAtOrAboveFloor_ShouldSucceed()
+    {
+        // Exactly at floor: 500_000 credits * 2.60 = 1,300,000 VND
+        var request = new CreateWorkspaceContractSubscriptionRequest(
+            WorkspaceId: Guid.NewGuid(),
+            PlanId: Guid.NewGuid(),
+            ContractTerms: new UpdateSubscriptionContractTermsRequest(
+                CreditsPerCycleOverride: 500_000,
+                ContractPriceVnd: 1_300_000m), // Exactly 2.60 VND/credit
+            UserId: Guid.NewGuid());
+        var plan = new Plan { Id = request.PlanId, Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+
+        var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request);
+
+        result.IsSuccess.Should().BeTrue("price is exactly at the floor");
+    }
+
+    // ========================================================================
+    // Trial subscription tests
+    // ========================================================================
+
+    [Fact]
+    public async Task CreateTrialSubscriptionAsync_Should_Grant_20000_Credits_And_NoOverage()
+    {
+        var request = new TrialSubscriptionRequest(
+            WorkspaceId: Guid.NewGuid(),
+            UserId: Guid.NewGuid(),
+            OwnerEmail: "ceo@acme.com");
+
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, Slug = "enterprise", IsActive = true };
+
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+        // No existing active subscription
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync((Subscription?)null);
+
+        var result = await _subscriptionService.CreateTrialSubscriptionAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.CreditsRemaining.Should().Be(20_000, "trial always grants 20,000 credits");
+        // TrialEndsAt should be set
+        result.Value.TrialEndsAt.Should().NotBeNull("trial must have an expiry");
+        // Overage should be 0 (cap = 0 → can't go negative)
+        _mockSubRepo.Verify(r => r.AddAsync(It.Is<Subscription>(s =>
+            s.CreditsRemaining == 20_000 &&
+            s.OverageCapCreditsOverride == 0 &&
+            s.TrialEndsAt != null &&
+            s.OwnerEmailDomain == "acme.com"), default), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateTrialSubscriptionAsync_Should_Block_Duplicate_Domain()
+    {
+        // First trial for acme.com already exists
+        var existingTrial = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            OwnerEmailDomain = "acme.com",
+            TrialEndsAt = DateTime.UtcNow.AddDays(7),
+        };
+
+        var request = new TrialSubscriptionRequest(
+            WorkspaceId: Guid.NewGuid(), // Different workspace
+            UserId: Guid.NewGuid(),
+            OwnerEmail: "cfo@acme.com");  // Same domain!
+
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Slug = "enterprise", IsActive = true, Price = 2_000_000m };
+        _mockPlanRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Plan, bool>>>(), default)).ReturnsAsync(plan);
+
+        // First call (check active subscription) → null, second call (check domain) → existing trial
+        var callCount = 0;
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default))
+            .ReturnsAsync(() => callCount++ == 0 ? null : existingTrial);
+
+        var result = await _subscriptionService.CreateTrialSubscriptionAsync(request);
+
+        result.IsSuccess.Should().BeFalse("duplicate trial for same email domain must be rejected");
+        result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionConflict);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Never);
+    }
+    [Fact]
+    public async Task UpdateContractTerms_Should_AutoResume_AI_When_OverageCap_Is_Increased()
+    {
+        var workspaceId = Guid.NewGuid();
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 2_000_000m, CreditsPerCycle = 700_000, OverageCapCredits = 100_000, OveragePricePerCredit = 4m };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            IsActive = true,
+            Status = SubscriptionConstants.SubscriptionStatuses.Active,
+            CreditsRemaining = 0,
+            OverageCreditsThisCycle = 150_000, // over the cap
+            OverageCapCreditsOverride = 100_000,
+            ServiceState = SubscriptionConstants.ServiceStates.Suspended,
+            SuspendedReason = SubscriptionConstants.SuspendedReasons.OverageCap
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
+        _mockAiServiceStateStore.Setup(s => s.SetAiServiceStateAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), default))
+            .ReturnsAsync(Result.Success());
+
+        // Increase cap to 200k, resolving the overage
+        var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId,
+            new UpdateSubscriptionContractTermsRequest(OverageCapCreditsOverride: 200_000));
+
+        result.IsSuccess.Should().BeTrue();
+        subscription.ServiceState.Should().Be(SubscriptionConstants.ServiceStates.Healthy);
+        subscription.SuspendedReason.Should().BeNull();
+
+        _mockAiServiceStateStore.Verify(s => s.SetAiServiceStateAsync(workspaceId, SubscriptionConstants.ServiceStates.Healthy, null, default), Times.Once);
+    }
 }

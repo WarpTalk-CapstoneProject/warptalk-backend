@@ -2,6 +2,9 @@ namespace WarpTalk.BillingService.Domain.Constants;
 
 public static class UsageConstants
 {
+    public const long MicroCreditsPerCredit = 1_000_000;
+    public const int MaxCreditsPerFlush = 10_000;
+
     public static class UsageTypes
     {
         public const string TranslationKeyword = "translation";

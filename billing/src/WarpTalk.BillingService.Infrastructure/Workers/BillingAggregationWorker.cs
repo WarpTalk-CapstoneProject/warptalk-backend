@@ -11,6 +11,7 @@ using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Domain.Interfaces;
 using WarpTalk.BillingService.Infrastructure.Logging;
 using WarpTalk.BillingService.Infrastructure.Options;
 
@@ -58,6 +59,9 @@ public class BillingAggregationWorker : BackgroundService
         var aiServiceStateStore = scope.ServiceProvider.GetRequiredService<IAiServiceStateStore>();
         var settlementService = scope.ServiceProvider.GetRequiredService<IUsageSettlementService>();
         var alertService = scope.ServiceProvider.GetService<IBillingOperationalAlertService>();
+        var notificationClient = scope.ServiceProvider.GetService<INotificationClient>();
+        var subscriptionRepo = scope.ServiceProvider.GetRequiredService<ISubscriptionRepository>();
+        var rateCardResolver = scope.ServiceProvider.GetRequiredService<IUsageRateCardResolverService>();
 
         var tempLogsResult = await usageQueue.GetTempUsageLogBatchAsync(_options.BillingAggregationBatchSize, stoppingToken);
         if (!tempLogsResult.IsSuccess)
@@ -74,7 +78,7 @@ public class BillingAggregationWorker : BackgroundService
         }
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
-        await AggregateTempLogsAsync(tempLogs, settlementService, aiServiceStateStore, _logger, alertService, stoppingToken);
+        await AggregateTempLogsAsync(tempLogs, settlementService, aiServiceStateStore, logger: _logger, alertService, rateCardResolver, notificationClient, subscriptionRepo, stoppingToken);
         var trimResult = await usageQueue.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
         if (!trimResult.IsSuccess)
         {
@@ -91,9 +95,69 @@ public class BillingAggregationWorker : BackgroundService
         IAiServiceStateStore? aiServiceStateStore,
         ILogger? logger,
         IBillingOperationalAlertService? alertService,
+        IUsageRateCardResolverService? rateCardResolver,
+        INotificationClient? notificationClient,
+        ISubscriptionRepository? subscriptionRepo,
         CancellationToken stoppingToken)
     {
-        var groupedLogs = tempLogs
+        var preProcessedLogs = tempLogs.ToList();
+
+        // 0. Filter out passthrough and cache hits (0 credit events)
+        preProcessedLogs.RemoveAll(log =>
+        {
+            if (!string.IsNullOrEmpty(log.SourceLanguageCode) && log.SourceLanguageCode == log.TargetLanguageCode)
+                return true; // passthrough
+
+            if (!string.IsNullOrWhiteSpace(log.Details) && log.Details.Contains("\"cache_hit\":true", StringComparison.OrdinalIgnoreCase))
+                return true; // tts cache hit
+
+            return false;
+        });
+
+        // 1. Pre-process AI Assistant tool-call loops:
+        // For AI Assistant 'token_in', we only take the MAX quantity/credits per ReferenceId.
+        var aiAssistantTokenInGroups = preProcessedLogs
+            .Where(x => x.UsageType == UsageConstants.UsageTypes.AiAssistant && x.Unit == "token_in" && x.ReferenceId.HasValue)
+            .GroupBy(x => x.ReferenceId!.Value)
+            .ToList();
+
+        foreach (var aiGroup in aiAssistantTokenInGroups)
+        {
+            var maxLog = aiGroup.OrderByDescending(x => x.Quantity).First();
+            foreach (var log in aiGroup)
+            {
+                if (log != maxLog)
+                {
+                    preProcessedLogs.Remove(log);
+                }
+            }
+        }
+
+        // 1.5 Resolve Rate Cards
+        if (rateCardResolver != null)
+        {
+            foreach (var log in preProcessedLogs)
+            {
+                if (log.PricingRateCardId == null)
+                {
+                    var rateResult = await rateCardResolver.ResolveRateCardAsync(
+                        log.ChargeType, log.Unit, "VND", log.SourceLanguageCode, log.TargetLanguageCode, stoppingToken);
+                    if (rateResult.IsSuccess && rateResult.Value != null)
+                    {
+                        log.PricingRateCardId = rateResult.Value.Id;
+                        log.UnitPriceSnapshot = rateResult.Value.UnitPrice;
+                    }
+                    else
+                    {
+                        logger?.LogError("Rate card not found. ChargeType={ChargeType}, Unit={Unit}. Event dropped.", log.ChargeType, log.Unit);
+                        log.PricingRateCardId = Guid.Empty; // Mark for removal
+                    }
+                }
+            }
+            preProcessedLogs.RemoveAll(x => x.PricingRateCardId == Guid.Empty);
+        }
+
+        var groupedLogs = preProcessedLogs
             .GroupBy(l => new
             {
                 l.SubscriptionId,
@@ -111,11 +175,21 @@ public class BillingAggregationWorker : BackgroundService
 
         foreach (var group in groupedLogs)
         {
-            var totalCredits = group.Sum(x => x.CreditsConsumed);
+            var totalMicroCredits = group.Sum(x => x.MicroCredits ?? (x.CreditsConsumed * UsageConstants.MicroCreditsPerCredit));
+            var totalCredits = (int)Math.Ceiling((double)totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
             var totalQuantity = group.Sum(x => x.Quantity);
 
             if (totalCredits == 0 && totalQuantity == 0)
                 continue;
+
+            if (totalCredits > UsageConstants.MaxCreditsPerFlush)
+            {
+                logger?.LogError(
+                    BillingOperationalEventIds.SettlementFailed,
+                    "Bug prevention: Aggregated credits {Credits} exceed max allowed {Max} per flush. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}",
+                    totalCredits, UsageConstants.MaxCreditsPerFlush, group.Key.SubscriptionId, group.Key.ChargeType);
+                continue;
+            }
 
             if (totalCredits != 0)
             {
@@ -138,31 +212,65 @@ public class BillingAggregationWorker : BackgroundService
                     continue;
                 }
 
-                if (settlement.Value?.ServiceState == SubscriptionConstants.ServiceStates.Suspended)
+                var settlementValue = settlement.Value;
+                if (settlementValue is null)
+                {
+                    logger?.LogError(
+                        BillingOperationalEventIds.SettlementFailed,
+                        "Usage settlement returned success without a value. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}",
+                        group.Key.SubscriptionId,
+                        group.Key.ChargeType);
+                    continue;
+                }
+
+                if (settlementValue.ServiceState == SubscriptionConstants.ServiceStates.Suspended)
                 {
                     logger?.LogWarning(
                         BillingOperationalEventIds.AiServiceSuspended,
                         "Billing settlement suspended AI service. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}, Reason={Reason}",
                         group.Key.WorkspaceId,
                         group.Key.SubscriptionId,
-                        settlement.Value.SuspendedReason);
+                        settlementValue.SuspendedReason);
                 }
 
-                if (!string.IsNullOrWhiteSpace(settlement.Value?.ServiceState) && aiServiceStateStore is not null)
+                if (!string.IsNullOrWhiteSpace(settlementValue.ServiceState) && aiServiceStateStore is not null)
                 {
                     await aiServiceStateStore.SetAiServiceStateAsync(
                         group.Key.WorkspaceId,
-                        settlement.Value.ServiceState!,
-                        settlement.Value.SuspendedReason,
+                        settlementValue.ServiceState,
+                        settlementValue.SuspendedReason,
                         stoppingToken);
 
                     if (settlementRequest.TranslationRoomId.HasValue)
                     {
                         await aiServiceStateStore.SetAiServiceStateForRoomAsync(
                             settlementRequest.TranslationRoomId.Value,
-                            settlement.Value.ServiceState!,
-                            settlement.Value.SuspendedReason,
+                            settlementValue.ServiceState,
+                            settlementValue.SuspendedReason,
                             stoppingToken);
+                    }
+                }
+
+                if (settlementValue.JustEnteredOverage && notificationClient is not null && subscriptionRepo is not null)
+                {
+                    try
+                    {
+                        var sub = await subscriptionRepo.FirstOrDefaultAsync(s => s.Id == group.Key.SubscriptionId, stoppingToken);
+                        if (sub is not null)
+                        {
+                            var msgReq = new SendBillingNotificationsRequest(
+                                new[] { sub.UserId },
+                                BillingMessageConstants.Notifications.Types.OverageStarted,
+                                BillingMessageConstants.Notifications.Titles.OverageStarted,
+                                string.Format(BillingMessageConstants.Notifications.Templates.OverageStartedContent, group.Key.WorkspaceId),
+                                BillingMessageConstants.Notifications.ActionUrls.Billing,
+                                null);
+                            await notificationClient.SendNotificationsAsync(msgReq, stoppingToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogError(ex, "Failed to send overage notification for WorkspaceId {WorkspaceId}", group.Key.WorkspaceId);
                     }
                 }
             }

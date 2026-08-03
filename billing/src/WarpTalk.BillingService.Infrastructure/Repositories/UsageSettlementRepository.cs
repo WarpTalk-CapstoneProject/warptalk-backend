@@ -29,7 +29,7 @@ public class UsageSettlementRepository : IUsageSettlementRepository
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT applied, transaction_id, usage_record_id, balance_after, service_state, suspended_reason
+            SELECT applied, transaction_id, usage_record_id, balance_after, service_state, suspended_reason, just_entered_overage
             FROM subscription.settle_usage_charge(
                 @subscription_id,
                 @user_id,
@@ -79,7 +79,8 @@ public class UsageSettlementRepository : IUsageSettlementRepository
             UsageRecordId: reader.IsDBNull(2) ? null : reader.GetGuid(2),
             BalanceAfter: reader.IsDBNull(3) ? null : reader.GetInt32(3),
             ServiceState: reader.IsDBNull(4) ? null : reader.GetString(4),
-            SuspendedReason: reader.IsDBNull(5) ? null : reader.GetString(5));
+            SuspendedReason: reader.IsDBNull(5) ? null : reader.GetString(5),
+            JustEnteredOverage: reader.GetBoolean(6));
     }
 
     private static void AddParameter(DbCommand command, string name, object? value)

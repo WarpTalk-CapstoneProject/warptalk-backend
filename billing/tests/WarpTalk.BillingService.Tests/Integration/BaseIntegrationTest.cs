@@ -77,7 +77,8 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
             { 
                 "004-add-atomic-usage-settlement-functions.sql",
                 "007-seed-enterprise-subscription-plan.sql",
-                "008-phase3-contract-overage-settlement.sql"
+                "008-phase3-contract-overage-settlement.sql",
+                "017-add-just-entered-overage-to-settlement.sql"
             };
 
             foreach (var migration in migrationsToApply)
