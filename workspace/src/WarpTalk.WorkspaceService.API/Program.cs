@@ -29,6 +29,7 @@ builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceServic
 builder.Services.AddScoped<IWorkspaceDocumentService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDocumentService>();
 builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.Application.Services.VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
+builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
 
 // --- Infrastructure Layer Services (DbContext, Repositories, Storage, Redis, gRPC Clients, Consumers) ---
 builder.Services.AddInfrastructureServices(builder.Configuration, builder.Environment);
