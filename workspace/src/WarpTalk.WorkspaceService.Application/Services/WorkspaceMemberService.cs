@@ -164,9 +164,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 }
 
                 var search = query.Search.Trim();
+                // Match on name OR email ignoring case AND diacritics, so "manh" finds
+                // "Trần Mạnh Tuấn" (WT-231) — an OrdinalIgnoreCase Contains only folds case,
+                // and nobody types the accents when searching.
                 var filteredDtos = (await WorkspaceMemberDtoHelper.BuildAsync(membersForSearch, _authIdentity, ct))
-                    .Where(m => m.FullName.Contains(search, StringComparison.OrdinalIgnoreCase)
-                                || m.Email.Contains(search, StringComparison.OrdinalIgnoreCase))
+                    .Where(m => SearchTextHelper.Matches(m.FullName, search)
+                                || SearchTextHelper.Matches(m.Email, search))
                     .ToList();
 
                 var searchedItems = filteredDtos
