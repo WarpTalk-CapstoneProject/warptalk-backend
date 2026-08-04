@@ -154,7 +154,7 @@ public class CreditService : ICreditService
 
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
+            await PublishCreditUpdateAsync(workspaceId, sub.UserId, sub.CreditsRemaining,
                 "Credits Consumed", $"You have consumed {request.Amount} credits.", cancellationToken);
 
             return Result.Success(tx.ToDto());
@@ -329,7 +329,7 @@ public class CreditService : ICreditService
             await _redisStore.SetReservationAsync(reservation, TimeSpan.FromMinutes(5), cancellationToken);
 
             // Publish credit update immediately when reserved
-            await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.CreditsRemaining,
+            await PublishCreditUpdateAsync(request.HostWorkspaceId, sub.UserId, sub.CreditsRemaining,
                 "Credits Reserved", $"Real-time translation session started. Reserved {cost} credits.", cancellationToken);
 
             return Result.Success(new CreditReservationDto(
@@ -386,7 +386,7 @@ public class CreditService : ICreditService
             await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
             // Publish credit update when consumption confirmed
-            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
+            await PublishCreditUpdateAsync(workspaceId, sub.UserId, sub.CreditsRemaining,
                 "Credits Consumed", $"Real-time translation session finished.", cancellationToken);
 
             return Result.Success(tx.ToDto());
@@ -458,7 +458,7 @@ public class CreditService : ICreditService
             await _redisStore.GetAndRemoveReservationAsync(idempotencyKey, cancellationToken);
 
             // Publish credit update on refund
-            await PublishCreditUpdateAsync(workspaceId, sub.CreditsRemaining,
+            await PublishCreditUpdateAsync(workspaceId, sub.UserId, sub.CreditsRemaining,
                 "Credits Refunded", $"Refunded {reservedAmount} credits.", cancellationToken);
 
             return Result.Success(true);
@@ -514,7 +514,7 @@ public class CreditService : ICreditService
             await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-            await PublishCreditUpdateAsync(sub.WorkspaceId, sub.CreditsRemaining, 
+            await PublishCreditUpdateAsync(sub.WorkspaceId, sub.UserId, sub.CreditsRemaining,
                 amount > 0 ? "Credits Added" : "Credits Deducted", 
                 $"Admin adjusted credit balance by {(amount > 0 ? "+" : "")}{amount} credits. Reason: {reason}", 
                 cancellationToken);
@@ -623,13 +623,17 @@ public class CreditService : ICreditService
         }
     }
 
-    private async Task PublishCreditUpdateAsync(Guid workspaceId, int newBalance, string title, string content, CancellationToken cancellationToken)
+    private async Task PublishCreditUpdateAsync(Guid workspaceId, Guid userId, int newBalance, string title, string content, CancellationToken cancellationToken)
     {
-        var payload = JsonSerializer.Serialize(new { new_balance = newBalance });
+        var payload = JsonSerializer.Serialize(new
+        {
+            workspace_id = workspaceId,
+            new_balance = newBalance
+        });
         var msg = new WarpTalk.Shared.Models.RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
-            UserId = workspaceId.ToString(),
+            UserId = userId.ToString(),
             Type = "billing.credits_updated",
             Title = title,
             Content = content,

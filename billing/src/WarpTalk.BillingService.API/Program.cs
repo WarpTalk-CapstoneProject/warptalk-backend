@@ -17,6 +17,7 @@ using WarpTalk.BillingService.Infrastructure.Redis;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.BillingService.Infrastructure.Clients;
 using WarpTalk.BillingService.API.Workers;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using WarpTalk.Shared.Protos;
@@ -88,6 +89,7 @@ try
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
     builder.Services.AddScoped<IRefundService, RefundService>();
     builder.Services.AddScoped<IUsageService, UsageService>();
+    builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
     builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddGrpcClient<WorkspaceService.WorkspaceServiceClient>(options =>
     {
@@ -146,6 +148,10 @@ try
         options.AddPolicy("default", policy => policy.RequireAuthenticatedUser());
         options.AddPolicy("BillingAdmin", policy => policy.RequireRole("billing_admin"));
     });
+
+    // Shared system-admin gate for every ~/api/v1/admin/* endpoint (WT-205). Distinct from the
+    // "BillingAdmin" policy above, which guards operational tooling such as outbox replay.
+    builder.Services.AddWarpTalkSystemAdminAuthorization();
 
     var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
     builder.Services.AddCors(options =>

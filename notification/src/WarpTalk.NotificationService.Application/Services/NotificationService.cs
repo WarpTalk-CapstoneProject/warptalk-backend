@@ -75,20 +75,16 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
         pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        var count = await repo.CountAsync(n => n.UserId == userId);
-        var items = await repo.FindWithPaginationAsync(
-            n => n.UserId == userId, 
-            (page - 1) * pageSize, 
-            pageSize, 
-            q => q.OrderByDescending(n => n.CreatedAt)
-        );
+        var repo = _unitOfWork.NotificationMessageRepository;
+        var (items, count) = await repo.GetPaginatedByUserIdAsync(userId, page, pageSize, ct);
+        var unreadCount = await repo.CountAsync(notification =>
+            notification.UserId == userId && !notification.IsRead);
 
         var dtoItems = items.Select(n => new NotificationMessageDto(
             n.Id, n.Type, n.Title, n.Content, n.ActionUrl, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
         ));
 
-        return Result.Success(new NotificationPaginatedResponse(dtoItems, count, page, pageSize));
+        return Result.Success(new NotificationPaginatedResponse(dtoItems, count, unreadCount, page, pageSize));
     }
 
     public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)

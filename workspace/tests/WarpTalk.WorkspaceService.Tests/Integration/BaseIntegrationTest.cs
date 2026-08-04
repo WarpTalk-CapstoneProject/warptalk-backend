@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -106,18 +107,25 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
     }
 
-    protected string GenerateJwtToken(Guid userId, string email)
+    /// <param name="roles">
+    /// Platform roles, mirroring JwtTokenGenerator's ClaimTypes.Role claims. Pass "admin" for
+    /// the system-administrator role; workspace-scoped roles never reach the token.
+    /// </param>
+    protected string GenerateJwtToken(Guid userId, string email, params string[] roles)
     {
         var tokenHandler = new JwtSecurityTokenHandler();
         var key = Encoding.UTF8.GetBytes("CHANGE_ME_SUPER_SECRET_KEY_MIN_32_CHARS_LONG!!");
+        var claims = new List<Claim>
+        {
+            new(JwtRegisteredClaimNames.Sub, userId.ToString()),
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
+            new(ClaimTypes.Email, email)
+        };
+        claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
+
         var tokenDescriptor = new SecurityTokenDescriptor
         {
-            Subject = new ClaimsIdentity(new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub, userId.ToString()),
-                new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
-                new Claim(ClaimTypes.Email, email)
-            }),
+            Subject = new ClaimsIdentity(claims),
             Issuer = "WarpTalk.AuthService",
             Audience = "WarpTalk",
             Expires = DateTime.UtcNow.AddHours(1),
