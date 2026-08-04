@@ -55,7 +55,7 @@ public class VerifiedDomainService : IVerifiedDomainService
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            if (!roleName.IsOwnerOrAdmin())
+            if (!roleName.IsOwner())
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, ErrorCodes.Forbidden);
 
             // 3. Normalise and validate domain
@@ -149,7 +149,7 @@ public class VerifiedDomainService : IVerifiedDomainService
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            if (!roleName.IsOwnerOrAdmin())
+            if (!roleName.IsOwner())
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, ErrorCodes.Forbidden);
 
             // 3. Domain entry must exist and be active
