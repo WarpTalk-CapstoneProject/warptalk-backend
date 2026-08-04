@@ -15,7 +15,7 @@ public class NotificationService : INotificationService
     private readonly ILogger<NotificationService> _logger;
 
     public NotificationService(
-        IUnitOfWork unitOfWork, 
+        IUnitOfWork unitOfWork,
         ILogger<NotificationService> logger,
         IEmailSender? emailSender = null)
     {
@@ -27,12 +27,12 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
         var repo = _unitOfWork.Repository<NotificationPreference>();
-        
+
         // We do a simple fallback if multiple matching items exist
         // Real implementation usually handles SingleOrDefault correctly
         var prefs = await repo.FindAsync(p => p.UserId == userId);
         var pref = prefs.FirstOrDefault();
-        
+
         if (pref == null)
         {
             pref = new NotificationPreference
@@ -75,35 +75,31 @@ public class NotificationService : INotificationService
     public async Task<Result<NotificationPaginatedResponse>> GetNotificationsAsync(Guid userId, int page = 1, int pageSize = 50, CancellationToken ct = default)
     {
         pageSize = Math.Max(1, Math.Min(pageSize, 100)); // Enforce bounded resource behavior
-        var repo = _unitOfWork.Repository<NotificationMessage>();
-        var count = await repo.CountAsync(n => n.UserId == userId);
-        var items = await repo.FindWithPaginationAsync(
-            n => n.UserId == userId, 
-            (page - 1) * pageSize, 
-            pageSize, 
-            q => q.OrderByDescending(n => n.CreatedAt)
-        );
+        var repo = _unitOfWork.NotificationMessageRepository;
+        var (items, count) = await repo.GetPaginatedByUserIdAsync(userId, page, pageSize, ct);
+        var unreadCount = await repo.CountAsync(notification =>
+            notification.UserId == userId && !notification.IsRead);
 
         var dtoItems = items.Select(n => new NotificationMessageDto(
             n.Id, n.Type, n.Title, n.Content, n.ActionUrl, n.PayloadJson, n.IsRead, n.ReadAt, n.CreatedAt
         ));
 
-        return Result.Success(new NotificationPaginatedResponse(dtoItems, count, page, pageSize));
+        return Result.Success(new NotificationPaginatedResponse(dtoItems, count, unreadCount, page, pageSize));
     }
 
     public async Task<Result> MarkAsReadAsync(Guid userId, Guid notificationId, CancellationToken ct = default)
     {
         var repo = _unitOfWork.NotificationMessageRepository;
         var notification = await repo.GetByIdAndUserIdAsync(notificationId, userId, ct);
-        
+
         if (notification == null)
             return Result.Failure("Notification not found", ErrorCodes.NotFound);
-            
+
         if (!notification.IsRead)
         {
             await repo.MarkAsReadAsync(notificationId, userId, ct);
         }
-        
+
         return Result.Success();
     }
 
@@ -117,10 +113,10 @@ public class NotificationService : INotificationService
     {
         var repo = _unitOfWork.Repository<NotificationMessage>();
         var notification = NotificationMessageMapper.ToEntity(dto);
-        
+
         await repo.AddAsync(notification);
         await _unitOfWork.SaveChangesAsync();
-        
+
         if (_emailSender != null)
         {
             try
@@ -152,7 +148,7 @@ public class NotificationService : INotificationService
                 _logger.LogWarning(ex, "Email delivery failed for notification {Id}", notification.Id);
             }
         }
-        
+
         return Result.Success(NotificationMessageMapper.ToDto(notification));
     }
 

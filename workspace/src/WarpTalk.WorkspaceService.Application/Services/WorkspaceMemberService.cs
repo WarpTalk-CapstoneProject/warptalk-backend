@@ -1,9 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -28,27 +25,20 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly ILogger<WorkspaceMemberService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
-    private readonly byte[] _previewSigningKey;
-
-    private static readonly byte[] FallbackPreviewSigningKey = RandomNumberGenerator.GetBytes(32);
+    private readonly IConfiguration _configuration;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceMemberService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
-        IConfiguration? configuration = null)
+        IConfiguration configuration)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
-        var configuredKey = configuration?["Security:RolePreviewSigningKey"]
-            ?? configuration?["Jwt:Secret"]
-            ?? Environment.GetEnvironmentVariable("WARPTALK_ROLE_PREVIEW_SIGNING_KEY");
-        _previewSigningKey = string.IsNullOrWhiteSpace(configuredKey)
-            ? FallbackPreviewSigningKey
-            : SHA256.HashData(Encoding.UTF8.GetBytes(configuredKey));
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
     }
 
 
@@ -113,8 +103,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             newOwnerMember.RoleId = ownerRoleId.Value;
             _unitOfWork.WorkspaceMemberRepository.Update(newOwnerMember);
 
-            await _unitOfWork.SaveChangesAsync(ct);
-
             var demotionId = Guid.NewGuid();
             var promotionId = Guid.NewGuid();
             var transferEffectiveAt = DateTime.UtcNow;
@@ -124,6 +112,8 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             await _eventPublisher.PublishMemberRoleChangedAsync(
                 workspaceId, newOwnerId, targetOldRoleName, ownerRoleName, executingUserId,
                 promotionId, null, newOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{promotionId:N}", ct);
+
+            await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
@@ -157,6 +147,36 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             var callerRole = await _authIdentity.GetRoleNameByIdAsync(caller.RoleId, ct);
             var isOwnerOrAdmin = callerRole.IsOwnerOrAdmin();
+
+            if (!string.IsNullOrWhiteSpace(query.Search))
+            {
+                List<WorkspaceMember> membersForSearch;
+                if (isOwnerOrAdmin)
+                {
+                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
+                    membersForSearch = allMembers.OrderByDescending(m => m.JoinedAt).ToList();
+                }
+                else
+                {
+                    membersForSearch = (await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct))
+                        .OrderByDescending(m => m.JoinedAt)
+                        .ToList();
+                }
+
+                var search = query.Search.Trim();
+                var filteredDtos = (await WorkspaceMemberDtoHelper.BuildAsync(membersForSearch, _authIdentity, ct))
+                    .Where(m => m.FullName.Contains(search, StringComparison.OrdinalIgnoreCase)
+                                || m.Email.Contains(search, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                var searchedItems = filteredDtos
+                    .Skip(Math.Max(0, (query.Page - 1) * query.PageSize))
+                    .Take(query.PageSize)
+                    .ToList();
+
+                return Result.Success(new PagedResult<WorkspaceMemberDto>(
+                    searchedItems, query.Page, query.PageSize, filteredDtos.Count));
+            }
 
             var (members, totalCount) = await _unitOfWork.WorkspaceMemberRepository.GetPagedMembersAsync(
                 workspaceId, query.Page, query.PageSize, isOwnerOrAdmin, isDescending: true, ct);
@@ -235,7 +255,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
                 executingMember.RemovedAt = DateTime.UtcNow;
                 executingMember.RemovedBy = executingUserId;
-                executingMember.Status = WorkspaceMemberStatus.Removed.ToString();
+                executingMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _eventPublisher.PublishMemberRemovedAsync(workspaceId, executingUserId, executingUserId, ct);
@@ -265,7 +285,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             targetMember.RemovedAt = DateTime.UtcNow;
             targetMember.RemovedBy = executingUserId;
-            targetMember.Status = WorkspaceMemberStatus.Removed.ToString();
+            targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);
@@ -322,12 +342,18 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             if (request != null)
             {
+                if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+                {
+                    _logger.LogError("Role preview signing key is not configured.");
+                    return Result.Failure(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+                }
+
                 if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
                 {
                     return Result.Failure(WorkspaceConstants.Errors.InvalidIdempotencyKey, ErrorCodes.ValidationError);
                 }
 
-                if (!RolePreviewTokenHelper.TryReadPreviewToken(request.PreviewToken, _previewSigningKey, out var preview)
+                if (!RolePreviewTokenHelper.TryReadPreviewToken(request.PreviewToken, previewSigningKey, out var preview)
                     || preview.WorkspaceId != workspaceId
                     || preview.TargetUserId != memberUserId)
                 {
@@ -364,6 +390,11 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
             }
 
+            if (string.Equals(targetRoleName, roleName, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Success();
+            }
+
             var newRoleId = await _authIdentity.GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
@@ -373,13 +404,13 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             targetMember.RoleId = newRoleId.Value;
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
-            await _unitOfWork.SaveChangesAsync(ct);
 
             var committedEventId = eventId ?? Guid.NewGuid();
             await _eventPublisher.PublishMemberRoleChangedAsync(
                 workspaceId, memberUserId, targetRoleName, roleName, executingUserId,
                 committedEventId, request?.CorrelationId, targetMember.MembershipType,
                 "next-request-or-session", DateTime.UtcNow, request?.IdempotencyKey, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
@@ -434,6 +465,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
         if (currentRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
         if (!string.Equals(target.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.ExternalRoleImmutable, ErrorCodes.ValidationError);
         if (!roleName.IsAdmin() && !roleName.IsMember()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
+        if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+        {
+            _logger.LogError("Role preview signing key is not configured.");
+            return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+        }
+
         var now = DateTime.UtcNow;
         var expiresAt = now.AddMinutes(15);
         var coolingOffUntil = roleName.IsAdmin() ? now.AddSeconds(60) : (DateTime?)null;
@@ -444,7 +481,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             roleName,
             new DateTimeOffset(expiresAt).ToUnixTimeSeconds(),
             new DateTimeOffset(coolingOffUntil ?? now).ToUnixTimeSeconds(),
-            _previewSigningKey);
+            previewSigningKey);
 
         return Result.Success(new WorkspaceRoleChangePreviewDto(memberUserId, currentRole, roleName, target.MembershipType, target.CanCreateMeetings, [], expiresAt, previewToken, coolingOffUntil));
     }

@@ -55,7 +55,7 @@ public static class UserMapper
             // UserSetting in the same SaveChanges batch and needs the real id upfront.
             Id = Guid.NewGuid(),
             Email = payload.Email.ToLowerInvariant().Trim(),
-            PasswordHash = "", 
+            PasswordHash = "",
             FullName = payload.Name ?? "Google User",
             AvatarUrl = payload.Picture,
             EmailVerified = payload.EmailVerified,

@@ -27,8 +27,8 @@ public class WorkspaceDocumentAuditRepository : GenericRepository<WorkspaceDocum
 
         var totalCount = await query.CountAsync(ct);
 
-        query = isDescending
-            ? query.OrderByDescending(a => a.ActionAt)
+        query = isDescending 
+            ? query.OrderByDescending(a => a.ActionAt) 
             : query.OrderBy(a => a.ActionAt);
 
         var skip = Math.Max(0, (page - 1) * pageSize);
@@ -42,7 +42,7 @@ public class WorkspaceDocumentAuditRepository : GenericRepository<WorkspaceDocum
         CancellationToken ct = default)
     {
         var approvalAudits = await _dbSet.AsNoTracking()
-            .Where(a => a.WorkspaceId == workspaceId &&
+            .Where(a => a.WorkspaceId == workspaceId && 
                         a.Action == Domain.Constants.WorkspaceDocumentConstants.AuditActions.ApproveDocument &&
                         a.ActorId != null)
             .Select(a => new { a.DocumentId, a.ActorId, a.ActionAt })

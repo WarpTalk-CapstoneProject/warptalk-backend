@@ -142,7 +142,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
                 // Save all generated artifacts into the DB
                 var artifactRepo = _unitOfWork.Repository<TranslationRoomArtifact>();
-                
+
                 await artifactRepo.AddAsync(transcript, ct);
                 await artifactRepo.AddAsync(summary, ct);
 
@@ -152,10 +152,10 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
                 // Trigger the transition to COMPLETED state
                 var eventResult = await _eventProcessor.ProcessEventAsync(
-                    roomId, 
-                    null, 
-                    AudioRoutingEventType.outputs_linked.ToString(), 
-                    "{}", 
+                    roomId,
+                    null,
+                    AudioRoutingEventType.outputs_linked.ToString(),
+                    "{}",
                     ct);
 
                 if (!eventResult.IsSuccess)
@@ -174,33 +174,33 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             catch (Exception ex)
             {
                 // Clean Architecture: Since we are in the Infrastructure layer, we can check EF Core and Npgsql types directly!
-                bool isPermanentDbError = ex is Microsoft.EntityFrameworkCore.DbUpdateException || 
+                bool isPermanentDbError = ex is Microsoft.EntityFrameworkCore.DbUpdateException ||
                                            (ex.InnerException != null && ex.InnerException is Npgsql.PostgresException);
 
                 if (isPermanentDbError)
                 {
                     _logger.LogError(ex, "Permanent Data Constraint error during finalization for Room {RoomId}", roomId);
-                    
+
                     // Immediately emit finalization_abandoned to end lifecycle
                     await _eventProcessor.ProcessEventAsync(
                         roomId, null, AudioRoutingEventType.finalization_abandoned.ToString(), "{}", ct);
-                        
+
                     throw; // Re-throw so the worker knows it failed permanently
                 }
 
                 _logger.LogWarning(ex, "Failure during artifacts finalization for Room {RoomId}. Attempt {Attempt} of {MaxRetries}", roomId, attempt, maxRetries);
-                
+
                 if (attempt == maxRetries)
                 {
                     _logger.LogError("Exhausted all {MaxRetries} retries for Room {RoomId}", maxRetries, roomId);
-                    
+
                     // Emit finalization_failed to put into FAILED queue for Sweeper
                     await _eventProcessor.ProcessEventAsync(
                         roomId, null, AudioRoutingEventType.finalization_failed.ToString(), "{}", ct);
-                        
+
                     throw;
                 }
-                
+
                 // Exponential backoff with jitter (e.g. 2s, 4s, 8s + random ms)
                 int baseDelayMs = (int)Math.Pow(2, attempt) * 1000;
                 int jitterMs = Random.Shared.Next(0, 1000);
@@ -243,13 +243,13 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
 
             return BuildArtifactRequest(
-                roomId, 
-                ArtifactType.TRANSCRIPT_EXPORT, 
+                roomId,
+                ArtifactType.TRANSCRIPT_EXPORT,
                 null,
-                "text/markdown", 
-                sizeBytes, 
-                false, 
-                false, 
+                "text/markdown",
+                sizeBytes,
+                false,
+                false,
                 false,
                 content: fullTranscript)
                 .ToEntity();
@@ -257,20 +257,20 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to retrieve real transcript from TranscriptService via gRPC. Falling back to local cache assembly.");
-            
+
             // Graceful fallback to local cache assembly so that the system doesn't break if TranscriptService is not running
             var redisKey = CacheKeyHelper.GetTranscriptKey(roomId);
             string fullTranscript = await _transcriptCacheService.AssembleTranscriptAsync(roomId, redisKey);
             long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
 
             return BuildArtifactRequest(
-                roomId, 
-                ArtifactType.TRANSCRIPT_EXPORT, 
+                roomId,
+                ArtifactType.TRANSCRIPT_EXPORT,
                 null,
-                "text/markdown", 
-                sizeBytes, 
-                false, 
-                false, 
+                "text/markdown",
+                sizeBytes,
+                false,
+                false,
                 false,
                 content: fullTranscript)
                 .ToEntity();
@@ -336,19 +336,19 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
 
     private static GetTranscriptsByTranslationRoomRequest CreateGetTranscriptsRequest(Guid roomId)
     {
-        return new GetTranscriptsByTranslationRoomRequest 
-        { 
-            TranslationRoomId = roomId.ToString() 
+        return new GetTranscriptsByTranslationRoomRequest
+        {
+            TranslationRoomId = roomId.ToString()
         };
     }
 
     private static GetTranscriptSegmentsRequest CreateGetTranscriptSegmentsRequest(string transcriptId)
     {
-        return new GetTranscriptSegmentsRequest 
-        { 
-            TranscriptId = transcriptId, 
-            Skip = 0, 
-            Take = 1000 
+        return new GetTranscriptSegmentsRequest
+        {
+            TranscriptId = transcriptId,
+            Skip = 0,
+            Take = 1000
         };
     }
 
@@ -381,8 +381,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     private static string FormatTranscriptText(Guid roomId, List<string> segments)
     {
         var header = $"# WarpTalk Transcription Room - Room: {roomId}\nGenerated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n---\n";
-        
-        return segments.Count > 0 
+
+        return segments.Count > 0
             ? header + string.Join("\n", segments)
             : header + "*No speech transcription recorded.*";
     }

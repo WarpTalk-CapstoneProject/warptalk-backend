@@ -1,8 +1,8 @@
 # Feature Specification: Workspace Member Management (WT-141)
 
-**Feature Branch**: `feat/auth`
-**Created**: 2026-05-24
-**Status**: Approved
+**Feature Branch**: `feat/auth`  
+**Created**: 2026-05-24  
+**Status**: Approved  
 **Input**: Linear ticket WT-141 - [Workspace] Let owners and admins manage workspace members
 
 ---
@@ -73,17 +73,17 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
 **Independent Test**: Seed a workspace with 12 members. Send a request to `GET /api/v1/workspaces/{workspaceId}/members?page=1&pageSize=10`. Assert that the response contains pagination envelope and 10 active member items.
 
 **Acceptance Scenarios**:
-1. **Given** an authenticated internal member of a workspace,
-   **When** they request the member list,
+1. **Given** an authenticated internal member of a workspace,  
+   **When** they request the member list,  
    **Then** they receive `200 OK` with a paginated list of active members, including their FullName, Email, Role, JoinedAt, and Status.
-2. **Given** an authenticated internal member of a workspace,
-   **When** they search for "Alice",
+2. **Given** an authenticated internal member of a workspace,  
+   **When** they search for "Alice",  
    **Then** they only receive members whose name or email contains "Alice".
-3. **Given** a user is NOT a member of the workspace,
-   **When** they request the member list,
+3. **Given** a user is NOT a member of the workspace,  
+   **When** they request the member list,  
    **Then** they receive `403 Forbidden` or `404 Not Found`.
-4. **Given** an authenticated External Member,
-   **When** they request the full member list,
+4. **Given** an authenticated External Member,  
+   **When** they request the full member list,  
    **Then** the request is rejected because external callers cannot access the internal directory.
 
 ---
@@ -96,17 +96,17 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
 **Independent Test**: Call the removal endpoint for a member. Verify that `RemovedAt` is set in the database, and the user is no longer returned in the active member list.
 
 **Acceptance Scenarios**:
-1. **Given** a workspace Owner or Admin,
-   **When** they send `DELETE /api/v1/workspaces/{workspaceId}/members/{userId}` to remove an active Member,
+1. **Given** a workspace Owner or Admin,  
+   **When** they send `DELETE /api/v1/workspaces/{workspaceId}/members/{userId}` to remove an active Member,  
    **Then** the member's `RemovedAt` and `RemovedBy` fields are set, and their access is revoked.
-2. **Given** an active Member or Admin,
-   **When** they send the DELETE request for their own User ID (self-removal/leave),
+2. **Given** an active Member or Admin,  
+   **When** they send the DELETE request for their own User ID (self-removal/leave),  
    **Then** the request succeeds and they leave the workspace.
-3. **Given** the last remaining Owner of the workspace,
-   **When** they try to remove themselves or leave,
+3. **Given** the last remaining Owner of the workspace,  
+   **When** they try to remove themselves or leave,  
    **Then** the request is **REJECTED** with `400 Bad Request` explaining they must transfer ownership first.
-4. **Given** a workspace Admin,
-   **When** they try to remove the workspace Owner,
+4. **Given** a workspace Admin,  
+   **When** they try to remove the workspace Owner,  
    **Then** the request is **REJECTED** with `403 Forbidden`.
 
 ---
@@ -119,14 +119,14 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
 **Independent Test**: Promote a Member to Admin. Assert that the member's role is updated in the database.
 
 **Acceptance Scenarios**:
-1. **Given** a workspace Owner,
-   **When** they change a Member's role to Admin,
+1. **Given** a workspace Owner,  
+   **When** they change a Member's role to Admin,  
    **Then** the request succeeds and the member is promoted.
-2. **Given** a workspace Admin,
-   **When** they try to demote the Owner, promote someone to Owner, change another Admin, or promote a Member to Admin,
+2. **Given** a workspace Admin,  
+   **When** they try to demote the Owner, promote someone to Owner, change another Admin, or promote a Member to Admin,  
    **Then** the request is **REJECTED** with `403 Forbidden`.
-3. **Given** the last remaining Owner,
-   **When** they try to demote themselves to Admin or Member,
+3. **Given** the last remaining Owner,  
+   **When** they try to demote themselves to Admin or Member,  
    **Then** the request is **REJECTED** with `400 Bad Request`.
 
 ---

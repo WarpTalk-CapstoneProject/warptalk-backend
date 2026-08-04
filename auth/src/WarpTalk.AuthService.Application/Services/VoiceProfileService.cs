@@ -184,6 +184,13 @@ public class VoiceProfileService : IVoiceProfileService
             return Result.Failure<VoiceProfileDto>("Language is required.", ErrorCodes.ValidationError);
         }
 
+        if (request.Sample == null)
+        {
+            return Result.Failure<VoiceProfileDto>(
+                "A validated voice sample is required.",
+                ErrorCodes.ValidationError);
+        }
+
         if (request.Sample != null)
         {
             if (request.Sample.Length <= 0)

@@ -24,7 +24,7 @@ public class NotificationValidatorTests
     public void Validate_HtmlInText_ReturnsHtmlNotAllowed(string title, string content)
     {
         var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, title, content, null, "{}");
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(NotificationConstants.ErrorHtmlNotAllowed, result.Error);
@@ -34,7 +34,7 @@ public class NotificationValidatorTests
     public void Validate_HtmlInPayloadString_ReturnsHtmlNotAllowed()
     {
         var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, "Title", "Content", "http://example.com<script>", "{}");
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorHtmlNotAllowed, result.Error);
     }
@@ -43,9 +43,9 @@ public class NotificationValidatorTests
     public void Validate_UnknownPayloadKey_ReturnsUnsupportedField()
     {
         var payload = JsonSerializer.Serialize(new { action_url = "url", secret_key = "123" });
-        
+
         var result = NotificationValidator.Validate(NotificationConstants.DefaultNotificationType, "Title", "Content", null, payload);
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorUnsupportedPayloadField, result.Error);
     }
@@ -55,9 +55,9 @@ public class NotificationValidatorTests
     {
         // meeting_id should be string, passing number
         var payload = JsonSerializer.Serialize(new { meeting_id = 123, inviter_name = "Alice" });
-        
+
         var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, payload);
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorInvalidFieldType, result.Error);
     }
@@ -67,9 +67,9 @@ public class NotificationValidatorTests
     {
         // missing inviter_name
         var payload = JsonSerializer.Serialize(new { meeting_id = "123" });
-        
+
         var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, payload);
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
@@ -77,13 +77,13 @@ public class NotificationValidatorTests
     [Fact]
     public void Validate_ValidPayload_ReturnsSuccess()
     {
-        var payload = JsonSerializer.Serialize(new 
-        { 
-            meeting_id = "123", 
+        var payload = JsonSerializer.Serialize(new
+        {
+            meeting_id = "123",
             inviter_name = "Alice"
         });
         var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", "http://localhost/meet", payload);
-        
+
         Assert.True(result.IsSuccess);
     }
 
@@ -91,7 +91,7 @@ public class NotificationValidatorTests
     public void Validate_EmptyPayloadForRequiredType_ReturnsMissingRequiredFields()
     {
         var result = NotificationValidator.Validate(NotificationConstants.TypeMeetingInvite, "Title", "Content", null, "{}");
-        
+
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }

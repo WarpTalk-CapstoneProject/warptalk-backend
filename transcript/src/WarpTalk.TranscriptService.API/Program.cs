@@ -11,6 +11,7 @@ using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
 using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
 using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -56,9 +57,9 @@ builder.Services.AddScoped<ITranscriptQueryService, TranscriptQueryService>();
 builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 
 // --- Redis ---
-var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString));
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
@@ -67,6 +68,7 @@ builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redi
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>

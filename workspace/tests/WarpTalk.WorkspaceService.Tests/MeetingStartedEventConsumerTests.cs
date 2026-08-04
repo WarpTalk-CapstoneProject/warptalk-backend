@@ -81,7 +81,7 @@ public class MeetingStartedEventConsumerTests
         // Arrange
         var roomId = "room-123";
         var workspaceId = Guid.NewGuid();
-        
+
         _workspaceDocumentRepository.FindAsync(default!, default!, default!)
             .ReturnsForAnyArgs(Task.FromResult<IReadOnlyList<WorkspaceDocument>>(new List<WorkspaceDocument>()));
 
@@ -100,7 +100,7 @@ public class MeetingStartedEventConsumerTests
         var workspaceId = Guid.NewGuid();
         var doc1 = new WorkspaceDocument { Id = Guid.NewGuid(), WorkspaceId = workspaceId, FileName = "doc1.txt" };
         var doc2 = new WorkspaceDocument { Id = Guid.NewGuid(), WorkspaceId = workspaceId, FileName = "doc2.txt" };
-        
+
         var documents = new List<WorkspaceDocument> { doc1, doc2 };
 
         _workspaceDocumentRepository.FindAsync(default!, default!, default!)

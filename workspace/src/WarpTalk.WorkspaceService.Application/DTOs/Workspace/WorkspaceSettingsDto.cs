@@ -17,3 +17,26 @@ public record WorkspaceSettingsDto(
     bool IsProfanityFilterEnabled,
     int InvitationExpiryDays = 7
 );
+
+public record WorkspaceSettingsPatchRequest(
+    string? DefaultLanguage = null,
+    string? Timezone = null,
+    List<string>? AllowedTargetLanguages = null,
+    bool? VoiceCloningEnabled = null,
+    int? MaxActiveRooms = null,
+    int? ArtifactRetentionDays = null,
+    bool? EnforceHostApprovalDefault = null,
+    List<string>? VerifiedDomains = null,
+    bool? AllowExternalCollaboration = null,
+    bool? RequireVerifiedDomainForInternal = null,
+    AiUsagePolicyPatchDto? AiUsagePolicy = null,
+    bool? IsProfanityFilterEnabled = null
+);
+
+public record AiUsagePolicyPatchDto(
+    bool? AllowExternalLlm = null,
+    PiiRedactionDto? RedactPii = null,
+    DlpDto? Dlp = null,
+    TranslationProfileDto? TranslationProfile = null,
+    bool? UseGlobalGlossary = null
+);

@@ -141,6 +141,12 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 }
             }
 
+            var capacityCheck = await EnsureTrialInviteCapacityAsync(workspaceId, ct);
+            if (!capacityCheck.IsSuccess)
+            {
+                return Result.Failure<InviteMemberResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
+            }
+
             var membershipType = membershipTypeEnum.ToString();
             var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
             var newInvitation = WorkspaceInvitationMapper.CreateInvitation(
@@ -275,7 +281,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         {
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
-            
+
             var isOwnerOrAdmin = false;
             if (member != null)
             {
@@ -296,7 +302,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             }
 
             var (items, totalCount) = await _unitOfWork.WorkspaceInvitationRepository.GetInvitationsByWorkspaceAsync(workspaceId, query.Page, query.PageSize, ct, query.Kind);
-            
+
             // Lazy expiration materialization
             var hasChanges = false;
             foreach (var invite in items)
@@ -338,7 +344,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         {
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
-            
+
             var isOwnerOrAdmin = false;
             if (member != null)
             {
@@ -697,6 +703,12 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.OnlyRequestedCanBeApproved, ErrorCodes.InvalidState);
             }
 
+            var capacityCheck = await EnsureTrialInviteCapacityAsync(workspaceId, ct);
+            if (!capacityCheck.IsSuccess)
+            {
+                return Result.Failure<ApproveJoinRequestResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
+            }
+
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
@@ -846,6 +858,26 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _logger.LogError(ex, "Error occurred while rejecting join request.");
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    private async Task<Result> EnsureTrialInviteCapacityAsync(Guid workspaceId, CancellationToken ct)
+    {
+        if (!await _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
+        {
+            return Result.Success();
+        }
+
+        var activeMemberCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, ct);
+        var pendingInvitations = await _unitOfWork.WorkspaceInvitationRepository.FindAsync(
+            i => i.WorkspaceId == workspaceId &&
+                 i.Status == InvitationStatus.PENDING.ToString() &&
+                 i.ExpiresAt >= DateTime.UtcNow,
+            "",
+            ct);
+
+        return activeMemberCount + pendingInvitations.Count >= WorkspaceConstants.TrialWorkspaceMemberLimit
+            ? Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden)
+            : Result.Success();
     }
 
 }

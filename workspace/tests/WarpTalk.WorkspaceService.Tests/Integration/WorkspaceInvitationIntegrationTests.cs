@@ -183,7 +183,7 @@ public class WorkspaceInvitationIntegrationTests : BaseIntegrationTest
         using (var scope = Factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<WorkspaceDbContext>();
-            
+
             // Workspace 1 (Target workspace, which user is invited to)
             var ws1 = new Workspace
             {

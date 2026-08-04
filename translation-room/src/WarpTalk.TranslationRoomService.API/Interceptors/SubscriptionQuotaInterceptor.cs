@@ -3,7 +3,6 @@ using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 using System.Threading.Tasks;
-using System.Text.Json;
 
 namespace WarpTalk.TranslationRoomService.API.Interceptors;
 
@@ -13,6 +12,12 @@ namespace WarpTalk.TranslationRoomService.API.Interceptors;
 /// </summary>
 public class SubscriptionQuotaInterceptor : Interceptor
 {
+    private const string WorkspaceQuotaExceededKeyTemplate = "workspace:{0}:quota:exceeded";
+    private const string WorkspaceAiServiceSuspendedKeyTemplate = "workspace:{0}:ai_service_suspended";
+    private const string RedisTrueValue = "true";
+    private const string AiServiceSuspendedMessage = "Workspace AI service is suspended.";
+    private const string MeetingQuotaExceededMessage = "Workspace has exceeded its active meeting quota.";
+
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<SubscriptionQuotaInterceptor> _logger;
 
@@ -35,11 +40,21 @@ public class SubscriptionQuotaInterceptor : Interceptor
             if (!string.IsNullOrEmpty(workspaceId))
             {
                 var isQuotaExceeded = await CheckQuotaFromRedisAsync(workspaceId);
+                var isAiServiceSuspended = await CheckAiServiceSuspendedFromRedisAsync(workspaceId);
 
-                if (isQuotaExceeded)
+                if (isQuotaExceeded || isAiServiceSuspended)
                 {
-                    _logger.LogWarning("Quota exceeded for Workspace {WorkspaceId}. Blocking {Method}", workspaceId, context.Method);
-                    throw new RpcException(new Status(StatusCode.ResourceExhausted, "Workspace has exceeded its active meeting quota."));
+                    var reason = isAiServiceSuspended
+                        ? AiServiceSuspendedMessage
+                        : MeetingQuotaExceededMessage;
+
+                    _logger.LogWarning(
+                        "Blocking {Method} for Workspace {WorkspaceId}. QuotaExceeded={QuotaExceeded}, AiServiceSuspended={AiServiceSuspended}",
+                        context.Method,
+                        workspaceId,
+                        isQuotaExceeded,
+                        isAiServiceSuspended);
+                    throw new RpcException(new Status(StatusCode.ResourceExhausted, reason));
                 }
             }
         }
@@ -57,8 +72,14 @@ public class SubscriptionQuotaInterceptor : Interceptor
     private async Task<bool> CheckQuotaFromRedisAsync(string workspaceId)
     {
         var db = _redis.GetDatabase();
-        // Assume BillingService updates "workspace:{id}:quota:exceeded"
-        var value = await db.StringGetAsync($"workspace:{workspaceId}:quota:exceeded");
-        return value.HasValue && value == "true";
+        var value = await db.StringGetAsync(string.Format(WorkspaceQuotaExceededKeyTemplate, workspaceId));
+        return value.HasValue && value == RedisTrueValue;
+    }
+
+    private async Task<bool> CheckAiServiceSuspendedFromRedisAsync(string workspaceId)
+    {
+        var db = _redis.GetDatabase();
+        var value = await db.StringGetAsync(string.Format(WorkspaceAiServiceSuspendedKeyTemplate, workspaceId));
+        return value.HasValue && value == RedisTrueValue;
     }
 }

@@ -24,7 +24,7 @@ public sealed class WorkspaceOutboxAdminController(
         CancellationToken cancellationToken = default)
     {
         limit = Math.Clamp(limit, 1, 500);
-        var messages = await dbContext.OutboxMessages
+        var messages = await dbContext.WorkspaceOutboxMessages
             .AsNoTracking()
             .Where(message => message.DeadLetteredAt != null)
             .OrderByDescending(message => message.DeadLetteredAt)
@@ -49,7 +49,7 @@ public sealed class WorkspaceOutboxAdminController(
         Guid eventId,
         CancellationToken cancellationToken = default)
     {
-        var message = await dbContext.OutboxMessages
+        var message = await dbContext.WorkspaceOutboxMessages
             .SingleOrDefaultAsync(
                 candidate => candidate.Id == eventId && candidate.DeadLetteredAt != null,
                 cancellationToken);

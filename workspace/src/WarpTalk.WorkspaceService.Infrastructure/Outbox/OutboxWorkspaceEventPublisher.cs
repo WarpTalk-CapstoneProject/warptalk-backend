@@ -120,8 +120,11 @@ public sealed class OutboxWorkspaceEventPublisher(WorkspaceOutboxWriter writer) 
                 changedByUserId.ToString(),
                 membershipType,
                 effectiveBehavior,
+                eventId.ToString(),
+                correlationId,
+                idempotencyKey,
                 effectiveAt,
-                idempotencyKey),
+                effectiveAt),
             correlationId: correlationId,
             occurredAt: effectiveAt);
         return writer.EnqueueAsync(envelope, "MemberRoleChanged", ct);

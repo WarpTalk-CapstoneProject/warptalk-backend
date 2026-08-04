@@ -27,8 +27,8 @@ public class WorkspaceDocumentRepository : GenericRepository<WorkspaceDocument>,
 
         var totalCount = await query.CountAsync(ct);
 
-        query = isDescending
-            ? query.OrderByDescending(d => d.CreatedAt)
+        query = isDescending 
+            ? query.OrderByDescending(d => d.CreatedAt) 
             : query.OrderBy(d => d.CreatedAt);
 
         var skip = Math.Max(0, (page - 1) * pageSize);

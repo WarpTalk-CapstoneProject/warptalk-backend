@@ -11,8 +11,8 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
     public const string UserIdHeader = "X-Test-UserId";
     public const string WorkspaceIdHeader = "X-Test-WorkspaceId";
 
-    public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options, 
-        ILoggerFactory logger, UrlEncoder encoder) 
+    public TestAuthHandler(IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger, UrlEncoder encoder)
         : base(options, logger, encoder)
     {
     }

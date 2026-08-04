@@ -9,14 +9,14 @@ Add a purpose-bound re-authentication layer for sensitive actions only. The Auth
 
 ## Technical Context
 
-**Language/Version**: .NET 10
-**Primary Dependencies**: ASP.NET Core, JWT, Redis, Resend, existing shared auth helpers
-**Storage**: PostgreSQL for primary data, Redis for OTP challenges and short-lived reauth state
-**Testing**: xUnit, integration tests with Testcontainers
-**Target Platform**: Backend API services
-**Project Type**: Multi-service web backend
-**Performance Goals**: Reauth flow should stay fast enough for modal-driven sensitive actions, with OTP delivery and proof verification completing in a few seconds under normal load
-**Constraints**: Keep reauth separate from login/refresh, preserve existing access JWT behavior, return `ProblemDetails` for failures, use `/api/v1/` routes, avoid leaking secrets or OTP values in logs
+**Language/Version**: .NET 10  
+**Primary Dependencies**: ASP.NET Core, JWT, Redis, Resend, existing shared auth helpers  
+**Storage**: PostgreSQL for primary data, Redis for OTP challenges and short-lived reauth state  
+**Testing**: xUnit, integration tests with Testcontainers  
+**Target Platform**: Backend API services  
+**Project Type**: Multi-service web backend  
+**Performance Goals**: Reauth flow should stay fast enough for modal-driven sensitive actions, with OTP delivery and proof verification completing in a few seconds under normal load  
+**Constraints**: Keep reauth separate from login/refresh, preserve existing access JWT behavior, return `ProblemDetails` for failures, use `/api/v1/` routes, avoid leaking secrets or OTP values in logs  
 **Scale/Scope**: Auth, shared auth middleware/contracts, and protected sensitive endpoints across Workspace and Billing
 
 ## Constitution Check

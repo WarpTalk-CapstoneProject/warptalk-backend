@@ -1,23 +1,13 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.API.Controllers;
-using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.Tests.API.Controllers;
 
 public class BillingEndpointSecurityContractTests
 {
-    [Theory]
-    [InlineData("SimulatePayment")]
-    [InlineData("TopUpCredits")]
-    [InlineData("ConsumeCredits")]
-    public void LegacyCreditsController_DoesNotExposeDirectCreditMutation(string actionName)
-    {
-        Assert.DoesNotContain(
-            typeof(CreditsController).GetMethods(BindingFlags.Instance | BindingFlags.Public),
-            method => method.Name == actionName);
-    }
-
     [Fact]
     public void GlobalCreditHistory_IsSystemAdminOnly()
     {
@@ -30,7 +20,10 @@ public class BillingEndpointSecurityContractTests
     [InlineData(nameof(UsagesController.GetGlobalUsageBreakdown))]
     [InlineData(nameof(UsagesController.GetTopWorkspaces))]
     [InlineData(nameof(UsagesController.GetUsageAlerts))]
-    [InlineData(nameof(UsagesController.GetServiceRates))]
+    [InlineData(nameof(UsagesController.GetUsageRateCard))]
+    [InlineData(nameof(UsagesController.UpsertUsageRateCard))]
+    [InlineData(nameof(UsagesController.GetPricingConfig))]
+    [InlineData(nameof(UsagesController.UpdatePricingConfig))]
     public void GlobalUsageAndRateActions_AreSystemAdminOnly(string actionName)
     {
         AssertAdminOnly(typeof(UsagesController), actionName);
@@ -52,41 +45,6 @@ public class BillingEndpointSecurityContractTests
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 
-    [Fact]
-    public void RecordUsage_IsNotAvailableToOrdinaryWorkspaceUsers()
-    {
-        AssertAdminOrBillingAdmin(
-            typeof(UsagesController),
-            nameof(UsagesController.RecordUsage));
-    }
-
-    [Fact]
-    public void LegacyBillingController_DoesNotExposeDirectCreditGrant()
-    {
-        Assert.DoesNotContain(
-            typeof(BillingController).GetMethods(BindingFlags.Instance | BindingFlags.Public),
-            method => method.Name == "TopUpCredits");
-    }
-
-    [Fact]
-    public void LegacyBillingConsumeCredits_IsAdminOrBillingAdminOnly()
-    {
-        AssertAdminOrBillingAdmin(
-            typeof(BillingController),
-            nameof(BillingController.ConsumeCredits));
-    }
-
-    [Theory]
-    [InlineData(nameof(BillingController.GetWorkspaceCredits))]
-    [InlineData(nameof(BillingController.GetActiveSubscription))]
-    [InlineData(nameof(BillingController.CreateSubscription))]
-    [InlineData(nameof(BillingController.GetCreditHistory))]
-    [InlineData(nameof(BillingController.GetTransactionHistory))]
-    [InlineData(nameof(BillingController.CancelSubscription))]
-    public void LegacyWorkspaceBillingActions_RequireWorkspaceBillingRole(string actionName)
-    {
-        AssertWorkspaceBillingRole(typeof(BillingController), actionName);
-    }
 
     [Fact]
     public void GlobalInvoiceHistory_IsSystemAdminOnly()
@@ -94,9 +52,20 @@ public class BillingEndpointSecurityContractTests
         AssertAdminOnly(typeof(InvoicesController), nameof(InvoicesController.GetGlobalInvoices));
     }
 
+    [Fact]
+    public void PaymentsController_DoesNotExposeLegacyUnsignedWebhook()
+    {
+        var legacyUnsignedWebhookActions = typeof(PaymentsController)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(method => method.GetCustomAttributes<HttpPostAttribute>()
+                .Any(attribute => string.Equals(attribute.Template, "webhook", StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        Assert.Empty(legacyUnsignedWebhookActions);
+    }
+
     [Theory]
-    [InlineData(typeof(PlansController), nameof(PlansController.CreatePlan))]
-    [InlineData(typeof(CreditsController), nameof(CreditsController.AdjustCredits))]
+    [InlineData(typeof(PlansController), nameof(PlansController.UpdatePlan))]
     [InlineData(typeof(SubscriptionsController), nameof(SubscriptionsController.GetGlobalSubscriptions))]
     public void GlobalBillingMutationAndReportingActions_AreSystemAdminOnly(
         Type controller,
@@ -106,11 +75,24 @@ public class BillingEndpointSecurityContractTests
     }
 
     [Fact]
-    public void CreateSubscription_RequiresWorkspaceBillingRole()
+    public void CreateTrialSubscription_RequiresWorkspaceBillingRole()
     {
         AssertWorkspaceBillingRole(
             typeof(SubscriptionsController),
-            nameof(SubscriptionsController.CreateSubscription));
+            nameof(SubscriptionsController.CreateTrialSubscription));
+    }
+
+    [Fact]
+    public void CreateWorkspaceSalesInquiry_RequiresAuthAndWorkspaceBillingRole()
+    {
+        var action = GetAction(
+            typeof(SalesInquiriesController),
+            nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
+
+        Assert.NotNull(action.GetCustomAttribute<AuthorizeAttribute>());
+        AssertWorkspaceBillingRole(
+            typeof(SalesInquiriesController),
+            nameof(SalesInquiriesController.SubmitWorkspaceSalesInquiry));
     }
 
     private static void AssertAdminOnly(Type controller, string actionName)
@@ -119,7 +101,9 @@ public class BillingEndpointSecurityContractTests
         var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
 
         Assert.NotNull(authorize);
-        Assert.Equal("Admin", authorize!.Roles);
+        var roles = authorize!.Roles!.Split(',', StringSplitOptions.TrimEntries);
+        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.Admin, roles);
+        Assert.Contains(WarpTalk.Shared.WorkspaceRoleConstants.SystemAdmin, roles);
         Assert.Null(action.GetCustomAttribute<AllowAnonymousAttribute>());
     }
 

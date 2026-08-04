@@ -29,7 +29,7 @@ public class InternalContextMiddlewareTests
         var context = new DefaultHttpContext();
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        
+
         // Generate a valid signed token
         var token = TokenGeneratorHelper.GenerateInternalSignedToken(userId, workspaceId, _sharedSecret);
         context.Request.Headers["X-Internal-Context"] = token;
@@ -53,7 +53,7 @@ public class InternalContextMiddlewareTests
         var context = new DefaultHttpContext();
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        
+
         // Generate token with a different secret
         var token = TokenGeneratorHelper.GenerateInternalSignedToken(userId, workspaceId, "wrong-secret-key-12345678901234567890");
         context.Request.Headers["X-Internal-Context"] = token;
@@ -75,7 +75,7 @@ public class InternalContextMiddlewareTests
         var context = new DefaultHttpContext();
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        
+
         var token = TokenGeneratorHelper.GenerateInternalSignedToken(userId, workspaceId, _sharedSecret);
         context.Request.Headers["X-Internal-Context"] = token;
 
@@ -102,7 +102,7 @@ public class InternalContextMiddlewareTests
         var context = new DefaultHttpContext();
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        
+
         // Generate an expired token
         var token = TokenGeneratorHelper.GenerateInternalSignedToken(userId, workspaceId, _sharedSecret, DateTime.UtcNow.AddMinutes(-5));
         context.Request.Headers["X-Internal-Context"] = token;
@@ -124,7 +124,7 @@ public class InternalContextMiddlewareTests
         var context = new DefaultHttpContext();
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        
+
         var token = TokenGeneratorHelper.GenerateInternalSignedToken(userId, workspaceId, _sharedSecret);
         context.Request.Headers["X-Internal-Context"] = token;
 

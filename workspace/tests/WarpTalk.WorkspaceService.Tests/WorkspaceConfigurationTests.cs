@@ -76,13 +76,13 @@ public class WorkspaceConfigurationTests
     }
 
     [Fact]
-    public void WorkspaceConfiguration_ShouldPreserveZeroRetentionAsIndefinite()
+    public void WorkspaceConfiguration_ShouldNormalizeZeroRetentionToDefault()
     {
         var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(
             "{\"ArtifactRetentionDays\":0}");
 
         Assert.NotNull(config);
-        Assert.Equal(0, config.ArtifactRetentionDays);
+        Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
     }
 
     [Fact]
@@ -135,7 +135,7 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(deserializedConfig);
         Assert.NotNull(deserializedConfig.AiUsagePolicy);
         Assert.True(deserializedConfig.AiUsagePolicy.AllowExternalLlm);
-        
+
         Assert.NotNull(deserializedConfig.AiUsagePolicy.RedactPii);
         Assert.True(deserializedConfig.AiUsagePolicy.RedactPii.Enabled);
 

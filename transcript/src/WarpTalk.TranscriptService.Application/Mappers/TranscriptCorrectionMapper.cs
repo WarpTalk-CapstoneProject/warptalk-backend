@@ -24,13 +24,13 @@ public static class TranscriptCorrectionMapper
         );
     }
 
-    public static TranscriptCorrection ToEntity(this CreateCorrectionDto dto, Guid segmentId)
+    public static TranscriptCorrection ToEntity(this CreateCorrectionDto dto, Guid segmentId, Guid authenticatedUserId)
     {
         return new TranscriptCorrection
         {
             Id = Guid.NewGuid(),
             SegmentId = segmentId,
-            UserId = dto.UserId,
+            UserId = authenticatedUserId,
             OriginalText = dto.OriginalText,
             CorrectedText = dto.CorrectedText,
             CorrectionType = dto.CorrectionType ?? "STT",

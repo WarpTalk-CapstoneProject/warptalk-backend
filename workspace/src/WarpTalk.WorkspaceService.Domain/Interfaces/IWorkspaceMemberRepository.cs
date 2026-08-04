@@ -9,9 +9,7 @@ namespace WarpTalk.WorkspaceService.Domain.Interfaces;
 public interface IWorkspaceMemberRepository : IGenericRepository<WorkspaceMember>
 {
     Task<List<WorkspaceMember>> GetActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
-
     Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default);
-
     Task<int> CountActiveOwnersAsync(Guid workspaceId, Guid ownerRoleId, CancellationToken ct = default);
 
     Task<(List<WorkspaceMember> Items, int TotalCount)> GetPagedMembersAsync(

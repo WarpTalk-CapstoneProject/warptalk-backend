@@ -56,7 +56,8 @@ public class AuthServiceTests
         {
             DefaultRole = "user",
             MaxFailedAttempts = 5,
-            LockoutDurationMinutes = 15
+            LockoutDurationMinutes = 15,
+            AutoVerifySelfRegistration = true
         };
         _authSettingsOptions = Options.Create(settings);
 
@@ -94,6 +95,7 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.User.EmailVerified);
         await _userSettingRepository.Received(1).AddAsync(
             Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
             Arg.Any<CancellationToken>()
@@ -103,6 +105,7 @@ public class AuthServiceTests
     [Fact]
     public async Task RegisterAsync_ShouldReturnSuccess_WhenVerificationEmailDeliveryFailsAfterPersistence()
     {
+        _authSettingsOptions.Value.AutoVerifySelfRegistration = false;
         _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(false);
         _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
@@ -314,7 +317,7 @@ public class AuthServiceTests
         Assert.NotNull(user.EmailVerificationTokenHash);
         Assert.NotNull(user.EmailVerificationTokenExpiresAt);
         await _unitOfWork.Received().SaveChangesAsync(Arg.Any<CancellationToken>());
-        
+
         // Confirm cache is updated
         await _cache.Received(1).SetAsync(
             $"resend:cooldown:{userId}",
@@ -354,7 +357,7 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        
+
         // Confirm window is created with attempt = 1
         await _cache.Received(1).SetAsync(
             $"resend:window:{userId}",
@@ -388,7 +391,7 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        
+
         // Confirm it parsed "3" as 3, and saved next attempt count as "4" (creating a new window from now)
         await _cache.Received(1).SetAsync(
             $"resend:window:{userId}",
@@ -422,7 +425,7 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        
+
         // Confirm it gracefully ignored garbage, falling back to 0 attempts, and saving attempt as "1" in a new window
         await _cache.Received(1).SetAsync(
             $"resend:window:{userId}",

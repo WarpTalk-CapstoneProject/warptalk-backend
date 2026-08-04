@@ -1,5 +1,6 @@
 using System;
 using System.Security.Claims;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -43,7 +44,7 @@ public class WorkspacesControllerTests
         // Arrange
         var request = new CreateWorkspaceRequest("DeepMind Team", "https://cdn.com/logo.png");
         var expectedDto = new WorkspaceDto(Guid.NewGuid(), "DeepMind Team", "deepmind-team", "https://cdn.com/logo.png", "Owner", DateTime.UtcNow, "en");
-        
+
         _workspaceService.CreateWorkspaceAsync(request, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedDto));
 
@@ -117,6 +118,36 @@ public class WorkspacesControllerTests
     }
 
     [Fact]
+    public async Task GetWorkspaceById_ShouldUseAdminLookup_WhenUserHasPlatformAdminRole()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var expectedDto = new WorkspaceDto(workspaceId, "FitPick", "fitpick", null, "admin", DateTime.UtcNow, "en");
+
+        var claims = new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, _userId.ToString()),
+            new Claim(ClaimTypes.Role, "admin")
+        };
+        _controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")) }
+        };
+
+        _workspaceService.GetWorkspaceByIdForAdminAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(expectedDto));
+
+        // Act
+        var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
+
+        // Assert
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        var value = Assert.IsType<WorkspaceDto>(okResult.Value);
+        Assert.Equal(expectedDto, value);
+        await _workspaceService.DidNotReceive().GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GetWorkspaceById_ShouldReturn403Forbidden_WhenUserNotMember()
     {
         // Arrange
@@ -184,7 +215,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -215,7 +246,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -244,7 +275,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -261,6 +292,84 @@ public class WorkspacesControllerTests
         Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
         var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldPreserveVerifiedDomains_WhenPatchOmitsThem()
+    {
+        var workspaceId = Guid.NewGuid();
+        var current = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string> { "company.com" },
+            true,
+            true,
+            null,
+            false);
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(current));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject { ["artifactRetentionDays"] = 60 },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var merged = Assert.IsType<WorkspaceSettingsDto>(ok.Value);
+        Assert.Equal(new List<string> { "company.com" }, merged.VerifiedDomains);
+        Assert.Equal(new List<string> { "company.com" }, savedSettings?.VerifiedDomains);
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldSendExplicitEmptyVerifiedDomains_WhenStrictModeIsOff()
+    {
+        var workspaceId = Guid.NewGuid();
+        var current = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string> { "company.com" },
+            true,
+            false,
+            null,
+            false);
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(current));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new JsonObject { ["verifiedDomains"] = new JsonArray() },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var merged = Assert.IsType<WorkspaceSettingsDto>(ok.Value);
+        Assert.Empty(merged.VerifiedDomains);
+        Assert.Empty(savedSettings?.VerifiedDomains ?? new List<string> { "unexpected" });
     }
 
 }

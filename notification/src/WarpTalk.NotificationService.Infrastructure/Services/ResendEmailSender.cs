@@ -26,8 +26,8 @@ public class ResendEmailSender : IEmailSender
         try
         {
             var defaultFrom = _configuration["Resend:FromEmail"] ?? "WarpTalk <onboarding@resend.dev>";
-            var fromEmail = !string.IsNullOrWhiteSpace(message.FromEmail) 
-                ? message.FromEmail 
+            var fromEmail = !string.IsNullOrWhiteSpace(message.FromEmail)
+                ? message.FromEmail
                 : defaultFrom;
 
             var resendMessage = new Resend.EmailMessage

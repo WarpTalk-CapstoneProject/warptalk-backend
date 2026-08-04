@@ -112,7 +112,7 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
 
         var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
-        
+
         if (existingMember != null)
         {
             return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);

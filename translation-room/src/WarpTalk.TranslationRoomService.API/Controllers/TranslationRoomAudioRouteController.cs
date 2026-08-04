@@ -49,9 +49,9 @@ public class TranslationRoomAudioRouteController : ControllerBase
 
     [HttpPatch("{routeId:guid}/runtime")]
     public async Task<IActionResult> UpdateRuntimeContext(
-        [FromRoute] Guid roomId, 
-        [FromRoute] Guid routeId, 
-        [FromBody] UpdateAudioRouteRuntimeContextDto dto, 
+        [FromRoute] Guid roomId,
+        [FromRoute] Guid routeId,
+        [FromBody] UpdateAudioRouteRuntimeContextDto dto,
         CancellationToken ct)
     {
         var result = await _audioRouteService.UpdateRuntimeContextAsync(roomId, routeId, dto, ct);
@@ -66,9 +66,9 @@ public class TranslationRoomAudioRouteController : ControllerBase
 
     [HttpPatch("{routeId:guid}/voice-clone")]
     public async Task<IActionResult> ToggleVoiceClone(
-        [FromRoute] Guid roomId, 
-        [FromRoute] Guid routeId, 
-        [FromBody] ToggleVoiceCloneDto dto, 
+        [FromRoute] Guid roomId,
+        [FromRoute] Guid routeId,
+        [FromBody] ToggleVoiceCloneDto dto,
         CancellationToken ct)
     {
         var result = await _audioRouteService.ToggleVoiceCloneAsync(roomId, routeId, dto, ct);

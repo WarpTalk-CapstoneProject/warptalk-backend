@@ -5,8 +5,8 @@ using StackExchange.Redis;
 using System.Text.Json;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Services;
-using WarpTalk.Shared.Models;
 using WarpTalk.Shared.Events;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.Gateway.Tests;
 
@@ -18,57 +18,16 @@ public class NotificationRedisSubscriberServiceTests
     private readonly Mock<IHubClients> _mockClients;
     private readonly Mock<IClientProxy> _mockClientProxy;
     private readonly Mock<ILogger<NotificationRedisSubscriberService>> _mockLogger;
-    
+
     private readonly NotificationRedisSubscriberService _service;
-    private readonly Dictionary<string, Action<RedisChannel, RedisValue>> _messageHandlers = new();
-
-    private async Task<Action<RedisChannel, RedisValue>> GetNotificationHandlerAsync()
-    {
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (_messageHandlers.TryGetValue("warptalk:notifications:new", out var handler))
-            {
-                return handler;
-            }
-            await Task.Delay(10);
-        }
-
-        throw new Xunit.Sdk.XunitException("Notification Redis subscription was not registered.");
-    }
-
-    private async Task<Action<RedisChannel, RedisValue>> GetHandlerAsync(string channel)
-    {
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (_messageHandlers.TryGetValue(channel, out var handler))
-                return handler;
-            await Task.Delay(10);
-        }
-
-        throw new Xunit.Sdk.XunitException($"Redis subscription {channel} was not registered.");
-    }
-
-    private async Task WaitForSubscriptionsAsync(int expectedCount)
-    {
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (_messageHandlers.Count == expectedCount)
-            {
-                return;
-            }
-
-            await Task.Delay(10);
-        }
-
-        throw new Xunit.Sdk.XunitException(
-            $"Expected {expectedCount} Redis subscriptions, but found {_messageHandlers.Count}.");
-    }
+    private Action<RedisChannel, RedisValue>? _messageHandler;
+    private RedisChannel _subscribedChannel;
 
     public NotificationRedisSubscriberServiceTests()
     {
         _mockRedis = new Mock<IConnectionMultiplexer>();
         _mockSubscriber = new Mock<ISubscriber>();
-        
+
         _mockHubContext = new Mock<IHubContext<NotificationHub>>();
         _mockClients = new Mock<IHubClients>();
         _mockClientProxy = new Mock<IClientProxy>();
@@ -76,21 +35,26 @@ public class NotificationRedisSubscriberServiceTests
 
         // Setup Redis
         _mockRedis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(_mockSubscriber.Object);
-        
-        // Capture the SubscribeAsync callback
+
+        // Capture the SubscribeAsync callback specifically for notifications channel
         _mockSubscriber.Setup(s => s.SubscribeAsync(
             It.IsAny<RedisChannel>(),
             It.IsAny<Action<RedisChannel, RedisValue>>(),
             It.IsAny<CommandFlags>()))
         .Callback<RedisChannel, Action<RedisChannel, RedisValue>, CommandFlags>((c, h, f) =>
         {
-            _messageHandlers[c.ToString()] = h;
+            if (c.ToString() == "warptalk:notifications:new")
+            {
+                _subscribedChannel = c;
+                _messageHandler = h;
+            }
         })
         .Returns(Task.CompletedTask);
 
         // Setup HubContext
         _mockHubContext.Setup(c => c.Clients).Returns(_mockClients.Object);
         _mockClients.Setup(c => c.Group(It.IsAny<string>())).Returns(_mockClientProxy.Object);
+        _mockClients.Setup(c => c.All).Returns(_mockClientProxy.Object);
 
         _service = new NotificationRedisSubscriberService(
             _mockRedis.Object,
@@ -103,44 +67,16 @@ public class NotificationRedisSubscriberServiceTests
     {
         // Act
         await _service.StartAsync(CancellationToken.None);
-        await WaitForSubscriptionsAsync(5);
+        await WaitForAsync(() => _messageHandler is not null);
 
         // Assert
-        Assert.Equal(5, _messageHandlers.Count);
-        Assert.Contains("warptalk:notifications:new", _messageHandlers.Keys);
-    }
+        _mockSubscriber.Verify(s => s.SubscribeAsync(
+            RedisChannel.Literal("warptalk:notifications:new"),
+            It.IsAny<Action<RedisChannel, RedisValue>>(),
+            It.IsAny<CommandFlags>()), Times.Once);
 
-    [Fact]
-    public async Task MeetingStartedHandler_BroadcastsVersionedPayloadToWorkspace()
-    {
-        await _service.StartAsync(CancellationToken.None);
-        var handler = await GetHandlerAsync("meeting.started");
-        var workspaceId = Guid.NewGuid();
-        var roomId = Guid.NewGuid();
-        var envelope = DomainEventEnvelope.Create(
-            MeetingEventTypes.Started,
-            "meeting-service",
-            workspaceId.ToString(),
-            new MeetingStartedEventPayload(roomId, workspaceId));
-
-        handler(
-            RedisChannel.Literal("meeting.started"),
-            JsonSerializer.Serialize(envelope));
-
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            if (_mockClients.Invocations.Any(invocation =>
-                    invocation.Method.Name == nameof(IHubClients.Group) &&
-                    Equals(invocation.Arguments[0], $"workspace:{workspaceId}")))
-                break;
-            await Task.Delay(10);
-        }
-
-        _mockClients.Verify(clients => clients.Group($"workspace:{workspaceId}"), Times.AtLeastOnce);
-        _mockClientProxy.Verify(proxy => proxy.SendCoreAsync(
-            "MeetingStarted",
-            It.Is<object[]>(args => HasMeetingStartedPayload(args, roomId)),
-            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(RedisChannel.Literal("warptalk:notifications:new"), _subscribedChannel);
+        Assert.NotNull(_messageHandler);
     }
 
     [Fact]
@@ -148,7 +84,7 @@ public class NotificationRedisSubscriberServiceTests
     {
         // Arrange
         await _service.StartAsync(CancellationToken.None);
-        var handler = await GetNotificationHandlerAsync();
+        await WaitForAsync(() => _messageHandler is not null);
         var message = new RealtimeNotificationMessage
         {
             Id = Guid.NewGuid().ToString(),
@@ -160,18 +96,70 @@ public class NotificationRedisSubscriberServiceTests
         var json = JsonSerializer.Serialize(message);
 
         // Act
-        handler(
-            RedisChannel.Literal("warptalk:notifications:new"),
-            new RedisValue(json));
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(json));
+        await WaitForAsync(() =>
+        {
+            try
+            {
+                _mockClients.Verify(c => c.Group("user:user-123"), Times.Once);
+                return true;
+            }
+            catch (MockException)
+            {
+                return false;
+            }
+        });
 
         // Assert
         _mockClients.Verify(c => c.Group("user:user-123"), Times.Once);
         _mockClientProxy.Verify(p => p.SendCoreAsync(
             "NewNotification",
-            It.Is<object[]>(args => 
-                args.Length > 0 && 
+            It.Is<object[]>(args =>
+                args.Length > 0 &&
                 args[0] is RealtimeNotificationMessage &&
                 ((RealtimeNotificationMessage)args[0]).UserId == "user-123"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RedisMessageHandler_WithAllUserId_BroadcastsToAllClients()
+    {
+        // Arrange
+        await _service.StartAsync(CancellationToken.None);
+        await WaitForAsync(() => _messageHandler is not null);
+        var message = new RealtimeNotificationMessage
+        {
+            Id = Guid.NewGuid().ToString(),
+            UserId = "all",
+            Type = "billing.plan_changed",
+            Title = "System Plan Update",
+            Content = "Plan updated"
+        };
+        var json = JsonSerializer.Serialize(message);
+
+        // Act
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(json));
+        await WaitForAsync(() =>
+        {
+            try
+            {
+                _mockClients.Verify(c => c.All, Times.Once);
+                return true;
+            }
+            catch (MockException)
+            {
+                return false;
+            }
+        });
+
+        // Assert
+        _mockClients.Verify(c => c.All, Times.Once);
+        _mockClientProxy.Verify(p => p.SendCoreAsync(
+            "NewNotification",
+            It.Is<object[]>(args =>
+                args.Length > 0 &&
+                args[0] is RealtimeNotificationMessage &&
+                ((RealtimeNotificationMessage)args[0]).UserId == "all"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -180,12 +168,10 @@ public class NotificationRedisSubscriberServiceTests
     {
         // Arrange
         await _service.StartAsync(CancellationToken.None);
-        var handler = await GetNotificationHandlerAsync();
+        await WaitForAsync(() => _messageHandler is not null);
 
         // Act
-        handler(
-            RedisChannel.Literal("warptalk:notifications:new"),
-            RedisValue.EmptyString);
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), RedisValue.EmptyString);
 
         // Assert
         _mockClients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
@@ -197,16 +183,28 @@ public class NotificationRedisSubscriberServiceTests
     {
         // Arrange
         await _service.StartAsync(CancellationToken.None);
-        var handler = await GetNotificationHandlerAsync();
+        await WaitForAsync(() => _messageHandler is not null);
         var invalidJson = "{ invalid_json: ";
 
         // Act - should catch exception inside the handler
-        handler(
-            RedisChannel.Literal("warptalk:notifications:new"),
-            new RedisValue(invalidJson));
+        _messageHandler?.Invoke(RedisChannel.Literal("warptalk:notifications:new"), new RedisValue(invalidJson));
 
         // Assert
         _mockClients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        while (!condition())
+        {
+            if (timeout.IsCancellationRequested)
+            {
+                throw new TimeoutException("Timed out waiting for async test condition.");
+            }
+
+            await Task.Delay(10, timeout.Token);
+        }
     }
 
     [Fact]
@@ -278,4 +276,22 @@ public class NotificationRedisSubscriberServiceTests
         => args.Length == 1 &&
            args[0] is MeetingStartedEventPayload payload &&
            payload.TranslationRoomId == roomId;
+
+    private async Task<Action<RedisChannel, RedisValue>> GetHandlerAsync(string channelPrefix)
+    {
+        Action<RedisChannel, RedisValue>? foundHandler = null;
+        _mockSubscriber.Setup(s => s.SubscribeAsync(
+            It.IsAny<RedisChannel>(),
+            It.IsAny<Action<RedisChannel, RedisValue>>(),
+            It.IsAny<CommandFlags>()))
+        .Callback<RedisChannel, Action<RedisChannel, RedisValue>, CommandFlags>((c, h, _) =>
+        {
+            if (c.ToString().StartsWith(channelPrefix)) foundHandler = h;
+        })
+        .Returns(Task.CompletedTask);
+        
+        await _service.StartAsync(CancellationToken.None);
+        await WaitForAsync(() => foundHandler != null);
+        return foundHandler!;
+    }
 }

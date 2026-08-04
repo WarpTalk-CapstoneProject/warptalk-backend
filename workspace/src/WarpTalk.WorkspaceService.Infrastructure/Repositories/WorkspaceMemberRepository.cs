@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 
@@ -13,6 +14,8 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Repositories;
 
 public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWorkspaceMemberRepository
 {
+    private static readonly string ActiveStatus = WorkspaceMemberStatus.Active.ToStorageValue();
+
     public WorkspaceMemberRepository(WorkspaceDbContext context) : base(context)
     {
     }
@@ -21,8 +24,8 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
     {
         return await _dbSet
             .AsNoTracking()
-            .Where(m => m.WorkspaceId == workspaceId
-                        && m.Status == WorkspaceMemberStatus.Active.ToString()
+            .Where(m => m.WorkspaceId == workspaceId 
+                        && m.Status.ToLower() == ActiveStatus
                         && m.RemovedAt == null)
             .OrderBy(m => m.JoinedAt)
             .ToListAsync(ct);
@@ -39,9 +42,9 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
     {
         return await _dbSet
             .AsNoTracking()
-            .CountAsync(m => m.WorkspaceId == workspaceId
-                             && m.RoleId == ownerRoleId
-                             && m.Status == WorkspaceMemberStatus.Active.ToString()
+            .CountAsync(m => m.WorkspaceId == workspaceId 
+                             && m.RoleId == ownerRoleId 
+                             && m.Status.ToLower() == ActiveStatus
                              && m.RemovedAt == null, ct);
     }
 
@@ -57,13 +60,13 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
 
         if (!includeInactiveAndBanned)
         {
-            query = query.Where(m => m.Status == WorkspaceMemberStatus.Active.ToString() && m.RemovedAt == null);
+            query = query.Where(m => m.Status.ToLower() == ActiveStatus && m.RemovedAt == null);
         }
 
         var totalCount = await query.CountAsync(ct);
 
-        query = isDescending
-            ? query.OrderByDescending(m => m.JoinedAt)
+        query = isDescending 
+            ? query.OrderByDescending(m => m.JoinedAt) 
             : query.OrderBy(m => m.JoinedAt);
 
         var skip = Math.Max(0, (page - 1) * pageSize);

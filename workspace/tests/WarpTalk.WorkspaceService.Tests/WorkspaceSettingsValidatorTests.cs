@@ -26,7 +26,7 @@ public class WorkspaceSettingsValidatorTests
             invitationExpiryDays);
 
     [Theory]
-    [InlineData(1, 0, 1)]
+    [InlineData(1, 1, 1)]
     [InlineData(50, 3650, 365)]
     public void AcceptsSupportedNumericBoundaries(int maxActiveRooms, int artifactRetentionDays, int invitationExpiryDays)
     {
@@ -38,6 +38,7 @@ public class WorkspaceSettingsValidatorTests
     [Theory]
     [InlineData(0, 30, "maxActiveRooms")]
     [InlineData(51, 30, "maxActiveRooms")]
+    [InlineData(5, 0, "artifactRetentionDays")]
     [InlineData(5, -1, "artifactRetentionDays")]
     [InlineData(5, 3651, "artifactRetentionDays")]
     public void RejectsOutOfRangeNumericBoundaries(int maxActiveRooms, int artifactRetentionDays, string field)

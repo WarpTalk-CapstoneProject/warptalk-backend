@@ -142,6 +142,10 @@ public sealed class WorkspaceOutboxDelivery(
                 entries.Add(new("old_role", roleChanged.OldRole));
                 entries.Add(new("new_role", roleChanged.NewRole));
                 entries.Add(new("changed_by_user_id", roleChanged.ChangedByUserId));
+                entries.Add(new("membership_type", roleChanged.MembershipType));
+                entries.Add(new("effective_behavior", roleChanged.EffectiveBehavior));
+                entries.Add(new("role_change_event_id", roleChanged.EventId));
+                entries.Add(new("idempotency_key", roleChanged.IdempotencyKey ?? string.Empty));
                 break;
             case WorkspaceDocumentIngestionRequestedEventPayload ingestion:
                 entries.Add(new("document_id", ingestion.DocumentId));

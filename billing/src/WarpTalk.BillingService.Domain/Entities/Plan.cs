@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations.Schema;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -16,22 +17,27 @@ public partial class Plan
 
     public decimal Price { get; set; }
 
-    public string Currency { get; set; } = "VND";
+    public string Currency { get; set; } = PaymentConstants.Currencies.VndAccounting;
 
-    public string BillingCycle { get; set; } = "monthly";
+    public string BillingCycle { get; set; } = SubscriptionConstants.BillingCycles.Monthly;
 
     public int CreditsPerCycle { get; set; }
 
-    [NotMapped]
-    public int CreditsPerMonth
-    {
-        get => CreditsPerCycle;
-        set => CreditsPerCycle = value;
-    }
+    public int OverageCapCredits { get; set; }
 
-    public int MaxParticipants { get; set; } = 2;
+    public decimal OveragePricePerCredit { get; set; } = SubscriptionConstants.PlanDefaults.OveragePricePerCredit;
 
-    public int MaxLanguages { get; set; } = 2;
+    public int LowBalanceThresholdCredits { get; set; }
+
+    public int RolloverCapCredits { get; set; }
+
+    public int InvoiceTermsDays { get; set; } = SubscriptionConstants.PlanDefaults.InvoiceTermsDays;
+
+    public int InvoiceGraceHours { get; set; } = SubscriptionConstants.PlanDefaults.InvoiceGraceHours;
+
+    public int MaxParticipants { get; set; } = SubscriptionConstants.PlanDefaults.MaxParticipants;
+
+    public int MaxLanguages { get; set; } = SubscriptionConstants.PlanDefaults.MaxLanguages;
 
     public bool VoiceCloneEnabled { get; set; }
 
@@ -41,7 +47,7 @@ public partial class Plan
 
     public bool DedicatedGpu { get; set; }
 
-    public string Features { get; set; } = "{}";
+    public string Features { get; set; } = SubscriptionConstants.FeatureAccess.EmptyFeaturesJson;
 
     public int SortOrder { get; set; }
 

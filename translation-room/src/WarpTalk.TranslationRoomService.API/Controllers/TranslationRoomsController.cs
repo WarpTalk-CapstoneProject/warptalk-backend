@@ -304,7 +304,7 @@ public class TranslationRoomsController : ControllerBase
         return File(bytes, "text/calendar", "meeting.ics");
     }
 
-//Chua co enpoint PATCH nen tach rieng settings
+    //Chua co enpoint PATCH nen tach rieng settings
     [HttpPut("{id}/settings")]
     public async Task<IActionResult> UpdateTranslationRoomSettings(Guid id, [FromBody] UpdateRoomSettingsRequest request, CancellationToken ct)
     {

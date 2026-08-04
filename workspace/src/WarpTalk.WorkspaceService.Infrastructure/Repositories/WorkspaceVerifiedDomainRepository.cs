@@ -27,8 +27,8 @@ public class WorkspaceVerifiedDomainRepository : GenericRepository<WorkspaceVeri
 
         var totalCount = await query.CountAsync(ct);
 
-        query = isDescending
-            ? query.OrderByDescending(vd => vd.CreatedAt)
+        query = isDescending 
+            ? query.OrderByDescending(vd => vd.CreatedAt) 
             : query.OrderBy(vd => vd.CreatedAt);
 
         var skip = Math.Max(0, (page - 1) * pageSize);

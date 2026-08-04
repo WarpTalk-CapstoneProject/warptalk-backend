@@ -1,7 +1,8 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations.Schema;
-using WarpTalk.BillingService.Domain.Enums;
+
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -9,18 +10,16 @@ public partial class Subscription
 {
     public Guid Id { get; set; }
 
-    /// <summary>External AuthService user id (creator/owner). No physical FK.</summary>
     public Guid UserId { get; set; }
 
     public Guid WorkspaceId { get; set; }
 
     public Guid PlanId { get; set; }
 
-    public string Status { get; set; } = "active";
+    public string Status { get; set; } = SubscriptionConstants.SubscriptionStatuses.Active;
 
     public int CreditsRemaining { get; set; }
 
-    /// <summary>Compatibility alias for older billing service code.</summary>
     [NotMapped]
     public int CurrentCredits
     {
@@ -34,7 +33,6 @@ public partial class Subscription
 
     public DateTime CurrentPeriodEnd { get; set; }
 
-    /// <summary>Compatibility alias for older billing service code.</summary>
     [NotMapped]
     public DateTime StartDate
     {
@@ -42,7 +40,6 @@ public partial class Subscription
         set => CurrentPeriodStart = value;
     }
 
-    /// <summary>Compatibility alias for older billing service code.</summary>
     [NotMapped]
     public DateTime? EndDate
     {
@@ -58,11 +55,28 @@ public partial class Subscription
 
     public DateTime? TrialEndsAt { get; set; }
 
-    /// <summary>
-    /// The authoritative "is this the workspace's active subscription" flag — driven off
-    /// this boolean, not Status, because billing_worker's resolve_subscription() and the
-    /// one-active-per-workspace unique index (migration 016/017) both key off is_active.
-    /// </summary>
+    public int? CreditsPerCycleOverride { get; set; }
+
+    public decimal? ContractPriceVnd { get; set; }
+
+    public int? OverageCapCreditsOverride { get; set; }
+
+    public decimal? OveragePricePerCreditOverride { get; set; }
+
+    public int? InvoiceTermsDaysOverride { get; set; }
+
+    public string? BillingContactEmail { get; set; }
+
+    public int OverageCreditsThisCycle { get; set; }
+
+    public DateTime? OverageStartedAt { get; set; }
+
+    public string ServiceState { get; set; } = SubscriptionConstants.ServiceStates.Healthy;
+
+    public string? SuspendedReason { get; set; }
+
+    public string? OwnerEmailDomain { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public DateTime CreatedAt { get; set; }
@@ -90,4 +104,5 @@ public partial class Subscription
     public virtual ICollection<Payment> Payments { get; set; } = new List<Payment>();
 
     public uint Version { get; set; }
+
 }

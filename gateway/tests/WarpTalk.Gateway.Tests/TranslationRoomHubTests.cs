@@ -18,7 +18,7 @@ public class TranslationRoomHubTests
     {
         // Arrange
         var connectionManagerMock = new Mock<IConnectionManager>();
-        
+
         var redisMock = new Mock<IConnectionMultiplexer>();
         var dbMock = new Mock<IDatabase>();
         redisMock.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(dbMock.Object);
@@ -27,7 +27,7 @@ public class TranslationRoomHubTests
         var configSectionMock = new Mock<Microsoft.Extensions.Configuration.IConfigurationSection>();
         configSectionMock.Setup(s => s.Value).Returns("10000");
         configMock.Setup(c => c.GetSection(It.IsAny<string>())).Returns(configSectionMock.Object);
-        
+
         var streamService = new RedisStreamService(redisMock.Object, new NullLogger<RedisStreamService>(), configMock.Object);
         var translationRoomRegistry = new ActiveTranslationRoomRegistry();
 
@@ -42,7 +42,7 @@ public class TranslationRoomHubTests
         // Mock HubContext Context (Claims & ConnectionId)
         var userId = Guid.NewGuid().ToString();
         var roomId = Guid.NewGuid();
-        
+
         var claims = new[] { new Claim(ClaimTypes.NameIdentifier, userId) };
         var identity = new ClaimsIdentity(claims, "TestAuthType");
         var claimsPrincipal = new ClaimsPrincipal(identity);
@@ -62,7 +62,7 @@ public class TranslationRoomHubTests
         var mockClients = new Mock<IHubCallerClients>();
         var mockClientProxy = new Mock<IClientProxy>();
         var mockSingleClientProxy = new Mock<ISingleClientProxy>();
-        
+
         mockClients.Setup(c => c.Client(It.IsAny<string>())).Returns(mockSingleClientProxy.Object);
         mockClients.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(mockClientProxy.Object);
         hub.Clients = mockClients.Object;
@@ -83,7 +83,7 @@ public class TranslationRoomHubTests
         // Verify that the old connection was sent the "ForceDisconnected" message
         mockClients.Verify(c => c.Client(oldConnectionId), Times.Once);
         mockSingleClientProxy.Verify(
-            p => p.SendCoreAsync("ForceDisconnected", It.IsAny<object[]>(), default), 
+            p => p.SendCoreAsync("ForceDisconnected", It.IsAny<object[]>(), default),
             Times.Once);
 
         // Verify that the old connection was removed from the SignalR Group

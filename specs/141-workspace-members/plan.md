@@ -1,8 +1,8 @@
 # Implementation Plan: Workspace Policy, Settings Toggle & Owner-only Role Governance
 
-**Feature:** WT-141 Workspace Member Management, extended by approved WT-157/WT-158 workspace policy boundaries
-**Status:** In Progress — direct `WorkspaceMember` persistence; downstream consumers require follow-up specs
-**Primary service:** Workspace Service
+**Feature:** WT-141 Workspace Member Management, extended by approved WT-157/WT-158 workspace policy boundaries  
+**Status:** In Progress — direct `WorkspaceMember` persistence; downstream consumers require follow-up specs  
+**Primary service:** Workspace Service  
 **Affected clients/services:** `warptalk-web`, Gateway, Translation Room, Transcript, Notification and document-ingestion workers
 
 ## 1. Scope and architectural constraints

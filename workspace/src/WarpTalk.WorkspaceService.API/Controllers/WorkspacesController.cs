@@ -74,7 +74,9 @@ public class WorkspacesController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
-        var result = await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, ct);
+        var result = User.IsInRole("admin")
+            ? await _workspaceService.GetWorkspaceByIdForAdminAsync(id, ct)
+            : await _workspaceService.GetWorkspaceByIdAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)

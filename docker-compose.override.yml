@@ -77,12 +77,12 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - DOTNET_USE_POLLING_FILE_WATCHER=1
 
-  assistant-service:
+  billing-service:
     build:
       target: build
     volumes:
       - .:/src
-    working_dir: /src/assistant/src/WarpTalk.AssistantService.API
+    working_dir: /src/billing/src/WarpTalk.BillingService.API
     command: ["dotnet", "watch", "run", "--no-launch-profile"]
     environment:
       - ASPNETCORE_ENVIRONMENT=Development

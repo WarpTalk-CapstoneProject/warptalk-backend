@@ -97,7 +97,7 @@ public class DocumentTextExtractor : IDocumentTextExtractor
                 {
                     var workbookPart = spreadsheetDoc.WorkbookPart;
                     if (workbookPart != null)
-                      {
+                    {
                         var sharedStringTable = workbookPart.SharedStringTablePart?.SharedStringTable;
                         var sheetsList = workbookPart.Workbook?.Sheets?.Elements<Sheet>().ToList() ?? new List<Sheet>();
 

@@ -16,6 +16,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
+using WarpTalk.WorkspaceService.Infrastructure.Helpers;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.BackgroundServices;
 
@@ -138,9 +139,9 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
             // document that can never enter AI ingestion. AiEligible is not used
             // here because false is also the valid initial state of an approved
             // document waiting for security/indexing to complete.
-            if (!HasBasicIndexEligibility(document))
+            if (!DocumentSecurityGuardrailHelper.HasBasicIndexEligibility(document))
             {
-                await MarkSkippedAsync(document, unitOfWork, lifecyclePublisher, ct);
+                await DocumentSecurityGuardrailHelper.MarkSkippedAsync(document, unitOfWork, lifecyclePublisher, ct);
                 _logger.LogInformation(
                     "Skipped document before content processing. DocumentId: {DocumentId}, Status: {Status}, IsAiAllowed: {IsAiAllowed}, RetentionState: {RetentionState}",
                     document.Id,
@@ -212,25 +213,38 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 _logger.LogInformation("DLP keyword violation detected in document {DocumentId}", documentId);
             }
 
-            if (scanResult.ViolationFound || scanResult.DlpDetected)
+            var wasRestrictedBeforeScan = document.IsRestricted();
+
+            if (scanResult.PiiDetected || scanResult.DlpDetected)
             {
                 document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
             }
 
             var isApproved = string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase);
+            var hasMaskedContent = !string.IsNullOrWhiteSpace(scanResult.MaskedContent);
             var canIndex = document.IsAiAllowed
-                && !document.IsRestricted()
+                && !wasRestrictedBeforeScan
                 && isApproved
                 && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-                && !scanResult.DlpDetected;
+                && !scanResult.DlpDetected
+                && (!scanResult.PiiDetected || hasMaskedContent);
 
-            // Use masked text for Qdrant indexing when PII is present to ensure zero raw PII exposure
-            var textToIngest = !string.IsNullOrWhiteSpace(scanResult.MaskedContent) ? scanResult.MaskedContent : content.FullText;
+            if (scanResult.PiiDetected && !hasMaskedContent)
+            {
+                _logger.LogWarning(
+                    "Skipping embedding for document {DocumentId} because PII was detected but masked content was unavailable.",
+                    documentId);
+            }
+
+            var textToIngest = scanResult.PiiDetected
+                ? scanResult.MaskedContent!
+                : content.FullText;
 
             // AiEligible means retrieval is ready, not merely that indexing may
             // start. It is enabled only by DocumentEmbeddingResultProcessor after
             // the embedding worker reports a successful Qdrant upsert.
             document.AiEligible = false;
+
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString();
             unitOfWork.WorkspaceDocumentRepository.Update(document);
             await unitOfWork.SaveChangesAsync(ct);
@@ -322,33 +336,4 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         }
     }
 
-    private static bool HasBasicIndexEligibility(WorkspaceDocument document)
-    {
-        return document.IsAiAllowed
-            && string.Equals(document.Status, WorkspaceDocumentStatus.@public.ToString(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(document.RetentionState, "active", StringComparison.OrdinalIgnoreCase)
-            && !document.IsRestricted();
-    }
-
-    private static async Task MarkSkippedAsync(
-        WorkspaceDocument document,
-        IUnitOfWork unitOfWork,
-        IWorkspaceDocumentEventPublisher lifecyclePublisher,
-        CancellationToken ct)
-    {
-        document.AiEligible = false;
-        document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
-        document.UpdatedAt = DateTime.UtcNow;
-        unitOfWork.WorkspaceDocumentRepository.Update(document);
-        await unitOfWork.SaveChangesAsync(ct);
-        await lifecyclePublisher.PublishDocumentLifecycleAsync(
-            document.Id,
-            document.WorkspaceId,
-            document.Status,
-            document.IngestionStatus,
-            WorkspaceDocumentConstants.LifecycleEvents.Updated,
-            document.UpdatedAt,
-            document.UploadedBy,
-            ct);
-    }
 }
