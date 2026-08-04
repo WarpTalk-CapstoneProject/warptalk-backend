@@ -12,6 +12,7 @@ using System.Text.Json.Serialization;
 using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
 using WarpTalk.NotificationService.API.Consumers;
+using WarpTalk.NotificationService.API.HostedServices;
 using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
@@ -54,6 +55,8 @@ builder.Services.AddWarpTalkServiceHealthChecks<NotificationDbContext>(
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 builder.Services.AddScoped<BillingNotificationEventHandler>();
+builder.Services.AddScoped<RealtimeNotificationPersistenceHandler>();
+builder.Services.AddHostedService<RealtimeNotificationPersistenceService>();
 builder.Services.AddWarpTalkMassTransit(
     builder.Configuration,
     registration => registration.AddConsumer<

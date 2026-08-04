@@ -207,4 +207,22 @@ public class VoiceProfileServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
     }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRejectProfileWithoutValidatedVoiceSample()
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = null,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains("sample", result.Error!, StringComparison.OrdinalIgnoreCase);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
 }
