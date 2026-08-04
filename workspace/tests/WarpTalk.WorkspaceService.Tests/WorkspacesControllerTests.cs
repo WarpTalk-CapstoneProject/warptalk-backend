@@ -1,5 +1,6 @@
 using System;
 using System.Security.Claims;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
@@ -323,7 +324,7 @@ public class WorkspacesControllerTests
 
         var result = await _controller.PatchWorkspaceSettings(
             workspaceId,
-            new WorkspaceSettingsPatchRequest(ArtifactRetentionDays: 60),
+            new JsonObject { ["artifactRetentionDays"] = 60 },
             CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -362,7 +363,7 @@ public class WorkspacesControllerTests
 
         var result = await _controller.PatchWorkspaceSettings(
             workspaceId,
-            new WorkspaceSettingsPatchRequest(VerifiedDomains: new List<string>()),
+            new JsonObject { ["verifiedDomains"] = new JsonArray() },
             CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);

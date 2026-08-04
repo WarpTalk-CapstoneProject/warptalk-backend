@@ -11,5 +11,6 @@ public interface IWorkspaceInvitationRepository : IGenericRepository<WorkspaceIn
     Task<WorkspaceInvitation?> GetByTokenHashAsync(string tokenHash, CancellationToken ct = default);
     Task<WorkspaceInvitation?> GetPendingByEmailAsync(Guid workspaceId, string email, CancellationToken ct = default);
     Task<List<WorkspaceInvitation>> GetPendingInvitationsByEmailAsync(string email, CancellationToken ct = default);
-    Task<(List<WorkspaceInvitation> Items, int TotalCount)> GetInvitationsByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken ct = default);
+    Task<List<WorkspaceInvitation>> GetJoinRequestsByUserAsync(Guid userId, CancellationToken ct = default);
+    Task<(List<WorkspaceInvitation> Items, int TotalCount)> GetInvitationsByWorkspaceAsync(Guid workspaceId, int page, int pageSize, CancellationToken ct = default, string? kind = null);
 }

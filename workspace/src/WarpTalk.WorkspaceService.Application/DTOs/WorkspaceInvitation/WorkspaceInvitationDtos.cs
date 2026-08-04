@@ -18,6 +18,10 @@ public record CreateJoinRequestCommand(
     string? WorkspaceSlug
 );
 
+public record ApproveJoinRequestRequest(
+    string? MembershipType = null
+);
+
 public record WorkspaceInvitationDto(
     Guid Id,
     Guid WorkspaceId,
@@ -31,7 +35,22 @@ public record WorkspaceInvitationDto(
     int SentCount,
     DateTime ExpiresAt,
     DateTime CreatedAt,
-    DateTime? AcceptedAt
+    DateTime? AcceptedAt,
+    Guid? RequestedBy = null,
+    Guid? ReviewedBy = null,
+    DateTime? ReviewedAt = null,
+    string? WorkspaceName = null,
+    string? WorkspaceSlug = null,
+    IReadOnlyList<string>? AllowedFinalMembershipTypes = null,
+    bool? RequiresPolicyAction = null,
+    string? PolicyReason = null,
+    IReadOnlyList<string>? SuggestedActions = null
+);
+
+public record ApproveJoinRequestResponse(
+    WorkspaceInvitationDto Invitation,
+    string ApprovalEmailStatus,
+    string? ApprovalEmailError = null
 );
 
 public record InviteMemberResponse(

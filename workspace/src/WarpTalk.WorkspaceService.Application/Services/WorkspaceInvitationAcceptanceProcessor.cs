@@ -73,6 +73,22 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
                   && vd.RevokedAt == null,
             ct);
 
+        // WT-179: gate on the membership type acceptance will ACTUALLY use, not the one stored
+        // on the invitation. ProcessAcceptInvitationAsync calls this same helper right after
+        // this method returns and overwrites invitation.MembershipType with the result, so the
+        // stored value has no bearing on the outcome — gating on it could only ever reject
+        // someone the very next line would have admitted.
+        //
+        // The two also disagreed on the rule itself. DetermineMembershipTypeAsync decides "does
+        // this workspace separate internal from external?" from the policy flags alone, while this
+        // gate also treated a non-empty config.VerifiedDomains as if the policy were on. A
+        // workspace with RequireVerifiedDomainForInternal = false but a leftover
+        // VerifiedDomains entry in its settings JSON therefore stored every invitee as
+        // Internal (flags off ⇒ Internal) and then refused every one of them at acceptance
+        // whose domain was not verified — with no workaround. That is exactly what happened to
+        // `testworkspace` on production: three pending invitations, all unacceptable.
+        // GetWorkspaceConfig already states the rule this restores — the dedicated columns are
+        // the authorization source of truth, and stale settings JSON must not change policy.
         var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(_unitOfWork, userEmail, workspace, ct);
 
         if (membershipType == MembershipType.Internal)

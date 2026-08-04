@@ -10,6 +10,7 @@ public class WorkspaceConfiguration
     private List<string> _allowedTargetLanguages = new();
     private int _maxActiveRooms = WorkspaceConstants.DefaultWorkspaceMaxActiveRooms;
     private int _artifactRetentionDays = WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays;
+    private int _invitationExpiryDays = WorkspaceConstants.DefaultInvitationExpiryDays;
     private AiUsagePolicyConfiguration? _aiUsagePolicy = NormalizeAiUsagePolicy(null);
 
     // 1. Localization & General
@@ -40,13 +41,23 @@ public class WorkspaceConfiguration
         set => _maxActiveRooms = value <= 0 ? WorkspaceConstants.DefaultWorkspaceMaxActiveRooms : value;
     }
 
-    // 3. Security & Artifact Retention
     public int ArtifactRetentionDays
     {
         get => _artifactRetentionDays;
         set => _artifactRetentionDays = value < WorkspaceConstants.MinWorkspaceArtifactRetentionDays
             ? WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays
             : value;
+    }
+
+    public int InvitationExpiryDays
+    {
+        get => _invitationExpiryDays;
+        set => _invitationExpiryDays = value switch
+        {
+            < WorkspaceConstants.MinWorkspaceInvitationExpiryDays => WorkspaceConstants.DefaultInvitationExpiryDays,
+            > WorkspaceConstants.MaxWorkspaceInvitationExpiryDays => WorkspaceConstants.MaxWorkspaceInvitationExpiryDays,
+            _ => value
+        };
     }
 
     public bool EnforceHostApprovalDefault { get; set; } = true;

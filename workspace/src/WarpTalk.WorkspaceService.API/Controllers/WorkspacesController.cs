@@ -1,11 +1,12 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Interfaces;
-using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 
@@ -158,7 +159,7 @@ public class WorkspacesController : ControllerBase
 
     [Authorize]
     [HttpPatch("{id:guid}/settings")]
-    public async Task<IActionResult> PatchWorkspaceSettings(Guid id, [FromBody] WorkspaceSettingsPatchRequest patch, CancellationToken ct)
+    public async Task<IActionResult> PatchWorkspaceSettings(Guid id, [FromBody] JsonObject patch, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
@@ -174,7 +175,12 @@ public class WorkspacesController : ControllerBase
             return BadRequest(new ApiErrorResponse(current.Error, current.ErrorCode));
         }
 
-        var merged = current.Value!.ApplyPatch(patch);
+        var mergedNode = JsonSerializer.SerializeToNode(current.Value)!.AsObject();
+        foreach (var property in patch)
+            mergedNode[property.Key] = property.Value?.DeepClone();
+
+        var merged = mergedNode.Deserialize<WorkspaceSettingsDto>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (merged == null) return BadRequest(new ApiErrorResponse("Invalid settings payload.", ErrorCodes.ValidationError));
 
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(id, merged, userId.Value, ct);
         if (!result.IsSuccess)

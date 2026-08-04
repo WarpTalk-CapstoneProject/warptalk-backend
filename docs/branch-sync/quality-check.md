@@ -31,3 +31,12 @@
   - `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~WorkspaceInvitationServiceTests" --nologo`: passed (`19/19`).
   - `dotnet build warptalk-backend.slnx --configuration Release --no-restore --warnaserror`: still environment-limited locally by missing restored Stripe references in billing infrastructure, but the workspace tests project compiled successfully before those unrelated errors.
 - Remote checks after push: pending before push.
+
+## 2026-08-04 - backend PR #79 development sync
+
+- Local verification:
+  - `git diff --cached --check origin/development`: passed.
+  - `dotnet build auth/tests/WarpTalk.AuthService.Tests/WarpTalk.AuthService.Tests.csproj --nologo --no-restore`: passed.
+  - `dotnet build workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --nologo --no-restore`: passed.
+  - `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --no-build --nologo --filter "FullyQualifiedName~WorkspaceInvitationServiceTests|FullyQualifiedName~WorkspaceSettingsValidatorTests|FullyQualifiedName~WorkspaceConfigurationTests|FullyQualifiedName~WorkspacesControllerTests"`: passed (`65/65`).
+- Remote checks after push: pending before push.

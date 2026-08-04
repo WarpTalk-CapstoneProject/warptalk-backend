@@ -146,6 +146,80 @@ public static class WorkspaceHelper
             workspace.AllowSubdomains);
     }
 
+    public static async Task<JoinRequestEligibility> EvaluateJoinRequestEligibilityAsync(
+        IUnitOfWork unitOfWork,
+        string? userEmail,
+        Guid? userId,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        var config = GetWorkspaceConfig(workspace);
+        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
+        var verifiedDomains = (await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                vd => vd.WorkspaceId == workspace.Id
+                      && vd.Status == verifiedStatus
+                      && vd.VerifiedAt != null
+                      && vd.RevokedAt == null,
+                "",
+                ct))
+            .Select(vd => vd.Domain)
+            .ToList();
+
+        var inferredMembershipType = ResolveMembershipType(
+            userEmail,
+            verifiedDomains,
+            requireVerifiedDomain: true,
+            workspace.AllowSubdomains);
+
+        if (inferredMembershipType == MembershipType.Internal)
+        {
+            var isEnterpriseWorkspace = workspace.RequireVerifiedDomainForInternal
+                || config.RequireVerifiedDomainForInternal
+                || verifiedDomains.Any();
+
+            if (userId.HasValue
+                && isEnterpriseWorkspace
+                && await IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(unitOfWork, userId.Value, userEmail ?? string.Empty, ct))
+            {
+                return new JoinRequestEligibility(
+                    inferredMembershipType,
+                    Array.Empty<string>(),
+                    RequiresPolicyAction: false,
+                    PolicyReason: "Requester is already an internal member of another Enterprise Workspace.",
+                    SuggestedActions: new[] { JoinRequestSuggestedActions.RejectRequest });
+            }
+
+            return new JoinRequestEligibility(
+                inferredMembershipType,
+                new[] { MembershipType.Internal.ToString() },
+                RequiresPolicyAction: false,
+                PolicyReason: "Requester email matches a verified workspace domain.",
+                SuggestedActions: Array.Empty<string>());
+        }
+
+        if (config.AllowExternalCollaboration)
+        {
+            return new JoinRequestEligibility(
+                inferredMembershipType,
+                new[] { MembershipType.External.ToString() },
+                RequiresPolicyAction: false,
+                PolicyReason: "Requester email does not match a verified workspace domain, but external collaboration is enabled.",
+                SuggestedActions: Array.Empty<string>());
+        }
+
+        return new JoinRequestEligibility(
+            inferredMembershipType,
+            Array.Empty<string>(),
+            RequiresPolicyAction: true,
+            PolicyReason: "Requester email does not match a verified workspace domain and external collaboration is disabled.",
+            SuggestedActions: new[]
+            {
+                JoinRequestSuggestedActions.EnableExternalCollaboration,
+                JoinRequestSuggestedActions.AddVerifiedDomain,
+                JoinRequestSuggestedActions.RejectRequest
+            });
+    }
+
     public static MembershipType ResolveMembershipType(
         string? userEmail,
         IEnumerable<string> verifiedDomains,

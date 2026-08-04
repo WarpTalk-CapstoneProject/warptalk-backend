@@ -31,3 +31,17 @@
 - Failure mode: CI build failed with `CS7036` in `WorkspaceInvitationServiceTests.cs:66` because the test fixture still constructed `WorkspaceInvitationService` without the new `IWorkspaceInvitationAcceptanceProcessor` dependency.
 - Resolution: updated the test fixture to pass a real `WorkspaceInvitationAcceptanceProcessor` wired to the existing substituted `IUnitOfWork` and `IBillingSubscriptionClient`, preserving coverage for the invitation acceptance path instead of bypassing it with an empty mock.
 - Commit SHA: pending before push.
+
+## 2026-08-04 - backend PR #79 development sync
+
+- Repository: `WarpTalk-CapstoneProject/warptalk-backend`
+- Branch: `feat/configurable-invitation-expiry`
+- Sync source: `origin/development` at `bfe46fc31efc0bed0fb45d6d04841e044e3fcfc0`.
+- Stack context: PR #70 was merged into `development`, so PR #79 was synced directly with `origin/development` instead of the retired lower stack branch.
+- Conflict strategy: kept `development` for stale stack surfaces outside PR79 scope, then preserved PR79-specific invitation expiry, invitation email template, join-request approval, and invitation DTO/repository behavior.
+- Mechanical fixes after conflict resolution:
+  - Restored `WorkspacesController` platform-admin lookup from `development` while keeping the PR79 JSON patch merge behavior.
+  - Updated `WorkspaceOutboxAdminController` to use `WorkspaceDbContext.WorkspaceOutboxMessages`, matching the synced DbContext entity name.
+  - Preserved the PR70 trial invite capacity guard in PR79 invite and join-request approval paths.
+  - Aligned settings tests with the `development` artifact-retention minimum of `1`.
+- Result: no unresolved merge paths and no conflict markers remain.
