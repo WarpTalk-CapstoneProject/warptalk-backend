@@ -63,7 +63,9 @@ public class WorkspaceInvitationServiceTests
             Substitute.For<ILogger<WorkspaceInvitationService>>(), 
             _authIdentity,
             _translationRoomClient,
-            _emailComposer);
+            _emailComposer,
+            _billingSubscriptionClient,
+            new WorkspaceInvitationAcceptanceProcessor(_unitOfWork, _billingSubscriptionClient));
     }
 
     private void StubRoleName(Guid roleId, string roleName)
