@@ -63,7 +63,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             // MeetingService.EndMeetingAsync) — this is a best-effort hint, not a contract.
             try
             {
-                var room = await _unitOfWork.Repository<TranslationRoom>().GetByIdAsync(roomId, ct);
+                var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
                 if (room != null)
                 {
                     var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
@@ -141,7 +141,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 var summary = await summaryTask;
 
                 // Save all generated artifacts into the DB
-                var artifactRepo = _unitOfWork.Repository<TranslationRoomArtifact>();
+                var artifactRepo = _unitOfWork.TranslationRoomArtifactRepository;
 
                 await artifactRepo.AddAsync(transcript, ct);
                 await artifactRepo.AddAsync(summary, ct);

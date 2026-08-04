@@ -44,8 +44,8 @@ public class DocumentAccessEvaluatorTests
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
 
         // Setup repository mocks on UnitOfWork
-        _unitOfWork.Repository<WorkspaceDocument>().Returns(_documentRepository);
-        _unitOfWork.Repository<WorkspaceDocumentAccessPolicy>().Returns(_policyRepository);
+        _unitOfWork.WorkspaceDocumentRepository.Returns(_documentRepository);
+        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.Returns(_policyRepository);
         _unitOfWork.WorkspaceDocumentRepository.Returns(_documentRepository);
         _unitOfWork.WorkspaceDocumentAccessPolicyRepository.Returns(_policyRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);

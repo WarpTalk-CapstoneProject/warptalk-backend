@@ -50,7 +50,7 @@ public class WorkspaceInvitationServiceTests
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _emailComposer.SendInvitationEmailAsync(
                 Arg.Any<WorkspaceInvitation>(),
                 Arg.Any<Workspace>(),

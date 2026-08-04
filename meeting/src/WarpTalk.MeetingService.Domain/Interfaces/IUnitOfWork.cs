@@ -9,7 +9,14 @@ public interface IUnitOfWork : IDisposable
     IMeetingChatTranslationRepository MeetingChatTranslationRepository { get; }
     IMeetingChatAssistantRequestRepository MeetingChatAssistantRequestRepository { get; }
     IMeetingChatModerationEventRepository MeetingChatModerationEventRepository { get; }
-    IGenericRepository<T> Repository<T>() where T : class;
+    IBreakoutSessionRepository BreakoutSessionRepository { get; }
+    IBreakoutAssignmentRepository BreakoutAssignmentRepository { get; }
+    IPollRepository PollRepository { get; }
+    IPollOptionRepository PollOptionRepository { get; }
+    IPollVoteRepository PollVoteRepository { get; }
+    IQuestionRepository QuestionRepository { get; }
+    IQuestionVoteRepository QuestionVoteRepository { get; }
+    IMeetingInvitationRepository MeetingInvitationRepository { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);
     Task CommitTransactionAsync(CancellationToken ct = default);

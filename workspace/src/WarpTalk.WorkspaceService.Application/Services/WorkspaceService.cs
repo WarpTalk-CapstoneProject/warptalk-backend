@@ -140,7 +140,7 @@ public class WorkspaceService : IWorkspaceService
                 foreach (var domain in domainsToVerify)
                 {
                     var verifiedDomain = WorkspaceMapper.ToVerifiedDomainEntity(workspace.Id, domain, userId);
-                    await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
+                    await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(verifiedDomain, ct);
                 }
             }
 

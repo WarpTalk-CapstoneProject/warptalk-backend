@@ -17,16 +17,16 @@ namespace WarpTalk.TranscriptService.Tests;
 public class GlobalGlossaryServiceTests
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IGenericRepository<GlobalGlossaryTerm> _termsRepo;
-    private readonly IGenericRepository<GlobalGlossaryAudit> _auditsRepo;
+    private readonly IGlobalGlossaryTermRepository _termsRepo;
+    private readonly IGlobalGlossaryAuditRepository _auditsRepo;
     private readonly IDatabase _redisDatabase;
     private readonly GlobalGlossaryService _service;
 
     public GlobalGlossaryServiceTests()
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
-        _termsRepo = Substitute.For<IGenericRepository<GlobalGlossaryTerm>>();
-        _auditsRepo = Substitute.For<IGenericRepository<GlobalGlossaryAudit>>();
+        _termsRepo = Substitute.For<IGlobalGlossaryTermRepository>();
+        _auditsRepo = Substitute.For<IGlobalGlossaryAuditRepository>();
         _unitOfWork.GlobalGlossaryTerms.Returns(_termsRepo);
         _unitOfWork.GlobalGlossaryAudits.Returns(_auditsRepo);
 

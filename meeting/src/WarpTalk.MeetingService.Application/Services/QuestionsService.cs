@@ -64,7 +64,7 @@ public class QuestionsService : IQuestionsService
             Status = "open",
             CreatedAt = DateTime.UtcNow
         };
-        await _unitOfWork.Repository<Question>().AddAsync(question, ct);
+        await _unitOfWork.QuestionRepository.AddAsync(question, ct);
         await _unitOfWork.SaveChangesAsync(ct);
 
         var dto = BuildDto(question, upvoteCount: 0, upvotedByMe: false);
@@ -82,11 +82,11 @@ public class QuestionsService : IQuestionsService
         if (!await IsActiveParticipantAsync(meetingRoom, callerUserId, ct))
             return Result.Failure<QuestionDto>("Not an active participant.", ErrorCodes.Forbidden);
 
-        var question = await _unitOfWork.Repository<Question>().FirstOrDefaultAsync(q => q.Id == questionId && q.MeetingRoomId == meetingRoom.Id, ct: ct);
+        var question = await _unitOfWork.QuestionRepository.FirstOrDefaultAsync(q => q.Id == questionId && q.MeetingRoomId == meetingRoom.Id, ct: ct);
         if (question == null)
             return Result.Failure<QuestionDto>("Question not found.", ErrorCodes.NotFound);
 
-        var voteRepo = _unitOfWork.Repository<QuestionVote>();
+        var voteRepo = _unitOfWork.QuestionVoteRepository;
         var existingVote = await voteRepo.FirstOrDefaultAsync(v => v.QuestionId == questionId && v.UserId == callerUserId, ct: ct);
 
         bool upvotedByMe;
@@ -116,21 +116,21 @@ public class QuestionsService : IQuestionsService
         if (meetingRoom == null)
             return Result.Failure<QuestionDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var question = await _unitOfWork.Repository<Question>().FirstOrDefaultAsync(q => q.Id == questionId && q.MeetingRoomId == meetingRoom.Id, ct: ct);
+        var question = await _unitOfWork.QuestionRepository.FirstOrDefaultAsync(q => q.Id == questionId && q.MeetingRoomId == meetingRoom.Id, ct: ct);
         if (question == null)
             return Result.Failure<QuestionDto>("Question not found.", ErrorCodes.NotFound);
 
         if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
             return Result.Failure<QuestionDto>("Only the host can mark a question as answered.", ErrorCodes.Forbidden);
 
-        var upvoteCount = (await _unitOfWork.Repository<QuestionVote>().FindAsync(v => v.QuestionId == questionId, ct: ct)).Count;
-        var upvotedByMe = await _unitOfWork.Repository<QuestionVote>().AnyAsync(v => v.QuestionId == questionId && v.UserId == callerUserId, ct);
+        var upvoteCount = (await _unitOfWork.QuestionVoteRepository.FindAsync(v => v.QuestionId == questionId, ct: ct)).Count;
+        var upvotedByMe = await _unitOfWork.QuestionVoteRepository.AnyAsync(v => v.QuestionId == questionId && v.UserId == callerUserId, ct);
 
         if (question.Status == "open")
         {
             question.Status = "answered";
             question.AnsweredAt = DateTime.UtcNow;
-            _unitOfWork.Repository<Question>().Update(question);
+            _unitOfWork.QuestionRepository.Update(question);
             await _unitOfWork.SaveChangesAsync(ct);
 
             await PublishRelayAsync("QuestionAnswered", translationRoomId, new { QuestionId = questionId.ToString() });
@@ -145,9 +145,9 @@ public class QuestionsService : IQuestionsService
         if (meetingRoom == null)
             return Result.Failure<List<QuestionDto>>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var questions = (await _unitOfWork.Repository<Question>().FindAsync(q => q.MeetingRoomId == meetingRoom.Id, ct: ct)).ToList();
+        var questions = (await _unitOfWork.QuestionRepository.FindAsync(q => q.MeetingRoomId == meetingRoom.Id, ct: ct)).ToList();
         var questionIds = questions.Select(q => q.Id).ToHashSet();
-        var allVotes = (await _unitOfWork.Repository<QuestionVote>().FindAsync(v => questionIds.Contains(v.QuestionId), ct: ct)).ToList();
+        var allVotes = (await _unitOfWork.QuestionVoteRepository.FindAsync(v => questionIds.Contains(v.QuestionId), ct: ct)).ToList();
 
         var dtos = questions
             .Select(q => BuildDto(

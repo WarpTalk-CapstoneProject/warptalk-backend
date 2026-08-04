@@ -9,21 +9,19 @@ using WarpTalk.NotificationService.Infrastructure.Persistence;
 
 namespace WarpTalk.NotificationService.Infrastructure.Repositories;
 
-public class AdminNotificationRepository : IAdminNotificationRepository
+public class AdminNotificationRepository
+    : GenericRepository<AdminNotification>, IAdminNotificationRepository
 {
-    private readonly NotificationDbContext _context;
-
-    public AdminNotificationRepository(NotificationDbContext context)
+    public AdminNotificationRepository(NotificationDbContext context) : base(context)
     {
-        _context = context;
     }
 
-    public async Task AddAsync(AdminNotification entity, CancellationToken ct = default)
+    public async Task AddAsync(AdminNotification entity, CancellationToken ct)
     {
         await _context.AdminNotifications.AddAsync(entity, ct);
     }
 
-    public async Task<AdminNotification?> GetByIdAsync(Guid id, CancellationToken ct = default)
+    public async Task<AdminNotification?> GetByIdAsync(Guid id, CancellationToken ct)
     {
         return await _context.AdminNotifications.FindAsync(new object[] { id }, ct);
     }

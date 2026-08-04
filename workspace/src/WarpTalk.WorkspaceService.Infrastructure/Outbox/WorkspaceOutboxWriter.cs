@@ -32,7 +32,7 @@ public sealed class WorkspaceOutboxWriter(IUnitOfWork unitOfWork)
             CreatedAt = DateTime.UtcNow
         };
 
-        return unitOfWork.Repository<WorkspaceOutboxMessage>()
+        return unitOfWork.WorkspaceOutboxMessageRepository
             .AddAsync(message, cancellationToken);
     }
 }

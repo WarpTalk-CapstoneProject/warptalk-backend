@@ -46,7 +46,7 @@ public class WorkspaceServiceTests
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _workspaceVerifiedDomainRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
                 Arg.Any<string>(),

@@ -20,14 +20,14 @@ namespace WarpTalk.BillingService.Tests.Application.Services;
 public class PlanServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly PlanService _planService;
 
     public PlanServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
 
         _mockUnitOfWork.Setup(u => u.Plans).Returns(_mockPlanRepo.Object);

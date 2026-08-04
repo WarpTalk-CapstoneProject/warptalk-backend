@@ -151,11 +151,9 @@ public class NotificationStreamConsumerService : BackgroundService
 
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var inboxRepository = unitOfWork.Repository<NotificationInboxMessage>();
+        var inboxRepository = unitOfWork.NotificationInboxMessageRepository;
         var eventId = StableEventId(logicalEventId);
-        var alreadyProcessed = (await inboxRepository.FindAsync(
-            item => item.EventId == eventId && item.Consumer == InboxConsumerName)).Any();
-        if (alreadyProcessed)
+        if (await inboxRepository.HasProcessedAsync(eventId, InboxConsumerName, cancellationToken))
             return;
 
         var adminNotification = await unitOfWork.AdminNotificationRepository

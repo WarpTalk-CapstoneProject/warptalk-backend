@@ -21,7 +21,7 @@ public class SubscriptionServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
     private readonly Mock<IStripePaymentService> _mockStripePaymentService;
     private readonly Mock<IAiServiceStateStore> _mockAiServiceStateStore;
@@ -31,7 +31,7 @@ public class SubscriptionServiceTests
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
         _mockStripePaymentService = new Mock<IStripePaymentService>();
         _mockAiServiceStateStore = new Mock<IAiServiceStateStore>();

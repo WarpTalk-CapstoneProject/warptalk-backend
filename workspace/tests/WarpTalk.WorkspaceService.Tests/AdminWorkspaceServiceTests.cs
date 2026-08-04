@@ -25,8 +25,6 @@ public class AdminWorkspaceServiceTests
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IWorkspaceRepository _workspaceRepository = Substitute.For<IWorkspaceRepository>();
-    private readonly IGenericRepository<WorkspaceAdminAction> _adminActionRepository =
-        Substitute.For<IGenericRepository<WorkspaceAdminAction>>();
     private readonly IAuthIdentityClient _authIdentityClient = Substitute.For<IAuthIdentityClient>();
     private readonly IAdminAuditLogRepository _adminAuditLogRepository =
         Substitute.For<IAdminAuditLogRepository>();
@@ -35,10 +33,8 @@ public class AdminWorkspaceServiceTests
     public AdminWorkspaceServiceTests()
     {
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
-        _unitOfWork.WorkspaceAdminActionRepository.Returns(_adminActionRepository);
-        _adminActionRepository
-            .FindAsync(Arg.Any<Expression<Func<WorkspaceAdminAction, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(Array.Empty<WorkspaceAdminAction>());
+        // Audit rows go through the append-only repository only — WorkspaceAdminAction is no
+        // longer reachable as a general repository on the unit of work.
         _adminAuditLogRepository
             .GetForEntityAsync(Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<WorkspaceAdminAction>());
@@ -321,7 +317,7 @@ public class AdminWorkspaceServiceTests
             .Returns(Row(id, workspace.OwnerId, isActive: false));
 
         WorkspaceAdminAction? appended = null;
-        await _adminActionRepository.AddAsync(
+        await _adminAuditLogRepository.AppendAsync(
             Arg.Do<WorkspaceAdminAction>(a => appended = a), Arg.Any<CancellationToken>());
 
         var result = await _service.SuspendAsync(id, "  Abuse report  ", actorId, "trace-42");
@@ -370,9 +366,6 @@ public class AdminWorkspaceServiceTests
             PerformedBy = Guid.NewGuid(),
             PerformedAt = Now.AddDays(-2),
         };
-        _adminActionRepository
-            .FindAsync(Arg.Any<Expression<Func<WorkspaceAdminAction, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(new[] { existingSuspend });
         _workspaceRepository.GetByIdAsync(id, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceRepository.GetAdminDetailAsync(id, Arg.Any<CancellationToken>())
             .Returns(Row(id, workspace.OwnerId, isActive: true));
@@ -381,7 +374,7 @@ public class AdminWorkspaceServiceTests
 
         Assert.True(result.IsSuccess);
         Assert.True(workspace.IsActive);
-        await _adminActionRepository.Received(1).AddAsync(
+        await _adminAuditLogRepository.Received(1).AppendAsync(
             Arg.Is<WorkspaceAdminAction>(a =>
                 a.Action == WorkspaceAdminActionTypes.Reactivate && a.Reason == "Invoice settled"),
             Arg.Any<CancellationToken>());

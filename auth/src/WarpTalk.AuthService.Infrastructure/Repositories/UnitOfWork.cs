@@ -6,7 +6,6 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 public class UnitOfWork : IUnitOfWork
 {
     private readonly AuthDbContext _context;
-    private readonly Dictionary<Type, object> _repositories = new();
 
     public UnitOfWork(
         AuthDbContext context,
@@ -16,7 +15,8 @@ public class UnitOfWork : IUnitOfWork
         IUserRoleRepository userRoleRepository,
         IUserSettingRepository userSettingRepository,
         IRefreshTokenRepository refreshTokenRepository,
-        IVoiceProfileRepository voiceProfileRepository)
+        IVoiceProfileRepository voiceProfileRepository,
+        IVoiceSampleRepository voiceSampleRepository)
     {
         _context = context;
         UserRepository = userRepository;
@@ -26,6 +26,7 @@ public class UnitOfWork : IUnitOfWork
         UserSettingRepository = userSettingRepository;
         RefreshTokenRepository = refreshTokenRepository;
         VoiceProfileRepository = voiceProfileRepository;
+        VoiceSampleRepository = voiceSampleRepository;
     }
 
     public IUserRepository UserRepository { get; }
@@ -35,17 +36,8 @@ public class UnitOfWork : IUnitOfWork
     public IUserSettingRepository UserSettingRepository { get; }
     public IRefreshTokenRepository RefreshTokenRepository { get; }
     public IVoiceProfileRepository VoiceProfileRepository { get; }
+    public IVoiceSampleRepository VoiceSampleRepository { get; }
 
-    public IGenericRepository<T> Repository<T>() where T : class
-    {
-        var type = typeof(T);
-        if (!_repositories.ContainsKey(type))
-        {
-            var repositoryInstance = new GenericRepository<T>(_context);
-            _repositories.Add(type, repositoryInstance);
-        }
-        return (IGenericRepository<T>)_repositories[type];
-    }
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 

@@ -44,7 +44,6 @@ public class VerifiedDomainServiceTests
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_verifiedDomainRepo);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_verifiedDomainRepo);
 
         _authIdentity.GetRoleByIdAsync(_ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = _ownerRoleId, Name = "Owner" });

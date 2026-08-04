@@ -21,7 +21,7 @@ public sealed class RealtimeNotificationPersistenceHandler(IUnitOfWork unitOfWor
             return false;
         }
 
-        var repository = unitOfWork.Repository<NotificationMessage>();
+        var repository = unitOfWork.NotificationMessageRepository;
         var existing = await repository.FindAsync(notification =>
             notification.Id == notificationId && notification.UserId == userId);
         if (existing.Any())

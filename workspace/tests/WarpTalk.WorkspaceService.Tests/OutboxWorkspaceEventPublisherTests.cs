@@ -13,8 +13,8 @@ public sealed class OutboxWorkspaceEventPublisherTests
     public async Task PublishMemberRoleChangedAsync_EnqueuesStableRoleChangedPayload()
     {
         var unitOfWork = Substitute.For<IUnitOfWork>();
-        var repository = Substitute.For<IGenericRepository<WorkspaceOutboxMessage>>();
-        unitOfWork.Repository<WorkspaceOutboxMessage>().Returns(repository);
+        var repository = Substitute.For<IWorkspaceOutboxMessageRepository>();
+        unitOfWork.WorkspaceOutboxMessageRepository.Returns(repository);
         var publisher = new OutboxWorkspaceEventPublisher(new WorkspaceOutboxWriter(unitOfWork));
         var workspaceId = Guid.NewGuid();
         var targetUserId = Guid.NewGuid();

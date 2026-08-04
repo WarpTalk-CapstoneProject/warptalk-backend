@@ -212,8 +212,9 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             _unitOfWork.WorkspaceRepository.Update(workspace);
 
             // Written directly rather than published: this service owns the audit store, so
-            // the row lands in the same transaction as the lifecycle change (WT-210).
-            await _unitOfWork.WorkspaceAdminActionRepository.AddAsync(
+            // the row lands in the same transaction as the lifecycle change (WT-210) — the
+            // append-only repository shares this scope's DbContext, so that still holds.
+            await _adminAuditLogRepository.AppendAsync(
                 new WorkspaceAdminAction
                 {
                     Id = Guid.NewGuid(),

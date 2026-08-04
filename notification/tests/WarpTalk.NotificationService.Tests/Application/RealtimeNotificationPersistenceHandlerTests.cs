@@ -13,12 +13,12 @@ public sealed class RealtimeNotificationPersistenceHandlerTests
     {
         var notificationId = Guid.NewGuid();
         var userId = Guid.NewGuid();
-        var repository = new Mock<IGenericRepository<NotificationMessage>>();
+        var repository = new Mock<INotificationMessageRepository>();
         repository
             .Setup(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<NotificationMessage, bool>>>() ))
             .ReturnsAsync(Array.Empty<NotificationMessage>());
         var unitOfWork = new Mock<IUnitOfWork>();
-        unitOfWork.Setup(x => x.Repository<NotificationMessage>()).Returns(repository.Object);
+        unitOfWork.Setup(x => x.NotificationMessageRepository).Returns(repository.Object);
         var handler = new RealtimeNotificationPersistenceHandler(unitOfWork.Object);
 
         var persisted = await handler.HandleAsync(new RealtimeNotificationMessage
@@ -46,12 +46,12 @@ public sealed class RealtimeNotificationPersistenceHandlerTests
     {
         var notificationId = Guid.NewGuid();
         var userId = Guid.NewGuid();
-        var repository = new Mock<IGenericRepository<NotificationMessage>>();
+        var repository = new Mock<INotificationMessageRepository>();
         repository
             .Setup(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<NotificationMessage, bool>>>() ))
             .ReturnsAsync(new[] { new NotificationMessage { Id = notificationId, UserId = userId } });
         var unitOfWork = new Mock<IUnitOfWork>();
-        unitOfWork.Setup(x => x.Repository<NotificationMessage>()).Returns(repository.Object);
+        unitOfWork.Setup(x => x.NotificationMessageRepository).Returns(repository.Object);
         var handler = new RealtimeNotificationPersistenceHandler(unitOfWork.Object);
 
         var persisted = await handler.HandleAsync(new RealtimeNotificationMessage

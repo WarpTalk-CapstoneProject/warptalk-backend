@@ -85,7 +85,7 @@ public class BillingCycleClosingServiceTests
             .Callback<CreditTransaction, CancellationToken>((transaction, _) => capturedRenewal = transaction)
             .Returns(Task.CompletedTask);
 
-        var usageRecordRepository = new Mock<IGenericRepository<UsageRecord>>();
+        var usageRecordRepository = new Mock<IUsageRecordRepository>();
         usageRecordRepository
             .Setup(r => r.FindAsync(
                 It.IsAny<Expression<Func<UsageRecord, bool>>>(),
@@ -208,7 +208,7 @@ public class BillingCycleClosingServiceTests
             .Setup(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        var usageRecordRepository = new Mock<IGenericRepository<UsageRecord>>();
+        var usageRecordRepository = new Mock<IUsageRecordRepository>();
         usageRecordRepository
             .Setup(r => r.FindAsync(
                 It.IsAny<Expression<Func<UsageRecord, bool>>>(),

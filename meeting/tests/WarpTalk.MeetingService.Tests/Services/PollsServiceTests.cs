@@ -20,9 +20,9 @@ public class PollsServiceTests
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
     private readonly Mock<ITranslationRoomGrpcService> _grpcServiceMock = new();
     private readonly Mock<IRedisService> _redisServiceMock = new();
-    private readonly FakeGenericRepository<Poll> _pollRepo = new();
-    private readonly FakeGenericRepository<PollOption> _optionRepo = new();
-    private readonly FakeGenericRepository<PollVote> _voteRepo = new();
+    private readonly FakePollRepository _pollRepo = new();
+    private readonly FakePollOptionRepository _optionRepo = new();
+    private readonly FakePollVoteRepository _voteRepo = new();
     private readonly PollsService _sut;
 
     public PollsServiceTests()
@@ -34,9 +34,9 @@ public class PollsServiceTests
             .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
             .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
 
-        _unitOfWorkMock.Setup(u => u.Repository<Poll>()).Returns(_pollRepo);
-        _unitOfWorkMock.Setup(u => u.Repository<PollOption>()).Returns(_optionRepo);
-        _unitOfWorkMock.Setup(u => u.Repository<PollVote>()).Returns(_voteRepo);
+        _unitOfWorkMock.Setup(u => u.PollRepository).Returns(_pollRepo);
+        _unitOfWorkMock.Setup(u => u.PollOptionRepository).Returns(_optionRepo);
+        _unitOfWorkMock.Setup(u => u.PollVoteRepository).Returns(_voteRepo);
 
         _sut = new PollsService(_unitOfWorkMock.Object, _grpcServiceMock.Object, _redisServiceMock.Object);
     }
