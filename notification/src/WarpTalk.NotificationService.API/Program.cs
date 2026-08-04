@@ -12,6 +12,7 @@ using System.Text.Json.Serialization;
 using FluentValidation;
 using WarpTalk.NotificationService.API.Validators;
 using WarpTalk.NotificationService.API.Consumers;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using MassTransit;
@@ -86,6 +87,7 @@ builder.Services.AddValidatorsFromAssemblyContaining<CreateAdminNotificationVali
 
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>

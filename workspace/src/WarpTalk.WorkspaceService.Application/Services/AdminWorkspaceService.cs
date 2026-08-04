@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Mappers.Admin;
@@ -18,8 +19,6 @@ namespace WarpTalk.WorkspaceService.Application.Services;
 
 public class AdminWorkspaceService : IAdminWorkspaceService
 {
-    private const int MaxPageSize = 100;
-    private const int DefaultPageSize = 20;
     private const int MaxReasonLength = 500;
     private const int LifecycleHistoryLimit = 50;
 
@@ -31,8 +30,8 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         WorkspaceLifecycleStatus.Deleted,
     };
 
-    private static readonly HashSet<string> AllowedSorts = new(StringComparer.OrdinalIgnoreCase)
-    {
+    private static readonly string[] AllowedSorts =
+    [
         WorkspaceDirectorySort.CreatedDesc,
         WorkspaceDirectorySort.CreatedAsc,
         WorkspaceDirectorySort.NameAsc,
@@ -40,7 +39,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         WorkspaceDirectorySort.MembersDesc,
         WorkspaceDirectorySort.MembersAsc,
         WorkspaceDirectorySort.UpdatedDesc,
-    };
+    ];
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentityClient;
@@ -72,10 +71,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 WorkspaceAdminErrors.UnknownStatusFilter, ErrorCodes.ValidationError);
         }
 
-        var sort = string.IsNullOrWhiteSpace(query.Sort)
-            ? WorkspaceDirectorySort.CreatedDesc
-            : query.Sort.Trim().ToLowerInvariant();
-        if (!AllowedSorts.Contains(sort))
+        if (!AdminSort.TryResolve(query.Sort, AllowedSorts, WorkspaceDirectorySort.CreatedDesc, out var sort))
         {
             return Result.Failure<AdminPagedResult<AdminWorkspaceSummaryDto>>(
                 WorkspaceAdminErrors.UnknownSort, ErrorCodes.ValidationError);
@@ -87,8 +83,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
                 WorkspaceAdminErrors.InvalidMemberCountRange, ErrorCodes.ValidationError);
         }
 
-        var page = query.Page <= 0 ? 1 : query.Page;
-        var pageSize = query.PageSize <= 0 ? DefaultPageSize : Math.Min(query.PageSize, MaxPageSize);
+        var (page, pageSize) = query.Normalize();
 
         var filter = new WorkspaceDirectoryFilter(
             page,

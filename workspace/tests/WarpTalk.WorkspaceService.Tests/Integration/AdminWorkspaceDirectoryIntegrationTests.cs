@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.WorkspaceService.Domain.Constants;
@@ -135,6 +136,21 @@ public class AdminWorkspaceDirectoryIntegrationTests : BaseIntegrationTest
     public async Task Directory_RejectsAuthenticatedNonAdmins()
     {
         var response = await MemberClient().GetAsync("/api/v1/admin/workspaces");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Directory_RejectsTheWorkspaceScopedAdminRole()
+    {
+        // init-db.sql seeds both 'admin' (platform) and 'Admin' (workspace administrator).
+        // The shared system-admin policy (WT-205) must treat them as different roles even
+        // though they differ only by case.
+        var client = Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer", GenerateJwtToken(_outsiderUserId, "workspace-admin@acme.com", "Admin"));
+
+        var response = await client.GetAsync("/api/v1/admin/workspaces");
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }

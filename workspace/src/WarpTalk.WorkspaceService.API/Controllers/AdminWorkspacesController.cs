@@ -4,7 +4,8 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.Shared;
-using WarpTalk.Shared.Extensions;
+using WarpTalk.Shared.Authorization;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 
@@ -14,17 +15,16 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// Platform-wide workspace directory, detail, and lifecycle actions for the System Admin
 /// portal (WT-204).
 ///
-/// [Authorize(Roles = "admin")] checks the platform-wide "admin" system role seeded in
-/// init-db.sql and put into the JWT's ClaimTypes.Role claims by JwtTokenGenerator — the same
-/// gate ~/api/v1/admin/global-glossary and ~/api/v1/admin/notifications use. Workspace-scoped
-/// Owner/Admin/Member roles live in workspace_members and never reach the token, so they
-/// cannot open these endpoints.
+/// Gated by the shared system-admin policy (WT-205), which requires the exact platform role
+/// value "admin" seeded in init-db.sql — distinct from the workspace-scoped "Admin" seeded
+/// alongside it. Workspace Owner/Admin/Member live in workspace_members and never reach the
+/// token, so they cannot open these endpoints by any route.
 ///
 /// The actor is always taken from the authenticated claims; no request body may name one.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/workspaces")]
-[Authorize(Roles = "admin")]
+[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class AdminWorkspacesController : ControllerBase
 {
     private readonly IAdminWorkspaceService _adminWorkspaceService;
@@ -56,12 +56,11 @@ public class AdminWorkspacesController : ControllerBase
         [FromBody] AdminWorkspaceLifecycleRequest request,
         CancellationToken ct)
     {
-        var actorId = User.GetUserId();
-        if (actorId == null)
+        if (!AdminActorContext.TryResolve(User, HttpContext, out var actor))
             return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
 
         var result = await _adminWorkspaceService.SuspendAsync(
-            id, request?.Reason ?? string.Empty, actorId.Value, HttpContext.TraceIdentifier, ct);
+            id, request?.Reason ?? string.Empty, actor.ActorId, actor.CorrelationId, ct);
         return ToActionResult(result);
     }
 
@@ -71,12 +70,11 @@ public class AdminWorkspacesController : ControllerBase
         [FromBody] AdminWorkspaceLifecycleRequest request,
         CancellationToken ct)
     {
-        var actorId = User.GetUserId();
-        if (actorId == null)
+        if (!AdminActorContext.TryResolve(User, HttpContext, out var actor))
             return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
 
         var result = await _adminWorkspaceService.ReactivateAsync(
-            id, request?.Reason ?? string.Empty, actorId.Value, HttpContext.TraceIdentifier, ct);
+            id, request?.Reason ?? string.Empty, actor.ActorId, actor.CorrelationId, ct);
         return ToActionResult(result);
     }
 

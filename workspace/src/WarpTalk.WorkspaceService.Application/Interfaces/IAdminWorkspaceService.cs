@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Contracts.Admin;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 
 namespace WarpTalk.WorkspaceService.Application.Interfaces;

@@ -1,16 +1,16 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.Shared.Contracts.Admin;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.Admin;
 
 /// <summary>
 /// Query string contract for the system-admin workspace directory. Bound with [FromQuery];
-/// every value is validated server-side before it reaches SQL.
+/// every value is validated server-side before it reaches SQL. Paging comes from the shared
+/// <see cref="AdminPageRequest"/> so every admin endpoint clamps it identically (WT-205).
 /// </summary>
-public record AdminWorkspaceDirectoryQuery
+public record AdminWorkspaceDirectoryQuery : AdminPageRequest
 {
-    public int Page { get; init; } = 1;
-    public int PageSize { get; init; } = 20;
     public string? Search { get; init; }
 
     /// <summary>all | active | suspended | deleted. Defaults to all.</summary>
@@ -80,9 +80,3 @@ public record AdminWorkspaceLifecycleEventDto(
     DateTime PerformedAt);
 
 public record AdminWorkspaceLifecycleRequest(string Reason);
-
-public record AdminPagedResult<T>(
-    IReadOnlyList<T> Items,
-    int Page,
-    int PageSize,
-    int Total);
