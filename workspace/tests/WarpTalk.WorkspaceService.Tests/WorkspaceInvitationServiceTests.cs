@@ -31,6 +31,7 @@ public class WorkspaceInvitationServiceTests
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
+    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
     private readonly WorkspaceInvitationService _workspaceInvitationService;
 
     public WorkspaceInvitationServiceTests()
@@ -43,6 +44,7 @@ public class WorkspaceInvitationServiceTests
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
         _emailComposer = Substitute.For<IWorkspaceInvitationEmailComposer>();
+        _billingSubscriptionClient = Substitute.For<IBillingSubscriptionClient>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);

@@ -16,6 +16,7 @@ public static class WorkspaceConstants
     public const int DefaultInvitationExpiryDays = 7;
     public const int MinWorkspaceInvitationExpiryDays = 1;
     public const int MaxWorkspaceInvitationExpiryDays = 365;
+    public const int TrialWorkspaceMemberLimit = 5;
 
     // Error Messages
     public static class Errors
@@ -86,6 +87,7 @@ public static class WorkspaceConstants
         public const string InvalidMembershipType = "Invalid membership type specified. Must be Internal or External.";
         public const string CannotInviteInternalWithoutVerifiedDomain = "Cannot invite as an Internal member because the email domain is not verified for this workspace.";
         public const string ExternalMemberMustHaveMemberRole = "External members can only be assigned the Member role.";
+        public const string TrialWorkspaceMemberLimitReached = "Enterprise trial workspaces can have up to 5 members. Ask an admin to approve the Enterprise contract before inviting more people.";
 
         // Join Request Errors
         public const string TranslationRoomNotFound = "Translation room not found.";

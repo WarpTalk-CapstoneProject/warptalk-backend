@@ -23,6 +23,16 @@
   - `GitGuardian Security Checks`: `SUCCESS`
   - `verify`: `FAILURE` on run `30897852692` / job `91954918291` because `WorkspaceInvitationServiceTests.AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers` returned success instead of forbidden at the five-member trial limit.
 
+## 2026-08-04 - backend PR #79
+
+- Local checks after cherry-picking PR #70 QA fixes:
+  - `git diff --check HEAD~3..HEAD`: passed.
+  - `dotnet build workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --nologo --no-restore`: passed.
+  - `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --no-build --no-restore --nologo --filter "FullyQualifiedName~WorkspaceInvitationServiceTests"`: passed (`25/25`).
+- Stack sync status:
+  - PR #79 contains the selected PR #70 invitation QA commits.
+  - Full merge of `origin/chore/update-auto-save-settings-pages` remains blocked by broad non-mechanical conflicts and was not applied.
+
 ## 2026-08-04 - backend PR #70 verify follow-up
 
 - Remote failure inspected: GitHub Actions run `30899859100`, `verify` job `91961374699`.

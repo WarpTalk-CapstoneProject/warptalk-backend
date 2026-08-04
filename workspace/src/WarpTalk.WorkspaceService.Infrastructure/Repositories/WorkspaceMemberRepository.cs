@@ -28,6 +28,13 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
             .ToListAsync(ct);
     }
 
+    public async Task<int> CountActiveMembersByWorkspaceAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        return await _dbSet.CountAsync(
+            m => m.WorkspaceId == workspaceId && m.RemovedAt == null,
+            ct);
+    }
+
     public async Task<int> CountActiveOwnersAsync(Guid workspaceId, Guid ownerRoleId, CancellationToken ct = default)
     {
         return await _dbSet

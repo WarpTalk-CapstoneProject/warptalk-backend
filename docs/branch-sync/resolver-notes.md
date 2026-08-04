@@ -25,6 +25,18 @@
   - Scoped fix: restored the trial acceptance guard inside the shared helper and passed `IBillingSubscriptionClient` into both invitation acceptance entry points so token-based and id-based acceptance follow the same limit check.
 - Commit SHA: pending before push.
 
+## 2026-08-04 - backend PR #79
+
+- Repository: `WarpTalk-CapstoneProject/warptalk-backend`
+- Branch: `feat/configurable-invitation-expiry`
+- Scope: cherry-picked PR #70 invitation QA fixes into PR #79 while preserving PR #79 invitation-expiry and join-request approval behavior.
+- Cherry-picks applied:
+  - `7c648f6` as `6b35883` - restored trial invite acceptance guard.
+  - `7ad1f2d` as `7b593b2` - replaced static `WorkspaceInvitationHelper` with DI-injected `WorkspaceInvitationAcceptanceProcessor`.
+  - `7af7c1d` as `4ce8c20` - updated invitation service test fixture.
+- Extra dependency resolution: added the minimal billing subscription client/proto/member-count dependencies required for the PR #70 guard to compile on PR #79.
+- Full lower-stack dry-run merge result: not safe to apply automatically; `git merge-tree --write-tree HEAD origin/chore/update-auto-save-settings-pages` still reports broad conflicts across auth/shared/specs/workspace services/repositories/tests/DbContext.
+
 ## 2026-08-04 - backend PR #70 verify follow-up
 
 - Remote failure: GitHub Actions run `30899859100`, `verify` job `91961374699`.
