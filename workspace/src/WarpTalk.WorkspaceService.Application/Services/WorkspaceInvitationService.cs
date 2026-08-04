@@ -28,6 +28,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
     private readonly IBillingSubscriptionClient _billingSubscriptionClient;
+    private readonly IWorkspaceInvitationAcceptanceProcessor _acceptanceProcessor;
 
     public WorkspaceInvitationService(
         IUnitOfWork unitOfWork,
@@ -35,7 +36,8 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         IAuthIdentityClient authIdentity,
         ITranslationRoomClient translationRoomClient,
         IWorkspaceInvitationEmailComposer emailComposer,
-        IBillingSubscriptionClient billingSubscriptionClient)
+        IBillingSubscriptionClient billingSubscriptionClient,
+        IWorkspaceInvitationAcceptanceProcessor acceptanceProcessor)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -43,6 +45,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         _translationRoomClient = translationRoomClient;
         _emailComposer = emailComposer;
         _billingSubscriptionClient = billingSubscriptionClient;
+        _acceptanceProcessor = acceptanceProcessor;
     }
 
     public async Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default)
@@ -538,7 +541,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
         try
         {
-            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
+            return await _acceptanceProcessor.ProcessAcceptanceAsync(invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {
@@ -557,7 +560,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
         try
         {
-            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
+            return await _acceptanceProcessor.ProcessAcceptanceAsync(invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {

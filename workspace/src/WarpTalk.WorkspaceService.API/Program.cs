@@ -26,6 +26,7 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.AddScoped<IWorkspaceService, WarpTalk.WorkspaceService.Application.Services.WorkspaceService>();
 builder.Services.AddScoped<IWorkspaceMemberService, WarpTalk.WorkspaceService.Application.Services.WorkspaceMemberService>();
 builder.Services.AddScoped<IWorkspaceInvitationService, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationService>();
+builder.Services.AddScoped<IWorkspaceInvitationAcceptanceProcessor, WarpTalk.WorkspaceService.Application.Services.WorkspaceInvitationAcceptanceProcessor>();
 builder.Services.AddScoped<IWorkspaceDocumentService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDocumentService>();
 builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.Application.Services.VerifiedDomainService>();
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
