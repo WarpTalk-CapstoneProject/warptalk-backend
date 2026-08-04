@@ -79,7 +79,8 @@ public class PaymentAppServiceTests
             _unitOfWork.Object,
             Mock.Of<ILogger<PaymentAppService>>(),
             _messagePublisher.Object,
-            handlers);
+            handlers,
+            new Mock<IWorkspaceClient>().Object);
 
     private static StripePaymentEventRequest CreateEvent(string paymentType)
         => new(

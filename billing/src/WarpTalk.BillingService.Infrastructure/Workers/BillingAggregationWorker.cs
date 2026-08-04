@@ -78,7 +78,7 @@ public class BillingAggregationWorker : BackgroundService
         }
         _logger.LogInformation($"Found {tempLogs.Count} temp usage logs. Aggregating...");
 
-        await AggregateTempLogsAsync(tempLogs, settlementService, aiServiceStateStore, logger: _logger, alertService, rateCardResolver, notificationClient, subscriptionRepo, stoppingToken);
+        var carryOverLogs = await AggregateTempLogsAsync(tempLogs, settlementService, aiServiceStateStore, logger: _logger, alertService, rateCardResolver, notificationClient, subscriptionRepo, stoppingToken);
         var trimResult = await usageQueue.TrimTempUsageLogBatchAsync(tempLogs.Count, stoppingToken);
         if (!trimResult.IsSuccess)
         {
@@ -86,10 +86,19 @@ public class BillingAggregationWorker : BackgroundService
             return;
         }
 
+        if (carryOverLogs != null && carryOverLogs.Count > 0)
+        {
+            foreach (var log in carryOverLogs)
+            {
+                await usageQueue.PushTempUsageLogDtoAsync(log, stoppingToken);
+            }
+            _logger.LogInformation("Successfully pushed {Count} carry-over logs back to Redis.", carryOverLogs.Count);
+        }
+
         _logger.LogInformation($"Successfully synced aggregated logs to DB.");
     }
 
-    public static async Task AggregateTempLogsAsync(
+    public static async Task<IReadOnlyList<TempUsageLogDto>> AggregateTempLogsAsync(
         IReadOnlyList<TempUsageLogDto> tempLogs,
         IUsageSettlementService settlementService,
         IAiServiceStateStore? aiServiceStateStore,
@@ -101,6 +110,7 @@ public class BillingAggregationWorker : BackgroundService
         CancellationToken stoppingToken)
     {
         var preProcessedLogs = tempLogs.ToList();
+        var carryOverLogs = new List<TempUsageLogDto>();
 
         // 0. Filter out passthrough and cache hits (0 credit events)
         preProcessedLogs.RemoveAll(log =>
@@ -180,22 +190,51 @@ public class BillingAggregationWorker : BackgroundService
         foreach (var group in groupedLogs)
         {
             var totalMicroCredits = group.Sum(x => x.MicroCredits ?? (x.CreditsConsumed * UsageConstants.MicroCreditsPerCredit));
-            var totalCredits = (int)Math.Ceiling((double)totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
+            var fullCredits = (int)(totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
+            var leftoverMicroCredits = totalMicroCredits % UsageConstants.MicroCreditsPerCredit;
+
             var totalQuantity = group.Sum(x => x.Quantity);
 
-            if (totalCredits == 0 && totalQuantity == 0)
+            if (fullCredits == 0 && totalQuantity == 0)
+            {
+                if (leftoverMicroCredits > 0)
+                {
+                    carryOverLogs.Add(new TempUsageLogDto
+                    {
+                        SubscriptionId = group.Key.SubscriptionId,
+                        WorkspaceId = group.Key.WorkspaceId,
+                        TranslationRoomId = group.Key.TranslationRoomId,
+                        UsageType = group.Key.UsageType,
+                        ChargeType = group.Key.ChargeType,
+                        Unit = group.Key.Unit,
+                        Provider = group.Key.Provider,
+                        Model = group.Key.Model,
+                        SourceLanguageCode = group.Key.SourceLanguageCode,
+                        TargetLanguageCode = group.Key.TargetLanguageCode,
+                        PricingScope = group.Key.PricingScope,
+                        PricingRateCardId = group.Key.PricingRateCardId,
+                        UnitPriceSnapshot = group.Key.UnitPriceSnapshot,
+                        ReferenceType = group.Key.ReferenceType,
+                        MicroCredits = leftoverMicroCredits,
+                        CreditsConsumed = 0,
+                        Quantity = 0,
+                        IdempotencyKey = $"carryover-{Guid.NewGuid():N}",
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
                 continue;
+            }
 
-            if (totalCredits > UsageConstants.MaxCreditsPerFlush)
+            if (fullCredits > UsageConstants.MaxCreditsPerFlush)
             {
                 logger?.LogError(
                     BillingOperationalEventIds.SettlementFailed,
                     "Bug prevention: Aggregated credits {Credits} exceed max allowed {Max} per flush. SubscriptionId={SubscriptionId}, ChargeType={ChargeType}",
-                    totalCredits, UsageConstants.MaxCreditsPerFlush, group.Key.SubscriptionId, group.Key.ChargeType);
+                    fullCredits, UsageConstants.MaxCreditsPerFlush, group.Key.SubscriptionId, group.Key.ChargeType);
                 continue;
             }
 
-            if (totalCredits != 0)
+            if (fullCredits != 0 || totalQuantity != 0)
             {
                 var settlementRequest = group.ToAggregatedSettlementRequest();
                 var settlement = await settlementService.SettleUsageChargeAsync(
@@ -214,6 +253,32 @@ public class BillingAggregationWorker : BackgroundService
                         await alertService.AlertSettlementFailedAsync(settlementRequest, settlement.Error, stoppingToken);
 
                     continue;
+                }
+
+                if (leftoverMicroCredits > 0)
+                {
+                    carryOverLogs.Add(new TempUsageLogDto
+                    {
+                        SubscriptionId = group.Key.SubscriptionId,
+                        WorkspaceId = group.Key.WorkspaceId,
+                        TranslationRoomId = group.Key.TranslationRoomId,
+                        UsageType = group.Key.UsageType,
+                        ChargeType = group.Key.ChargeType,
+                        Unit = group.Key.Unit,
+                        Provider = group.Key.Provider,
+                        Model = group.Key.Model,
+                        SourceLanguageCode = group.Key.SourceLanguageCode,
+                        TargetLanguageCode = group.Key.TargetLanguageCode,
+                        PricingScope = group.Key.PricingScope,
+                        PricingRateCardId = group.Key.PricingRateCardId,
+                        UnitPriceSnapshot = group.Key.UnitPriceSnapshot,
+                        ReferenceType = group.Key.ReferenceType,
+                        MicroCredits = leftoverMicroCredits,
+                        CreditsConsumed = 0,
+                        Quantity = 0,
+                        IdempotencyKey = $"carryover-{Guid.NewGuid():N}",
+                        CreatedAt = DateTime.UtcNow
+                    });
                 }
 
                 var settlementValue = settlement.Value;
@@ -279,6 +344,7 @@ public class BillingAggregationWorker : BackgroundService
                 }
             }
         }
-    }
 
+        return carryOverLogs;
+    }
 }

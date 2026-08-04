@@ -66,7 +66,7 @@ public static class UsageSettlementMapper
         var first = items[0];
 
         long totalMicroCredits = items.Sum(x => x.MicroCredits ?? (x.CreditsConsumed * UsageConstants.MicroCreditsPerCredit));
-        int totalCreditsCeil = (int)Math.Ceiling((double)totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
+        int totalCreditsFloor = (int)(totalMicroCredits / UsageConstants.MicroCreditsPerCredit);
 
         var totalQuantity = items.Sum(x => x.Quantity);
 
@@ -82,7 +82,7 @@ public static class UsageSettlementMapper
             TranscriptSegmentId: first.TranscriptSegmentId,
             Quantity: (decimal)totalQuantity,
             Unit: first.Unit,
-            CreditsConsumed: totalCreditsCeil,
+            CreditsConsumed: totalCreditsFloor,
             IdempotencyKey: BillingIdempotencyKeyHelper.ForAggregate(items.Select(x => x.IdempotencyKey)),
             PricingRateCardId: first.PricingRateCardId,
             UnitPriceSnapshot: first.UnitPriceSnapshot,

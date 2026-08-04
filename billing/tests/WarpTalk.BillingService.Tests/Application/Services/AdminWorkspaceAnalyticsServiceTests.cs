@@ -12,7 +12,7 @@ using WarpTalk.BillingService.API.Controllers;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
-using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 using WarpTalk.BillingService.Infrastructure.Repositories;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Authorization;

@@ -135,12 +135,11 @@ public class BillingAggregationWorkerTests
     }
 
     [Theory]
-    [InlineData(0, 0)]
-    [InlineData(1000, 1)] // 0.001 -> 1
-    [InlineData(500000, 1)] // 0.5 -> 1
-    [InlineData(1000000, 1)] // 1.0 -> 1
-    [InlineData(1499900, 2)] // 1.4999 -> 2
-    public async Task AggregateTempLogsAsync_Should_Ceil_Accumulator_Correctly_For_MicroCredits(long microCredits, int expectedCredits)
+    [InlineData(500_000, 0)] // 0.5 credits -> 0
+    [InlineData(1_000, 0)]   // 0.001 credits -> 0
+    [InlineData(1_499_900, 1)] // 1.49 credits -> 1
+    [InlineData(0, 0)] // 0 credits -> 0
+    public async Task AggregateTempLogsAsync_Should_Floor_Accumulator_Correctly_For_MicroCredits(long microCredits, int expectedCredits)
     {
         var settlementRequests = new List<SettleUsageChargeRequest>();
         var settlementService = new Mock<IUsageSettlementService>();
@@ -169,19 +168,13 @@ public class BillingAggregationWorkerTests
 
         await BillingAggregationWorker.AggregateTempLogsAsync(logs, settlementService.Object, null, null, null, null, null, null, CancellationToken.None);
 
-        if (expectedCredits > 0)
-        {
-            settlementRequests.Should().HaveCount(1);
-            settlementRequests.Single().CreditsConsumed.Should().Be(expectedCredits);
-        }
-        else
-        {
-            settlementRequests.Should().BeEmpty();
-        }
+        settlementRequests.Should().HaveCount(1);
+        settlementRequests.Single().CreditsConsumed.Should().Be(expectedCredits);
     }
 
+
     [Fact]
-    public async Task AggregateTempLogsAsync_Should_Accumulate_Fractional_Events_And_Ceil()
+    public async Task AggregateTempLogsAsync_Should_Accumulate_Fractional_Events_And_Floor()
     {
         var settlementRequests = new List<SettleUsageChargeRequest>();
         var settlementService = new Mock<IUsageSettlementService>();
@@ -210,9 +203,9 @@ public class BillingAggregationWorkerTests
 
         await BillingAggregationWorker.AggregateTempLogsAsync(logs, settlementService.Object, null, null, null, null, null, null, CancellationToken.None);
 
-        // 1.36 * 3 = 4.08 -> ceil(4.08) = 5
+        // 1.36 * 3 = 4.08 -> floor(4.08) = 4
         settlementRequests.Should().HaveCount(1);
-        settlementRequests.Single().CreditsConsumed.Should().Be(5);
+        settlementRequests.Single().CreditsConsumed.Should().Be(4);
     }
 
     [Fact]
@@ -275,6 +268,6 @@ public class BillingAggregationWorkerTests
         // Should only charge for the max one (1090)
         settlementRequests.Should().HaveCount(1);
         settlementRequests.Single().Quantity.Should().Be(1090);
-        settlementRequests.Single().CreditsConsumed.Should().Be(1); // ceil(1090 / 1_000_000)
+        settlementRequests.Single().CreditsConsumed.Should().Be(0); // floor(1090 / 1_000_000)
     }
 }

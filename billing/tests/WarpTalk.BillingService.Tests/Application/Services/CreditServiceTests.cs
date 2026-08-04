@@ -150,5 +150,4 @@ public class CreditServiceTests
             repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
->>>>>>> origin/development
 }

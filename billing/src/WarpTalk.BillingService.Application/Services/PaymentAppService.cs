@@ -139,7 +139,7 @@ public class PaymentAppService : IPaymentAppService
             
             if (!processResult.IsSuccess)
             {
-                return Result.Failure<CheckoutSessionDto>(processResult.Error, processResult.ErrorCode);
+                return Result.Failure<CheckoutSessionDto>(processResult.Error ?? "Unknown payment processing error", processResult.ErrorCode);
             }
         }
 
