@@ -45,7 +45,8 @@ public record GetTranslationRoomsRequest(
     DateTime? From = null,
     DateTime? To = null,
     int Page = 1,
-    int PageSize = 20
+    int PageSize = 20,
+    Guid? WorkspaceId = null
 );
 
 public record CreateTranslationRoomRequest(

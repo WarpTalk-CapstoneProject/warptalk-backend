@@ -23,7 +23,10 @@ public class TranscriptRedisConsumerService : BackgroundService
     private readonly ILogger<TranscriptRedisConsumerService> _logger;
     private readonly IServiceProvider _serviceProvider;
     private const string ConsumerGroup = "transcript-persistence";
+    private const string ConsumerMetricsKey = "transcript:persistence:consumer:metrics";
     private readonly string _consumerName = $"transcript-{Environment.MachineName}-{Guid.NewGuid():N}";
+    private readonly Dictionary<string, RedisValue> _claimCursors = new();
+    private readonly Dictionary<string, DateTime> _lastRecoveryAt = new();
 
     // Cache the resolved AllowExternalLlm flag per workspace so PublishEmbeddingIndexRequestAsync
     // (called once per persisted segment — i.e. potentially many times a second across a busy
@@ -70,6 +73,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                 var messagesRead = 0;
                 foreach (var stream in streamKeys)
                 {
+                    messagesRead += await RecoverStaleMessagesAsync(db, stream, stoppingToken);
+
                     var messages = await db.StreamReadGroupAsync(stream, ConsumerGroup, _consumerName, count: 10);
 
                     if (messages.Length > 0)
@@ -77,27 +82,8 @@ public class TranscriptRedisConsumerService : BackgroundService
                         messagesRead += messages.Length;
                         foreach (var message in messages)
                         {
-                            bool success;
-                            switch (TranscriptConsumerPollingPolicy.Classify(stream))
-                            {
-                                case TranscriptResultStreamKind.Stt:
-                                    success = await ProcessSttMessageAsync(stream, message, stoppingToken);
-                                    break;
-                                case TranscriptResultStreamKind.Translation:
-                                    success = await ProcessTranslateMessageAsync(stream, message, stoppingToken);
-                                    break;
-                                case TranscriptResultStreamKind.Tts:
-                                    success = await ProcessTtsMessageAsync(stream, message, stoppingToken);
-                                    break;
-                                default:
-                                    success = true;
-                                    break;
-                            }
-
-                            if (success)
-                            {
-                                await db.StreamAcknowledgeAsync(stream, ConsumerGroup, message.Id);
-                            }
+                            var success = await ProcessMessageAsync(stream, message, stoppingToken);
+                            await FinalizeDeliveryAsync(db, stream, message, success);
                         }
                     }
                 }
@@ -120,22 +106,158 @@ public class TranscriptRedisConsumerService : BackgroundService
         }
     }
 
-    private async Task<bool> ProcessSttMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
-    {
-        // Extract meeting ID from stream key
-        var roomIdStr = streamKey.Replace("stt:results:", "");
-        if (!Guid.TryParse(roomIdStr, out var roomId))
+    private Task<bool> ProcessMessageAsync(
+        string stream,
+        StreamEntry message,
+        CancellationToken cancellationToken) =>
+        TranscriptConsumerPollingPolicy.Classify(stream) switch
         {
-            return true; // Malformed room ID, discard
+            TranscriptResultStreamKind.Stt => ProcessSttMessageAsync(stream, message, cancellationToken),
+            TranscriptResultStreamKind.Translation => ProcessTranslateMessageAsync(stream, message, cancellationToken),
+            TranscriptResultStreamKind.Tts => ProcessTtsMessageAsync(stream, message, cancellationToken),
+            _ => Task.FromResult(true)
+        };
+
+    private async Task<int> RecoverStaleMessagesAsync(
+        IDatabase db,
+        string stream,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        if (_lastRecoveryAt.TryGetValue(stream, out var lastRecoveryAt) &&
+            now - lastRecoveryAt < TranscriptConsumerPollingPolicy.PendingRecoveryInterval)
+        {
+            return 0;
+        }
+        _lastRecoveryAt[stream] = now;
+
+        var cursor = _claimCursors.GetValueOrDefault(stream, "0-0");
+        var claimed = await db.StreamAutoClaimAsync(
+            stream,
+            ConsumerGroup,
+            _consumerName,
+            (long)TranscriptConsumerPollingPolicy.PendingClaimIdle.TotalMilliseconds,
+            cursor,
+            TranscriptConsumerPollingPolicy.RecoveryBatchSize);
+
+        _claimCursors[stream] = claimed.NextStartId.IsNull
+            ? "0-0"
+            : claimed.NextStartId;
+
+        foreach (var message in claimed.ClaimedEntries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var success = await ProcessMessageAsync(stream, message, cancellationToken);
+            await FinalizeDeliveryAsync(db, stream, message, success);
         }
 
+        if (claimed.ClaimedEntries.Length > 0)
+        {
+            _logger.LogInformation(
+                "Reclaimed {Count} stale transcript messages from {Stream}",
+                claimed.ClaimedEntries.Length,
+                stream);
+        }
+
+        return claimed.ClaimedEntries.Length;
+    }
+
+    private async Task FinalizeDeliveryAsync(
+        IDatabase db,
+        string stream,
+        StreamEntry message,
+        bool success)
+    {
+        if (success)
+        {
+            await db.StreamAcknowledgeAsync(stream, ConsumerGroup, message.Id);
+            return;
+        }
+
+        var pending = await db.StreamPendingMessagesAsync(
+            stream,
+            ConsumerGroup,
+            1,
+            _consumerName,
+            message.Id,
+            message.Id);
+        var attempts = pending.FirstOrDefault().DeliveryCount;
+        if (attempts <= 0)
+        {
+            attempts = 1;
+        }
+
+        await db.HashIncrementAsync(ConsumerMetricsKey, $"retry:{stream}");
+        if (!TranscriptConsumerPollingPolicy.ShouldDeadLetter(attempts))
+        {
+            _logger.LogWarning(
+                "Transcript message {MessageId} on {Stream} remains pending after attempt {Attempt}",
+                message.Id,
+                stream,
+                attempts);
+            return;
+        }
+
+        var deadLetterValues = message.Values
+            .Concat(new NameValueEntry[]
+            {
+                new("_source_stream", stream),
+                new("_source_message_id", message.Id),
+                new("_consumer_group", ConsumerGroup),
+                new("_failure_reason", "processing_failed_or_dependency_missing"),
+                new("_delivery_attempts", attempts),
+                new("_failed_at", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+            })
+            .ToArray();
+
+        var deadLetterStream = TranscriptConsumerPollingPolicy.DeadLetterStream(stream);
+        var transaction = db.CreateTransaction();
+        var addToDeadLetter = transaction.StreamAddAsync(
+            deadLetterStream,
+            deadLetterValues,
+            maxLength: 10_000,
+            useApproximateMaxLength: true);
+        var acknowledgeSource = transaction.StreamAcknowledgeAsync(
+            stream,
+            ConsumerGroup,
+            message.Id);
+        if (!await transaction.ExecuteAsync())
+        {
+            throw new RedisException(
+                $"Could not atomically dead-letter transcript message {message.Id} from {stream}");
+        }
+        await addToDeadLetter;
+        await acknowledgeSource;
+        await db.HashIncrementAsync(ConsumerMetricsKey, $"dead_letter:{stream}");
+
+        _logger.LogError(
+            "Moved transcript message {MessageId} from {Stream} to {DeadLetterStream} after {Attempt} attempts",
+            message.Id,
+            stream,
+            deadLetterStream,
+            attempts);
+    }
+
+    private async Task<bool> ProcessSttMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
+    {
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
 
+        // The room id comes from the message payload, NOT the stream key — see
+        // TranscriptConsumerPollingPolicy.TryResolveRoomId for why parsing it out of the key
+        // silently discarded every message once this consumer moved to the global streams.
+        if (!TranscriptConsumerPollingPolicy.TryResolveRoomId(streamKey, values, out var roomId))
+        {
+            _logger.LogWarning(
+                "Could not resolve a room id for STT message {MessageId} on stream {Stream}",
+                message.Id,
+                streamKey);
+            return false; // Bounded retry, then dead-letter instead of silently dropping
+        }
         if (!Guid.TryParse(values.GetValueOrDefault("segment_id"), out var segmentId) ||
-            !Guid.TryParse(values.GetValueOrDefault("speaker_id"), out var speakerId))
+            !TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName))
         {
             _logger.LogWarning("Invalid segment data in message {MessageId}", message.Id);
-            return true; // Discard invalid message
+            return false; // Bounded retry, then dead-letter with the original payload
         }
 
         var text = values.GetValueOrDefault("text", "");
@@ -174,7 +296,7 @@ public class TranscriptRedisConsumerService : BackgroundService
             {
                 // Fetch room details
                 var roomResponse = await roomClient.GetTranslationRoomByIdAsync(
-                    new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomIdStr },
+                    new WarpTalk.Shared.Protos.GetTranslationRoomRequest { Id = roomId.ToString() },
                     cancellationToken: cancellationToken);
 
                 // A room can already have past (non-current) transcripts from an earlier
@@ -217,15 +339,17 @@ public class TranscriptRedisConsumerService : BackgroundService
                 // instead of being set on the tracked `transcript` object below.
                 var sequenceOrder = await unitOfWork.AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs, cancellationToken);
 
-                string speakerName = speakerId.ToString();
-                try
+                if (speakerId.HasValue)
                 {
-                    var userResponse = await authClient.GetUserByIdAsync(
-                        new WarpTalk.Shared.Protos.GetUserRequest { Id = speakerId.ToString() },
-                        cancellationToken: cancellationToken);
-                    speakerName = userResponse.FullName;
+                    try
+                    {
+                        var userResponse = await authClient.GetUserByIdAsync(
+                            new WarpTalk.Shared.Protos.GetUserRequest { Id = speakerId.Value.ToString() },
+                            cancellationToken: cancellationToken);
+                        speakerName = userResponse.FullName;
+                    }
+                    catch (Exception) { /* Keep the stable participant id as fallback. */ }
                 }
-                catch (Exception) { /* Ignored for performance, should be cached realistically */ }
 
                 var segment = new TranscriptSegment
                 {
@@ -285,12 +409,10 @@ public class TranscriptRedisConsumerService : BackgroundService
 
     private async Task<bool> ProcessTranslateMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
     {
-        var roomIdStr = streamKey.Replace("translate:results:", "");
-        if (!Guid.TryParse(roomIdStr, out var roomId))
-        {
-            return true;
-        }
-
+        // No room-id gate here: everything below is keyed off segment_id, and the room id was
+        // never actually used. The old `streamKey.Replace("translate:results:", "")` parse could
+        // not succeed on the global stream, so it just ACKed and dropped every translation — see
+        // TranscriptConsumerPollingPolicy.TryResolveRoomId.
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
 
         // shared/schemas.py TranslationResultMessage.to_redis() field names — the previous
@@ -308,7 +430,7 @@ public class TranscriptRedisConsumerService : BackgroundService
         if (!ExtractUnderlyingSegmentId(values.GetValueOrDefault("segment_id"), out var segmentId))
         {
             _logger.LogWarning("Invalid translation data in message {MessageId}", message.Id);
-            return true;
+            return false;
         }
 
         var translatedText = values.GetValueOrDefault("translated_text", "");
@@ -418,12 +540,9 @@ public class TranscriptRedisConsumerService : BackgroundService
 
     private async Task<bool> ProcessTtsMessageAsync(string streamKey, StreamEntry message, CancellationToken cancellationToken)
     {
-        var roomIdStr = streamKey.Replace("tts:results:", "");
-        if (!Guid.TryParse(roomIdStr, out _))
-        {
-            return true;
-        }
-
+        // No room-id gate here — same reasoning as ProcessTranslateMessageAsync above: the parsed
+        // room id was discarded into `out _` anyway, while the parse failure ACKed and dropped
+        // every TTS result. See TranscriptConsumerPollingPolicy.TryResolveRoomId.
         var values = message.Values.ToDictionary(v => v.Name.ToString(), v => v.Value.ToString());
 
         // shared/schemas.py TTSResultMessage.to_redis() field names. segment_id is the same
@@ -433,7 +552,7 @@ public class TranscriptRedisConsumerService : BackgroundService
         if (!ExtractUnderlyingSegmentId(values.GetValueOrDefault("segment_id"), out var segmentId))
         {
             _logger.LogWarning("Invalid TTS data in message {MessageId}", message.Id);
-            return true;
+            return false;
         }
 
         var targetLang = values.GetValueOrDefault("target_lang", "");

@@ -914,6 +914,13 @@ public class TranslationRoomService : ITranslationRoomService
 
     public async Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
+        if (!request.WorkspaceId.HasValue || request.WorkspaceId.Value == Guid.Empty)
+        {
+            return Result.Failure<TranslationRoomHistoryResponse>(
+                "WorkspaceId is required when loading room history.",
+                ErrorCodes.ValidationError);
+        }
+
         try
         {
             var page = Math.Max(1, request.Page);
@@ -1120,6 +1127,11 @@ public class TranslationRoomService : ITranslationRoomService
 
     private static IQueryable<TranslationRoom> ApplyRoomFilters(IQueryable<TranslationRoom> query, GetTranslationRoomsRequest request)
     {
+        if (request.WorkspaceId.HasValue)
+        {
+            query = query.Where(r => r.WorkspaceId == request.WorkspaceId.Value);
+        }
+
         if (!string.IsNullOrWhiteSpace(request.Status))
         {
             var statuses = request.Status

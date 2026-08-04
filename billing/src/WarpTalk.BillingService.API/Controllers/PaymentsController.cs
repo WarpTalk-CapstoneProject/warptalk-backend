@@ -96,63 +96,22 @@ public class PaymentsController : ControllerBase
 
         try
         {
-            var sessionResult = await _paymentAppService.GetCheckoutSessionAsync(sessionId);
-            if (!sessionResult.IsSuccess)
-            {
-                return BadRequest(new ApiErrorResponse(sessionResult.Error, sessionResult.ErrorCode));
-            }
-
-            var session = sessionResult.Value!;
-
-            // Validate workspace ID from session metadata
-            string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
-            if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
-            {
-                return BadRequest(new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError));
-            }
-
-            // Verify the requesting user is a system admin or an Owner/Admin of this workspace.
             var isSystemAdmin =
                 User.IsInRole(WorkspaceRoleConstants.SystemAdmin) ||
                 User.IsInRole(WorkspaceRoleConstants.Admin);
-            if (!isSystemAdmin)
+
+            var result = await _paymentAppService.GetAndProcessCheckoutSessionAsync(sessionId, userId.Value, isSystemAdmin);
+            
+            if (!result.IsSuccess)
             {
-                var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
-                    workspaceId,
-                    userId.Value,
-                    WorkspaceRoleConstants.Owner,
-                    WorkspaceRoleConstants.Admin);
-                if (!accessResult.IsSuccess || !accessResult.Value)
+                if (result.ErrorCode == ErrorCodes.Forbidden)
                 {
-                    return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden));
+                    return StatusCode(StatusCodes.Status403Forbidden, new ApiErrorResponse(result.Error, result.ErrorCode));
                 }
+                return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
             }
 
-            // Fallback: process payment event inline if session already marked as paid
-            if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
-            {
-                bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
-                decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
-
-                var processResult = await _paymentAppService.ProcessPaymentEventAsync(new StripePaymentEventRequest(
-                    StripeSessionId: session.Id,
-                    PaymentIntentId: !string.IsNullOrEmpty(session.PaymentIntentId) ? session.PaymentIntentId : string.Empty,
-                    Amount: finalAmount,
-                    Currency: session.Currency,
-                    UserIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.UserId, string.Empty),
-                    WorkspaceIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty),
-                    PaymentType: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PaymentType, string.Empty),
-                    Status: PaymentConstants.Payments.StatusPaid,
-                    PlanSlug: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PlanSlug, string.Empty),
-                    BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
-                ));
-                if (!processResult.IsSuccess)
-                {
-                    return BadRequest(new ApiErrorResponse(processResult.Error, processResult.ErrorCode));
-                }
-            }
-
-            return Ok(session);
+            return Ok(result.Value);
         }
         catch (ArgumentException ex)
         {

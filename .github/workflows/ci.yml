@@ -47,6 +47,8 @@ jobs:
             echo "External Dockerfile base images must be pinned by digest." >&2
             exit 1
           fi
+      - name: Production runtime base security contract
+        run: bash scripts/check-runtime-base-security.sh
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 10.0.x

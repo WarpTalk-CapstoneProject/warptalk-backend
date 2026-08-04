@@ -11,7 +11,7 @@ RUN dotnet restore notification/src/WarpTalk.NotificationService.API/WarpTalk.No
 WORKDIR /src/notification/src/WarpTalk.NotificationService.API
 RUN dotnet publish -c Release -o /app/publish --no-restore /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.7@sha256:55e37c7795bfaf6b9cc5d77c155811d9569f529d86e20647704bc1d7dd9741d4 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.10@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b AS final
 WORKDIR /app
 EXPOSE 5104 50054
 COPY --from=build --chown=$APP_UID:$APP_UID /app/publish .

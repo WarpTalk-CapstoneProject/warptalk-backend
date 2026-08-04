@@ -122,6 +122,18 @@ public sealed class RedisStreamService
         await db.StreamAcknowledgeAsync(streamKey, groupName, messageId);
     }
 
+    /// <summary>
+    /// Write a plain key with an expiry. Used to project decisions this gateway has
+    /// already made (and cached) into Redis for the Python AI workers, which have no gRPC
+    /// client and no service credentials of their own — Redis is the only channel they
+    /// share with the .NET services.
+    /// </summary>
+    public async Task SetWithTtlAsync(string key, string value, TimeSpan ttl)
+    {
+        var db = _redis.GetDatabase();
+        await db.StringSetAsync(key, value, ttl);
+    }
+
     // ── Helpers ──────────────────────────────────────────────
 
     /// <summary>

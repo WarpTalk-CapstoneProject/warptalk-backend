@@ -132,11 +132,6 @@ public class CreditService : ICreditService
         return Result.Success(PaginatedResponse<CreditTransactionDto>.Create(dtos, page.TotalCount, page.PageNumber, page.PageSize));
     }
 
-
-
-
-
-
     private static async Task<Result<Subscription>> GetActiveSubscriptionAsync(
         IUnitOfWork unitOfWork,
         Guid workspaceId,

@@ -16,19 +16,22 @@ public class PaymentAppService : IPaymentAppService
     private readonly ILogger<PaymentAppService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IReadOnlyList<IPaymentEventHandler> _paymentEventHandlers;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public PaymentAppService(
         IStripePaymentService stripePaymentService,
         IUnitOfWork unitOfWork,
         ILogger<PaymentAppService> logger,
         IBillingMessagePublisher messagePublisher,
-        IEnumerable<IPaymentEventHandler> paymentEventHandlers)
+        IEnumerable<IPaymentEventHandler> paymentEventHandlers,
+        IWorkspaceClient workspaceClient)
     {
         _stripePaymentService = stripePaymentService;
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _paymentEventHandlers = paymentEventHandlers.ToList();
+        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<string>> CreateCheckoutSessionAsync(CreateCheckoutSessionRequest request)
@@ -84,6 +87,63 @@ public class PaymentAppService : IPaymentAppService
                 BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionGetFailed,
                 ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<Result<CheckoutSessionDto>> GetAndProcessCheckoutSessionAsync(string sessionId, Guid userId, bool isSystemAdmin)
+    {
+        var sessionResult = await GetCheckoutSessionAsync(sessionId);
+        if (!sessionResult.IsSuccess)
+        {
+            return sessionResult;
+        }
+
+        var session = sessionResult.Value!;
+
+        string workspaceIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty);
+        if (!Guid.TryParse(workspaceIdStr, out Guid workspaceId))
+        {
+            return Result.Failure<CheckoutSessionDto>(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
+        }
+
+        if (!isSystemAdmin)
+        {
+            var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
+                workspaceId,
+                userId,
+                WorkspaceRoleConstants.Owner,
+                WorkspaceRoleConstants.Admin);
+            
+            if (!accessResult.IsSuccess || !accessResult.Value)
+            {
+                return Result.Failure<CheckoutSessionDto>(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
+            }
+        }
+
+        if (session.PaymentStatus == PaymentConstants.Payments.StatusPaid)
+        {
+            bool isZeroDecimal = string.Equals(session.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase);
+            decimal finalAmount = isZeroDecimal ? (session.AmountTotal ?? 0) : ((session.AmountTotal ?? 0) / 100m);
+
+            var processResult = await ProcessPaymentEventAsync(new StripePaymentEventRequest(
+                StripeSessionId: session.Id,
+                PaymentIntentId: !string.IsNullOrEmpty(session.PaymentIntentId) ? session.PaymentIntentId : string.Empty,
+                Amount: finalAmount,
+                Currency: session.Currency,
+                UserIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.UserId, string.Empty),
+                WorkspaceIdStr: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.WorkspaceId, string.Empty),
+                PaymentType: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PaymentType, string.Empty),
+                Status: PaymentConstants.Payments.StatusPaid,
+                PlanSlug: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PlanSlug, string.Empty),
+                BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
+            ));
+            
+            if (!processResult.IsSuccess)
+            {
+                return Result.Failure<CheckoutSessionDto>(processResult.Error, processResult.ErrorCode);
+            }
+        }
+
+        return Result.Success(session);
     }
 
     public async Task<Result> ProcessPaymentEventAsync(StripePaymentEventRequest request)
