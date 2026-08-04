@@ -24,3 +24,10 @@
   - Root cause: the invitation acceptance flow was centralized into `WorkspaceInvitationHelper.ProcessAcceptanceAsync`, but the trial-workspace acceptance capacity check was not moved with it.
   - Scoped fix: restored the trial acceptance guard inside the shared helper and passed `IBillingSubscriptionClient` into both invitation acceptance entry points so token-based and id-based acceptance follow the same limit check.
 - Commit SHA: pending before push.
+
+## 2026-08-04 - backend PR #70 verify follow-up
+
+- Remote failure: GitHub Actions run `30899859100`, `verify` job `91961374699`.
+- Failure mode: CI build failed with `CS7036` in `WorkspaceInvitationServiceTests.cs:66` because the test fixture still constructed `WorkspaceInvitationService` without the new `IWorkspaceInvitationAcceptanceProcessor` dependency.
+- Resolution: updated the test fixture to pass a real `WorkspaceInvitationAcceptanceProcessor` wired to the existing substituted `IUnitOfWork` and `IBillingSubscriptionClient`, preserving coverage for the invitation acceptance path instead of bypassing it with an empty mock.
+- Commit SHA: pending before push.

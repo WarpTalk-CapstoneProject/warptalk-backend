@@ -22,3 +22,12 @@
 - GitHub status at last read:
   - `GitGuardian Security Checks`: `SUCCESS`
   - `verify`: `FAILURE` on run `30897852692` / job `91954918291` because `WorkspaceInvitationServiceTests.AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers` returned success instead of forbidden at the five-member trial limit.
+
+## 2026-08-04 - backend PR #70 verify follow-up
+
+- Remote failure inspected: GitHub Actions run `30899859100`, `verify` job `91961374699`.
+- CI failure: `dotnet build warptalk-backend.slnx --configuration Release --no-restore --warnaserror` failed at `WorkspaceInvitationServiceTests.cs:66` with `CS7036`, missing the new `acceptanceProcessor` constructor argument.
+- Local verification:
+  - `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --configuration Release --no-restore --filter "FullyQualifiedName~WorkspaceInvitationServiceTests" --nologo`: passed (`19/19`).
+  - `dotnet build warptalk-backend.slnx --configuration Release --no-restore --warnaserror`: still environment-limited locally by missing restored Stripe references in billing infrastructure, but the workspace tests project compiled successfully before those unrelated errors.
+- Remote checks after push: pending before push.

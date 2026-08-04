@@ -69,7 +69,8 @@ public class WorkspaceInvitationServiceTests
             _authIdentity,
             _translationRoomClient,
             _emailComposer,
-            _billingSubscriptionClient);
+            _billingSubscriptionClient,
+            new WorkspaceInvitationAcceptanceProcessor(_unitOfWork, _billingSubscriptionClient));
     }
 
     private void StubRoleName(Guid roleId, string roleName)
