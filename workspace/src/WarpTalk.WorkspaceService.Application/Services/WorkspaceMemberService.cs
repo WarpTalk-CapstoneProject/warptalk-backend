@@ -164,12 +164,14 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 var avatarUrl = user?.AvatarUrl;
                 var roleName = roleMap.GetValueOrDefault(m.RoleId, "Member");
 
-                if (!string.IsNullOrWhiteSpace(query.Search))
+                // Match on name OR email, ignoring case and diacritics so "manh" finds
+                // "Trần Mạnh Tuấn" (WT-231). Falls back to the real email only — the old
+                // "Unknown" placeholder made every profile-less member match the term "unknown".
+                if (!string.IsNullOrWhiteSpace(query.Search)
+                    && !SearchTextHelper.Matches(fullName, query.Search)
+                    && !SearchTextHelper.Matches(email, query.Search))
                 {
-                    var searchLower = query.Search.ToLower();
-                    var userEmail = user?.Email ?? "Unknown";
-                    if (!fullName.ToLower().Contains(searchLower) && !userEmail.ToLower().Contains(searchLower))
-                        continue;
+                    continue;
                 }
 
                 filteredDtos.Add(m.ToDto(fullName, email, avatarUrl, roleName));
