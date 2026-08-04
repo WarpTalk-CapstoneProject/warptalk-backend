@@ -11,4 +11,5 @@ public interface ITranscriptCorrectionService
 {
     Task<Result> SubmitCorrectionAsync(Guid transcriptId, Guid segmentId, Guid userId, CreateCorrectionDto dto, CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<TranscriptCorrectionDto>>> GetCorrectionsBySegmentIdAsync(Guid transcriptId, Guid segmentId, Guid userId, CancellationToken cancellationToken = default);
+    Task<Result> FinalizeTranscriptAsync(Guid transcriptId, Guid userId, CancellationToken cancellationToken = default);
 }

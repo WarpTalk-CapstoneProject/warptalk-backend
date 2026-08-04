@@ -43,6 +43,7 @@ public record NotificationMessageDto(
 public record NotificationPaginatedResponse(
     IEnumerable<NotificationMessageDto> Items,
     int TotalCount,
+    int UnreadCount,
     int Page,
     int PageSize
 );
