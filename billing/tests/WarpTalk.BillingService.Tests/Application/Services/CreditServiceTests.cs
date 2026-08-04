@@ -41,7 +41,8 @@ public class CreditServiceTests
         _creditService = new CreditService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<CreditService>>().Object,
-            _mockSettlementService.Object);
+            _mockSettlementService.Object,
+            new Mock<IWorkspaceClient>().Object);
     }
 
     [Fact]

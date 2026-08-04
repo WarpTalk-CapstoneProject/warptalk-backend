@@ -25,6 +25,7 @@ public class SubscriptionService : ISubscriptionService
     private readonly IStripePaymentService _stripePaymentService;
     private readonly IAiServiceStateStore? _aiServiceStateStore;
     private readonly IUsageRateCardAdminService _pricingConfigService;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
@@ -32,6 +33,7 @@ public class SubscriptionService : ISubscriptionService
         IBillingMessagePublisher messagePublisher,
         IStripePaymentService stripePaymentService,
         IUsageRateCardAdminService pricingConfigService,
+        IWorkspaceClient workspaceClient,
         IAiServiceStateStore? aiServiceStateStore = null)
     {
         _unitOfWork = unitOfWork;
@@ -39,6 +41,7 @@ public class SubscriptionService : ISubscriptionService
         _messagePublisher = messagePublisher;
         _stripePaymentService = stripePaymentService;
         _pricingConfigService = pricingConfigService;
+        _workspaceClient = workspaceClient;
         _aiServiceStateStore = aiServiceStateStore;
     }
 
@@ -86,15 +89,18 @@ public class SubscriptionService : ISubscriptionService
                     : sub.ToDto(plan));
             }
 
-            // Resolve workspace names cross-schema
+            // Resolve workspace names via workspace-service (billing must not read workspace schema)
             try
             {
                 var workspaceIds = BillingQueryHelper.GetWorkspaceIds(items, i => i.WorkspaceId);
 
                 if (workspaceIds.Length > 0)
                 {
-                    var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                    items = BillingQueryHelper.ApplyWorkspaceNames(items, workspaceNames, i => i.WorkspaceId, (i, name) => i with { WorkspaceName = name });
+                    var namesResult = await _workspaceClient.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
+                    if (namesResult.IsSuccess)
+                        items = BillingQueryHelper.ApplyWorkspaceNames(items, namesResult.Value!, i => i.WorkspaceId, (i, name) => i with { WorkspaceName = name });
+                    else
+                        _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesGlobalSub);
                 }
             }
             catch (Exception wsEx)
