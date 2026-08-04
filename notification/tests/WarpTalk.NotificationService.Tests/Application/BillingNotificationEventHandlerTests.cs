@@ -4,6 +4,7 @@ using WarpTalk.NotificationService.Application.Services;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.Shared.Events;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.NotificationService.Tests.Application;
 
@@ -40,7 +41,8 @@ public sealed class BillingNotificationEventHandlerTests
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(x => x.Repository<NotificationInboxMessage>()).Returns(inboxRepository.Object);
         unitOfWork.Setup(x => x.Repository<NotificationMessage>()).Returns(notificationRepository.Object);
-        var handler = new BillingNotificationEventHandler(unitOfWork.Object);
+        var publisher = new Mock<IMessagePublisher>();
+        var handler = new BillingNotificationEventHandler(unitOfWork.Object, publisher.Object);
 
         var processed = await handler.HandleAsync(message);
 
@@ -50,6 +52,12 @@ public sealed class BillingNotificationEventHandlerTests
         notificationRepository.Verify(x => x.AddAsync(It.Is<NotificationMessage>(n =>
             n.UserId == userId && n.Type == "BILLING_PAYMENT_SUCCEEDED")), Times.Once);
         unitOfWork.Verify(x => x.SaveChangesAsync(), Times.Once);
+        publisher.Verify(x => x.PublishAsync(
+            "warptalk:notifications:new",
+            It.Is<RealtimeNotificationMessage>(notification =>
+                notification.UserId == userId.ToString()
+                && notification.Type == "BILLING_PAYMENT_SUCCEEDED"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -64,7 +72,8 @@ public sealed class BillingNotificationEventHandlerTests
             });
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(x => x.Repository<NotificationInboxMessage>()).Returns(inboxRepository.Object);
-        var handler = new BillingNotificationEventHandler(unitOfWork.Object);
+        var publisher = new Mock<IMessagePublisher>();
+        var handler = new BillingNotificationEventHandler(unitOfWork.Object, publisher.Object);
 
         var processed = await handler.HandleAsync(new OutboxEventMessage
         {
@@ -75,5 +84,6 @@ public sealed class BillingNotificationEventHandlerTests
 
         Assert.False(processed);
         unitOfWork.Verify(x => x.SaveChangesAsync(), Times.Never);
+        publisher.VerifyNoOtherCalls();
     }
 }

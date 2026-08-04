@@ -14,6 +14,7 @@ public interface IUnitOfWork : IDisposable
     IGenericRepository<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicyRepository { get; }
     IGenericRepository<WorkspaceDocumentAudit> WorkspaceDocumentAuditRepository { get; }
     IGenericRepository<WorkspaceVerifiedDomain> WorkspaceVerifiedDomainRepository { get; }
+    IGenericRepository<WorkspaceAdminAction> WorkspaceAdminActionRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);

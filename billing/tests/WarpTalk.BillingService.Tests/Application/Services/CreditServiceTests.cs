@@ -138,6 +138,12 @@ public class CreditServiceTests
         persistedTransaction.ReferenceType.Should().Be("manual_adjustment");
         persistedTransaction.Description.Should().Be("Demo support grant");
         persistedTransaction.BalanceAfter.Should().Be(75);
+        _mockMessagePublisher.Verify(publisher => publisher.PublishAsync(
+            "warptalk:notifications:new",
+            It.Is<WarpTalk.Shared.Models.RealtimeNotificationMessage>(notification =>
+                notification.UserId == subscription.UserId.ToString()
+                && notification.Type == "billing.credits_updated"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

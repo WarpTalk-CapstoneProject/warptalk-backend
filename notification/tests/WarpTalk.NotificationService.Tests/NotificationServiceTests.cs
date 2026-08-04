@@ -81,4 +81,34 @@ public class NotificationServiceTests
         Assert.True(result.IsSuccess);
         _mockRepo.Verify(r => r.MarkAllAsReadAsync(userId, It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task GetNotificationsAsync_ReturnsUnreadCountAcrossTheWholeCenter()
+    {
+        var userId = Guid.NewGuid();
+        var pageItem = new NotificationMessage
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Type = "SYSTEM",
+            Title = "Visible item",
+            Content = "Only one item is on this page.",
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _mockRepo
+            .Setup(r => r.GetPaginatedByUserIdAsync(userId, 1, 10, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((new[] { pageItem }, 25));
+        _mockRepo
+            .Setup(r => r.CountAsync(It.IsAny<System.Linq.Expressions.Expression<Func<NotificationMessage, bool>>>() ))
+            .ReturnsAsync(17);
+
+        var result = await _sut.GetNotificationsAsync(userId, 1, 10);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(25, result.Value!.TotalCount);
+        Assert.Equal(17, result.Value.UnreadCount);
+        Assert.Single(result.Value.Items);
+    }
 }

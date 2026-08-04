@@ -20,6 +20,7 @@ public class UnitOfWork : IUnitOfWork
     private IGenericRepository<WorkspaceDocumentAccessPolicy>? _workspaceDocumentAccessPolicyRepository;
     private IGenericRepository<WorkspaceDocumentAudit>? _workspaceDocumentAuditRepository;
     private IGenericRepository<WorkspaceVerifiedDomain>? _workspaceVerifiedDomainRepository;
+    private IGenericRepository<WorkspaceAdminAction>? _workspaceAdminActionRepository;
     private Dictionary<Type, object>? _repositories;
 
     public UnitOfWork(WorkspaceDbContext context)
@@ -47,6 +48,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IGenericRepository<WorkspaceVerifiedDomain> WorkspaceVerifiedDomainRepository =>
         _workspaceVerifiedDomainRepository ??= new GenericRepository<WorkspaceVerifiedDomain>(_context);
+
+    public IGenericRepository<WorkspaceAdminAction> WorkspaceAdminActionRepository =>
+        _workspaceAdminActionRepository ??= new GenericRepository<WorkspaceAdminAction>(_context);
 
     public IGenericRepository<T> Repository<T>() where T : class
     {

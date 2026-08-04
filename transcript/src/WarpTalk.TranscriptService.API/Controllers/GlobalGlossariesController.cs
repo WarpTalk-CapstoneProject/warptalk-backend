@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 
@@ -11,14 +12,15 @@ namespace WarpTalk.TranscriptService.API.Controllers;
 
 /// <summary>
 /// Platform-admin CRUD + publish/archive lifecycle for the system-managed global glossary.
-/// Route follows the ~/api/v1/admin/notifications precedent (NotificationsController) —
-/// [Authorize(Roles = "admin")] checks the "admin" system role seeded in init-db.sql and put
-/// into the JWT's ClaimTypes.Role claims by JwtTokenGenerator. See
-/// docs/global-glossary-plan.md §3/§5.2.
+/// See docs/global-glossary-plan.md §3/§5.2.
+///
+/// Gated by the shared system-admin policy (WT-205), which replaces the per-controller
+/// [Authorize(Roles = "admin")] so every ~/api/v1/admin/* endpoint shares one gate and one
+/// test suite.
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/global-glossary")]
-[Authorize(Roles = "admin")]
+[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
 public class GlobalGlossariesController : ControllerBase
 {
     private readonly IGlobalGlossaryService _globalGlossaryService;
