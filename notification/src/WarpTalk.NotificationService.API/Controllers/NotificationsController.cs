@@ -5,6 +5,7 @@ using WarpTalk.NotificationService.Application.DTOs;
 using WarpTalk.NotificationService.Application.DTOs.AdminNotifications;
 using WarpTalk.NotificationService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 
 namespace WarpTalk.NotificationService.API.Controllers;
 
@@ -114,7 +115,7 @@ public class NotificationsController : ControllerBase
         return NoContent();
     }
     [HttpPost("~/api/v1/admin/notifications")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     public async Task<IActionResult> CreateAdminNotification([FromBody] CreateAdminNotificationDto request, CancellationToken ct)
     {
         var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -132,7 +133,7 @@ public class NotificationsController : ControllerBase
     }
 
     [HttpGet("~/api/v1/admin/notifications")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     public async Task<IActionResult> GetAdminNotifications([FromQuery] GetAdminNotificationsQuery query, CancellationToken ct)
     {
         var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -148,7 +149,7 @@ public class NotificationsController : ControllerBase
     }
 
     [HttpGet("~/api/v1/admin/notifications/{id}")]
-    [Authorize(Roles = "admin")]
+    [Authorize(Policy = SystemAdminAuthorization.PolicyName)]
     public async Task<IActionResult> GetAdminNotificationDetail(Guid id, CancellationToken ct)
     {
         var adminIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);

@@ -2,10 +2,13 @@ using System.Text.Json;
 using WarpTalk.NotificationService.Domain.Entities;
 using WarpTalk.NotificationService.Domain.Interfaces;
 using WarpTalk.Shared.Events;
+using WarpTalk.Shared.Models;
 
 namespace WarpTalk.NotificationService.Application.Services;
 
-public sealed class BillingNotificationEventHandler(IUnitOfWork unitOfWork)
+public sealed class BillingNotificationEventHandler(
+    IUnitOfWork unitOfWork,
+    IMessagePublisher messagePublisher)
 {
     public const string ConsumerName = "notification-service.billing-events.v1";
 
@@ -28,7 +31,7 @@ public sealed class BillingNotificationEventHandler(IUnitOfWork unitOfWork)
             throw new InvalidOperationException($"Billing event {message.EventId} has an invalid user id.");
 
         var (type, title, content) = NotificationCopy(message.EventType, envelope.Payload);
-        await unitOfWork.Repository<NotificationMessage>().AddAsync(new NotificationMessage
+        var notification = new NotificationMessage
         {
             Id = Guid.NewGuid(),
             UserId = userId,
@@ -39,7 +42,8 @@ public sealed class BillingNotificationEventHandler(IUnitOfWork unitOfWork)
             PayloadJson = message.PayloadJson,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
-        });
+        };
+        await unitOfWork.Repository<NotificationMessage>().AddAsync(notification);
         await inboxRepository.AddAsync(new NotificationInboxMessage
         {
             EventId = message.EventId,
@@ -49,6 +53,20 @@ public sealed class BillingNotificationEventHandler(IUnitOfWork unitOfWork)
         });
 
         await unitOfWork.SaveChangesAsync();
+        await messagePublisher.PublishAsync(
+            "warptalk:notifications:new",
+            new RealtimeNotificationMessage
+            {
+                Id = notification.Id.ToString(),
+                UserId = notification.UserId.ToString(),
+                Type = notification.Type,
+                Title = notification.Title,
+                Content = notification.Content,
+                ActionUrl = notification.ActionUrl,
+                PayloadJson = notification.PayloadJson,
+                CreatedAt = notification.CreatedAt.ToString("O")
+            },
+            cancellationToken);
         return true;
     }
 

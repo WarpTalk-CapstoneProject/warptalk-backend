@@ -53,13 +53,13 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
             if (transcript == null)
                 return Result.Failure($"Transcript with ID {segment.TranscriptId} not found.", "NOT_FOUND");
 
-            if (transcript.Status != "FINALIZED")
-                return Result.Failure("Corrections can only be submitted for finalized transcripts.", "BAD_REQUEST");
+            if (string.Equals(transcript.Status, "ARCHIVED", StringComparison.OrdinalIgnoreCase))
+                return Result.Failure("Archived transcripts cannot be corrected.", "BAD_REQUEST");
 
             if (!await CanAccessTranscriptAsync(transcript, userId, cancellationToken))
                 return Result.Failure("You do not have access to this transcript.", "UNAUTHORIZED");
 
-            var correction = dto.ToEntity(segmentId);
+            var correction = dto.ToEntity(segmentId, userId);
             var isMtCorrection = dto.CorrectionType?.Equals("MT", StringComparison.OrdinalIgnoreCase) == true;
 
             if (isMtCorrection)
@@ -140,6 +140,50 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         {
             _logger.LogError(ex, "Error getting corrections for segment {SegmentId}", segmentId);
             return Result.Failure<IEnumerable<TranscriptCorrectionDto>>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
+    public async Task<Result> FinalizeTranscriptAsync(
+        Guid transcriptId,
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var transcript = await _unitOfWork.Transcripts.GetByIdAsync(transcriptId, cancellationToken);
+            if (transcript == null || transcript.DeletedAt != null)
+                return Result.Failure($"Transcript with ID {transcriptId} not found.", "NOT_FOUND");
+
+            var room = await _roomClient.GetTranslationRoomByIdAsync(
+                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
+                cancellationToken: cancellationToken);
+            if (!Guid.TryParse(room.HostId, out var hostId) || hostId != userId)
+                return Result.Failure("Only the meeting host can finalize the transcript.", "UNAUTHORIZED");
+
+            if (string.Equals(transcript.Status, "ARCHIVED", StringComparison.OrdinalIgnoreCase))
+                return Result.Failure("Archived transcripts cannot be finalized.", "BAD_REQUEST");
+
+            if (string.Equals(transcript.Status, "FINALIZED", StringComparison.OrdinalIgnoreCase))
+                return Result.Success();
+
+            var now = DateTime.UtcNow;
+            transcript.Status = "FINALIZED";
+            transcript.IsActive = false;
+            transcript.FinalizedAt = now;
+            transcript.UpdatedAt = now;
+            transcript.UpdatedBy = userId;
+            _unitOfWork.Transcripts.Update(transcript);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
+        {
+            return Result.Failure("Translation room not found.", "NOT_FOUND");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error finalizing transcript {TranscriptId}", transcriptId);
+            return Result.Failure("An unexpected error occurred.", "INTERNAL_ERROR");
         }
     }
 

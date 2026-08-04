@@ -13,6 +13,15 @@ using WarpTalk.BillingService.Infrastructure.Workers;
 
 using WarpTalk.BillingService.API.Services;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Application.Configuration;
+using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Messaging;
+using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Redis;
+using WarpTalk.BillingService.Infrastructure.Repositories;
+using WarpTalk.BillingService.Infrastructure.Clients;
+using WarpTalk.BillingService.API.Workers;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -94,6 +103,8 @@ try
     Stripe.StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"] ?? string.Empty;
 
     // --- Grpc Clients ---
+    builder.Services.AddScoped<IAdminWorkspaceAnalyticsService, AdminWorkspaceAnalyticsService>();
+    builder.Services.AddScoped<IIdempotencyService, PersistentIdempotencyService>();
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
         var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50053";
@@ -175,6 +186,21 @@ try
         {
             options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         });
+
+    // Shared system-admin gate for every ~/api/v1/admin/* endpoint (WT-205). Distinct from the
+    // "BillingAdmin" policy above, which guards operational tooling such as outbox replay.
+    builder.Services.AddWarpTalkSystemAdminAuthorization();
+
+    var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "*" };
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowSpecificOrigins", policy =>
+        {
+            policy.WithOrigins(corsOrigins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        });
+    });
 
     builder.Services.AddOpenApi();
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -80,6 +80,59 @@ public class CreditService : ICreditService
     }
 
 
+
+    public async Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
+        Guid subscriptionId,
+        int amount,
+        string reason,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        if (amount == 0)
+            return Result.Failure<CreditTransactionDto>("Adjustment amount cannot be zero.", "INVALID_REQUEST");
+        if (adminUserId == Guid.Empty)
+            return Result.Failure<CreditTransactionDto>("AdminUserId is required for audit trail.", "INVALID_REQUEST");
+        if (string.IsNullOrWhiteSpace(reason))
+            return Result.Failure<CreditTransactionDto>("Adjustment reason is required for audit trail.", "INVALID_REQUEST");
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.GetByIdAsync(subscriptionId, cancellationToken);
+            if (sub == null)
+            {
+                return Result.Failure<CreditTransactionDto>("Subscription not found.", ErrorCodes.BillingSubscriptionNotFound);
+            }
+
+            if (sub.CreditsRemaining + amount < 0)
+                return Result.Failure<CreditTransactionDto>("Adjustment would make the credit balance negative.", ErrorCodes.BillingInsufficientCredits);
+
+            sub.CreditsRemaining += amount;
+            sub.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+
+            var adjustmentTx = new CreditTransaction
+            {
+                SubscriptionId = sub.Id,
+                UserId = adminUserId,
+                Amount = amount,
+                Type = "adjustment",
+                Description = reason.Trim(),
+                ReferenceType = "manual_adjustment",
+                ReferenceId = null,
+                BalanceAfter = sub.CreditsRemaining,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _unitOfWork.CreditTransactionRepository.AddAsync(adjustmentTx, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(adjustmentTx.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error manually adjusting credits for SubscriptionId {SubscriptionId}", subscriptionId);
+            return Result.Failure<CreditTransactionDto>("An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
 
     public async Task<Result<PaginatedResponse<CreditTransactionDto>>> GetCreditHistoryAsync(
         Guid workspaceId,

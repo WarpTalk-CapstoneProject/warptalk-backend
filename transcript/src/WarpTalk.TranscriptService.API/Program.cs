@@ -11,6 +11,7 @@ using WarpTalk.TranscriptService.Domain.Interfaces;
 using WarpTalk.TranscriptService.Infrastructure.Persistence;
 using WarpTalk.TranscriptService.Infrastructure.Persistence.Contexts;
 using WarpTalk.TranscriptService.Infrastructure.Repositories;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -67,6 +68,7 @@ builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redi
 // --- Authentication ---
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 
 // --- gRPC Clients ---
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>

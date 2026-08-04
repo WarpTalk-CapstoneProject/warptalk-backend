@@ -88,4 +88,67 @@ public class CreditServiceTests
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.BillingInsufficientCredits);
     }
+
+    [Fact]
+    public async Task AdjustCreditsAsync_ShouldPersistAdministratorAsAuditActor()
+    {
+        var administratorId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
+            CreditsRemaining = 50,
+            IsActive = true
+        };
+        CreditTransaction? persistedTransaction = null;
+        _mockSubRepo
+            .Setup(repository => repository.GetByIdAsync(subscription.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+        _mockTxRepo
+            .Setup(repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()))
+            .Callback<CreditTransaction, CancellationToken>((transaction, _) => persistedTransaction = transaction)
+            .Returns(Task.CompletedTask);
+
+        var result = await _creditService.AdjustCreditsAsync(
+            subscription.Id,
+            25,
+            "Demo support grant",
+            administratorId);
+
+        result.IsSuccess.Should().BeTrue();
+        persistedTransaction.Should().NotBeNull();
+        persistedTransaction!.UserId.Should().Be(administratorId);
+        persistedTransaction.ReferenceType.Should().Be("manual_adjustment");
+        persistedTransaction.Description.Should().Be("Demo support grant");
+        persistedTransaction.BalanceAfter.Should().Be(75);
+    }
+
+    [Fact]
+    public async Task AdjustCreditsAsync_ShouldRejectAdjustmentThatMakesBalanceNegative()
+    {
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            CreditsRemaining = 10,
+            IsActive = true
+        };
+        _mockSubRepo
+            .Setup(repository => repository.GetByIdAsync(subscription.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(subscription);
+
+        var result = await _creditService.AdjustCreditsAsync(
+            subscription.Id,
+            -11,
+            "Correction",
+            Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingInsufficientCredits);
+        _mockTxRepo.Verify(
+            repository => repository.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+>>>>>>> origin/development
 }
