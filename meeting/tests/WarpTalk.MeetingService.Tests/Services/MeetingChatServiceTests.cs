@@ -10,6 +10,7 @@ using Moq;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Services;
+using WarpTalk.MeetingService.Domain.Constants;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Enums;
 using WarpTalk.MeetingService.Domain.Interfaces;
@@ -98,6 +99,45 @@ public class MeetingChatServiceTests
     };
 
     // --- SendMessage Tests ---
+
+    [Fact]
+    public async Task SendMessageAsync_MessageOverLengthLimit_ReturnsValidationFailure()
+    {
+        var request = new SendMeetingChatMessageRequest
+        {
+            OriginalText = new string('a', MeetingChatConstants.MaxMessageLength + 1),
+            OriginalLanguage = "en"
+        };
+
+        var result = await _sut.SendMessageAsync(_roomId, _userId, request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("VALIDATION_ERROR", result.ErrorCode);
+        // Rejected before the room is even looked up — no point paying for the query.
+        _roomRepoMock.Verify(r => r.FirstOrDefaultAsync(
+            It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task SendMessageAsync_MessageExactlyAtLengthLimit_IsAccepted()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom());
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateParticipant(_userId));
+
+        var request = new SendMeetingChatMessageRequest
+        {
+            OriginalText = new string('a', MeetingChatConstants.MaxMessageLength),
+            OriginalLanguage = "en"
+        };
+
+        var result = await _sut.SendMessageAsync(_roomId, _userId, request);
+
+        Assert.True(result.IsSuccess);
+    }
 
     [Fact]
     public async Task SendMessageAsync_RoomNotFound_ReturnsFailure()

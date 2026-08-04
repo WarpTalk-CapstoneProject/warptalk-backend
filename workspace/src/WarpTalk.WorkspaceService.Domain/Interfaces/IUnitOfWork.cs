@@ -21,7 +21,4 @@ public interface IUnitOfWork : IDisposable
     // repository here handed every IUnitOfWork holder an Update()/Remove() on audit history.
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
-    Task BeginTransactionAsync(CancellationToken ct = default);
-    Task CommitTransactionAsync(CancellationToken ct = default);
-    Task RollbackTransactionAsync(CancellationToken ct = default);
 }

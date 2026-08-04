@@ -61,7 +61,16 @@ public class TranslationRoomsController : ControllerBase
         var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value);
 
         if (!result.IsSuccess)
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        {
+            // WT-249: a revoked host permission is not a malformed request — the client shows a
+            // different message for "you may not" than for "we could not check right now".
+            return result.ErrorCode switch
+            {
+                ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+                ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(result.Error, result.ErrorCode)),
+                _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            };
+        }
 
         return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value!.Id }, result.Value);
     }

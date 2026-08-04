@@ -51,39 +51,11 @@ public class UnitOfWork : IUnitOfWork
     public IWorkspaceOutboxMessageRepository WorkspaceOutboxMessageRepository =>
         _workspaceOutboxMessageRepository ??= new WorkspaceOutboxMessageRepository(_context);
 
-    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
-
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _context.SaveChangesAsync(ct);
 
-    public async Task BeginTransactionAsync(CancellationToken ct = default)
-    {
-        _currentTransaction = await _context.Database.BeginTransactionAsync(ct);
-    }
-
-    public async Task CommitTransactionAsync(CancellationToken ct = default)
-    {
-        if (_currentTransaction != null)
-        {
-            await _currentTransaction.CommitAsync(ct);
-            await _currentTransaction.DisposeAsync();
-            _currentTransaction = null;
-        }
-    }
-
-    public async Task RollbackTransactionAsync(CancellationToken ct = default)
-    {
-        if (_currentTransaction != null)
-        {
-            await _currentTransaction.RollbackAsync(ct);
-            await _currentTransaction.DisposeAsync();
-            _currentTransaction = null;
-        }
-    }
-
     public void Dispose()
     {
-        _currentTransaction?.Dispose();
         _context.Dispose();
         GC.SuppressFinalize(this);
     }

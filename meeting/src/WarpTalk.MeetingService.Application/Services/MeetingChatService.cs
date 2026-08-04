@@ -10,6 +10,7 @@ using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.Shared;
+using WarpTalk.MeetingService.Domain.Constants;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 
@@ -61,6 +62,16 @@ public class MeetingChatService : IMeetingChatService
 
     public async Task<Result<MeetingChatMessageDto>> SendMessageAsync(Guid roomId, Guid userId, SendMeetingChatMessageRequest request, string? bearerToken = null, CancellationToken ct = default)
     {
+        // The column is TEXT and the desktop app posts to this same endpoint, so this check
+        // is what actually bounds a message — the editor cap in the web client is only a
+        // convenience on top of it (WT-237).
+        if ((request.OriginalText?.Length ?? 0) > MeetingChatConstants.MaxMessageLength)
+        {
+            return Result.Failure<MeetingChatMessageDto>(
+                $"Message must be {MeetingChatConstants.MaxMessageLength} characters or fewer.",
+                "VALIDATION_ERROR");
+        }
+
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");

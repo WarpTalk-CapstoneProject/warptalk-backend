@@ -32,6 +32,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IAudioRouteEventProcessor _audioRouteEventProcessor;
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
+    private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
@@ -69,6 +70,7 @@ public class TranslationRoomService : ITranslationRoomService
         IAudioRouteEventProcessor audioRouteEventProcessor,
         ITranslationRoomAudioRouteService audioRouteService,
         IUserSettingsDirectory userSettingsDirectory,
+        IWorkspaceMeetingPolicy workspaceMeetingPolicy,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
@@ -79,6 +81,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteEventProcessor = audioRouteEventProcessor;
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
+        _workspaceMeetingPolicy = workspaceMeetingPolicy;
         _emailService = emailService;
         _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
@@ -169,6 +172,23 @@ public class TranslationRoomService : ITranslationRoomService
             {
                 if (!await _languagePolicy.IsSupportedAsync(lang))
                     return Result.Failure<TranslationRoomDto>(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
+            }
+
+            // WT-249: the workspace owns who may open a room — a member whose host permission was
+            // revoked must be stopped here. Runs after language resolution so the workspace also
+            // gets to veto the languages actually being used, not the ones merely requested.
+            var workspaceId = request.WorkspaceId ?? Guid.Empty;
+            if (workspaceId == Guid.Empty)
+                return Result.Failure<TranslationRoomDto>(ApiMessageConstants.ValidationMessages.WorkspaceRequired, ErrorCodes.ValidationError);
+
+            var policy = await _workspaceMeetingPolicy.ValidateMeetingCreationAsync(workspaceId, hostId, targetLangs, ct);
+            if (!policy.IsSuccess)
+            {
+                // The workspace owns the wording, but it is free to deny without one.
+                var reason = string.IsNullOrWhiteSpace(policy.Error)
+                    ? "You do not have permission to create meetings in this workspace."
+                    : policy.Error;
+                return Result.Failure<TranslationRoomDto>(reason, policy.ErrorCode);
             }
 
             // 1. Determine initial status

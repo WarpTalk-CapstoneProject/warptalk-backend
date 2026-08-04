@@ -20,7 +20,7 @@ public interface IVerifiedDomainService
     /// Returns the active (non-revoked) verified domains for a workspace.
     /// Accessible to Owner and Admin.
     /// </summary>
-    Task<Result<IReadOnlyList<VerifiedDomainDto>>> ListDomainsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
+    Task<Result<List<VerifiedDomainDto>>> ListDomainsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
 
     /// <summary>
     /// Revokes a verified domain. Blocked if it is the last active domain and

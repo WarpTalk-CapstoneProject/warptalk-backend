@@ -691,7 +691,7 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsOwnerOrAdmin()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenOwnerChangesAllowExternalCollaboration()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -704,7 +704,7 @@ public class WorkspaceServiceTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "warptalk.vn" },
             true,
             true,
             new AiUsagePolicyDto(
@@ -760,9 +760,76 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsAdmin()
     {
         // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
+        };
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30, true,
+            new List<string>(), true, false, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId, Arg.Any<WorkspaceConfiguration>(), userId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminChangesAllowExternalCollaboration()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
+        };
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30, true,
+            new List<string>(), false, false, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenUserIsNotOwnerOrAdmin()
+    {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var newSettings = new WorkspaceSettingsDto(
@@ -844,6 +911,92 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenStrictDomainVerificationHasNoDomains()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var settings = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string>(),
+            true,
+            true,
+            null,
+            false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId });
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenRemovedDomainHasActiveInternalMembers()
+    {
+        var userId = Guid.NewGuid();
+        var activeMemberUserId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId };
+        var activeInternalMember = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = activeMemberUserId,
+            MembershipType = MembershipType.Internal.ToString()
+        };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            Settings = "{\"VerifiedDomains\":[\"company.com\"],\"AllowExternalCollaboration\":true}"
+        };
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30, true,
+            new List<string>(), false, false, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(owner);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { activeInternalMember });
+        _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = activeMemberUserId, Email = "member@company.com" });
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     #endregion

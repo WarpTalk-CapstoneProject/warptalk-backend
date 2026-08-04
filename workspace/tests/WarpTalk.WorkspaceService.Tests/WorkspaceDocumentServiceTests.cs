@@ -296,7 +296,8 @@ public class WorkspaceDocumentServiceTests
             FileName = "file.pdf",
             FileExtension = ".pdf",
             UploadedBy = Guid.NewGuid(),
-            ConfidentialityLevel = "general"
+            ConfidentialityLevel = "general",
+            IsAiAllowed = true
         };
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
@@ -453,11 +454,13 @@ public class WorkspaceDocumentServiceTests
             new() { Id = Guid.NewGuid(), DocumentId = documentId, SubjectType = "User", SubjectId = Guid.NewGuid(), Permission = "view", Effect = "DENY" }
         };
 
-        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FindAsync(
-            Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(),
-            Arg.Any<string>(),
+        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.GetPagedAccessPoliciesAsync(
+            documentId,
+            2,
+            2,
+            true,
             Arg.Any<CancellationToken>()
-        ).Returns(policies);
+        ).Returns((policies.Skip(2).Take(2).ToList(), policies.Count));
 
         var query = new GetWorkspacesQuery(Page: 2, PageSize: 2);
 

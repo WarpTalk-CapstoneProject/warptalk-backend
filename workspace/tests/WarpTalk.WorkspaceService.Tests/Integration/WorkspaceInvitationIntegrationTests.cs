@@ -272,7 +272,7 @@ public class WorkspaceInvitationIntegrationTests : BaseIntegrationTest
         var response = await Client.PostAsJsonAsync("/api/v1/workspaces/invitations/accept", new AcceptInvitationRequest(rawToken));
 
         // Assert
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]

@@ -35,6 +35,10 @@ function listJsonSchemas(directory) {
   });
 }
 
+function relativeContractPath(path) {
+  return relative(contractRoot, path).replaceAll("\\", "/");
+}
+
 function normalizedTypes(value) {
   if (value === undefined) {
     return null;
@@ -123,7 +127,7 @@ for (const schemaPath of listJsonSchemas(contractRoot)) {
   if (!schema) {
     continue;
   }
-  schemas.set(relative(contractRoot, schemaPath), { path: schemaPath, schema });
+  schemas.set(relativeContractPath(schemaPath), { path: schemaPath, schema });
 
   for (const part of schema.allOf ?? []) {
     if (typeof part.$ref === "string" && part.$ref.startsWith(".")) {

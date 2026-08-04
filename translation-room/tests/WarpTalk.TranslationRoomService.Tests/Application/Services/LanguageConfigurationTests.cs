@@ -28,6 +28,7 @@ public class LanguageConfigurationTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
+    private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
@@ -41,6 +42,7 @@ public class LanguageConfigurationTests
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
+        _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -48,12 +50,18 @@ public class LanguageConfigurationTests
         _mockUnitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUnitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
 
+        // These tests are about language resolution, not permission — let the workspace allow.
+        _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             _mockUnitOfWork.Object,
             _mockLanguagePolicy.Object,
             _mockAudioRouteEventProcessor.Object,
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
+            _mockWorkspaceMeetingPolicy.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);
@@ -76,6 +84,8 @@ public class LanguageConfigurationTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
+        // A workspace id is required now: the meeting-creation permission lives on the workspace
+        // membership, so a room with no workspace could not be authorized at all (WT-249).
         var request = new CreateTranslationRoomRequest(
             Guid.NewGuid(), "Defaults", null, "INSTANT", 10,
             null, null, null, null, null);

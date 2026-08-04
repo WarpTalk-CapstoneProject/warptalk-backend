@@ -2,7 +2,7 @@
 
 **Feature Branch**: `feat/auth`  
 **Created**: 2026-05-24  
-**Status**: Draft  
+**Status**: Approved  
 **Input**: Linear ticket WT-141 - [Workspace] Let owners and admins manage workspace members
 
 ---
@@ -43,7 +43,7 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
    - Admins and Members cannot remove or demote the Owner.
 
 #### Admin Rules:
-1. **Day-to-day Manager**: Admins can invite new members (as Admin or Member), list members, and change roles.
+1. **Day-to-day Manager**: Admins can invite new Members and perform only explicitly allowed operational actions; they cannot change member roles or manage policy settings.
 2. **Role Boundaries**:
    - Admins CANNOT manage the `Owner` role (cannot promote someone to Owner, demote the Owner, or remove the Owner).
    - Admins can demote `Member` only where the target role is permitted by the service.
@@ -53,7 +53,7 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
    - Admins can remove themselves (leave the workspace).
 
 #### Member Rules:
-1. **Collaborator**: Internal Members can use workspace resources and view the member list, but cannot modify anything.
+1. **Collaborator**: Internal Members can use workspace resources and view the member directory read-only, but cannot modify anything.
 2. **Leave Workspace**: Members can remove themselves (leave the workspace).
 
 #### External Member Rules:
@@ -141,7 +141,7 @@ WarpTalk supports three roles inside an Enterprise Workspace: `Owner`, `Admin`, 
 - **FR-141-004**: System MUST check role hierarchy: only Owners and Admins can remove members. Admins CANNOT remove the Owner.
 - **FR-141-005**: System MUST block the last remaining active Owner from removing themselves or leaving the workspace.
 - **FR-141-006**: System MUST expose `PUT /api/v1/workspaces/{workspaceId}/members/{userId}/role` to change roles.
-- **FR-141-007**: Only Owners and Admins can change roles. Admins CANNOT change the Owner's role, change another Admin, promote a Member to Admin, or assign Owner.
+- **FR-141-007**: Only the active Workspace Owner can change `Admin|Member` roles. Admins, Members and Externals receive `403`; Owner and self targets, Owner role assignment and External targets are rejected.
 - **FR-141-008**: System MUST block the last remaining active Owner from demoting themselves.
 - **FR-141-009**: System MUST reject full member-directory listing for External Members.
 - **FR-141-010**: System MUST allow ownership transfer only by the current Owner and only to an active non-external member.

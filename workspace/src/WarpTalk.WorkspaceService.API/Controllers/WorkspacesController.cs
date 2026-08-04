@@ -1,13 +1,14 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
-using WarpTalk.WorkspaceService.Domain.Settings;
 
 namespace WarpTalk.WorkspaceService.API.Controllers;
 
@@ -27,7 +28,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> CreateWorkspace([FromBody] CreateWorkspaceRequest request, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId.Value, ct);
         if (!result.IsSuccess)
@@ -40,6 +41,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return Ok(result.Value);
     }
 
@@ -48,7 +50,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> GetWorkspaces([FromQuery] GetWorkspacesQuery query, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.GetWorkspacesAsync(query, userId.Value, ct);
         if (!result.IsSuccess)
@@ -61,6 +63,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return Ok(result.Value);
     }
 
@@ -69,7 +72,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> GetWorkspaceById(Guid id, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = User.IsInRole("admin")
             ? await _workspaceService.GetWorkspaceByIdForAdminAsync(id, ct)
@@ -84,6 +87,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return Ok(result.Value);
     }
 
@@ -92,7 +96,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> SelectWorkspace(Guid id, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.SelectWorkspaceAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
@@ -105,6 +109,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return Ok(result.Value);
     }
 
@@ -113,7 +118,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> GetWorkspaceSettings(Guid id, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.GetWorkspaceSettingsAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
@@ -126,6 +131,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return Ok(result.Value);
     }
 
@@ -134,7 +140,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> UpdateWorkspaceSettings(Guid id, [FromBody] WorkspaceSettingsDto settings, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(id, settings, userId.Value, ct);
         if (!result.IsSuccess)
@@ -147,7 +153,48 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return NoContent();
+    }
+
+    [Authorize]
+    [HttpPatch("{id:guid}/settings")]
+    public async Task<IActionResult> PatchWorkspaceSettings(Guid id, [FromBody] JsonObject patch, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+        if (patch == null) return BadRequest(new ApiErrorResponse("Invalid settings payload.", ErrorCodes.ValidationError));
+
+        var current = await _workspaceService.GetWorkspaceSettingsAsync(id, userId.Value, ct);
+        if (!current.IsSuccess)
+        {
+            if (current.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(current.Error, current.ErrorCode));
+            if (current.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(current.Error, current.ErrorCode));
+            return BadRequest(new ApiErrorResponse(current.Error, current.ErrorCode));
+        }
+
+        var mergedNode = JsonSerializer.SerializeToNode(current.Value)!.AsObject();
+        foreach (var property in patch)
+            mergedNode[property.Key] = property.Value?.DeepClone();
+
+        var merged = mergedNode.Deserialize<WorkspaceSettingsDto>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (merged == null) return BadRequest(new ApiErrorResponse("Invalid settings payload.", ErrorCodes.ValidationError));
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(id, merged, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(merged);
     }
 
     [Authorize]
@@ -155,7 +202,7 @@ public class WorkspacesController : ControllerBase
     public async Task<IActionResult> DeleteWorkspace(Guid id, CancellationToken ct)
     {
         var userId = User.GetUserId();
-        if (userId == null) return Unauthorized();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(id, userId.Value, ct);
         if (!result.IsSuccess)
@@ -168,6 +215,7 @@ public class WorkspacesController : ControllerBase
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
+
         return NoContent();
     }
 }
