@@ -20,8 +20,8 @@ public class QuestionsServiceTests
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
     private readonly Mock<ITranslationRoomGrpcService> _grpcServiceMock = new();
     private readonly Mock<IRedisService> _redisServiceMock = new();
-    private readonly FakeGenericRepository<Question> _questionRepo = new();
-    private readonly FakeGenericRepository<QuestionVote> _voteRepo = new();
+    private readonly FakeQuestionRepository _questionRepo = new();
+    private readonly FakeQuestionVoteRepository _voteRepo = new();
     private readonly QuestionsService _sut;
 
     public QuestionsServiceTests()
@@ -33,8 +33,8 @@ public class QuestionsServiceTests
             .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
             .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
 
-        _unitOfWorkMock.Setup(u => u.Repository<Question>()).Returns(_questionRepo);
-        _unitOfWorkMock.Setup(u => u.Repository<QuestionVote>()).Returns(_voteRepo);
+        _unitOfWorkMock.Setup(u => u.QuestionRepository).Returns(_questionRepo);
+        _unitOfWorkMock.Setup(u => u.QuestionVoteRepository).Returns(_voteRepo);
 
         _sut = new QuestionsService(_unitOfWorkMock.Object, _grpcServiceMock.Object, _redisServiceMock.Object);
     }

@@ -153,7 +153,7 @@ public class MeetingRoomService : IMeetingRoomService
             if (!isHost)
             {
                 // Check MeetingInvitation Table first (for explicit invites & external guests)
-                var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+                var invitationRepo = _unitOfWork.MeetingInvitationRepository;
                 var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
 
                 if (explicitInvite != null)
@@ -495,7 +495,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 3. Revoke Invitation
-        var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -620,7 +620,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // Revoke Invitation to prevent re-join
-        var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)

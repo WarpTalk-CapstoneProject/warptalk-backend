@@ -78,13 +78,13 @@ public class BreakoutsService : IBreakoutsService
 
         // Restarting breakouts (host clicks "Start" again) implicitly replaces any still-open
         // ones for this room rather than layering a second set on top.
-        var previousActive = await _unitOfWork.Repository<BreakoutSession>()
+        var previousActive = await _unitOfWork.BreakoutSessionRepository
             .FindAsync(s => s.ParentMeetingRoomId == meetingRoom.Id && s.EndedAt == null, ct: ct);
         var now = DateTime.UtcNow;
         foreach (var previous in previousActive)
         {
             previous.EndedAt = now;
-            _unitOfWork.Repository<BreakoutSession>().Update(previous);
+            _unitOfWork.BreakoutSessionRepository.Update(previous);
         }
 
         var sessions = new List<BreakoutSession>();
@@ -109,7 +109,7 @@ public class BreakoutsService : IBreakoutsService
                 CreatedAt = now
             };
             sessions.Add(session);
-            await _unitOfWork.Repository<BreakoutSession>().AddAsync(session, ct);
+            await _unitOfWork.BreakoutSessionRepository.AddAsync(session, ct);
 
             var userIds = (group.UserIds ?? new List<Guid>()).Distinct().ToList();
             foreach (var userId in userIds)
@@ -122,7 +122,7 @@ public class BreakoutsService : IBreakoutsService
                     CreatedAt = now
                 };
                 assignments.Add(assignment);
-                await _unitOfWork.Repository<BreakoutAssignment>().AddAsync(assignment, ct);
+                await _unitOfWork.BreakoutAssignmentRepository.AddAsync(assignment, ct);
                 relayAssignments.Add(new BreakoutAssignmentRelayDto { UserId = userId, SessionId = session.Id, Label = label });
             }
 
@@ -166,14 +166,14 @@ public class BreakoutsService : IBreakoutsService
         if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
             return Result.Failure<bool>("Only the host can end breakout rooms.", ErrorCodes.Forbidden);
 
-        var activeSessions = await _unitOfWork.Repository<BreakoutSession>()
+        var activeSessions = await _unitOfWork.BreakoutSessionRepository
             .FindAsync(s => s.ParentMeetingRoomId == meetingRoom.Id && s.EndedAt == null, ct: ct);
 
         var now = DateTime.UtcNow;
         foreach (var session in activeSessions)
         {
             session.EndedAt = now;
-            _unitOfWork.Repository<BreakoutSession>().Update(session);
+            _unitOfWork.BreakoutSessionRepository.Update(session);
         }
 
         if (activeSessions.Any())
@@ -190,7 +190,7 @@ public class BreakoutsService : IBreakoutsService
         DateTime utcNow,
         CancellationToken ct = default)
     {
-        var candidates = await _unitOfWork.Repository<BreakoutSession>()
+        var candidates = await _unitOfWork.BreakoutSessionRepository
             .FindAsync(
                 session => session.EndedAt == null &&
                            session.StartedAt.HasValue &&
@@ -206,7 +206,7 @@ public class BreakoutsService : IBreakoutsService
         foreach (var session in dueSessions)
         {
             session.EndedAt = utcNow;
-            _unitOfWork.Repository<BreakoutSession>().Update(session);
+            _unitOfWork.BreakoutSessionRepository.Update(session);
         }
         await _unitOfWork.SaveChangesAsync(ct);
 
@@ -235,13 +235,13 @@ public class BreakoutsService : IBreakoutsService
         if (meetingRoom == null)
             return Result.Failure<BreakoutJoinInfoDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var myAssignments = await _unitOfWork.Repository<BreakoutAssignment>()
+        var myAssignments = await _unitOfWork.BreakoutAssignmentRepository
             .FindAsync(a => a.UserId == callerUserId, ct: ct);
         if (!myAssignments.Any())
             return Result.Failure<BreakoutJoinInfoDto>("No active breakout assignment.", ErrorCodes.NotFound);
 
         var mySessionIds = myAssignments.Select(a => a.BreakoutSessionId).ToHashSet();
-        var activeSessions = await _unitOfWork.Repository<BreakoutSession>()
+        var activeSessions = await _unitOfWork.BreakoutSessionRepository
             .FindAsync(s => s.ParentMeetingRoomId == meetingRoom.Id && s.EndedAt == null && mySessionIds.Contains(s.Id), ct: ct);
         var session = activeSessions.FirstOrDefault();
         if (session == null)
