@@ -55,8 +55,8 @@ public class LanguageConfigurationTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockEmailService.Object,
-            _mockRedisStateRepository.Object,
-            _mockLogger.Object);
+            _mockLogger.Object,
+            redisStateRepository: _mockRedisStateRepository.Object);
     }
 
     [Fact]
@@ -77,14 +77,14 @@ public class LanguageConfigurationTests
             .ReturnsAsync(false);
 
         var request = new CreateTranslationRoomRequest(
-            null, "Defaults", null, "INSTANT", 10,
+            Guid.NewGuid(), "Defaults", null, "INSTANT", 10,
             null, null, null, null, null);
 
         var result = await _roomService.CreateTranslationRoomAsync(request, userId);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal("vi-VN", result.Value!.SourceLanguage);
-        Assert.Contains("en-US", result.Value.TargetLanguages);
+        Assert.Equal("vi", result.Value!.SourceLanguage);
+        Assert.Contains("en", result.Value.TargetLanguages);
         _mockUserSettingsDirectory.Verify(
             directory => directory.GetDefaultsAsync(userId, It.IsAny<CancellationToken>()),
             Times.Once);
@@ -154,7 +154,7 @@ public class LanguageConfigurationTests
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync("vi-VN", "en-US", room)).ReturnsAsync((string?)null);
 
         var request = new JoinTranslationRoomRequest(
-            "abc-defg-hij", "User", 
+            "abc-defg-hij", "User",
             "ja-JP", // Not in policy
             "vi-VN"
         );

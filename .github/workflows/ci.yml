@@ -74,13 +74,17 @@ jobs:
       - name: Build
         run: dotnet build warptalk-backend.slnx --configuration Release --no-restore --warnaserror
       - name: Test
-        run: >-
-          dotnet test warptalk-backend.slnx
-          --configuration Release
-          --no-build
-          --no-restore
-          --logger "trx;LogFileName=backend-tests.trx"
-          --results-directory artifacts/test-results
+        run: |
+          mkdir -p artifacts/test-results
+          while IFS= read -r project; do
+            name="$(basename "$project" .csproj)"
+            dotnet test "$project" \
+              --configuration Release \
+              --no-build \
+              --no-restore \
+              --logger "trx;LogFileName=${name}.trx" \
+              --results-directory artifacts/test-results
+          done < <(find . -path '*/tests/*.Tests.csproj' -print | sort)
       - name: Dependency vulnerability gate
         run: |
           output="$(dotnet list warptalk-backend.slnx package --vulnerable --include-transitive)"

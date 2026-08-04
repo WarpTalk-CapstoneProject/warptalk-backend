@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -6,13 +6,12 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
 [ApiController]
-[Route("api/v1/invoices")]
+[Route("api/v1/[controller]")]
 public class InvoicesController : ControllerBase
 {
     private readonly IInvoiceService _invoiceService;
@@ -22,43 +21,62 @@ public class InvoicesController : ControllerBase
         _invoiceService = invoiceService;
     }
 
-    /// <summary>
-    /// Paginated invoice history for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<PagedResult<InvoiceDto>>> GetWorkspaceInvoices(
+    [HttpGet("workspace/{workspaceId}")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetWorkspaceInvoices(
         Guid workspaceId,
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
+        [FromQuery] PaginationQuery query,
+        CancellationToken cancellationToken)
     {
-        var result = await _invoiceService.GetInvoicesAsync(workspaceId, pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
-    }
-
-    /// <summary>
-    /// Paginated global invoice history for admins.
-    /// </summary>
-    [HttpGet("global")]
-    [Authorize(Roles = "Admin")]
-    public async Task<ActionResult<PagedResult<InvoiceDto>>> GetGlobalInvoices(
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _invoiceService.GetGlobalInvoicesAsync(pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
-        return Ok(result.Value);
-    }
-
-    private ActionResult HandleFailure<T>(Result<T> result) =>
-        result.ErrorCode switch
+        var result = await _invoiceService.GetInvoicesAsync(workspaceId, query, cancellationToken);
+        if (!result.IsSuccess)
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { message = result.Error }),
-            _ => StatusCode(500, new { message = result.Error })
-        };
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpGet("global")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<PaginatedResponse<InvoiceDto>>> GetGlobalInvoices(
+        [FromQuery] PaginationQuery query,
+        CancellationToken cancellationToken)
+    {
+        var result = await _invoiceService.GetGlobalInvoicesAsync(query, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpPost("{invoiceId}/checkout")]
+    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    public async Task<ActionResult<object>> CreateInvoiceCheckout(
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _invoiceService.CreateInvoiceCheckoutSessionAsync(invoiceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { url = result.Value });
+    }
+
+    [HttpPost("{invoiceId}/mark-paid")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<InvoiceDto>> MarkInvoicePaid(
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _invoiceService.MarkInvoicePaidAsync(invoiceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
 }

@@ -1,14 +1,15 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
-using WarpTalk.MeetingService.Infrastructure.Extensions;
 using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
-using WarpTalk.Shared.Protos;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
+using WarpTalk.Shared.Protos;
 
 AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
@@ -43,7 +44,6 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
         StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
     builder.Services.AddSingleton<IRedisService, RedisService>();
-    builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService>();
 }
 
 var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(builder.Configuration.GetConnectionString("DefaultConnection"));
@@ -65,16 +65,25 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(dataSource));
-builder.Services.AddWarpTalkServiceHealthChecks<MeetingDbContext>(
-    "meeting-database");
 
-builder.Services.AddWarpTalkJwtAuthentication(
-    builder.Configuration,
-    builder.Environment,
-    options =>
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
     {
+        var jwtSecret = builder.Configuration["Jwt:Secret"] ?? string.Empty;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(System.Text.Encoding.UTF8.GetBytes(jwtSecret)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+
         // SignalR: Extract JWT from query string for WebSocket handshake
-        options.Events = new Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerEvents
+        options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
@@ -109,7 +118,6 @@ builder.Services.AddScoped<IQuestionsService, QuestionsService>();
 
 // Breakout rooms (scoped-down)
 builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
-builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.BreakoutExpiryWorker>();
 
 // WT-08: elects a new host when the Gateway's TranslationRoomHub signals a participant went
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
@@ -123,14 +131,13 @@ builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAs
 builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
-builder.Services.AddMeetingChatFileStorage(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IMeetingChatFileStorage, WarpTalk.MeetingService.Infrastructure.Storage.LocalMeetingChatFileStorage>();
 builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 
 // History service
 builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
-
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
@@ -164,6 +171,5 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub");
-app.MapWarpTalkServiceHealthChecks();
 
 app.Run();

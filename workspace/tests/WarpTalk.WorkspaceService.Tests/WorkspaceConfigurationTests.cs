@@ -106,7 +106,7 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(deserializedConfig);
         Assert.NotNull(deserializedConfig.AiUsagePolicy);
         Assert.True(deserializedConfig.AiUsagePolicy.AllowExternalLlm);
-        
+
         Assert.NotNull(deserializedConfig.AiUsagePolicy.RedactPii);
         Assert.True(deserializedConfig.AiUsagePolicy.RedactPii.Enabled);
 

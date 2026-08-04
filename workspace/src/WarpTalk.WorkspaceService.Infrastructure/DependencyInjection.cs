@@ -153,6 +153,16 @@ public static class DependencyInjection
         .AddWarpTalkGrpcClientDefaults(configuration, environment);
         services.AddScoped<ITranslationRoomClient, TranslationRoomGrpcClient>();
 
+        services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
+        {
+            o.Address = configuration.GetRequiredServiceUri(
+                environment,
+                "GrpcSettings:BillingServiceUrl",
+                "http://localhost:50057");
+        })
+        .AddWarpTalkGrpcClientDefaults(configuration, environment);
+        services.AddScoped<IBillingSubscriptionClient, BillingSubscriptionGrpcClient>();
+
         return services;
     }
 

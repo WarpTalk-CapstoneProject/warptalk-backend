@@ -18,8 +18,30 @@ public static class ErrorCodes
     // ── Billing ───────────────────────────────────────────
     public const string BillingSubscriptionNotFound = "BILLING_SUBSCRIPTION_NOT_FOUND";
     public const string BillingSubscriptionAlreadyActive = "BILLING_SUBSCRIPTION_ALREADY_ACTIVE";
+    public const string BillingSubscriptionNotActive = "BILLING_SUBSCRIPTION_NOT_ACTIVE";
+    public const string BillingSubscriptionConflict = "BILLING_SUBSCRIPTION_CONFLICT";
+    public const string BillingSubscriptionExpired = "BILLING_SUBSCRIPTION_EXPIRED";
     public const string BillingPlanNotFound = "BILLING_PLAN_NOT_FOUND";
+    public const string BillingPlanInactive = "BILLING_PLAN_INACTIVE";
+    public const string BillingPaymentInvalidStatus = "BILLING_PAYMENT_INVALID_STATUS";
+    public const string BillingSimulationInvalidRequest = "BILLING_SIMULATION_INVALID_REQUEST";
+    public const string BillingSimulationFailed = "BILLING_SIMULATION_FAILED";
+
+    public const string BillingPlanInvalid = "BILLING_PLAN_INVALID";
+    public const string BillingDuplicatePlanSlug = "BILLING_DUPLICATE_PLAN_SLUG";
     public const string BillingInsufficientCredits = "BILLING_INSUFFICIENT_CREDITS";
+    public const string BillingCreditsOperationFailed = "BILLING_CREDITS_OPERATION_FAILED";
+    public const string BillingWorkspaceNotFound = "BILLING_WORKSPACE_NOT_FOUND";
+    public const string BillingWorkspaceUnauthorized = "BILLING_WORKSPACE_UNAUTHORIZED";
+    public const string BillingTransactionNotFound = "BILLING_TRANSACTION_NOT_FOUND";
+    public const string BillingTransactionProcessingFailed = "BILLING_TRANSACTION_PROCESSING_FAILED";
+    public const string BillingTransactionPaymentFailed = "BILLING_TRANSACTION_PAYMENT_FAILED";
+    public const string BillingValidationFailed = "BILLING_VALIDATION_FAILED";
+    public const string BillingInvalidAmount = "BILLING_INVALID_AMOUNT";
+    public const string BillingInvalidWorkspaceId = "BILLING_INVALID_WORKSPACE_ID";
+    public const string BillingConcurrencyConflict = "BILLING_CONCURRENCY_CONFLICT";
+    public const string BillingServiceUnavailable = "BILLING_SERVICE_UNAVAILABLE";
+    public const string BillingExternalServiceError = "BILLING_EXTERNAL_SERVICE_ERROR";
 
     // ── Auth ──────────────────────────────────────────────
     public const string EmailExists = "EMAIL_EXISTS";

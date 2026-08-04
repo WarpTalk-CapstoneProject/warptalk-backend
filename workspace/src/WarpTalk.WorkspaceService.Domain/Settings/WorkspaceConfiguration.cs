@@ -61,7 +61,7 @@ public class WorkspaceConfiguration
         get => _aiUsagePolicy;
         set => _aiUsagePolicy = NormalizeAiUsagePolicy(value);
     }
-    
+
     // 6. Content Filtering
     public bool IsProfanityFilterEnabled { get; set; } = false;
 

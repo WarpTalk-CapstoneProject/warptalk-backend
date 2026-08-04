@@ -1,15 +1,15 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
-using WarpTalk.BillingService.API.Filters;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
 [Authorize]
 [ApiController]
-[Route("api/v1/subscriptions")]
+[Route("api/v1/[controller]")]
 public class SubscriptionsController : ControllerBase
 {
     private readonly ISubscriptionService _subscriptionService;
@@ -19,93 +19,100 @@ public class SubscriptionsController : ControllerBase
         _subscriptionService = subscriptionService;
     }
 
-    /// <summary>
-    /// Provision a new subscription for a workspace.
-    /// </summary>
-    [HttpPost]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<SubscriptionDto>> CreateSubscription(
-        [FromBody] SubscriptionRequest request,
+    [HttpPost("contract")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<SubscriptionDto>> CreateWorkspaceContractSubscription(
+        [FromBody] CreateWorkspaceContractSubscriptionRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _subscriptionService.CreateSubscriptionAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
+        var result = await _subscriptionService.CreateWorkspaceContractSubscriptionAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return StatusCode(201, result.Value);
     }
 
-    /// <summary>
-    /// Get the active subscription for a workspace.
-    /// </summary>
-    [HttpGet("workspace/{workspaceId:guid}")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(
-        Guid workspaceId,
-        CancellationToken cancellationToken)
+    [HttpPost("trial")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> CreateTrialSubscription([FromBody] TrialSubscriptionRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.CreateTrialSubscriptionAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return StatusCode(201, result.Value);
+    }
+
+    [HttpGet("workspace/{workspaceId}")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> GetActiveSubscription(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.GetActiveSubscriptionAsync(workspaceId, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
 
-    /// <summary>
-    /// Get paginated global subscriptions for admins.
-    /// </summary>
     [HttpGet("global")]
-    [Authorize(Roles = "Admin")]
-    public async Task<ActionResult<PagedResult<SubscriptionDto>>> GetGlobalSubscriptions(
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<PaginatedResponse<SubscriptionDto>>> GetGlobalSubscriptions(
+        [FromQuery] PaginationQuery query,
         CancellationToken cancellationToken = default)
     {
-        var result = await _subscriptionService.GetGlobalSubscriptionsAsync(pageNumber, pageSize, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
+        var result = await _subscriptionService.GetGlobalSubscriptionsAsync(query, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
 
-    /// <summary>
-    /// Cancel the active subscription for a workspace.
-    /// </summary>
-    [HttpDelete("workspace/{workspaceId:guid}")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<IActionResult> CancelSubscription(
-        Guid workspaceId,
-        [FromQuery] string? reason,
-        CancellationToken cancellationToken)
+    [HttpDelete("workspace/{workspaceId}")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<IActionResult> CancelSubscription(Guid workspaceId, [FromQuery] string? reason, CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.CancelSubscriptionAsync(workspaceId, reason, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
 
         return NoContent();
     }
 
-    /// <summary>
-    /// Change the active subscription plan for a workspace.
-    /// </summary>
-    [HttpPut("workspace/{workspaceId:guid}/change-plan")]
-    [RequireWorkspaceRole("Owner", "Admin")]
-    public async Task<ActionResult<SubscriptionDto>> ChangeSubscription(
+    [HttpPost("workspace/{workspaceId}/resume")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
         Guid workspaceId,
-        [FromBody] SubscriptionRequest request,
+        [FromBody] ResumeSubscriptionRequest request,
         CancellationToken cancellationToken)
     {
-        if (workspaceId != request.WorkspaceId)
-            return BadRequest(new { Message = "Workspace ID in URL does not match request body." });
-
-        var result = await _subscriptionService.ChangeSubscriptionAsync(request, cancellationToken);
-        if (!result.IsSuccess) return HandleFailure(result);
-
+        var result = await _subscriptionService.ResumeSubscriptionAsync(workspaceId, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
         return Ok(result.Value);
     }
 
-    private ActionResult HandleFailure<T>(Result<T> result) =>
-        result.ErrorCode switch
+    [HttpPut("workspace/{workspaceId}/contract-terms")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<SubscriptionDto>> UpdateContractTerms(
+        Guid workspaceId,
+        [FromBody] UpdateSubscriptionContractTermsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId, request, cancellationToken);
+        if (!result.IsSuccess)
         {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(new { Message = result.Error }),
-            ErrorCodes.BillingSubscriptionAlreadyActive => Conflict(new { Message = result.Error }),
-            ErrorCodes.BillingPlanNotFound => BadRequest(new { Message = result.Error }),
-            _ => StatusCode(500, new { Message = result.Error })
-        };
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
 }

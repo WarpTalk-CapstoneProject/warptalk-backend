@@ -55,7 +55,7 @@ if (Test-Path $envFile) {
         $line = $_.Trim()
         if ($line -and -not $line.StartsWith("#") -and $line -match '=') {
             $key, $value = $line -split '=', 2
-            $env:$key = $value.Trim()
+            Set-Item -Path "Env:\$key" -Value $value.Trim()
         }
     }
 }

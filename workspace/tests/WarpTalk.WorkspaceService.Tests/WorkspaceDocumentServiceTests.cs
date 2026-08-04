@@ -118,7 +118,7 @@ public class WorkspaceDocumentServiceTests
         Assert.NotNull(result.Value);
         Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), result.Value.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), result.Value.IngestionStatus);
-        
+
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(
@@ -286,10 +286,10 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var adminRoleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             Status = WorkspaceDocumentStatus.pending_approval.ToString(),
             IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(),
             StorageKey = "key",
@@ -329,10 +329,10 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var adminRoleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             Status = WorkspaceDocumentStatus.pending_approval.ToString(),
             IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(),
             UploadedBy = Guid.NewGuid()
@@ -364,9 +364,9 @@ public class WorkspaceDocumentServiceTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var userId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
             WorkspaceId = workspaceId,
             Name = "Doc1",
             FileName = "file.pdf",
@@ -402,10 +402,10 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = userId,
             Name = "Doc1",
             FileName = "file.pdf",

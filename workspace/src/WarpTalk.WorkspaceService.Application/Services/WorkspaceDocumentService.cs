@@ -88,8 +88,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
 
             var storageKey = WorkspaceDocumentHelper.GenerateStorageKey(workspaceId, docId, extension);
 
-            var status = isOwnerOrAdmin 
-                ? WorkspaceDocumentStatus.@public 
+            var status = isOwnerOrAdmin
+                ? WorkspaceDocumentStatus.@public
                 : WorkspaceDocumentStatus.pending_approval;
 
             var effectiveIsAiAllowed = request.IsAiAllowed && WorkspaceDocumentHelper.IsAiReadableExtension(extension);
@@ -101,8 +101,8 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
             }
             else
             {
-                ingestionStatus = isOwnerOrAdmin 
-                    ? WorkspaceDocumentIngestionStatus.pending 
+                ingestionStatus = isOwnerOrAdmin
+                    ? WorkspaceDocumentIngestionStatus.pending
                     : WorkspaceDocumentIngestionStatus.awaiting_approval;
             }
 
@@ -365,7 +365,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                     // Toggled to Administrative Document (IsAiAllowed = false)
                     document.AiEligible = false;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
-                    
+
                     // Invalidate and delete existing vectors in Qdrant Vector DB
                     await _eventPublisher.PublishDocumentDeletedAsync(documentId, workspaceId, ct);
                 }
@@ -618,7 +618,7 @@ public class WorkspaceDocumentService : IWorkspaceDocumentService
                 document.Status = WorkspaceDocumentStatus.@public.ToString();
                 document.AiEligible = false;
                 document.IngestionStatus = document.IsAiAllowed
-                    ? WorkspaceDocumentIngestionStatus.pending.ToString() 
+                    ? WorkspaceDocumentIngestionStatus.pending.ToString()
                     : WorkspaceDocumentIngestionStatus.skipped.ToString();
                 document.UpdatedAt = DateTime.UtcNow;
 

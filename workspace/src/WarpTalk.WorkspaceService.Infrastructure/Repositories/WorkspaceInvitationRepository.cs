@@ -30,10 +30,10 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
     {
         return await _dbSet
             .Include(i => i.Workspace)
-            .FirstOrDefaultAsync(i => 
-                i.WorkspaceId == workspaceId && 
-                i.Email.ToLower() == email.ToLower() && 
-                i.Status == InvitationStatus.PENDING.ToString(), 
+            .FirstOrDefaultAsync(i =>
+                i.WorkspaceId == workspaceId &&
+                i.Email.ToLower() == email.ToLower() &&
+                i.Status == InvitationStatus.PENDING.ToString(),
                 ct);
     }
 
@@ -41,8 +41,8 @@ public class WorkspaceInvitationRepository : GenericRepository<WorkspaceInvitati
     {
         return await _dbSet
             .Include(i => i.Workspace)
-            .Where(i => 
-                i.Email.ToLower() == email.ToLower() && 
+            .Where(i =>
+                i.Email.ToLower() == email.ToLower() &&
                 i.Status == InvitationStatus.PENDING.ToString())
             .OrderByDescending(i => i.CreatedAt)
             .ToListAsync(ct);

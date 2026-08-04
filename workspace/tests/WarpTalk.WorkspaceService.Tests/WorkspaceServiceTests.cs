@@ -122,7 +122,7 @@ public class WorkspaceServiceTests
         var request = new CreateWorkspaceRequest("New Enterprise", null, RequireVerifiedDomainForInternal: true);
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(user);
-        
+
         var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
         StubRoleByName("Owner", ownerRole);
 
@@ -180,11 +180,11 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        
+
         // Verify we saved the workspace with VerifiedDomains set to enterprise.com
-        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
             w.Settings.Contains("enterprise.com")), Arg.Any<CancellationToken>());
-        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => 
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd =>
             vd.Domain == "enterprise.com" && vd.Status == "verified"), Arg.Any<CancellationToken>());
     }
 
@@ -256,8 +256,8 @@ public class WorkspaceServiceTests
         Assert.Equal("Personal Team", result.Value.Name);
 
         // Verify we saved the workspace with empty verified domains and RequireVerifiedDomainForInternal = false
-        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
-            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":false") && 
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
+            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":false") &&
             w.Settings.Contains("\"VerifiedDomains\":[]")), Arg.Any<CancellationToken>());
 
         // Verify we did NOT add any WorkspaceVerifiedDomain records
@@ -271,8 +271,8 @@ public class WorkspaceServiceTests
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@deepmind.com" };
         var request = new CreateWorkspaceRequest(
-            "DeepMind Labs", 
-            "https://cdn.com/logo.png", 
+            "DeepMind Labs",
+            "https://cdn.com/logo.png",
             VerifiedDomains: new List<string> { "deepmind.com", "google.com" },
             RequireVerifiedDomainForInternal: true
         );
@@ -289,9 +289,9 @@ public class WorkspaceServiceTests
         Assert.NotNull(result.Value);
 
         // Verify we saved the workspace with both verified domains
-        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => 
-            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":true") && 
-            w.Settings.Contains("deepmind.com") && 
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
+            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":true") &&
+            w.Settings.Contains("deepmind.com") &&
             w.Settings.Contains("google.com")), Arg.Any<CancellationToken>());
 
         // Verify WorkspaceVerifiedDomain records were added for both domains
@@ -306,8 +306,8 @@ public class WorkspaceServiceTests
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@gmail.com" };
         var request = new CreateWorkspaceRequest(
-            "Fake Google", 
-            "https://cdn.com/logo.png", 
+            "Fake Google",
+            "https://cdn.com/logo.png",
             VerifiedDomains: new List<string> { "gmail.com" }, // Public domain
             RequireVerifiedDomainForInternal: true
         );
@@ -379,12 +379,12 @@ public class WorkspaceServiceTests
             .Returns(member);
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace 
-            { 
-                Id = workspaceId, 
-                Name = "DeepMind", 
-                Slug = "deepmind", 
-                Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" 
+            .Returns(new Workspace
+            {
+                Id = workspaceId,
+                Name = "DeepMind",
+                Slug = "deepmind",
+                Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}"
             });
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
@@ -510,6 +510,53 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
     }
 
+    [Fact]
+    public async Task GetWorkspaceByIdForAdminAsync_ShouldReturnWorkspaceWithoutMembership()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "FitPick",
+            Slug = "fitpick",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+
+        // Act
+        var result = await _workspaceService.GetWorkspaceByIdForAdminAsync(workspaceId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Equal("FitPick", result.Value.Name);
+        Assert.Equal("admin", result.Value.Role);
+        await _workspaceMemberRepository.DidNotReceive().FirstOrDefaultAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetWorkspaceByIdForAdminAsync_ShouldFail_WhenWorkspaceNotFound()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((Workspace?)null);
+
+        // Act
+        var result = await _workspaceService.GetWorkspaceByIdForAdminAsync(workspaceId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
     #endregion
 
     #region Workspace Settings Tests
@@ -521,7 +568,7 @@ public class WorkspaceServiceTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId };
-        
+
         var workspace = new Workspace
         {
             Id = workspaceId,
@@ -532,16 +579,16 @@ public class WorkspaceServiceTests
             .Returns(member);
         _authIdentity.GetRoleByIdAsync(member.RoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = member.RoleId, Name = "Admin" });
-        
+
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
 
         _workspaceRepository.GetSettingsAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceConfiguration 
-            { 
-                DefaultLanguage = "vi", 
-                Timezone = "Asia/Ho_Chi_Minh", 
-                VoiceCloningEnabled = false 
+            .Returns(new WorkspaceConfiguration
+            {
+                DefaultLanguage = "vi",
+                Timezone = "Asia/Ho_Chi_Minh",
+                VoiceCloningEnabled = false
             });
 
         _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
@@ -565,7 +612,7 @@ public class WorkspaceServiceTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId };
-        
+
         var workspace = new Workspace
         {
             Id = workspaceId,
@@ -576,7 +623,7 @@ public class WorkspaceServiceTests
             .Returns(member);
         _authIdentity.GetRoleByIdAsync(member.RoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = member.RoleId, Name = "Owner" });
-        
+
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
 

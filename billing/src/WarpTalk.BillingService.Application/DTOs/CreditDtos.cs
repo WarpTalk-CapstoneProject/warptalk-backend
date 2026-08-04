@@ -1,5 +1,7 @@
 using System;
 using System.ComponentModel.DataAnnotations;
+using WarpTalk.Shared;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -14,25 +16,30 @@ public record CreditBalanceDto(
     DateTime CurrentPeriodEnd
 );
 
-
 public record ConsumeCreditsRequest(
     [Required]
-    [Range(1, int.MaxValue, ErrorMessage = "Amount must be at least 1.")]
+    Guid WorkspaceId,
+
+    [Required]
+    [Range(1, int.MaxValue, ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.AmountGreaterThanZero)]
     int Amount,
 
-    [Required(ErrorMessage = "ReferenceType is required.")]
-    [MaxLength(100)]
+    [Required(ErrorMessage = WarpTalk.Shared.ApiMessageConstants.ValidationMessages.ReferenceTypeRequired)]
     string ReferenceType,
 
-    Guid? ReferenceId
-);
+    Guid? ReferenceId,
+
+    string? IdempotencyKey = null
+) : IWorkspaceScopedRequest;
+
+
 
 public record CreditTransactionDto(
     Guid Id,
     int Amount,        // negative = consumption, positive = top-up
-    string Type,          // "consumption" | "top_up"
+    string Type,          // Use TransactionConstants.TransactionTypes ("consume" | "top_up" | "adjustment" | "refund")
     string? Description,
-    string? ReferenceType,
+    string? ReferenceType, // Use TransactionConstants.ReferenceTypes
     Guid? ReferenceId,
     int BalanceAfter,
     DateTime CreatedAt,
@@ -55,18 +62,19 @@ public record CreditTransactionDto(
     }
 }
 
-public record AdjustCreditsRequest(
-    [property: Required]
-    [property: Range(-1_000_000, 1_000_000)]
-    int Amount,
-    [property: Required]
-    [property: MaxLength(500)]
-    string Reason
-);
+
 
 public record UsageAlertDto(
     Guid WorkspaceId,
     string WorkspaceName,
     int ConsumedCreditsIn24h,
     string Reason
+);
+
+public record StripeSubscriptionTransactionRequest(
+    Domain.Entities.Subscription Subscription,
+    Domain.Entities.Plan Plan,
+    string PaymentType,
+    Guid UserId,
+    Guid ReferenceId
 );

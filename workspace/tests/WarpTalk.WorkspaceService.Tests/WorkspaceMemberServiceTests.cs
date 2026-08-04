@@ -69,9 +69,9 @@ public class WorkspaceMemberServiceTests
         var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: "John");
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace 
-            { 
-                Id = workspaceId, 
+            .Returns(new Workspace
+            {
+                Id = workspaceId,
                 Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}"
             });
 
@@ -87,13 +87,13 @@ public class WorkspaceMemberServiceTests
         var memberRoleId = Guid.NewGuid();
         var members = new List<WorkspaceMember>
         {
-            new() 
-            { 
-                Id = Guid.NewGuid(), 
-                WorkspaceId = workspaceId, 
-                UserId = memberUserId, 
+            new()
+            {
+                Id = Guid.NewGuid(),
+                WorkspaceId = workspaceId,
+                UserId = memberUserId,
                 RoleId = memberRoleId,
-                Status = "Active", 
+                Status = "Active",
                 JoinedAt = DateTime.UtcNow,
                 MembershipType = "Internal"
             }
@@ -226,7 +226,7 @@ public class WorkspaceMemberServiceTests
         var workspaceId = Guid.NewGuid();
         var targetUserId = Guid.NewGuid();
         var ownerUserId = Guid.NewGuid();
-        
+
         var workspace = new Workspace { Id = workspaceId };
         var ownerRoleId = Guid.NewGuid();
         var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
@@ -234,7 +234,7 @@ public class WorkspaceMemberServiceTests
         var targetMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = targetUserId, RoleId = targetRoleId };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         // Mock exec user (owner)
         _workspaceMemberRepository.FirstOrDefaultAsync(
             Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(ownerMember)),
@@ -266,7 +266,7 @@ public class WorkspaceMemberServiceTests
         var workspaceId = Guid.NewGuid();
         var ownerUserId = Guid.NewGuid();
         var adminUserId = Guid.NewGuid();
-        
+
         var workspace = new Workspace { Id = workspaceId };
         var adminRoleId = Guid.NewGuid();
         var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
@@ -274,7 +274,7 @@ public class WorkspaceMemberServiceTests
         var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         _workspaceMemberRepository.FirstOrDefaultAsync(
             Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(adminMember)),
             "", Arg.Any<CancellationToken>()).Returns(adminMember);
@@ -300,13 +300,13 @@ public class WorkspaceMemberServiceTests
         // Arrange
         var workspaceId = Guid.NewGuid();
         var ownerUserId = Guid.NewGuid();
-        
+
         var workspace = new Workspace { Id = workspaceId };
         var ownerRoleId = Guid.NewGuid();
         var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         _workspaceMemberRepository.FirstOrDefaultAsync(
             Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(ownerMember)),
             "", Arg.Any<CancellationToken>()).Returns(ownerMember);
@@ -332,13 +332,13 @@ public class WorkspaceMemberServiceTests
         // Arrange
         var workspaceId = Guid.NewGuid();
         var ownerUserId = Guid.NewGuid();
-        
+
         var workspace = new Workspace { Id = workspaceId };
         var ownerRoleId = Guid.NewGuid();
         var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         _workspaceMemberRepository.FirstOrDefaultAsync(
             Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(ownerMember)),
             "", Arg.Any<CancellationToken>()).Returns(ownerMember);
@@ -557,7 +557,7 @@ public class WorkspaceMemberServiceTests
         var newOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = newOwnerId, MembershipType = "Internal" };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         // Mock finding new owner member
         _workspaceMemberRepository.FirstOrDefaultAsync(
             Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(newOwnerMember)),

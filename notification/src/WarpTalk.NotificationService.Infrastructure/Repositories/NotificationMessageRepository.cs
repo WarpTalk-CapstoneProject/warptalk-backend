@@ -13,9 +13,9 @@ public class NotificationMessageRepository : GenericRepository<NotificationMessa
     {
         var count = await CountAsync(n => n.UserId == userId);
         var items = await FindWithPaginationAsync(
-            n => n.UserId == userId, 
-            (page - 1) * pageSize, 
-            pageSize, 
+            n => n.UserId == userId,
+            (page - 1) * pageSize,
+            pageSize,
             q => q.OrderByDescending(n => n.CreatedAt)
         );
         return (items, count);
@@ -38,7 +38,7 @@ public class NotificationMessageRepository : GenericRepository<NotificationMessa
             .ExecuteUpdateAsync(s => s
                 .SetProperty(n => n.IsRead, true)
                 .SetProperty(n => n.ReadAt, DateTime.UtcNow), ct);
-                
+
         return rows > 0;
     }
 

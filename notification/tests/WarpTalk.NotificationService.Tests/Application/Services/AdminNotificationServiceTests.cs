@@ -41,7 +41,7 @@ public class AdminNotificationServiceTests
         // Arrange
         var adminId = Guid.NewGuid();
         var dto = new CreateAdminNotificationDto("T", "C", "INVALID", "BROADCAST", null, null);
-        
+
         _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult(new[] { new ValidationFailure("Type", "Invalid type") }));
 
@@ -60,10 +60,10 @@ public class AdminNotificationServiceTests
         // Arrange
         var adminId = Guid.NewGuid();
         var dto = new CreateAdminNotificationDto(
-            "Title", "Content", NotificationConstants.TypeSystem, 
-            NotificationConstants.TargetModeSpecificUsers, 
+            "Title", "Content", NotificationConstants.TypeSystem,
+            NotificationConstants.TargetModeSpecificUsers,
             new List<Guid>(), null); // Empty list, which will fail the Helper
-        
+
         _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult());
 
@@ -72,9 +72,9 @@ public class AdminNotificationServiceTests
         // The FluentValidation catches empty. But let's say the Helper catches > 10,000.
         var tooManyUsers = new List<Guid>();
         for (int i = 0; i < 10001; i++) tooManyUsers.Add(Guid.NewGuid());
-        
+
         var badDto = dto with { SpecificUserIds = tooManyUsers };
-        
+
         _mockValidator.Setup(v => v.ValidateAsync(badDto, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult()); // Assume validator passed it, but helper fails
 
@@ -93,9 +93,9 @@ public class AdminNotificationServiceTests
         // Arrange
         var adminId = Guid.NewGuid();
         var dto = new CreateAdminNotificationDto(
-            "Valid Title", "Valid Content", NotificationConstants.TypePromotion, 
+            "Valid Title", "Valid Content", NotificationConstants.TypePromotion,
             NotificationConstants.TargetModeBroadcast, null, null);
-            
+
         _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult());
 
@@ -109,13 +109,13 @@ public class AdminNotificationServiceTests
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
         Assert.Equal(NotificationConstants.StatusPending, result.Value.Status);
-        
+
         mockRepo.Verify(r => r.AddAsync(It.IsAny<AdminNotification>(), It.IsAny<CancellationToken>()), Times.Once);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
-        
+
         _mockPublisher.Verify(p => p.PublishAsync(
-            "admin-notifications-delivery", 
-            It.IsAny<DeliveryEventPayload>(), 
+            "admin-notifications-delivery",
+            It.IsAny<DeliveryEventPayload>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -126,10 +126,10 @@ public class AdminNotificationServiceTests
         var adminId = Guid.NewGuid();
         var userIds = new List<Guid>();
         for (int i = 0; i < 2500; i++) userIds.Add(Guid.NewGuid());
-        
+
         var dto = new CreateAdminNotificationDto(
             "Title", "Content", NotificationConstants.TypeSystem, NotificationConstants.TargetModeSpecificUsers, userIds, null);
-        
+
         _mockValidator.Setup(v => v.ValidateAsync(dto, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ValidationResult());
 
@@ -141,10 +141,10 @@ public class AdminNotificationServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        
+
         // 2500 users chunked by 1000 = 3 chunks (1000, 1000, 500)
         _mockPublisher.Verify(p => p.PublishAsync(
-            "admin-notifications-delivery", 
+            "admin-notifications-delivery",
             It.IsAny<DeliveryEventPayload>(),
             It.IsAny<CancellationToken>()), Times.Exactly(3));
     }

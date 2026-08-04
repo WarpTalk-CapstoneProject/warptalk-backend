@@ -19,7 +19,7 @@ public sealed class OutboxRetentionContractTests
         var workspaceMigration = File.ReadAllText(workspaceMigrationPath);
         var billingWorker = File.ReadAllText(Path.Combine(
             root,
-            "billing/src/WarpTalk.BillingService.API/Workers/BillingOutboxWorker.cs"));
+            "billing/src/WarpTalk.BillingService.Infrastructure/Workers/BillingOutboxWorker.cs"));
         var workspaceWorker = File.ReadAllText(Path.Combine(
             root,
             "workspace/src/WarpTalk.WorkspaceService.Infrastructure/BackgroundServices/WorkspaceOutboxWorker.cs"));

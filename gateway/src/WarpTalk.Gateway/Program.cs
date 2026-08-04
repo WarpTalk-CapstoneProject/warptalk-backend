@@ -1,15 +1,18 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
 using System.Net;
+using System.Text;
 using System.Threading.RateLimiting;
-using WarpTalk.Gateway.Configuration;
+using WarpTalk.Shared.Extensions;
+using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
-using WarpTalk.Gateway.Middleware;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
-using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 using Yarp.ReverseProxy.Transforms;
 
@@ -20,12 +23,28 @@ builder.Services.AddWarpTalkObservability(
     "warptalk-gateway");
 
 // 1. Configure JWT Authentication
-builder.Services.AddWarpTalkJwtAuthentication(
-    builder.Configuration,
-    builder.Environment,
-    options =>
+var jwtSettings = builder.Configuration.GetSection("Jwt");
+var secretKey = jwtSettings["Secret"];
+
+if (string.IsNullOrEmpty(secretKey))
+{
+    throw new InvalidOperationException("JWT Secret is not configured.");
+}
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
     {
-        options.TokenValidationParameters.ClockSkew = TimeSpan.Zero;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = jwtSettings["Issuer"],
+            ValidAudience = jwtSettings["Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+            ClockSkew = TimeSpan.Zero
+        };
 
         // SignalR: Extract JWT from query string for WebSocket handshake.
         // Browsers cannot send Authorization headers during WebSocket upgrade requests,
@@ -56,41 +75,6 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("RequireAuth", policy => policy.RequireAuthenticatedUser());
 });
 
-builder.Services.Configure<ForwardedHeadersOptions>(options =>
-{
-    options.ForwardedHeaders =
-        ForwardedHeaders.XForwardedFor |
-        ForwardedHeaders.XForwardedProto;
-    options.ForwardLimit = 2;
-    options.RequireHeaderSymmetry = true;
-
-    foreach (var value in builder.Configuration
-        .GetSection("ForwardedHeaders:KnownProxies")
-        .Get<string[]>() ?? [])
-    {
-        if (!IPAddress.TryParse(value, out var address))
-        {
-            throw new InvalidOperationException(
-                $"ForwardedHeaders:KnownProxies contains invalid IP address '{value}'.");
-        }
-
-        options.KnownProxies.Add(address);
-    }
-
-    foreach (var value in builder.Configuration
-        .GetSection("ForwardedHeaders:KnownNetworks")
-        .Get<string[]>() ?? [])
-    {
-        if (!System.Net.IPNetwork.TryParse(value, out var network))
-        {
-            throw new InvalidOperationException(
-                $"ForwardedHeaders:KnownNetworks contains invalid CIDR '{value}'.");
-        }
-
-        options.KnownIPNetworks.Add(network);
-    }
-});
-
 // 2. Configure CORS (with configurable origins)
 var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
     ?? ["https://warptalk.vn", "https://admin.warptalk.vn"];
@@ -117,66 +101,54 @@ builder.Services.AddCors(options =>
 });
 
 // 3. Configure Rate Limiting
-var rateLimits = builder.Configuration
-    .GetSection(GatewayRateLimitOptions.SectionName)
-    .Get<GatewayRateLimitOptions>() ?? new GatewayRateLimitOptions();
-rateLimits.Validate();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost;
+
+    foreach (var proxy in builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+    {
+        if (IPAddress.TryParse(proxy, out var address))
+        {
+            options.KnownProxies.Add(address);
+        }
+    }
+
+    foreach (var network in builder.Configuration.GetSection("ForwardedHeaders:KnownNetworks").Get<string[]>() ?? [])
+    {
+        if (System.Net.IPNetwork.TryParse(network, out var parsedNetwork))
+        {
+            options.KnownIPNetworks.Add(parsedNetwork);
+        }
+    }
+});
 
 builder.Services.AddRateLimiter(options =>
 {
-    var ipLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: RequestRateLimitPartitionKeys.Ip(httpContext),
-            factory: _ => new FixedWindowRateLimiterOptions
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? httpContext.Request.Headers.Host.ToString(),
+            factory: partition => new FixedWindowRateLimiterOptions
             {
                 AutoReplenishment = true,
-                PermitLimit = rateLimits.IpPermitLimit,
-                Window = TimeSpan.FromSeconds(rateLimits.WindowSeconds),
-                QueueLimit = 0
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1)
             }));
-    var userLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: RequestRateLimitPartitionKeys.User(httpContext),
-            factory: _ => new FixedWindowRateLimiterOptions
-            {
-                AutoReplenishment = true,
-                PermitLimit = rateLimits.UserPermitLimit,
-                Window = TimeSpan.FromSeconds(rateLimits.WindowSeconds),
-                QueueLimit = 0
-            }));
-    var workspaceLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-    {
-        var workspace = RequestRateLimitPartitionKeys.Workspace(httpContext);
-        return workspace is null
-            ? RateLimitPartition.GetNoLimiter("no-workspace")
-            : RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: workspace,
-                factory: _ => new FixedWindowRateLimiterOptions
-                {
-                    AutoReplenishment = true,
-                    PermitLimit = rateLimits.WorkspacePermitLimit,
-                    Window = TimeSpan.FromSeconds(rateLimits.WindowSeconds),
-                    QueueLimit = 0
-                });
-    });
-    options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
-        ipLimiter,
-        userLimiter,
-        workspaceLimiter);
-    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
     // Specific policy for login
     options.AddFixedWindowLimiter("LoginPolicy", opt =>
     {
-        opt.PermitLimit = rateLimits.LoginPermitLimit;
-        opt.Window = TimeSpan.FromSeconds(rateLimits.WindowSeconds);
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(1);
     });
 
     // Specific policy for inbox
     options.AddFixedWindowLimiter("InboxPolicy", opt =>
     {
-        opt.PermitLimit = rateLimits.InboxPermitLimit;
-        opt.Window = TimeSpan.FromSeconds(rateLimits.WindowSeconds);
+        opt.PermitLimit = 30;
+        opt.Window = TimeSpan.FromMinutes(1);
     });
 });
 
@@ -215,12 +187,6 @@ if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
 }
 if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
 {
-    if (builder.Environment.IsProduction())
-    {
-        throw new InvalidOperationException(
-            "Redis:ConnectionString or SignalR:Redis must be configured in Production.");
-    }
-
     redisStreamConnectionString = "localhost:6379";
 }
 
@@ -232,54 +198,51 @@ builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
 builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 builder.Services.AddHostedService<TranslationRoomRedisSubscriberService>();
+builder.Services.AddHostedService<WarpTalk.Gateway.Services.BillingRedisSubscriberService>();
 
-// 8. Configure liveness separately from dependency-aware readiness.
+// 8. Configure Health Checks
 builder.Services
     .AddHealthChecks()
-    .AddCheck(
-        "self",
-        () => Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Healthy(),
-        tags: ["live"])
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"])
     .AddWarpTalkRedisReadiness("gateway-redis");
 
-// 9. Configure authenticated, deadline-bound and retryable internal gRPC clients.
+// 9. Configure gRPC Clients & Server
+builder.Services.AddGrpc();
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
 {
-    o.Address = builder.Configuration.GetRequiredServiceUri(
-        builder.Environment,
-        "GrpcUrls:NotificationServiceUrl",
-        "http://localhost:50054");
+    var address = builder.Configuration["GrpcUrls:NotificationServiceUrl"]
+                  ?? "http://localhost:50054";
+    o.Address = new Uri(address);
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceClient>(o =>
 {
-    o.Address = builder.Configuration.GetRequiredServiceUri(
-        builder.Environment,
-        "GrpcUrls:WorkspaceServiceUrl",
-        "http://localhost:50056");
+    var address = builder.Configuration["GrpcUrls:WorkspaceServiceUrl"]
+                  ?? "http://localhost:50056";
+    o.Address = new Uri(address);
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient>(o =>
 {
-    o.Address = builder.Configuration.GetRequiredServiceUri(
-        builder.Environment,
-        "GrpcUrls:TranslationRoomServiceUrl",
-        "http://localhost:50052");
+    var address = builder.Configuration["GrpcUrls:TranslationRoomServiceUrl"]
+                  ?? "http://localhost:50052";
+    o.Address = new Uri(address);
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-app.UseForwardedHeaders();
 app.UseWebSockets();
+app.UseForwardedHeaders();
 app.UseCors();
 
 // Security Headers Middleware
 // [Security] Set HTTP response headers to protect against XSS, clickjacking, and MIME-sniffing.
-app.Use(async (context, next) => {
+app.Use(async (context, next) =>
+{
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
@@ -287,9 +250,9 @@ app.Use(async (context, next) => {
     await next();
 });
 
-app.UseAuthentication();
-app.UseMiddleware<SecurityAuditMiddleware>();
 app.UseRateLimiter();
+
+app.UseAuthentication();
 app.UseAuthorization();
 
 // Map YARP
@@ -302,20 +265,18 @@ app.MapHub<TranslationRoomHub>("/hubs/translation-room")
 app.MapHub<NotificationHub>("/hubs/notification")
     .RequireAuthorization("RequireAuth");
 
+app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
+    .RequireAuthorization("RequireAuth");
 
 
-// Standard platform probes. Keep the two legacy aliases during the migration
-// window so existing local tooling does not break.
-app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+
+// Map Health Checks
+app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("live")
 });
-app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-{
-    Predicate = check => check.Tags.Contains("ready")
-});
-app.MapHealthChecks("/health");
-app.MapHealthChecks("/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready")
 });
