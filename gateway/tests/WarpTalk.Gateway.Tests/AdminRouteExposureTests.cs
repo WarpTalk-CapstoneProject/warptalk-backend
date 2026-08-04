@@ -14,6 +14,7 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/notifications/{**catch-all}",
         "/api/v1/admin/global-glossary/{**catch-all}",
         "/api/v1/admin/workspaces/{**catch-all}",
+        "/api/v1/admin/audit-log/{**catch-all}",
     ];
 
     private static JsonElement Routes()

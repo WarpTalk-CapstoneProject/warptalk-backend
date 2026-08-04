@@ -28,6 +28,8 @@ public class AdminWorkspaceServiceTests
     private readonly IGenericRepository<WorkspaceAdminAction> _adminActionRepository =
         Substitute.For<IGenericRepository<WorkspaceAdminAction>>();
     private readonly IAuthIdentityClient _authIdentityClient = Substitute.For<IAuthIdentityClient>();
+    private readonly IAdminAuditLogRepository _adminAuditLogRepository =
+        Substitute.For<IAdminAuditLogRepository>();
     private readonly AdminWorkspaceService _service;
 
     public AdminWorkspaceServiceTests()
@@ -37,10 +39,14 @@ public class AdminWorkspaceServiceTests
         _adminActionRepository
             .FindAsync(Arg.Any<Expression<Func<WorkspaceAdminAction, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Array.Empty<WorkspaceAdminAction>());
+        _adminAuditLogRepository
+            .GetForEntityAsync(Arg.Any<string>(), Arg.Any<Guid>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceAdminAction>());
 
         _service = new AdminWorkspaceService(
             _unitOfWork,
             _authIdentityClient,
+            _adminAuditLogRepository,
             Substitute.For<ILogger<AdminWorkspaceService>>(),
             new FixedTimeProvider(Now));
     }
@@ -228,9 +234,10 @@ public class AdminWorkspaceServiceTests
             PerformedBy = Guid.NewGuid(),
             PerformedAt = Now.AddDays(-1),
         };
-        _adminActionRepository
-            .FindAsync(Arg.Any<Expression<Func<WorkspaceAdminAction, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(new[] { suspendAction, reactivateAction });
+        // The audit repository orders newest-first in SQL, so the stub returns that order.
+        _adminAuditLogRepository
+            .GetForEntityAsync(Arg.Any<string>(), id, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceAdminAction> { reactivateAction, suspendAction });
         _workspaceRepository.GetAdminDetailAsync(id, Arg.Any<CancellationToken>())
             .Returns(Row(id, Guid.NewGuid(), isActive: true));
 

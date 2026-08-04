@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Contracts.Admin;
+using WarpTalk.Shared.Events;
 using WarpTalk.WorkspaceService.Application.DTOs.Admin;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Mappers.Admin;
@@ -43,17 +45,20 @@ public class AdminWorkspaceService : IAdminWorkspaceService
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentityClient;
+    private readonly IAdminAuditLogRepository _adminAuditLogRepository;
     private readonly ILogger<AdminWorkspaceService> _logger;
     private readonly TimeProvider _timeProvider;
 
     public AdminWorkspaceService(
         IUnitOfWork unitOfWork,
         IAuthIdentityClient authIdentityClient,
+        IAdminAuditLogRepository adminAuditLogRepository,
         ILogger<AdminWorkspaceService> logger,
         TimeProvider? timeProvider = null)
     {
         _unitOfWork = unitOfWork;
         _authIdentityClient = authIdentityClient;
+        _adminAuditLogRepository = adminAuditLogRepository;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -206,18 +211,28 @@ public class AdminWorkspaceService : IAdminWorkspaceService
             workspace.UpdatedBy = actorId;
             _unitOfWork.WorkspaceRepository.Update(workspace);
 
+            // Written directly rather than published: this service owns the audit store, so
+            // the row lands in the same transaction as the lifecycle change (WT-210).
             await _unitOfWork.WorkspaceAdminActionRepository.AddAsync(
                 new WorkspaceAdminAction
                 {
                     Id = Guid.NewGuid(),
+                    SourceService = AdminAuditSources.WorkspaceService,
                     WorkspaceId = workspaceId,
+                    EntityType = AdminAuditEntityTypes.Workspace,
+                    EntityId = workspaceId,
                     Action = suspend
                         ? WorkspaceAdminActionTypes.Suspend
                         : WorkspaceAdminActionTypes.Reactivate,
                     Reason = trimmedReason,
+                    Result = AdminAuditResults.Succeeded,
                     PerformedBy = actorId,
                     PerformedAt = now,
                     CorrelationId = correlationId,
+                    BeforeSummary = JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["status"] = suspend ? "active" : "suspended" }),
+                    AfterSummary = JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["status"] = suspend ? "suspended" : "active" }),
                 },
                 ct);
 
@@ -254,11 +269,10 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         if (row is null) return null;
 
         var owner = await _authIdentityClient.GetUserByIdAsync(row.OwnerId, ct);
-        var history = (await _unitOfWork.WorkspaceAdminActionRepository.FindAsync(
-                action => action.WorkspaceId == workspaceId, "", ct))
-            .OrderByDescending(action => action.PerformedAt)
-            .Take(LifecycleHistoryLimit)
-            .ToList();
+        // Ordered and limited in SQL by the audit repository rather than in memory, and scoped
+        // by entity so a platform-wide action never leaks into a workspace's history.
+        var history = await _adminAuditLogRepository.GetForEntityAsync(
+            AdminAuditEntityTypes.Workspace, workspaceId, LifecycleHistoryLimit, ct);
 
         return AdminWorkspaceMapper.ToDetail(row, owner, history);
     }
