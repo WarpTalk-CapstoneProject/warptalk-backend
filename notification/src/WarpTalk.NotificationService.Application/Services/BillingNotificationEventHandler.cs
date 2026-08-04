@@ -17,10 +17,8 @@ public sealed class BillingNotificationEventHandler(
         if (!IsSupported(message.EventType))
             return false;
 
-        var inboxRepository = unitOfWork.Repository<NotificationInboxMessage>();
-        var existing = await inboxRepository.FindAsync(
-            receipt => receipt.EventId == message.EventId && receipt.Consumer == ConsumerName);
-        if (existing.Any())
+        var inboxRepository = unitOfWork.NotificationInboxMessageRepository;
+        if (await inboxRepository.HasProcessedAsync(message.EventId, ConsumerName, cancellationToken))
             return false;
 
         var envelope = JsonSerializer.Deserialize<EventEnvelope<BillingPaymentEventPayload>>(
@@ -43,7 +41,7 @@ public sealed class BillingNotificationEventHandler(
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         };
-        await unitOfWork.Repository<NotificationMessage>().AddAsync(notification);
+        await unitOfWork.NotificationMessageRepository.AddAsync(notification);
         await inboxRepository.AddAsync(new NotificationInboxMessage
         {
             EventId = message.EventId,

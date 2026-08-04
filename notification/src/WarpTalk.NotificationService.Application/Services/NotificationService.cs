@@ -26,7 +26,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPreferenceDto>> GetPreferencesAsync(Guid userId, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationPreference>();
+        var repo = _unitOfWork.NotificationPreferenceRepository;
 
         // We do a simple fallback if multiple matching items exist
         // Real implementation usually handles SingleOrDefault correctly
@@ -54,7 +54,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationPreferenceDto>> UpdatePreferencesAsync(Guid userId, UpdateNotificationPreferenceRequest request, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationPreference>();
+        var repo = _unitOfWork.NotificationPreferenceRepository;
         var prefs = await repo.FindAsync(p => p.UserId == userId);
         var pref = prefs.FirstOrDefault();
 
@@ -111,7 +111,7 @@ public class NotificationService : INotificationService
 
     public async Task<Result<NotificationMessageDto>> CreateNotificationAsync(CreateNotificationMessageDto dto, CancellationToken ct = default)
     {
-        var repo = _unitOfWork.Repository<NotificationMessage>();
+        var repo = _unitOfWork.NotificationMessageRepository;
         var notification = NotificationMessageMapper.ToEntity(dto);
 
         await repo.AddAsync(notification);
