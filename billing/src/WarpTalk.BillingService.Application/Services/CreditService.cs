@@ -20,15 +20,18 @@ public class CreditService : ICreditService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<CreditService> _logger;
     private readonly IUsageSettlementService _settlementService;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public CreditService(
         IUnitOfWork unitOfWork,
         ILogger<CreditService> logger,
-        IUsageSettlementService settlementService)
+        IUsageSettlementService settlementService,
+        IWorkspaceClient workspaceClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _settlementService = settlementService;
+        _workspaceClient = workspaceClient;
     }
 
 
@@ -173,8 +176,11 @@ public class CreditService : ICreditService
 
             if (workspaceIds.Length > 0)
             {
-                var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames, d => d.WorkspaceId, (d, name) => d with { WorkspaceName = name });
+                var namesResult = await _workspaceClient.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
+                if (namesResult.IsSuccess)
+                    dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, namesResult.Value!, d => d.WorkspaceId, (d, name) => d with { WorkspaceName = name });
+                else
+                    _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNames);
             }
         }
         catch (Exception wsEx)

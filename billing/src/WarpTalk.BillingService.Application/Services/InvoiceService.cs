@@ -18,15 +18,18 @@ public class InvoiceService : IInvoiceService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<InvoiceService> _logger;
     private readonly IStripePaymentService _stripePaymentService;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public InvoiceService(
         IUnitOfWork unitOfWork,
         ILogger<InvoiceService> logger,
-        IStripePaymentService stripePaymentService)
+        IStripePaymentService stripePaymentService,
+        IWorkspaceClient workspaceClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _stripePaymentService = stripePaymentService;
+        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<PaginatedResponse<InvoiceDto>>> GetInvoicesAsync(
@@ -61,14 +64,17 @@ public class InvoiceService : IInvoiceService
 
             var dtos = page.Items.Select(i => i.ToDto(i.Payment.Subscription.WorkspaceId)).ToList();
 
-            // Resolve workspace names cross-schema
+            // Resolve workspace names via workspace-service (billing must not read workspace schema)
             try
             {
                 var workspaceIds = BillingQueryHelper.GetWorkspaceIds(page.Items, i => i.Payment.Subscription.WorkspaceId);
                 if (workspaceIds.Length > 0)
                 {
-                    var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                    dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, workspaceNames, i => Guid.TryParse(i.WorkspaceId, out var wId) ? wId : (Guid?)null, (i, name) => i with { WorkspaceName = name });
+                    var namesResult = await _workspaceClient.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
+                    if (namesResult.IsSuccess)
+                        dtos = BillingQueryHelper.ApplyWorkspaceNames(dtos, namesResult.Value!, i => Guid.TryParse(i.WorkspaceId, out var wId) ? wId : (Guid?)null, (i, name) => i with { WorkspaceName = name });
+                    else
+                        _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesGlobalInvoices);
                 }
             }
             catch (Exception ex)

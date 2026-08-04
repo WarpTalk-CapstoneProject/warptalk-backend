@@ -16,19 +16,6 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
     {
     }
 
-    public async Task<Dictionary<Guid, string>> GetWorkspaceNamesAsync(IEnumerable<Guid> workspaceIds, CancellationToken cancellationToken = default)
-    {
-        var idsArray = workspaceIds.ToArray();
-        if (idsArray.Length == 0)
-            return new Dictionary<Guid, string>();
-
-        var results = await _context.Database
-            .SqlQuery<WorkspaceNameResult>($"SELECT id AS \"Id\", name AS \"Name\" FROM workspace.workspaces WHERE id = ANY({idsArray})")
-            .ToListAsync(cancellationToken);
-
-        return results.ToDictionary(r => r.Id, r => r.Name);
-    }
-
     public async Task<PagedResult<CreditTransaction>> GetHistoryPageAsync(CreditTransactionHistoryFilter filter, CancellationToken cancellationToken = default)
     {
         var normalized = RepositoryPaging.Normalize(filter.Page);
@@ -81,10 +68,4 @@ public class CreditTransactionRepository : GenericRepository<CreditTransaction>,
 
         return filtered;
     }
-}
-
-internal sealed class WorkspaceNameResult
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = string.Empty;
 }

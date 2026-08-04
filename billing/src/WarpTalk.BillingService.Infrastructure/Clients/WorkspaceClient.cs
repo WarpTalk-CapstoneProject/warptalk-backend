@@ -45,6 +45,36 @@ public class WorkspaceClient : IWorkspaceClient
         }
     }
 
+    public async Task<Result<Dictionary<Guid, string>>> GetWorkspaceNamesAsync(
+        IEnumerable<Guid> workspaceIds, CancellationToken cancellationToken = default)
+    {
+        var distinctIds = workspaceIds.Distinct().ToArray();
+        if (distinctIds.Length == 0)
+            return Result.Success(new Dictionary<Guid, string>());
+
+        try
+        {
+            var request = new GetWorkspaceNamesRequest();
+            request.WorkspaceIds.AddRange(distinctIds.Select(id => id.ToString()));
+
+            var response = await _grpcClient.GetWorkspaceNamesAsync(request, cancellationToken: cancellationToken);
+
+            var names = new Dictionary<Guid, string>();
+            foreach (var item in response.Workspaces)
+            {
+                if (Guid.TryParse(item.WorkspaceId, out var workspaceId))
+                    names[workspaceId] = item.WorkspaceName;
+            }
+
+            return Result.Success(names);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNames);
+            return Result.Failure<Dictionary<Guid, string>>(ex.Message, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<bool>> VerifyWorkspaceRolesAsync(
         Guid workspaceId, Guid userId, params string[] allowedRoles)
     {

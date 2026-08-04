@@ -17,13 +17,16 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<BillingAnalyticsService> _logger;
+    private readonly IWorkspaceClient _workspaceClient;
 
     public BillingAnalyticsService(
         IUnitOfWork unitOfWork,
-        ILogger<BillingAnalyticsService> logger)
+        ILogger<BillingAnalyticsService> logger,
+        IWorkspaceClient workspaceClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
+        _workspaceClient = workspaceClient;
     }
 
     public async Task<Result<BillingReportDto>> GetBillingReportAsync(Guid workspaceId, BillingReportQuery query, CancellationToken cancellationToken = default)
@@ -249,20 +252,28 @@ public class BillingAnalyticsService : IBillingAnalyticsService
                 try
                 {
                     var ids = topWorkspaces.Select(w => w.WorkspaceId).Distinct().ToArray();
-                    var workspaceNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(ids, cancellationToken);
-                    var resolvedTopWorkspaces = new List<TopWorkspaceDto>();
-                    foreach (var tw in topWorkspaces)
+                    var namesResult = await _workspaceClient.GetWorkspaceNamesAsync(ids, cancellationToken);
+                    if (!namesResult.IsSuccess)
                     {
-                        if (workspaceNames.TryGetValue(tw.WorkspaceId, out var realName))
-                        {
-                            resolvedTopWorkspaces.Add(tw with { WorkspaceName = realName });
-                        }
-                        else
-                        {
-                            resolvedTopWorkspaces.Add(tw);
-                        }
+                        _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesTopWorkspaces);
                     }
-                    topWorkspaces = resolvedTopWorkspaces;
+                    else
+                    {
+                        var workspaceNames = namesResult.Value!;
+                        var resolvedTopWorkspaces = new List<TopWorkspaceDto>();
+                        foreach (var tw in topWorkspaces)
+                        {
+                            if (workspaceNames.TryGetValue(tw.WorkspaceId, out var realName))
+                            {
+                                resolvedTopWorkspaces.Add(tw with { WorkspaceName = realName });
+                            }
+                            else
+                            {
+                                resolvedTopWorkspaces.Add(tw);
+                            }
+                        }
+                        topWorkspaces = resolvedTopWorkspaces;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -318,10 +329,17 @@ public class BillingAnalyticsService : IBillingAnalyticsService
 
                 if (workspaceIds.Any())
                 {
-                    var fetchedNames = await _unitOfWork.CreditTransactionRepository.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
-                    foreach (var kvp in fetchedNames)
+                    var namesResult = await _workspaceClient.GetWorkspaceNamesAsync(workspaceIds, cancellationToken);
+                    if (namesResult.IsSuccess)
                     {
-                        workspaceNames[kvp.Key] = kvp.Value;
+                        foreach (var kvp in namesResult.Value!)
+                        {
+                            workspaceNames[kvp.Key] = kvp.Value;
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning(BillingMessageConstants.LogMessages.FailedToResolveWorkspaceNamesAlerts);
                     }
                 }
             }

@@ -51,6 +51,7 @@ public class SubscriptionServiceTests
             new Mock<IBillingMessagePublisher>().Object,
             _mockStripePaymentService.Object,
             CreatePricingConfigService(),
+            new Mock<IWorkspaceClient>().Object,
             _mockAiServiceStateStore.Object);
     }
 
