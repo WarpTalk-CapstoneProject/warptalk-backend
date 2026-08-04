@@ -85,262 +85,275 @@ public class MeetingRoomService : IMeetingRoomService
         await _unitOfWork.BeginTransactionAsync();
         try
         {
-        // 2. Provision / Get Meeting Room
-        var meetingRoom = await _unitOfWork.MeetingRoomRepository
-            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+            // 2. Provision / Get Meeting Room
+            var meetingRoom = await _unitOfWork.MeetingRoomRepository
+                .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
 
-        if (meetingRoom == null)
-        {
-            meetingRoom = new MeetingRoom
+            if (meetingRoom == null)
             {
-                TranslationRoomId = translationRoomId,
-                ProviderRoomName = translationRoomId.ToString(),
-                Status = roomDetails.Status
-            };
-            await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
+                meetingRoom = new MeetingRoom
+                {
+                    TranslationRoomId = translationRoomId,
+                    ProviderRoomName = translationRoomId.ToString(),
+                    Status = roomDetails.Status
+                };
+                await _unitOfWork.MeetingRoomRepository.AddAsync(meetingRoom);
+                await _unitOfWork.SaveChangesAsync();
 
-            // Notify WorkspaceService to capture Context Snapshot
-            await PublishMeetingStartedAsync(
-                translationRoomId,
-                roomDetails.WorkspaceId,
-                roomDetails.Title,
-                roomDetails.Description);
-        }
-        else if (meetingRoom.Status != roomDetails.Status)
-        {
-            meetingRoom.Status = roomDetails.Status;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-
-            // If it transitions to IN_PROGRESS, might want to trigger too if not done
-            if (meetingRoom.Status == "IN_PROGRESS")
-            {
+                // Notify WorkspaceService to capture Context Snapshot
                 await PublishMeetingStartedAsync(
                     translationRoomId,
                     roomDetails.WorkspaceId,
                     roomDetails.Title,
                     roomDetails.Description);
             }
-        }
+            else if (meetingRoom.Status != roomDetails.Status)
+            {
+                meetingRoom.Status = roomDetails.Status;
+                _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+                await _unitOfWork.SaveChangesAsync();
 
-        // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
-        bool isHost = roomDetails.HostId == userIdString;
-        bool isAuthorized = isHost;
-        Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
+                // If it transitions to IN_PROGRESS, might want to trigger too if not done
+                if (meetingRoom.Status == "IN_PROGRESS")
+                {
+                    await PublishMeetingStartedAsync(
+                        translationRoomId,
+                        roomDetails.WorkspaceId,
+                        roomDetails.Title,
+                        roomDetails.Description);
+                }
+            }
 
-        // WT-04: a locked room rejects everyone except the host and participants who are
-        // already active in it (e.g. a reconnect after a network blip must not be treated
-        // as a new-joiner lockout) — checked ahead of the authorization gate below so a
-        // locked room reports "Room is locked." rather than a generic authorization error
-        // even to someone who would otherwise have been authorized to join. Only queries
-        // for the caller's existing participant row when the room IS locked, to avoid an
-        // extra DB round-trip on the (common) non-locked path — step 4 below falls back to
-        // its own query when this stays null.
-        MeetingParticipant? existingParticipant = null;
-        if (meetingRoom.IsLocked)
-        {
-            existingParticipant = await _unitOfWork.MeetingParticipantRepository
-                .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
-            bool isExistingActiveParticipant = existingParticipant != null && existingParticipant.IsActive && !existingParticipant.LeftAt.HasValue;
-            if (!isHost && !isExistingActiveParticipant)
+            // 3. Enforce Authorization (MeetingInvitation, Expiration & Dynamic Workspace)
+            bool isHost = roomDetails.HostId == userIdString;
+            bool isAuthorized = isHost;
+            Shared.Protos.GetParticipantsByRoomIdResponse? participantsResponse = null;
+
+            // WT-04: a locked room rejects everyone except the host and participants who are
+            // already active in it (e.g. a reconnect after a network blip must not be treated
+            // as a new-joiner lockout) — checked ahead of the authorization gate below so a
+            // locked room reports "Room is locked." rather than a generic authorization error
+            // even to someone who would otherwise have been authorized to join. Only queries
+            // for the caller's existing participant row when the room IS locked, to avoid an
+            // extra DB round-trip on the (common) non-locked path — step 4 below falls back to
+            // its own query when this stays null.
+            MeetingParticipant? existingParticipant = null;
+            if (meetingRoom.IsLocked)
+            {
+                existingParticipant = await _unitOfWork.MeetingParticipantRepository
+                    .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
+                bool isExistingActiveParticipant = existingParticipant != null && existingParticipant.IsActive && !existingParticipant.LeftAt.HasValue;
+                if (!isHost && !isExistingActiveParticipant)
+                {
+                    await _unitOfWork.RollbackTransactionAsync();
+                    return Result.Failure<JoinMeetingResponse>("Room is locked.", ErrorCodes.Forbidden);
+                }
+            }
+
+            if (!isHost)
+            {
+                // Check MeetingInvitation Table first (for explicit invites & external guests)
+                var invitationRepo = _unitOfWork.MeetingInvitationRepository;
+                var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
+
+                if (explicitInvite != null)
+                {
+                    if (explicitInvite.Status == "REVOKED")
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("Your invitation has been revoked.", ErrorCodes.Forbidden);
+                    }
+
+                    if (explicitInvite.Status == "DECLINED")
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("You have declined this invitation.", ErrorCodes.Forbidden);
+                    }
+
+                    if (explicitInvite.ExpiresAt.HasValue && explicitInvite.ExpiresAt.Value < DateTime.UtcNow)
+                    {
+                        await _unitOfWork.RollbackTransactionAsync();
+                        return Result.Failure<JoinMeetingResponse>("Your invitation has expired.", ErrorCodes.Forbidden);
+                    }
+
+                    // A PENDING invite is implicitly accepted by the act of joining.
+                    if (explicitInvite.Status == "PENDING")
+                    {
+                        explicitInvite.Status = "ACCEPTED";
+                        invitationRepo.Update(explicitInvite);
+                    }
+
+                    isAuthorized = true;
+                }
+                else
+                {
+                    // Authenticated user room authorization
+                    isAuthorized = true;
+                }
+            }
+
+            if (!isAuthorized)
             {
                 await _unitOfWork.RollbackTransactionAsync();
-                return Result.Failure<JoinMeetingResponse>("Room is locked.", ErrorCodes.Forbidden);
+                return Result.Failure<JoinMeetingResponse>("You are not authorized to join this meeting.", ErrorCodes.Forbidden);
             }
-        }
 
-        if (!isHost)
-        {
-            // Check MeetingInvitation Table first (for explicit invites & external guests)
-            var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
-            var explicitInvite = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == userId);
+            // 4. Register or Update Participant
+            var providerIdentity = userIdString;
+            var participant = existingParticipant ?? await _unitOfWork.MeetingParticipantRepository
+                .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
 
-            if (explicitInvite != null)
+            if (participant == null)
             {
-                if (explicitInvite.Status == "REVOKED")
+                participant = new MeetingParticipant
                 {
-                    await _unitOfWork.RollbackTransactionAsync();
-                    return Result.Failure<JoinMeetingResponse>("Your invitation has been revoked.", ErrorCodes.Forbidden);
-                }
-
-                if (explicitInvite.Status == "DECLINED")
-                {
-                    await _unitOfWork.RollbackTransactionAsync();
-                    return Result.Failure<JoinMeetingResponse>("You have declined this invitation.", ErrorCodes.Forbidden);
-                }
-
-                if (explicitInvite.ExpiresAt.HasValue && explicitInvite.ExpiresAt.Value < DateTime.UtcNow)
-                {
-                    await _unitOfWork.RollbackTransactionAsync();
-                    return Result.Failure<JoinMeetingResponse>("Your invitation has expired.", ErrorCodes.Forbidden);
-                }
-
-                // A PENDING invite is implicitly accepted by the act of joining.
-                if (explicitInvite.Status == "PENDING")
-                {
-                    explicitInvite.Status = "ACCEPTED";
-                    invitationRepo.Update(explicitInvite);
-                }
-
-                isAuthorized = true;
+                    Id = Guid.CreateVersion7(),
+                    MeetingRoomId = meetingRoom.Id,
+                    UserId = userId,
+                    ProviderIdentity = providerIdentity,
+                    IsActive = true,
+                    JoinedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
+                await _unitOfWork.SaveChangesAsync();
             }
             else
             {
-                // Authenticated user room authorization
-                isAuthorized = true;
+                if (!participant.IsActive || participant.LeftAt.HasValue)
+                {
+                    participant.IsActive = true;
+                    participant.JoinedAt = DateTime.UtcNow;
+                    participant.LeftAt = null;
+                    _unitOfWork.MeetingParticipantRepository.Update(participant);
+                    await _unitOfWork.SaveChangesAsync();
+                }
             }
-        }
 
-        if (!isAuthorized)
-        {
-            await _unitOfWork.RollbackTransactionAsync();
-            return Result.Failure<JoinMeetingResponse>("You are not authorized to join this meeting.", ErrorCodes.Forbidden);
-        }
-
-        // 4. Register or Update Participant
-        var providerIdentity = userIdString;
-        var participant = existingParticipant ?? await _unitOfWork.MeetingParticipantRepository
-            .FirstOrDefaultAsync(p => p.MeetingRoomId == meetingRoom.Id && p.UserId == userId);
-
-        if (participant == null)
-        {
-            participant = new MeetingParticipant
+            // 5. Lobby / Waiting Room Logic
+            if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
             {
-                Id = Guid.CreateVersion7(),
-                MeetingRoomId = meetingRoom.Id,
-                UserId = userId,
-                ProviderIdentity = providerIdentity,
-                IsActive = true,
-                JoinedAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
-            await _unitOfWork.MeetingParticipantRepository.AddAsync(participant);
-            await _unitOfWork.SaveChangesAsync();
-        }
-        else
-        {
-            if (!participant.IsActive || participant.LeftAt.HasValue)
-            {
-                participant.IsActive = true;
-                participant.JoinedAt = DateTime.UtcNow;
-                participant.LeftAt = null;
-                _unitOfWork.MeetingParticipantRepository.Update(participant);
-                await _unitOfWork.SaveChangesAsync();
+                if (isHost)
+                {
+                    meetingRoom.ActiveHostId = userId;
+                    _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+                    await _unitOfWork.SaveChangesAsync();
+                }
+                else
+                {
+                    if (participantsResponse == null)
+                    {
+                        var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                        if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                            participantsResponse = grpcPartsResult.Value;
+                    }
+
+                    var isAdmittedParticipant = participantsResponse?.Participants
+                        .Any(p => p.Id == userIdString && p.IsActive) == true;
+
+                    if (!isAdmittedParticipant)
+                    {
+                        await _unitOfWork.CommitTransactionAsync();
+                        return Result.Success(new JoinMeetingResponse
+                        {
+                            Token = string.Empty,
+                            ProviderRoomName = meetingRoom.ProviderRoomName,
+                            ParticipantIdentity = providerIdentity,
+                            IsWaitingRoom = true,
+                            MuteOnEntry = meetingRoom.MuteOnEntry
+                        });
+                    }
+                }
             }
-        }
-
-        // 5. Lobby / Waiting Room Logic
-        if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
-        {
-            if (isHost)
+            else if (isHost && meetingRoom.ActiveHostId == null)
             {
                 meetingRoom.ActiveHostId = userId;
                 _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
                 await _unitOfWork.SaveChangesAsync();
             }
-            else
+
+            // 6. Resolve participant display name for LiveKit token
+            // Priority: 1) displayName from controller (from JWT/frontend), 2) gRPC participant lookup, 3) fallback
+            string participantName = displayName ?? "Participant";
+
+            // If no displayName was provided, reuse participants already fetched during auth (or fetch once)
+            if (string.IsNullOrEmpty(displayName))
             {
-                // Translation Room owns lobby admission. Once the host admits this user,
-                // its participant row becomes CONNECTED and is exposed over gRPC as active.
-                // Do not keep an admitted participant trapped in Meeting Service's lobby
-                // just because the room itself is still in WAITING state.
-                if (participantsResponse == null)
+                try
                 {
-                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                        participantsResponse = grpcPartsResult.Value;
-                }
-
-                var translationParticipant = participantsResponse?.Participants
-                    .FirstOrDefault(p => p.Id == userIdString);
-
-                if (translationParticipant?.IsActive != true)
-                {
-                    await _unitOfWork.CommitTransactionAsync();
-                    return Result.Success(new JoinMeetingResponse
+                    // Translation Room owns lobby admission. Once the host admits this user,
+                    // its participant row becomes CONNECTED and is exposed over gRPC as active.
+                    // Do not keep an admitted participant trapped in Meeting Service's lobby
+                    // just because the room itself is still in WAITING state.
+                    if (participantsResponse == null)
                     {
-                        Token = string.Empty,
-                        ProviderRoomName = meetingRoom.ProviderRoomName,
-                        ParticipantIdentity = providerIdentity,
-                        IsWaitingRoom = true,
-                        MuteOnEntry = meetingRoom.MuteOnEntry
-                    });
+                        var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                        if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                            participantsResponse = grpcPartsResult.Value;
+                    }
+
+                    var translationParticipant = participantsResponse?.Participants
+                        .FirstOrDefault(p => p.Id == userIdString);
+
+                    if (translationParticipant?.IsActive != true)
+                    {
+                        await _unitOfWork.CommitTransactionAsync();
+                        return Result.Success(new JoinMeetingResponse
+                        {
+                            Token = string.Empty,
+                            ProviderRoomName = meetingRoom.ProviderRoomName,
+                            ParticipantIdentity = providerIdentity,
+                            IsWaitingRoom = true,
+                            MuteOnEntry = meetingRoom.MuteOnEntry
+                        });
+                    }
+
+                    if (!string.IsNullOrEmpty(translationParticipant?.DisplayName))
+                        participantName = translationParticipant.DisplayName;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to resolve participant display name via gRPC");
                 }
             }
-        }
-        else if (isHost && meetingRoom.ActiveHostId == null)
-        {
-            meetingRoom.ActiveHostId = userId;
-            _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-            await _unitOfWork.SaveChangesAsync();
-        }
 
-        // 6. Resolve participant display name for LiveKit token
-        // Priority: 1) displayName from controller (from JWT/frontend), 2) gRPC participant lookup, 3) fallback
-        string participantName = displayName ?? "Participant";
+            var tokenResult = _tokenService.GenerateToken(
+                roomName: meetingRoom.ProviderRoomName,
+                participantIdentity: providerIdentity,
+                participantName: participantName,
+                canPublish: true,
+                canSubscribe: true);
 
-        // If no displayName was provided, reuse participants already fetched during auth (or fetch once)
-        if (string.IsNullOrEmpty(displayName))
-        {
+            if (!tokenResult.IsSuccess)
+            {
+                await _unitOfWork.RollbackTransactionAsync();
+                return Result.Failure<JoinMeetingResponse>(tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
+            }
+
+            await _unitOfWork.CommitTransactionAsync();
+
+            // 7. Notify AI Worker via Redis Pub/Sub
             try
             {
-                if (participantsResponse == null)
-                {
-                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                        participantsResponse = grpcPartsResult.Value;
-                }
-                if (participantsResponse != null)
-                {
-                    var p = participantsResponse.Participants.FirstOrDefault(x => x.Id == userIdString);
-                    if (p != null && !string.IsNullOrEmpty(p.DisplayName))
-                        participantName = p.DisplayName;
-                }
+                await PublishTrackPublishedAsync(
+                    meetingRoom.ProviderRoomName,
+                    providerIdentity,
+                    "audio_track_1");
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to resolve participant display name via gRPC");
+                _logger.LogWarning(ex, "Failed to auto-trigger AI worker for room {RoomName}", meetingRoom.ProviderRoomName);
             }
-        }
 
-        var tokenResult = _tokenService.GenerateToken(
-            roomName: meetingRoom.ProviderRoomName,
-            participantIdentity: providerIdentity,
-            participantName: participantName,
-            canPublish: true,
-            canSubscribe: true);
-
-        if (!tokenResult.IsSuccess)
-        {
-            await _unitOfWork.RollbackTransactionAsync();
-            return Result.Failure<JoinMeetingResponse>(tokenResult.Error ?? "Failed to generate token", ErrorCodes.InternalServerError);
-        }
-
-        await _unitOfWork.CommitTransactionAsync();
-
-        // 7. Notify AI Worker via Redis Pub/Sub
-        try
-        {
-            await PublishTrackPublishedAsync(
-                meetingRoom.ProviderRoomName,
-                providerIdentity,
-                "audio_track_1");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to auto-trigger AI worker for room {RoomName}", meetingRoom.ProviderRoomName);
-        }
-
-        return Result.Success(new JoinMeetingResponse
-        {
-            Token = tokenResult.Value!,
-            ProviderRoomName = meetingRoom.ProviderRoomName,
-            ParticipantIdentity = providerIdentity,
-            IsWaitingRoom = false,
-            MuteOnEntry = meetingRoom.MuteOnEntry
-        });
+            return Result.Success(new JoinMeetingResponse
+            {
+                Token = tokenResult.Value!,
+                ProviderRoomName = meetingRoom.ProviderRoomName,
+                ParticipantIdentity = providerIdentity,
+                IsWaitingRoom = false,
+                MuteOnEntry = meetingRoom.MuteOnEntry
+            });
         } // end try (BeginTransactionAsync)
         catch (Exception ex)
         {
@@ -482,7 +495,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // 3. Revoke Invitation
-        var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -565,6 +578,13 @@ public class MeetingRoomService : IMeetingRoomService
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
 
+        // WT-234: an explicit transfer is now the only way host moves, so it has to be the one
+        // that tells the room. The broadcast used to hang off the automatic election, which
+        // meant the deliberate path left every client showing stale host controls until its
+        // next full room refetch.
+        await PublishGatewayCommandAsync(
+            "HostChanged", translationRoomId, new { NewHostUserId = newHostUserId.ToString() });
+
         return Result.Success(true);
     }
 
@@ -607,7 +627,7 @@ public class MeetingRoomService : IMeetingRoomService
         }
 
         // Revoke Invitation to prevent re-join
-        var invitationRepo = _unitOfWork.Repository<MeetingInvitation>();
+        var invitationRepo = _unitOfWork.MeetingInvitationRepository;
         var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.MeetingRoomId == meetingRoom.Id && i.InviteeUserId == participantUserId);
 
         if (invitation != null)
@@ -813,21 +833,25 @@ public class MeetingRoomService : IMeetingRoomService
     // ── WT-08: Auto host fallback ──────────────────────────
 
     /// <summary>
-    /// Authoritative host-fallback election. Triggered ONLY from the Gateway hub's
-    /// OnDisconnectedAsync full-disconnect signal (via HostFallbackConsumerWorker
+    /// Releases the host claim when the host goes offline. Triggered ONLY from the Gateway
+    /// hub's OnDisconnectedAsync full-disconnect signal (via HostFallbackConsumerWorker
     /// subscribing to the same "translationRoom:participant-offline" channel the hub
     /// already publishes to unconditionally — see TranslationRoomHub.OnDisconnectedAsync).
     ///
-    /// MeetingWebhookService.HandleParticipantLeft (the OTHER participant-left signal,
-    /// from LiveKit's webhook) intentionally does NOT elect a new host — it only clears
-    /// ActiveHostId when the departing identity matches it, which is safe/idempotent to run
-    /// in either order relative to this method: whichever runs first "wins" the null-out,
-    /// and the equality check there means it never clobbers a host this method has already
-    /// elected. This method is the only place a NON-NULL ActiveHostId is ever assigned as a
-    /// fallback, so there is no double-election race between the two paths. It re-derives
-    /// "should I elect someone" from current DB state rather than trusting the webhook to
-    /// have already run, so it works correctly regardless of which of the two signals
-    /// arrives first.
+    /// WT-234: this used to elect the earliest-joined remaining participant and broadcast
+    /// HostChanged for them. Nobody had asked for that host, and ActiveHostId is a real
+    /// permission — it gates breakouts, polls, questions, recording and mute-all — so a
+    /// plain participant silently acquired host powers while still being displayed, and
+    /// still being stored in TranslationRoom, as a participant. Host now moves only through
+    /// TransferHostAsync, or back to the original host when they rejoin (see JoinRoomAsync).
+    ///
+    /// Leaving the room host-less is deliberate rather than a gap: workspace Owners/Admins
+    /// already hold host-like authority over every room in their workspace (WT-188), so an
+    /// abandoned room still has someone who can act on it.
+    ///
+    /// Idempotent against MeetingWebhookService.HandleParticipantLeft, the other
+    /// participant-left signal, which performs the same equality-guarded null-out from
+    /// LiveKit's webhook — whichever arrives first wins and the second is a no-op.
     /// </summary>
     public async Task<Result<bool>> HandleHostOfflineAsync(Guid translationRoomId, Guid departedUserId)
     {
@@ -836,26 +860,14 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Success(false);
 
-        bool departedWasHost = meetingRoom.ActiveHostId == departedUserId;
-        // Nothing to do if some other, still-current host is already assigned.
-        if (!departedWasHost && meetingRoom.ActiveHostId != null)
+        // Only the departing host's own claim is released. Anyone else leaving changes nothing,
+        // and a room that is already host-less stays that way.
+        if (meetingRoom.ActiveHostId != departedUserId)
             return Result.Success(false);
 
-        var activeParticipants = await _unitOfWork.MeetingParticipantRepository
-            .FindAsync(p => p.MeetingRoomId == meetingRoom.Id && p.IsActive && p.UserId != departedUserId);
-
-        var nextHost = activeParticipants.OrderBy(p => p.JoinedAt).FirstOrDefault();
-
-        // No active participants left: fall back to "no host", matching
-        // MeetingWebhookService.HandleParticipantLeft's existing null-out behavior.
-        meetingRoom.ActiveHostId = nextHost?.UserId;
+        meetingRoom.ActiveHostId = null;
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
-
-        if (nextHost != null)
-        {
-            await PublishGatewayCommandAsync("HostChanged", translationRoomId, new { NewHostUserId = nextHost.UserId.ToString() });
-        }
 
         return Result.Success(true);
     }

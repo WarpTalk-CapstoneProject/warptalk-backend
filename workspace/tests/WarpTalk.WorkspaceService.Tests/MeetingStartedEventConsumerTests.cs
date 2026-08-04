@@ -24,7 +24,7 @@ public class MeetingStartedEventConsumerTests
     private readonly IServiceProvider _serviceProvider;
     private readonly IServiceScope _serviceScope;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly MeetingStartedEventConsumer _service;
 
@@ -38,7 +38,7 @@ public class MeetingStartedEventConsumerTests
         _serviceScope = Substitute.For<IServiceScope>();
         var serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
 
         _serviceProvider.GetService(typeof(IServiceScopeFactory)).Returns(serviceScopeFactory);
@@ -81,7 +81,7 @@ public class MeetingStartedEventConsumerTests
         // Arrange
         var roomId = "room-123";
         var workspaceId = Guid.NewGuid();
-        
+
         _workspaceDocumentRepository.FindAsync(default!, default!, default!)
             .ReturnsForAnyArgs(Task.FromResult<IReadOnlyList<WorkspaceDocument>>(new List<WorkspaceDocument>()));
 
@@ -100,7 +100,7 @@ public class MeetingStartedEventConsumerTests
         var workspaceId = Guid.NewGuid();
         var doc1 = new WorkspaceDocument { Id = Guid.NewGuid(), WorkspaceId = workspaceId, FileName = "doc1.txt" };
         var doc2 = new WorkspaceDocument { Id = Guid.NewGuid(), WorkspaceId = workspaceId, FileName = "doc2.txt" };
-        
+
         var documents = new List<WorkspaceDocument> { doc1, doc2 };
 
         _workspaceDocumentRepository.FindAsync(default!, default!, default!)

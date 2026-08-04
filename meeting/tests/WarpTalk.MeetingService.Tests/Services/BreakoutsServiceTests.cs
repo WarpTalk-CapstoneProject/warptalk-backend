@@ -21,8 +21,8 @@ public class BreakoutsServiceTests
     private readonly Mock<ITranslationRoomGrpcService> _grpcServiceMock = new();
     private readonly Mock<IRedisService> _redisServiceMock = new();
     private readonly Mock<ILiveKitTokenService> _tokenServiceMock = new();
-    private readonly FakeGenericRepository<BreakoutSession> _sessionRepo = new();
-    private readonly FakeGenericRepository<BreakoutAssignment> _assignmentRepo = new();
+    private readonly FakeBreakoutSessionRepository _sessionRepo = new();
+    private readonly FakeBreakoutAssignmentRepository _assignmentRepo = new();
     private readonly BreakoutsService _sut;
 
     public BreakoutsServiceTests()
@@ -38,8 +38,8 @@ public class BreakoutsServiceTests
             .Setup(t => t.GenerateToken(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>()))
             .Returns(Result.Success("fake-token"));
 
-        _unitOfWorkMock.Setup(u => u.Repository<BreakoutSession>()).Returns(_sessionRepo);
-        _unitOfWorkMock.Setup(u => u.Repository<BreakoutAssignment>()).Returns(_assignmentRepo);
+        _unitOfWorkMock.Setup(u => u.BreakoutSessionRepository).Returns(_sessionRepo);
+        _unitOfWorkMock.Setup(u => u.BreakoutAssignmentRepository).Returns(_assignmentRepo);
 
         _sut = new BreakoutsService(_unitOfWorkMock.Object, _grpcServiceMock.Object, _redisServiceMock.Object, _tokenServiceMock.Object);
     }

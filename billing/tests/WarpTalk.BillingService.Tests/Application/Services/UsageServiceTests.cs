@@ -1,3 +1,4 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
@@ -7,61 +8,48 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Services;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
-using Microsoft.Extensions.Options;
-using WarpTalk.BillingService.Application.Configuration;
 using WarpTalk.Shared;
 using Xunit;
+
 
 namespace WarpTalk.BillingService.Tests.Application.Services;
 
 public class UsageServiceTests
 {
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
-    private readonly Mock<IGenericRepository<Subscription>> _mockSubRepo;
-    private readonly Mock<IGenericRepository<CreditTransaction>> _mockTxRepo;
-    private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<ISubscriptionRepository> _mockSubRepo;
+    private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
+    private readonly Mock<IUsageRecordRepository> _mockUsageRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
+    private readonly Mock<IUsageSettlementService> _mockSettlementService;
+    private readonly Mock<IUsageRateCardResolverService> _mockRateCardResolver;
     private readonly UsageService _usageService;
 
     public UsageServiceTests()
     {
         _mockUnitOfWork = new Mock<IUnitOfWork>();
-        _mockSubRepo = new Mock<IGenericRepository<Subscription>>();
-        _mockTxRepo = new Mock<IGenericRepository<CreditTransaction>>();
-        _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockSubRepo = new Mock<ISubscriptionRepository>();
+        _mockTxRepo = new Mock<ICreditTransactionRepository>();
+        _mockUsageRepo = new Mock<IUsageRecordRepository>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
+        _mockSettlementService = new Mock<IUsageSettlementService>();
+        _mockRateCardResolver = new Mock<IUsageRateCardResolverService>();
+
         _mockUnitOfWork.Setup(u => u.SubscriptionRepository).Returns(_mockSubRepo.Object);
         _mockUnitOfWork.Setup(u => u.CreditTransactionRepository).Returns(_mockTxRepo.Object);
         _mockUnitOfWork.Setup(u => u.UsageRecordRepository).Returns(_mockUsageRepo.Object);
-        _mockUnitOfWork.Setup(u => u.PlanRepository).Returns(_mockPlanRepo.Object);
+        _mockUnitOfWork.Setup(u => u.Plans).Returns(_mockPlanRepo.Object);
 
         _usageService = new UsageService(
             _mockUnitOfWork.Object,
             new Mock<ILogger<UsageService>>().Object,
-            Options.Create(new BillingRatesOptions
-            {
-                SttPerMinute = 15.0,
-                TranslationPerMinute = 15.0,
-                StandardTtsPerMinute = 15.0,
-                VoiceClonePerMinute = 40.0,
-                AiSummaryPerRequest = 5.0,
-                AiChatPerRequest = 2.0
-            }));
-    }
-
-    [Fact]
-    public void CalculateCreditCost_StandardUsage_ShouldCalculateCorrectly()
-    {
-        var plan = new Plan { Id = Guid.NewGuid(), Name = "Pro" };
-        
-        // 60s STT + 60s Translation + 60s Standard TTS (15 + 15 + 15 = 45 credits)
-        var cost = _usageService.CalculateCreditCost(60, 1000, 1000, false, plan);
-
-        cost.Should().Be(45);
+            _mockSettlementService.Object,
+            _mockRateCardResolver.Object);
     }
 
     [Fact]
@@ -71,13 +59,26 @@ public class UsageServiceTests
         var planId = Guid.NewGuid();
         var subscription = new Subscription
         {
-            Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
-            PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
-        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, Name = "Pro" };
+        var plan = new Plan { Id = planId, Name = "Pro" };
 
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+
+        _mockRateCardResolver
+            .Setup(r => r.ResolveRateCardAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new UsageRateCardDto(Guid.NewGuid(), "voice_clone", "minutes", "provider", "model", null, null, 10, "VND", null, null, DateTime.UtcNow, null, true)));
+
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(true, Guid.NewGuid(), Guid.NewGuid(), 400, SubscriptionConstants.ServiceStates.Healthy, null)));
 
         var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, null);
         var result = await _usageService.RecordUsageAsync(request);
@@ -85,10 +86,11 @@ public class UsageServiceTests
         result.IsSuccess.Should().BeTrue();
         result.Value!.CurrentCredits.Should().Be(400); // 500 - 100
 
-        _mockSubRepo.Verify(r => r.Update(It.Is<Subscription>(s => s.CreditsRemaining == 400)), Times.Once);
-        _mockTxRepo.Verify(r => r.AddAsync(It.IsAny<CreditTransaction>(), It.IsAny<CancellationToken>()), Times.Once);
-        _mockUsageRepo.Verify(r => r.AddAsync(It.IsAny<UsageRecord>(), It.IsAny<CancellationToken>()), Times.Once);
-        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(
+                It.Is<SettleUsageChargeRequest>(r => r.CreditsConsumed == 100 && r.WorkspaceId == hostWorkspaceId),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]
@@ -98,19 +100,137 @@ public class UsageServiceTests
         var planId = Guid.NewGuid();
         var subscription = new Subscription
         {
-            Id = Guid.NewGuid(), WorkspaceId = hostWorkspaceId,
-            PlanId = planId, IsActive = true, CreditsRemaining = 500, CreditsUsedThisCycle = 0, CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
         };
-        var plan = new Plan { Id = planId, VoiceCloneEnabled = true, Name = "Pro" };
+        var plan = new Plan { Id = planId, Name = "Pro" };
         var segmentId = Guid.NewGuid();
 
-        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
         _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+        _mockRateCardResolver
+            .Setup(r => r.ResolveRateCardAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new UsageRateCardDto(Guid.NewGuid(), "voice_clone", "minutes", "provider", "model", null, null, 10, "VND", null, null, DateTime.UtcNow, null, true)));
+
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(true, Guid.NewGuid(), Guid.NewGuid(), 400, SubscriptionConstants.ServiceStates.Healthy, null)));
 
         var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, segmentId, "Segment details");
         var result = await _usageService.RecordUsageAsync(request);
 
         result.IsSuccess.Should().BeTrue();
-        _mockUsageRepo.Verify(r => r.AddAsync(It.Is<UsageRecord>(u => u.SegmentId == segmentId), It.IsAny<CancellationToken>()), Times.Once);
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(
+                It.Is<SettleUsageChargeRequest>(r => r.TranscriptSegmentId == segmentId),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task RecordUsageAsync_PassthroughSourceEqualsTarget_ShouldReturn0CreditWithoutCharging()
+    {
+        var hostWorkspaceId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+        };
+        var plan = new Plan { Id = planId, Name = "Pro" };
+
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+
+        var details = "{\"source_lang\":\"en\",\"target_lang\":\"en\"}";
+        var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "translation", "chars", 100, 10, null, null, null, details);
+
+        var result = await _usageService.RecordUsageAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.CurrentCredits.Should().Be(500); // Balance unchanged
+
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RecordUsageAsync_TtsCacheHit_ShouldReturn0CreditWithoutCharging()
+    {
+        var hostWorkspaceId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+        };
+        var plan = new Plan { Id = planId, Name = "Pro" };
+
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+
+        var details = "{\"cache_hit\":true}";
+        var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "text_to_speech", "chars", 100, 10, null, null, null, details);
+
+        var result = await _usageService.RecordUsageAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.CurrentCredits.Should().Be(500); // Balance unchanged
+
+        _mockSettlementService.Verify(
+            s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task RecordUsageAsync_IdempotencyTriggered_ShouldReturnSuccessWithUnchangedBalance()
+    {
+        var hostWorkspaceId = Guid.NewGuid();
+        var planId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = hostWorkspaceId,
+            PlanId = planId,
+            IsActive = true,
+            CreditsRemaining = 500,
+            CreditsUsedThisCycle = 0,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(5)
+        };
+        var plan = new Plan { Id = planId, Name = "Pro" };
+
+        _mockSubRepo.Setup(r => r.GetActiveByWorkspaceIdAsync(hostWorkspaceId, true, false, It.IsAny<CancellationToken>())).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(planId, It.IsAny<CancellationToken>())).ReturnsAsync(plan);
+
+        _mockRateCardResolver
+            .Setup(r => r.ResolveRateCardAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new UsageRateCardDto(Guid.NewGuid(), "voice_clone", "minutes", "provider", "model", null, null, 10, "VND", null, null, DateTime.UtcNow, null, true)));
+
+        _mockSettlementService
+            .Setup(s => s.SettleUsageChargeAsync(It.IsAny<SettleUsageChargeRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success(new SettleUsageChargeResult(false, Guid.NewGuid(), Guid.NewGuid(), 500, SubscriptionConstants.ServiceStates.Healthy, null))); // Applied = false, TransactionId != null
+
+        var request = new RecordUsageRequest(hostWorkspaceId, Guid.NewGuid(), "voice_clone", "minutes", 5, 100, 300, null, null, null, "my-idempotent-key");
+
+        var result = await _usageService.RecordUsageAsync(request);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.CurrentCredits.Should().Be(500); // Balance from SettleUsageChargeResult.BalanceAfter
     }
 }

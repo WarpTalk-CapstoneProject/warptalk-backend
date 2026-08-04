@@ -66,10 +66,21 @@ public class AuthService : IAuthService
 
             var passwordHash = _passwordHasher.Hash(request.Password);
             var user = UserMapper.ToUser(request, passwordHash);
-            var verificationToken = TokenHashing.GenerateToken();
-            user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
-            user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
-                _authSettings.VerificationTokenLifetimeMinutes);
+            string? verificationToken = null;
+            if (_authSettings.AutoVerifySelfRegistration)
+            {
+                user.EmailVerified = true;
+                user.EmailVerifiedAt = DateTime.UtcNow;
+                user.EmailVerificationTokenHash = null;
+                user.EmailVerificationTokenExpiresAt = null;
+            }
+            else
+            {
+                verificationToken = TokenHashing.GenerateToken();
+                user.EmailVerificationTokenHash = TokenHashing.Hash(verificationToken);
+                user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddMinutes(
+                    _authSettings.VerificationTokenLifetimeMinutes);
+            }
 
             await _userRepository.AddAsync(user, ct);
 
@@ -79,20 +90,23 @@ public class AuthService : IAuthService
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
-            try
+            if (verificationToken is not null)
             {
-                await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
-            }
-            catch (Exception ex)
-            {
-                // The user and verification token are already committed. Returning a
-                // registration failure here would invite duplicate retries while the
-                // account actually exists. The user can request another verification
-                // message through the dedicated resend endpoint.
-                _logger.LogError(
-                    ex,
-                    "Registration persisted but verification email delivery failed. UserId: {UserId}",
-                    user.Id);
+                try
+                {
+                    await _authEmailSender.SendVerificationEmailAsync(user, verificationToken, ct);
+                }
+                catch (Exception ex)
+                {
+                    // The user and verification token are already committed. Returning a
+                    // registration failure here would invite duplicate retries while the
+                    // account actually exists. The user can request another verification
+                    // message through the dedicated resend endpoint.
+                    _logger.LogError(
+                        ex,
+                        "Registration persisted but verification email delivery failed. UserId: {UserId}",
+                        user.Id);
+                }
             }
 
             var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
@@ -178,7 +192,7 @@ public class AuthService : IAuthService
             // 1. Check rate limit window (Max 5 requests per 15 minutes)
             var windowKey = $"resend:window:{userId}";
             var attemptsString = await _cache.GetStringAsync(windowKey, ct);
-            
+
             int attemptsCount = 0;
             DateTime expiryTime = DateTime.UtcNow.AddMinutes(15);
 

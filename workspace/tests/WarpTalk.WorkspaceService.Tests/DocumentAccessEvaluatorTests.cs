@@ -24,8 +24,8 @@ namespace WarpTalk.WorkspaceService.Tests;
 public class DocumentAccessEvaluatorTests
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IGenericRepository<WorkspaceDocument> _documentRepository;
-    private readonly IGenericRepository<WorkspaceDocumentAccessPolicy> _policyRepository;
+    private readonly IWorkspaceDocumentRepository _documentRepository;
+    private readonly IWorkspaceDocumentAccessPolicyRepository _policyRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IAuthIdentityClient _authIdentity;
@@ -36,16 +36,16 @@ public class DocumentAccessEvaluatorTests
     public DocumentAccessEvaluatorTests()
     {
         _unitOfWork = Substitute.For<IUnitOfWork>();
-        _documentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
-        _policyRepository = Substitute.For<IGenericRepository<WorkspaceDocumentAccessPolicy>>();
+        _documentRepository = Substitute.For<IWorkspaceDocumentRepository>();
+        _policyRepository = Substitute.For<IWorkspaceDocumentAccessPolicyRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
 
         // Setup repository mocks on UnitOfWork
-        _unitOfWork.Repository<WorkspaceDocument>().Returns(_documentRepository);
-        _unitOfWork.Repository<WorkspaceDocumentAccessPolicy>().Returns(_policyRepository);
+        _unitOfWork.WorkspaceDocumentRepository.Returns(_documentRepository);
+        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.Returns(_policyRepository);
         _unitOfWork.WorkspaceDocumentRepository.Returns(_documentRepository);
         _unitOfWork.WorkspaceDocumentAccessPolicyRepository.Returns(_policyRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
@@ -123,10 +123,10 @@ public class DocumentAccessEvaluatorTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString(),
             OwnerId = Guid.NewGuid() // Not current user
         };
@@ -154,10 +154,10 @@ public class DocumentAccessEvaluatorTests
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             IngestionStatus = WorkspaceDocumentIngestionStatus.pending.ToString(),
             OwnerId = Guid.NewGuid() // Not current user
         };
@@ -418,11 +418,11 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var meetingId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
-            IngestionStatus = "completed", 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            IngestionStatus = "completed",
             ConfidentialityLevel = "general",
             Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
@@ -465,11 +465,11 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var meetingId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
-            IngestionStatus = "completed", 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            IngestionStatus = "completed",
             ConfidentialityLevel = "general",
             Status = WorkspaceDocumentStatus.@public.ToString(),
             SourceType = WorkspaceDocumentConstants.SourceTypeMeeting,
@@ -520,10 +520,10 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
 
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = Guid.NewGuid() // Owned by someone else
         };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };
@@ -550,10 +550,10 @@ public class DocumentAccessEvaluatorTests
         var documentId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
 
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = userId // Owned by current user
         };
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };

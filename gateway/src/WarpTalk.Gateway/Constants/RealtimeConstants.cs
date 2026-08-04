@@ -18,6 +18,7 @@ public static class RealtimeConstants
         public const string NewNotification = "NewNotification";
         public const string NotificationRead = "NotificationRead";
         public const string AllNotificationsRead = "AllNotificationsRead";
+        public const string BillingNotification = "BillingNotification";
 
         public const string MeetingEvent = "MeetingEvent";
         public const string MeetingStarted = "MeetingStarted";
@@ -42,5 +43,18 @@ public static class RealtimeConstants
         public static string User(string userId) => $"user:{userId}";
         public static string Workspace(string workspaceId) => $"workspace:{workspaceId}";
         public static string TranslationRoom(string roomId) => $"translationRoom:{roomId}";
+    }
+
+    public static class Billing
+    {
+        public const string NotificationTypePrefix = "billing.";
+        public const string HubPath = "/hubs/billing";
+        
+        public static class Logs
+        {
+            public const string ProcessRedisNotificationError = "Failed to process incoming Redis billing notification message.";
+            public const string BroadcastLogTemplate = "BillingRedisSubscriber: Broadcasted {EventName} ({Type}) to {GroupName}";
+            public const string SubscriberStartedTemplate = "BillingRedisSubscriberService started listening to {Channel}.";
+        }
     }
 }

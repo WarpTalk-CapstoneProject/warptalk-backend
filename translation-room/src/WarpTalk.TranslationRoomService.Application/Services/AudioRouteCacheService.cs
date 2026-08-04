@@ -56,7 +56,7 @@ public class AudioRouteCacheService : IAudioRouteCacheService
             type = "AUDIO_ROUTES_UPDATED",
             data = payload
         });
-        
+
         await _redisStateRepo.PublishAsync(eventChannel, pubSubPayload);
 
         return activeOrPendingRoutes;

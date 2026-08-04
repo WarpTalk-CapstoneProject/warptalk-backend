@@ -34,7 +34,7 @@ public class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        var claims = new[] { 
+        var claims = new[] {
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Role, "admin")
         };
@@ -78,7 +78,7 @@ public class AdminNotificationControllerTests : IClassFixture<WebApplicationFact
 
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", options => { });
-                
+
                 services.AddAuthorization(options =>
                 {
                     options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder("Test")
@@ -90,7 +90,7 @@ public class AdminNotificationControllerTests : IClassFixture<WebApplicationFact
         {
             AllowAutoRedirect = false
         });
-        
+
         _client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Test");
     }
 

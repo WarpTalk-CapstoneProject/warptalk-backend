@@ -7,17 +7,17 @@ namespace WarpTalk.TranscriptService.Domain.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
-    IGenericRepository<Transcript> Transcripts { get; }
-    IGenericRepository<TranscriptSegment> TranscriptSegments { get; }
-    IGenericRepository<TranscriptCorrection> TranscriptCorrections { get; }
-    IGenericRepository<Glossary> Glossaries { get; }
-    IGenericRepository<GlossaryTerm> GlossaryTerms { get; }
-    IGenericRepository<GlobalGlossaryTerm> GlobalGlossaryTerms { get; }
-    IGenericRepository<GlobalGlossaryAudit> GlobalGlossaryAudits { get; }
-    IGenericRepository<TranscriptExport> TranscriptExports { get; }
-    IGenericRepository<TranslationContent> TranslationContents { get; }
-    IGenericRepository<SegmentTranslationLink> SegmentTranslationLinks { get; }
-    IGenericRepository<AudioDubbing> AudioDubbings { get; }
+    ITranscriptRepository Transcripts { get; }
+    ITranscriptSegmentRepository TranscriptSegments { get; }
+    ITranscriptCorrectionRepository TranscriptCorrections { get; }
+    IGlossaryRepository Glossaries { get; }
+    IGlossaryTermRepository GlossaryTerms { get; }
+    IGlobalGlossaryTermRepository GlobalGlossaryTerms { get; }
+    IGlobalGlossaryAuditRepository GlobalGlossaryAudits { get; }
+    ITranscriptExportRepository TranscriptExports { get; }
+    ITranslationContentRepository TranslationContents { get; }
+    ISegmentTranslationLinkRepository SegmentTranslationLinks { get; }
+    IAudioDubbingRepository AudioDubbings { get; }
 
     /// <summary>
     /// Atomically advances a transcript for one new segment: increments last_sequence_order,

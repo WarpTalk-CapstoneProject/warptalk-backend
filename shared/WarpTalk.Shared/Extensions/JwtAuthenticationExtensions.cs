@@ -62,14 +62,14 @@ public static class JwtAuthenticationExtensions
                 "JWT previous signing secrets must contain at least 32 characters and must not be placeholders.");
         }
 
-        var issuer = jwtSection["Issuer"] 
-                     ?? configuration["JwtSettings:Issuer"] 
-                     ?? Environment.GetEnvironmentVariable("JWT_ISSUER") 
+        var issuer = jwtSection["Issuer"]
+                     ?? configuration["JwtSettings:Issuer"]
+                     ?? Environment.GetEnvironmentVariable("JWT_ISSUER")
                      ?? "WarpTalk.AuthService";
 
-        var audience = jwtSection["Audience"] 
-                       ?? configuration["JwtSettings:Audience"] 
-                       ?? Environment.GetEnvironmentVariable("JWT_AUDIENCE") 
+        var audience = jwtSection["Audience"]
+                       ?? configuration["JwtSettings:Audience"]
+                       ?? Environment.GetEnvironmentVariable("JWT_AUDIENCE")
                        ?? "WarpTalk";
         var signingKeys = new[] { secretKey }
             .Concat(previousSecrets)

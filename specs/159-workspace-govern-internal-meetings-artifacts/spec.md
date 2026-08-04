@@ -25,7 +25,7 @@ Trong mô hình B2B của WarpTalk, các cuộc họp nội bộ (native interna
 
 ### 1.3. B2B Direction
 Hệ thống WarpTalk coi cuộc họp nội bộ (native internal meetings) là luồng nghiệp vụ B2B cốt lõi. Cuộc họp thuộc sở hữu và quyền quản lý của **Enterprise Workspace**, không thuộc về cá nhân. 
-Các nền tảng của bên thứ ba như Google Meet, Microsoft Teams và Zoom chỉ đóng vai trò là các kênh tích hợp bổ sung (External Integration) và sẽ được xử lý thông qua Virtual Audio Bridge; chúng không thay thế và không làm thay đổi luồng cuộc họp nội bộ chính này.
+Google Meet là external meeting integration duy nhất trong phạm vi demo. Nền tảng này đóng vai trò là kênh tích hợp bổ sung (External Integration) và sẽ được xử lý thông qua Virtual Audio Bridge; không thay thế và không làm thay đổi luồng cuộc họp nội bộ chính này.
 
 ---
 

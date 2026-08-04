@@ -7,6 +7,6 @@ public interface IUnitOfWork : IDisposable
     INotificationTemplateRepository NotificationTemplateRepository { get; }
     IPushSubscriptionRepository PushSubscriptionRepository { get; }
     IAdminNotificationRepository AdminNotificationRepository { get; }
-    IGenericRepository<T> Repository<T>() where T : class;
+    INotificationInboxMessageRepository NotificationInboxMessageRepository { get; }
     Task<int> SaveChangesAsync();
 }

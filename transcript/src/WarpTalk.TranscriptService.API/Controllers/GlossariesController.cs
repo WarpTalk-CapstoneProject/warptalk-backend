@@ -45,7 +45,7 @@ public class GlossariesController : ControllerBase
     {
         var result = await _glossaryService.CreateGlossaryAsync(request, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
-        
+
         return StatusCode(201);
     }
 
@@ -54,7 +54,7 @@ public class GlossariesController : ControllerBase
     {
         var result = await _glossaryService.GetGlossaryByIdAsync(id, cancellationToken);
         if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
-        
+
         return Ok(result.Value);
     }
 

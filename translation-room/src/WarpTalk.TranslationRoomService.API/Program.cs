@@ -79,6 +79,8 @@ builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoo
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
 builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
+builder.Services.AddScoped<ITranslationRoomInvitationRepository, TranslationRoomInvitationRepository>();
+builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFeedbackRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -114,6 +116,7 @@ builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();
+builder.Services.AddScoped<IWorkspaceMeetingPolicy, WorkspaceMeetingPolicyGrpcClient>();
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.AppSettings>(builder.Configuration.GetSection("App"));
 builder.Services.Configure<WarpTalk.Shared.Configuration.SmtpSettings>(builder.Configuration.GetSection("Smtp"));
 builder.Services.AddScoped<WarpTalk.Shared.Interfaces.IEmailService, WarpTalk.Shared.Services.SmtpEmailService>();
@@ -125,9 +128,9 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
     builder.Configuration.GetSection("ArtifactFinalization"));
 
 // --- Redis ---
-var redisConnectionString = builder.Configuration["Redis:ConnectionString"] 
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp => 
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     ConnectionMultiplexer.Connect(redisConnectionString));
 
 // Hosted Services

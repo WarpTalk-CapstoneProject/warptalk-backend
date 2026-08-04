@@ -7,6 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using StackExchange.Redis;
 using Testcontainers.PostgreSql;
+using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
 namespace WarpTalk.TranslationRoomService.Tests.Integration;
@@ -50,7 +52,7 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     var mockRedis = new Mock<IConnectionMultiplexer>();
                     var mockDatabase = new Mock<IDatabase>();
                     var mockSubscriber = new Mock<ISubscriber>();
-                    
+
                     mockDatabase.Setup(d => d.StreamCreateConsumerGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
                         .ReturnsAsync(true);
                     mockDatabase.Setup(d => d.StreamReadGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>()))
@@ -73,10 +75,24 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     mockRedis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(mockSubscriber.Object);
                     services.AddSingleton<IConnectionMultiplexer>(mockRedis.Object);
 
+                    // WT-249: room creation now asks WorkspaceService whether the caller may open
+                    // a room, and fails closed when it cannot reach it. There is no WorkspaceService
+                    // in this harness, so stub the decision — these tests cover room flow, and the
+                    // permission rule itself is covered by unit tests.
+                    var policyDescriptor = services.SingleOrDefault(
+                        d => d.ServiceType == typeof(IWorkspaceMeetingPolicy));
+                    if (policyDescriptor != null) services.Remove(policyDescriptor);
+
+                    var mockMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+                    mockMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                        .ReturnsAsync(Result.Success());
+                    services.AddScoped<IWorkspaceMeetingPolicy>(_ => mockMeetingPolicy.Object);
+
                     // Add Test Auth
                     services.AddAuthentication("Test")
                         .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", options => { });
-                    
+
                     services.AddAuthorization(options =>
                     {
                         options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder("Test")

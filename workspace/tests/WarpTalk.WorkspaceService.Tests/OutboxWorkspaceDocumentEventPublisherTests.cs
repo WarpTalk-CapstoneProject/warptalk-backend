@@ -11,15 +11,15 @@ namespace WarpTalk.WorkspaceService.Tests;
 public sealed class OutboxWorkspaceDocumentEventPublisherTests
 {
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
-    private readonly IGenericRepository<WorkspaceOutboxMessage> _repository =
-        Substitute.For<IGenericRepository<WorkspaceOutboxMessage>>();
+    private readonly IWorkspaceOutboxMessageRepository _repository =
+        Substitute.For<IWorkspaceOutboxMessageRepository>();
     private readonly IConnectionMultiplexer _redis =
         Substitute.For<IConnectionMultiplexer>();
     private readonly OutboxWorkspaceDocumentEventPublisher _publisher;
 
     public OutboxWorkspaceDocumentEventPublisherTests()
     {
-        _unitOfWork.Repository<WorkspaceOutboxMessage>().Returns(_repository);
+        _unitOfWork.WorkspaceOutboxMessageRepository.Returns(_repository);
         var auxiliary = new WorkspaceDocumentAuxiliaryPublisher(
             _redis,
             Substitute.For<

@@ -47,7 +47,7 @@ public class NotificationGrpcServiceImpl : NotificationGrpcService.NotificationG
             foreach (var kvp in request.Metadata) meta[kvp.Key] = kvp.Value;
         }
 
-        
+
 
         var payloadJson = "{}";
         if (meta.Count > 0)

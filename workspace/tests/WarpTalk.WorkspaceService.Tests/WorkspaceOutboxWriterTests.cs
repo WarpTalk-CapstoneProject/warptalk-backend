@@ -13,8 +13,8 @@ public sealed class WorkspaceOutboxWriterTests
     public async Task EnqueueAsync_PreservesEnvelopeIdentityAndPayload()
     {
         var unitOfWork = Substitute.For<IUnitOfWork>();
-        var repository = Substitute.For<IGenericRepository<WorkspaceOutboxMessage>>();
-        unitOfWork.Repository<WorkspaceOutboxMessage>().Returns(repository);
+        var repository = Substitute.For<IWorkspaceOutboxMessageRepository>();
+        unitOfWork.WorkspaceOutboxMessageRepository.Returns(repository);
         var writer = new WorkspaceOutboxWriter(unitOfWork);
         var workspaceId = Guid.NewGuid();
         var occurredAt = DateTime.UtcNow;
@@ -55,8 +55,8 @@ public sealed class WorkspaceOutboxWriterTests
     public async Task EnqueueAsync_DoesNotCommitOutsideOwningBusinessTransaction()
     {
         var unitOfWork = Substitute.For<IUnitOfWork>();
-        var repository = Substitute.For<IGenericRepository<WorkspaceOutboxMessage>>();
-        unitOfWork.Repository<WorkspaceOutboxMessage>().Returns(repository);
+        var repository = Substitute.For<IWorkspaceOutboxMessageRepository>();
+        unitOfWork.WorkspaceOutboxMessageRepository.Returns(repository);
         var writer = new WorkspaceOutboxWriter(unitOfWork);
         var envelope = DomainEventEnvelope.Create(
             WorkspaceEventTypes.DocumentInvalidated,

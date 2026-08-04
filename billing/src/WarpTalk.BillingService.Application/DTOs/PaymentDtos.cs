@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -27,56 +28,75 @@ public record CreatePaymentRequest(
     string Provider
 );
 
-public record PaymentWebhookRequest(
-    string OrderCode, // Maps to Payment.Id
-    string Status,    // "PAID", "CANCELLED", etc.
-    string TransactionId
-);
-
-public record CreateCheckoutSessionRequest(
-    Guid UserId,
-    Guid WorkspaceId,
-    decimal Amount,
-    string Currency,
-    string PaymentType,
-    string? PlanSlug = null,
-    string? BillingCycle = null
-);
-
-public record ResolvedCheckout(
-    Guid UserId,
-    Guid WorkspaceId,
-    decimal Amount,
-    string Currency,
-    string PaymentType,
-    string PlanSlug,
-    string BillingCycle,
-    string ProductName
-);
-
-public record CheckoutSessionDto(
-    string Id,
-    long? AmountTotal,
-    string Currency,
-    IReadOnlyDictionary<string, string> Metadata,
-    string PaymentStatus,
+public record UpdatePaymentStatusRequest(
     string Status,
-    string? PaymentIntentId
+    string? ProviderTransactionId,
+    string? FailureReason
 );
 
-public class RefundDto
-{
-    public string Id { get; set; } = string.Empty;
-    public string PaymentId { get; set; } = string.Empty;
-    public decimal Amount { get; set; }
-    public string Reason { get; set; } = string.Empty;
-    public string Status { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; }
-    public DateTime? CompletedAt { get; set; }
-}
+public record SendBillingNotificationsRequest(
+    IEnumerable<Guid> UserIds,
+    string Type,
+    string Title,
+    string Body,
+    string ActionUrl,
+    Dictionary<string, string>? Metadata = null
+);
 
-public record RefundPaymentRequest(
+public record SendSingleNotificationRequest(
+    Guid UserId,
+    string Type,
+    string Title,
+    string Body,
+    string ActionUrl,
+    Dictionary<string, string>? Metadata = null
+);
+
+public record StripePaymentCreationRequest(
+    Guid? SubscriptionId,
+    Guid UserId,
     decimal Amount,
-    string Reason
+    string? Currency,
+    string ProviderTransactionId,
+    string Status,
+    string? FailureReason
 );
 
+public record StripeInvoiceCreationRequest(
+    Guid PaymentId,
+    Guid UserId,
+    decimal Amount,
+    string? Currency,
+    string? PdfUrl
+);
+
+public record BillingCyclePaymentCreationRequest(
+    Domain.Entities.Subscription Subscription,
+    decimal Subtotal,
+    decimal Tax,
+    decimal Total,
+    int OverageCredits,
+    DateTime Now
+);
+
+public record BillingCycleInvoiceCreationRequest(
+    Domain.Entities.Subscription Subscription,
+    Domain.Entities.Plan Plan,
+    Guid PaymentId,
+    decimal ContractPrice,
+    int OverageCredits,
+    decimal OveragePricePerCredit,
+    decimal OverageAmount,
+    IReadOnlyCollection<BillingCycleUsageBreakdownItem> UsageBreakdown,
+    decimal Subtotal,
+    decimal Tax,
+    decimal Total,
+    int InvoiceTermsDays,
+    DateTime Now
+);
+
+public record BillingCycleUsageBreakdownItem(
+    string ChargeType,
+    string Unit,
+    decimal Quantity,
+    int CreditsConsumed);

@@ -68,7 +68,7 @@ public class PollsService : IPollsService
             Status = "open",
             CreatedAt = DateTime.UtcNow
         };
-        await _unitOfWork.Repository<Poll>().AddAsync(poll, ct);
+        await _unitOfWork.PollRepository.AddAsync(poll, ct);
 
         var pollOptions = options.Select((label, index) => new PollOption
         {
@@ -78,7 +78,7 @@ public class PollsService : IPollsService
             Position = index
         }).ToList();
         foreach (var option in pollOptions)
-            await _unitOfWork.Repository<PollOption>().AddAsync(option, ct);
+            await _unitOfWork.PollOptionRepository.AddAsync(option, ct);
 
         await _unitOfWork.SaveChangesAsync(ct);
 
@@ -97,7 +97,7 @@ public class PollsService : IPollsService
         if (!await IsActiveParticipantAsync(meetingRoom, callerUserId, ct))
             return Result.Failure<PollDto>("Not an active participant.", ErrorCodes.Forbidden);
 
-        var poll = await _unitOfWork.Repository<Poll>().FirstOrDefaultAsync(p => p.Id == pollId && p.MeetingRoomId == meetingRoom.Id, ct: ct);
+        var poll = await _unitOfWork.PollRepository.FirstOrDefaultAsync(p => p.Id == pollId && p.MeetingRoomId == meetingRoom.Id, ct: ct);
         if (poll == null)
             return Result.Failure<PollDto>("Poll not found.", ErrorCodes.NotFound);
 
@@ -111,13 +111,13 @@ public class PollsService : IPollsService
         if (!poll.IsMultipleChoice && optionIds.Count > 1)
             return Result.Failure<PollDto>("This poll only allows a single choice.", ErrorCodes.ValidationError);
 
-        var pollOptions = (await _unitOfWork.Repository<PollOption>().FindAsync(o => o.PollId == pollId, ct: ct)).ToList();
+        var pollOptions = (await _unitOfWork.PollOptionRepository.FindAsync(o => o.PollId == pollId, ct: ct)).ToList();
         var validOptionIds = pollOptions.Select(o => o.Id).ToHashSet();
         if (!optionIds.All(validOptionIds.Contains))
             return Result.Failure<PollDto>("One or more options do not belong to this poll.", ErrorCodes.ValidationError);
 
         // Re-vote replaces any prior vote(s) from this caller for this poll.
-        var voteRepo = _unitOfWork.Repository<PollVote>();
+        var voteRepo = _unitOfWork.PollVoteRepository;
         var priorVotes = await voteRepo.FindAsync(v => v.PollId == pollId && v.UserId == callerUserId, ct: ct);
         foreach (var vote in priorVotes)
             voteRepo.Remove(vote);
@@ -151,21 +151,21 @@ public class PollsService : IPollsService
         if (meetingRoom == null)
             return Result.Failure<PollDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var poll = await _unitOfWork.Repository<Poll>().FirstOrDefaultAsync(p => p.Id == pollId && p.MeetingRoomId == meetingRoom.Id, ct: ct);
+        var poll = await _unitOfWork.PollRepository.FirstOrDefaultAsync(p => p.Id == pollId && p.MeetingRoomId == meetingRoom.Id, ct: ct);
         if (poll == null)
             return Result.Failure<PollDto>("Poll not found.", ErrorCodes.NotFound);
 
         if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
             return Result.Failure<PollDto>("Only the host can close a poll.", ErrorCodes.Forbidden);
 
-        var pollOptions = (await _unitOfWork.Repository<PollOption>().FindAsync(o => o.PollId == pollId, ct: ct)).ToList();
-        var allVotes = (await _unitOfWork.Repository<PollVote>().FindAsync(v => v.PollId == pollId, ct: ct)).ToList();
+        var pollOptions = (await _unitOfWork.PollOptionRepository.FindAsync(o => o.PollId == pollId, ct: ct)).ToList();
+        var allVotes = (await _unitOfWork.PollVoteRepository.FindAsync(v => v.PollId == pollId, ct: ct)).ToList();
 
         if (poll.Status == "open")
         {
             poll.Status = "closed";
             poll.ClosedAt = DateTime.UtcNow;
-            _unitOfWork.Repository<Poll>().Update(poll);
+            _unitOfWork.PollRepository.Update(poll);
             await _unitOfWork.SaveChangesAsync(ct);
 
             var closedDto = BuildDto(poll, pollOptions, allVotes, callerUserId);
@@ -182,13 +182,13 @@ public class PollsService : IPollsService
         if (meetingRoom == null)
             return Result.Failure<List<PollDto>>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var polls = (await _unitOfWork.Repository<Poll>().FindAsync(p => p.MeetingRoomId == meetingRoom.Id, ct: ct))
+        var polls = (await _unitOfWork.PollRepository.FindAsync(p => p.MeetingRoomId == meetingRoom.Id, ct: ct))
             .OrderBy(p => p.CreatedAt)
             .ToList();
         var pollIds = polls.Select(p => p.Id).ToHashSet();
 
-        var allOptions = (await _unitOfWork.Repository<PollOption>().FindAsync(o => pollIds.Contains(o.PollId), ct: ct)).ToList();
-        var allVotes = (await _unitOfWork.Repository<PollVote>().FindAsync(v => pollIds.Contains(v.PollId), ct: ct)).ToList();
+        var allOptions = (await _unitOfWork.PollOptionRepository.FindAsync(o => pollIds.Contains(o.PollId), ct: ct)).ToList();
+        var allVotes = (await _unitOfWork.PollVoteRepository.FindAsync(v => pollIds.Contains(v.PollId), ct: ct)).ToList();
 
         var dtos = polls.Select(p => BuildDto(
             p,

@@ -1,16 +1,15 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
-using WarpTalk.BillingService.Domain.Enums;
+
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
-/// <summary>Maps to subscription.payments — kept the class name "Transaction" to avoid renaming every caller.</summary>
 public partial class Transaction
 {
     public Guid Id { get; set; }
 
     public Guid SubscriptionId { get; set; }
 
-    /// <summary>External AuthService user id who made the payment. No physical FK.</summary>
     public Guid UserId { get; set; }
 
     public decimal Amount { get; set; }
@@ -29,7 +28,7 @@ public partial class Transaction
 
     public string? ProviderOrderId { get; set; }
 
-    public TransactionStatus Status { get; set; }
+    public string Status { get; set; } = TransactionConstants.TransactionStatuses.Pending;
 
     public string? FailureReason { get; set; }
 
@@ -43,7 +42,6 @@ public partial class Transaction
 
     public DateTime UpdatedAt { get; set; }
 
-    /// <summary>ExternalId kept for BillingService.cs's existing MapToDto — mirrors ProviderTransactionId.</summary>
     public string? ExternalId
     {
         get => ProviderTransactionId;

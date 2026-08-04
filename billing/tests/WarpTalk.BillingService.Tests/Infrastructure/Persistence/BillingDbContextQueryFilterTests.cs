@@ -2,7 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.EntityFrameworkCore.PostgreSQL;
 using WarpTalk.BillingService.Domain.Entities;
-using WarpTalk.BillingService.Infrastructure.Persistence.Contexts;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 using Xunit;
 
 namespace WarpTalk.BillingService.Tests.Infrastructure.Persistence;
@@ -24,8 +24,7 @@ public sealed class BillingDbContextQueryFilterTests
             typeof(UsageRecord),
             typeof(Payment),
             typeof(Transaction),
-            typeof(Invoice),
-            typeof(Refund)
+            typeof(Invoice)
         };
 
         foreach (var dependentType in dependentTypes)

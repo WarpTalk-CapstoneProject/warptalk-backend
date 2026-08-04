@@ -13,56 +13,56 @@ namespace WarpTalk.TranscriptService.Infrastructure.Repositories;
 public class UnitOfWork : IUnitOfWork
 {
     private readonly TranscriptDbContext _context;
-    
-    private IGenericRepository<Transcript>? _transcripts;
-    private IGenericRepository<TranscriptSegment>? _transcriptSegments;
-    private IGenericRepository<TranscriptCorrection>? _transcriptCorrections;
-    private IGenericRepository<Glossary>? _glossaries;
-    private IGenericRepository<GlossaryTerm>? _glossaryTerms;
-    private IGenericRepository<GlobalGlossaryTerm>? _globalGlossaryTerms;
-    private IGenericRepository<GlobalGlossaryAudit>? _globalGlossaryAudits;
-    private IGenericRepository<TranscriptExport>? _transcriptExports;
-    private IGenericRepository<TranslationContent>? _translationContents;
-    private IGenericRepository<SegmentTranslationLink>? _segmentTranslationLinks;
-    private IGenericRepository<AudioDubbing>? _audioDubbings;
+
+    private ITranscriptRepository? _transcripts;
+    private ITranscriptSegmentRepository? _transcriptSegments;
+    private ITranscriptCorrectionRepository? _transcriptCorrections;
+    private IGlossaryRepository? _glossaries;
+    private IGlossaryTermRepository? _glossaryTerms;
+    private IGlobalGlossaryTermRepository? _globalGlossaryTerms;
+    private IGlobalGlossaryAuditRepository? _globalGlossaryAudits;
+    private ITranscriptExportRepository? _transcriptExports;
+    private ITranslationContentRepository? _translationContents;
+    private ISegmentTranslationLinkRepository? _segmentTranslationLinks;
+    private IAudioDubbingRepository? _audioDubbings;
 
     public UnitOfWork(TranscriptDbContext context)
     {
         _context = context;
     }
 
-    public IGenericRepository<Transcript> Transcripts => 
-        _transcripts ??= new GenericRepository<Transcript>(_context);
+    public ITranscriptRepository Transcripts =>
+        _transcripts ??= new TranscriptRepository(_context);
 
-    public IGenericRepository<TranscriptSegment> TranscriptSegments => 
-        _transcriptSegments ??= new GenericRepository<TranscriptSegment>(_context);
+    public ITranscriptSegmentRepository TranscriptSegments =>
+        _transcriptSegments ??= new TranscriptSegmentRepository(_context);
 
-    public IGenericRepository<TranscriptCorrection> TranscriptCorrections =>
-        _transcriptCorrections ??= new GenericRepository<TranscriptCorrection>(_context);
+    public ITranscriptCorrectionRepository TranscriptCorrections =>
+        _transcriptCorrections ??= new TranscriptCorrectionRepository(_context);
 
-    public IGenericRepository<Glossary> Glossaries => 
-        _glossaries ??= new GenericRepository<Glossary>(_context);
+    public IGlossaryRepository Glossaries =>
+        _glossaries ??= new GlossaryRepository(_context);
 
-    public IGenericRepository<GlossaryTerm> GlossaryTerms =>
-        _glossaryTerms ??= new GenericRepository<GlossaryTerm>(_context);
+    public IGlossaryTermRepository GlossaryTerms =>
+        _glossaryTerms ??= new GlossaryTermRepository(_context);
 
-    public IGenericRepository<GlobalGlossaryTerm> GlobalGlossaryTerms =>
-        _globalGlossaryTerms ??= new GenericRepository<GlobalGlossaryTerm>(_context);
+    public IGlobalGlossaryTermRepository GlobalGlossaryTerms =>
+        _globalGlossaryTerms ??= new GlobalGlossaryTermRepository(_context);
 
-    public IGenericRepository<GlobalGlossaryAudit> GlobalGlossaryAudits =>
-        _globalGlossaryAudits ??= new GenericRepository<GlobalGlossaryAudit>(_context);
+    public IGlobalGlossaryAuditRepository GlobalGlossaryAudits =>
+        _globalGlossaryAudits ??= new GlobalGlossaryAuditRepository(_context);
 
-    public IGenericRepository<TranscriptExport> TranscriptExports =>
-        _transcriptExports ??= new GenericRepository<TranscriptExport>(_context);
+    public ITranscriptExportRepository TranscriptExports =>
+        _transcriptExports ??= new TranscriptExportRepository(_context);
 
-    public IGenericRepository<TranslationContent> TranslationContents =>
-        _translationContents ??= new GenericRepository<TranslationContent>(_context);
+    public ITranslationContentRepository TranslationContents =>
+        _translationContents ??= new TranslationContentRepository(_context);
 
-    public IGenericRepository<SegmentTranslationLink> SegmentTranslationLinks =>
-        _segmentTranslationLinks ??= new GenericRepository<SegmentTranslationLink>(_context);
+    public ISegmentTranslationLinkRepository SegmentTranslationLinks =>
+        _segmentTranslationLinks ??= new SegmentTranslationLinkRepository(_context);
 
-    public IGenericRepository<AudioDubbing> AudioDubbings =>
-        _audioDubbings ??= new GenericRepository<AudioDubbing>(_context);
+    public IAudioDubbingRepository AudioDubbings =>
+        _audioDubbings ??= new AudioDubbingRepository(_context);
 
     public async Task<int> AdvanceTranscriptForNewSegmentAsync(Guid transcriptId, int endTimeMs, CancellationToken cancellationToken = default)
     {

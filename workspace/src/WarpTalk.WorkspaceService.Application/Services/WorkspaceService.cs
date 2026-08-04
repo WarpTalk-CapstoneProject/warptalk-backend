@@ -10,6 +10,7 @@ using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces.Caching;
 using WarpTalk.WorkspaceService.Application.Mappers;
+using WarpTalk.WorkspaceService.Application.Validators;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
@@ -32,8 +33,8 @@ public class WorkspaceService : IWorkspaceService
     private readonly IWorkspaceEventPublisher _eventPublisher;
 
     public WorkspaceService(
-        IUnitOfWork unitOfWork, 
-        IWorkspaceCacheService workspaceCache, 
+        IUnitOfWork unitOfWork,
+        IWorkspaceCacheService workspaceCache,
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher)
@@ -139,7 +140,7 @@ public class WorkspaceService : IWorkspaceService
                 foreach (var domain in domainsToVerify)
                 {
                     var verifiedDomain = WorkspaceMapper.ToVerifiedDomainEntity(workspace.Id, domain, userId);
-                    await _unitOfWork.Repository<WorkspaceVerifiedDomain>().AddAsync(verifiedDomain, ct);
+                    await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(verifiedDomain, ct);
                 }
             }
 
@@ -217,6 +218,25 @@ public class WorkspaceService : IWorkspaceService
         }
     }
 
+    public async Task<Result<WorkspaceDto>> GetWorkspaceByIdForAdminAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            return Result.Success(workspace.ToDto("admin"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while fetching workspace by ID for system admin. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UnexpectedErrorFetchingWorkspace, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<SelectWorkspaceResponse>> SelectWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try
@@ -265,10 +285,10 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
-            var role = await _authIdentity.GetRoleByIdAsync(member.RoleId, ct);
-            if (role is null || !role.Name.IsOwnerOrAdmin())
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            if (!roleName.IsOwnerOrAdmin())
             {
-                return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.AccessDeniedDefault, ErrorCodes.Forbidden);
+                return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
@@ -304,18 +324,17 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
-            if (settings == null)
+            var settingsValidation = WorkspaceSettingsValidator.Validate(settings);
+            if (!settingsValidation.IsValid)
             {
-                return Result.Failure(WorkspaceConstants.Errors.InvalidSettingsPayload, ErrorCodes.ValidationError);
+                return Result.Failure(settingsValidation.ErrorMessage, ErrorCodes.ValidationError);
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (execRoleName.IsAdmin())
+            var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
+            if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
-                if (currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration)
-                {
-                    return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyExternalCollaboration, ErrorCodes.Forbidden);
-                }
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);
             }
 
             if (settings.VerifiedDomains != null && settings.VerifiedDomains.Any())
@@ -325,6 +344,42 @@ public class WorkspaceService : IWorkspaceService
                     if (EmailAddress.IsPublicDomainName(domain))
                     {
                         return Result.Failure(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
+                    }
+                }
+            }
+
+            // Check if any domain is being removed via settings update
+            var removedDomains = currentConfig.VerifiedDomains
+                .Except(settings.VerifiedDomains ?? new List<string>(), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (removedDomains.Any())
+            {
+                var newDomainsSet = (settings.VerifiedDomains ?? new List<string>())
+                    .Select(d => d.Trim().ToLowerInvariant())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                var activeInternalMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
+                    m => m.WorkspaceId == workspaceId && m.RemovedAt == null && m.MembershipType == MembershipType.Internal.ToString(),
+                    "",
+                    ct);
+
+                if (activeInternalMembers.Any())
+                {
+                    var activeInternalMemberUsers = await Task.WhenAll(
+                        activeInternalMembers.Select(m => _authIdentity.GetUserByIdAsync(m.UserId, ct)));
+
+                    var activeInternalMemberDomains = activeInternalMemberUsers
+                        .Where(user => !string.IsNullOrWhiteSpace(user?.Email))
+                        .Select(user => user!.Email.Split('@').LastOrDefault()?.Trim().ToLowerInvariant())
+                        .Where(domain => !string.IsNullOrWhiteSpace(domain))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var removedDomain in removedDomains)
+                    {
+                        var targetDomain = removedDomain.Trim().ToLowerInvariant();
+                        if (activeInternalMemberDomains.Contains(targetDomain) && !newDomainsSet.Contains(targetDomain))
+                            return Result.Failure(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, ErrorCodes.ValidationError);
                     }
                 }
             }
@@ -371,7 +426,7 @@ public class WorkspaceService : IWorkspaceService
 
             workspace.DeletedAt = DateTime.UtcNow;
             workspace.UpdatedBy = userId;
-            
+
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
             await _unitOfWork.SaveChangesAsync(ct);

@@ -165,7 +165,7 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
                 ErrorMessage = $"Workspace active room limit ({config.MaxActiveRooms}) has been reached."
             };
         }
-        
+
         return new ValidateMeetingCreationResponse
         {
             IsAllowed = true,
@@ -228,12 +228,12 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             if (WarpTalk.WorkspaceService.Domain.ValueObjects.EmailAddress.TryParse(request.UserEmail, out var emailAddress) && emailAddress != null)
             {
                 var domain = emailAddress.Domain;
-                isDomainMatched = await _unitOfWork.Repository<WarpTalk.WorkspaceService.Domain.Entities.WorkspaceVerifiedDomain>().AnyAsync(
-                    vd => vd.WorkspaceId == workspaceId 
-                          && vd.Domain.ToLower() == domain.ToLower() 
-                          && vd.Status == "verified" 
-                          && vd.VerifiedAt != null 
-                          && vd.RevokedAt == null, 
+                isDomainMatched = await _unitOfWork.WorkspaceVerifiedDomainRepository.AnyAsync(
+                    vd => vd.WorkspaceId == workspaceId
+                          && vd.Domain.ToLower() == domain.ToLower()
+                          && vd.Status == "verified"
+                          && vd.VerifiedAt != null
+                          && vd.RevokedAt == null,
                     ct);
             }
         }

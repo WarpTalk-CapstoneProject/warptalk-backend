@@ -8,8 +8,8 @@ public static class WorkspaceDocumentHelper
     // Helper method to get confidentiality level based on sensitivity
     public static string GetConfidentialityLevel(bool isSensitive)
     {
-        return isSensitive 
-            ? WorkspaceDocumentConstants.SensitiveConfidentialityLevel 
+        return isSensitive
+            ? WorkspaceDocumentConstants.SensitiveConfidentialityLevel
             : WorkspaceDocumentConstants.NonSensitiveConfidentialityLevel;
     }
 
@@ -55,5 +55,23 @@ public static class WorkspaceDocumentHelper
         return WorkspaceDocumentConstants.ContentTypesByExtension.TryGetValue(extension, out var contentType)
             ? contentType
             : "application/octet-stream";
+    }
+
+    public static string? NormalizePolicySubjectType(string? subjectType)
+    {
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeUser;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeRole;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeMembershipType;
+        return null;
+    }
+
+    public static bool IsSupportedPolicyPermission(string? permission)
+    {
+        return string.Equals(permission, WorkspaceDocumentPermissions.View, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.Download, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.Ordinal);
     }
 }

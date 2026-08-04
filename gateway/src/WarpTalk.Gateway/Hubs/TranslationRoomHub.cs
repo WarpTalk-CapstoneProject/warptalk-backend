@@ -4,6 +4,7 @@ using StackExchange.Redis;
 using System.Security.Claims;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 
 namespace WarpTalk.Gateway.Hubs;
@@ -17,6 +18,7 @@ namespace WarpTalk.Gateway.Hubs;
 public class TranslationRoomHub : Hub
 {
     private readonly IConnectionManager _connectionManager;
+    private readonly IPresenceNotifier _presence;
     private readonly RedisStreamService _streamService;
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IConnectionMultiplexer _redis;
@@ -24,18 +26,20 @@ public class TranslationRoomHub : Hub
 
     // Track which connection belongs to which room
     private static readonly ConcurrentDictionary<string, string> _connectionToRoom = new();
-    
+
     // Track user active connection in a room: (RoomId_UserId) -> ConnectionId
     private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
 
     public TranslationRoomHub(
         IConnectionManager connectionManager,
+        IPresenceNotifier presence,
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IConnectionMultiplexer redis,
         ILogger<TranslationRoomHub> logger)
     {
         _connectionManager = connectionManager;
+        _presence = presence;
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _redis = redis;
@@ -82,6 +86,9 @@ public class TranslationRoomHub : Hub
             var db = _redis.GetDatabase();
             await db.PublishAsync(RedisChannel.Literal("translationRoom:participant-offline"), $"{roomIdStr}:{userId}");
 
+            // Dropping the socket leaves the meeting just as surely as pressing leave does.
+            await _presence.UserLeftMeetingAsync(userId);
+
             _translationRoomRegistry.UnregisterParticipant(roomIdStr, userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
@@ -122,10 +129,10 @@ public class TranslationRoomHub : Hub
             if (existingConnectionId != Context.ConnectionId)
             {
                 _logger.LogWarning("TranslationRoomHub: User {UserId} joined from a new device. Kicking old connection {OldConnectionId}.", userId, existingConnectionId);
-                
+
                 // Notify old connection
                 await Clients.Client(existingConnectionId).SendAsync("ForceDisconnected", "You have joined from another device.");
-                
+
                 // Remove old connection from group
                 await Groups.RemoveFromGroupAsync(existingConnectionId, groupName);
                 _connectionToRoom.TryRemove(existingConnectionId, out _);
@@ -135,6 +142,9 @@ public class TranslationRoomHub : Hub
         await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
         _connectionToRoom[Context.ConnectionId] = roomIdStr;
         _roomUserToConnection[roomUserKey] = Context.ConnectionId;
+
+        // Being in a room is what "In a meeting" means to the rest of the workspace.
+        await _presence.UserEnteredMeetingAsync(userId, Context.ConnectionAborted);
 
         var participantInfo = new ParticipantInfoDto(
             UserId: Guid.Parse(userId),
@@ -190,6 +200,10 @@ public class TranslationRoomHub : Hub
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
         _connectionToRoom.TryRemove(Context.ConnectionId, out _);
         _roomUserToConnection.TryRemove(roomUserKey, out _);
+
+        // Back to plain online — unless they have already closed the app, which
+        // ClearInMeetingAsync checks for so a late leave cannot resurrect them.
+        await _presence.UserLeftMeetingAsync(userId, Context.ConnectionAborted);
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLeft", userId);

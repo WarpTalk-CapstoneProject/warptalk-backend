@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Claims;
+using WarpTalk.Gateway.Presence;
 
 namespace WarpTalk.Gateway.Hubs;
 
@@ -13,15 +14,18 @@ namespace WarpTalk.Gateway.Hubs;
 public class NotificationHub : Hub
 {
     private readonly IConnectionManager _connectionManager;
+    private readonly IPresenceNotifier _presence;
     private readonly ILogger<NotificationHub> _logger;
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
 
     public NotificationHub(
-        IConnectionManager connectionManager, 
+        IConnectionManager connectionManager,
+        IPresenceNotifier presence,
         ILogger<NotificationHub> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
     {
         _connectionManager = connectionManager;
+        _presence = presence;
         _logger = logger;
         _grpcClient = grpcClient;
     }
@@ -35,6 +39,10 @@ public class NotificationHub : Hub
 
         // Automatically subscribe to the user's personal notification group
         await Groups.AddToGroupAsync(Context.ConnectionId, UserGroupName(userId));
+
+        // This hub is the one every signed-in client holds open, which makes its connection
+        // lifecycle the truthful signal for "is this member reachable".
+        await _presence.UserConnectedAsync(userId, Context.ConnectionAborted);
 
         _logger.LogInformation(
             "NotificationHub: User {UserId} connected (ConnectionId: {ConnectionId})",
@@ -50,6 +58,13 @@ public class NotificationHub : Hub
 
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, UserGroupName(userId));
 
+        // Only when the LAST connection goes: closing one of three tabs does not make someone
+        // offline, which is exactly what RemoveConnection's return value already tracks.
+        if (isFullyOffline)
+        {
+            await _presence.UserDisconnectedAsync(userId);
+        }
+
         _logger.LogInformation(
             "NotificationHub: User {UserId} disconnected (FullyOffline: {FullyOffline})",
             userId, isFullyOffline);
@@ -59,7 +74,7 @@ public class NotificationHub : Hub
 
     // ── Server Methods (Client → Server) ──────────────────
 
-    
+
     public async Task MarkAsRead(Guid notificationId)
     {
         var userId = GetUserId();
@@ -98,7 +113,7 @@ public class NotificationHub : Hub
         }
     }
 
-    
+
     public async Task MarkAllAsRead()
     {
         var userId = GetUserId();
@@ -135,6 +150,14 @@ public class NotificationHub : Hub
     {
         if (string.IsNullOrWhiteSpace(workspaceId)) return;
         await Groups.AddToGroupAsync(Context.ConnectionId, WorkspaceGroupName(workspaceId));
+
+        var userId = GetUserId();
+        // Presence changes fan out per workspace, so the store has to know which ones this user
+        // belongs to. Announcing right after joining also tells the room the caller is here —
+        // the members already on the page learn about a late arrival without refetching.
+        await _presence.TrackWorkspaceAsync(userId, workspaceId, Context.ConnectionAborted);
+        await _presence.AnnounceToWorkspaceAsync(userId, workspaceId, Context.ConnectionAborted);
+
         _logger.LogDebug("NotificationHub: Connection {ConnectionId} joined group {GroupName}", Context.ConnectionId, WorkspaceGroupName(workspaceId));
     }
 

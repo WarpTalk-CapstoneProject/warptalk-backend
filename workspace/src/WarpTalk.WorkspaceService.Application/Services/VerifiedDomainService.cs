@@ -98,7 +98,7 @@ public class VerifiedDomainService : IVerifiedDomainService
     // LIST
     // ─────────────────────────────────────────────────────────────────────────
 
-    public async Task<Result<IReadOnlyList<VerifiedDomainDto>>> ListDomainsAsync(
+    public async Task<Result<List<VerifiedDomainDto>>> ListDomainsAsync(
         Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try
@@ -107,24 +107,24 @@ public class VerifiedDomainService : IVerifiedDomainService
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
             if (member == null)
-                return Result.Failure<IReadOnlyList<VerifiedDomainDto>>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+                return Result.Failure<List<VerifiedDomainDto>>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             if (!roleName.IsOwnerOrAdmin())
-                return Result.Failure<IReadOnlyList<VerifiedDomainDto>>(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
+                return Result.Failure<List<VerifiedDomainDto>>(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
 
             var domains = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
                 vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
                 "",
                 ct);
 
-            IReadOnlyList<VerifiedDomainDto> dtos = domains.Select(d => d.ToDto()).ToList();
+            List<VerifiedDomainDto> dtos = domains.Select(d => d.ToDto()).ToList();
             return Result.Success(dtos);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error listing verified domains. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
-            return Result.Failure<IReadOnlyList<VerifiedDomainDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+            return Result.Failure<List<VerifiedDomainDto>>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
@@ -173,7 +173,38 @@ public class VerifiedDomainService : IVerifiedDomainService
                     return Result.Failure(WorkspaceConstants.Errors.CannotRevokeLastDomain, ErrorCodes.ValidationError);
             }
 
-            // 5. Soft-revoke
+            // 5. Guard: cannot revoke domain if active internal members rely on this domain
+            var activeInternalMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
+                m => m.WorkspaceId == workspaceId && m.RemovedAt == null && m.MembershipType == MembershipType.Internal.ToString(),
+                "",
+                ct);
+
+            if (activeInternalMembers.Any())
+            {
+                var targetDomain = entry.Domain.Trim().ToLowerInvariant();
+                var remainingActiveDomains = (await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                    vd => vd.WorkspaceId == workspaceId && vd.Id != domainId && vd.RevokedAt == null,
+                    "",
+                    ct)).Select(d => d.Domain.Trim().ToLowerInvariant()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var activeMember in activeInternalMembers)
+                {
+                    var user = await _authIdentity.GetUserByIdAsync(activeMember.UserId, ct);
+                    if (user != null && !string.IsNullOrWhiteSpace(user.Email))
+                    {
+                        var memberEmailDomain = user.Email.Split('@').LastOrDefault()?.Trim().ToLowerInvariant();
+                        if (string.Equals(memberEmailDomain, targetDomain, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (memberEmailDomain != null && !remainingActiveDomains.Contains(memberEmailDomain))
+                            {
+                                return Result.Failure(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, ErrorCodes.ValidationError);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 6. Soft-revoke
             entry.SoftRevoke(userId);
 
             _unitOfWork.WorkspaceVerifiedDomainRepository.Update(entry);

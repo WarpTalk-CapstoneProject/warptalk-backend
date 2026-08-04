@@ -32,8 +32,8 @@ public class WorkspaceDocumentServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
-    private readonly IGenericRepository<WorkspaceDocumentAudit> _workspaceDocumentAuditRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentAuditRepository _workspaceDocumentAuditRepository;
     private readonly IDocumentAccessEvaluator _accessEvaluator;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
@@ -48,8 +48,8 @@ public class WorkspaceDocumentServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
-        _workspaceDocumentAuditRepository = Substitute.For<IGenericRepository<WorkspaceDocumentAudit>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
+        _workspaceDocumentAuditRepository = Substitute.For<IWorkspaceDocumentAuditRepository>();
         _accessEvaluator = Substitute.For<IDocumentAccessEvaluator>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
@@ -118,7 +118,7 @@ public class WorkspaceDocumentServiceTests
         Assert.NotNull(result.Value);
         Assert.Equal(WorkspaceDocumentStatus.pending_approval.ToString(), result.Value.Status);
         Assert.Equal(WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(), result.Value.IngestionStatus);
-        
+
         await _workspaceDocumentRepository.Received(1).AddAsync(Arg.Any<WorkspaceDocument>(), Arg.Any<CancellationToken>());
         await _unitOfWork.Received(2).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.DidNotReceiveWithAnyArgs().PublishDocumentUploadedAsync(
@@ -286,17 +286,18 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var adminRoleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             Status = WorkspaceDocumentStatus.pending_approval.ToString(),
             IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(),
             StorageKey = "key",
             FileName = "file.pdf",
             FileExtension = ".pdf",
             UploadedBy = Guid.NewGuid(),
-            ConfidentialityLevel = "general"
+            ConfidentialityLevel = "general",
+            IsAiAllowed = true
         };
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(member);
@@ -329,10 +330,10 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var adminRoleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             Status = WorkspaceDocumentStatus.pending_approval.ToString(),
             IngestionStatus = WorkspaceDocumentIngestionStatus.awaiting_approval.ToString(),
             UploadedBy = Guid.NewGuid()
@@ -364,9 +365,9 @@ public class WorkspaceDocumentServiceTests
         var workspaceId = Guid.NewGuid();
         var documentId = Guid.NewGuid();
         var userId = Guid.NewGuid();
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
             WorkspaceId = workspaceId,
             Name = "Doc1",
             FileName = "file.pdf",
@@ -402,10 +403,10 @@ public class WorkspaceDocumentServiceTests
         var userId = Guid.NewGuid();
         var roleId = Guid.NewGuid();
         var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = roleId };
-        var document = new WorkspaceDocument 
-        { 
-            Id = documentId, 
-            WorkspaceId = workspaceId, 
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
             OwnerId = userId,
             Name = "Doc1",
             FileName = "file.pdf",
@@ -453,11 +454,13 @@ public class WorkspaceDocumentServiceTests
             new() { Id = Guid.NewGuid(), DocumentId = documentId, SubjectType = "User", SubjectId = Guid.NewGuid(), Permission = "view", Effect = "DENY" }
         };
 
-        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.FindAsync(
-            Arg.Any<Expression<Func<WorkspaceDocumentAccessPolicy, bool>>>(),
-            Arg.Any<string>(),
+        _unitOfWork.WorkspaceDocumentAccessPolicyRepository.GetPagedAccessPoliciesAsync(
+            documentId,
+            2,
+            2,
+            true,
             Arg.Any<CancellationToken>()
-        ).Returns(policies);
+        ).Returns((policies.Skip(2).Take(2).ToList(), policies.Count));
 
         var query = new GetWorkspacesQuery(Page: 2, PageSize: 2);
 

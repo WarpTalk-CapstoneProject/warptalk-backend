@@ -31,7 +31,7 @@ public class InternalContextMiddleware
                 {
                     var tokenHandler = new JwtSecurityTokenHandler();
                     var key = Encoding.UTF8.GetBytes(_sharedSecret);
-                    
+
                     var validationParameters = new TokenValidationParameters
                     {
                         ValidateIssuerSigningKey = true,

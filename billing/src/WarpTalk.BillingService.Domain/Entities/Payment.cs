@@ -1,4 +1,6 @@
+using WarpTalk.BillingService.Domain.Constants;
 using System;
+
 
 namespace WarpTalk.BillingService.Domain.Entities;
 
@@ -26,7 +28,7 @@ public partial class Payment
 
     public string? ProviderOrderId { get; set; }
 
-    public string Status { get; set; } = null!;
+    public string Status { get; set; } = PaymentConstants.PaymentStatuses.Pending;
 
     public string? FailureReason { get; set; }
 
@@ -41,6 +43,4 @@ public partial class Payment
     public DateTime UpdatedAt { get; set; }
 
     public virtual Subscription Subscription { get; set; } = null!;
-
-    public virtual ICollection<Refund> Refunds { get; set; } = new List<Refund>();
 }

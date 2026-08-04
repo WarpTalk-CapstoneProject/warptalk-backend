@@ -21,6 +21,7 @@ public class WorkspaceConfigurationTests
         Assert.Empty(config.AllowedTargetLanguages);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceMaxActiveRooms, config.MaxActiveRooms);
         Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
+        Assert.Equal(WorkspaceConstants.DefaultInvitationExpiryDays, config.InvitationExpiryDays);
         Assert.NotNull(config.AiUsagePolicy);
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
         Assert.NotNull(config.AiUsagePolicy.RedactPii);
@@ -37,7 +38,7 @@ public class WorkspaceConfigurationTests
     public void WorkspaceConfiguration_ShouldApplyDefaultsAndNormalize_WhenDeserializedFromNullOrInvalidJson()
     {
         // Arrange
-        var json = "{\"DefaultLanguage\":null,\"Timezone\":\"   \",\"AllowedTargetLanguages\":null,\"MaxActiveRooms\":-5,\"ArtifactRetentionDays\":0}";
+        var json = "{\"DefaultLanguage\":null,\"Timezone\":\"   \",\"AllowedTargetLanguages\":null,\"MaxActiveRooms\":-5,\"ArtifactRetentionDays\":-1}";
 
         // Act
         var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(json);
@@ -54,6 +55,34 @@ public class WorkspaceConfigurationTests
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
         Assert.NotNull(config.AiUsagePolicy.RedactPii);
         Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
+    }
+
+    [Fact]
+    public void WorkspaceConfiguration_ShouldNormalizeInvitationExpiryDays_WhenDeserialized()
+    {
+        var invalidLow = JsonSerializer.Deserialize<WorkspaceConfiguration>(
+            "{\"InvitationExpiryDays\":0}");
+        var invalidHigh = JsonSerializer.Deserialize<WorkspaceConfiguration>(
+            "{\"InvitationExpiryDays\":366}");
+        var valid = JsonSerializer.Deserialize<WorkspaceConfiguration>(
+            "{\"InvitationExpiryDays\":30}");
+
+        Assert.NotNull(invalidLow);
+        Assert.NotNull(invalidHigh);
+        Assert.NotNull(valid);
+        Assert.Equal(WorkspaceConstants.DefaultInvitationExpiryDays, invalidLow.InvitationExpiryDays);
+        Assert.Equal(WorkspaceConstants.MaxWorkspaceInvitationExpiryDays, invalidHigh.InvitationExpiryDays);
+        Assert.Equal(30, valid.InvitationExpiryDays);
+    }
+
+    [Fact]
+    public void WorkspaceConfiguration_ShouldNormalizeZeroRetentionToDefault()
+    {
+        var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(
+            "{\"ArtifactRetentionDays\":0}");
+
+        Assert.NotNull(config);
+        Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
     }
 
     [Fact]
@@ -106,7 +135,7 @@ public class WorkspaceConfigurationTests
         Assert.NotNull(deserializedConfig);
         Assert.NotNull(deserializedConfig.AiUsagePolicy);
         Assert.True(deserializedConfig.AiUsagePolicy.AllowExternalLlm);
-        
+
         Assert.NotNull(deserializedConfig.AiUsagePolicy.RedactPii);
         Assert.True(deserializedConfig.AiUsagePolicy.RedactPii.Enabled);
 

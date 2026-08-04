@@ -8,6 +8,7 @@ public static class WorkspaceEventTypes
     public const string WorkspaceCreated = "workspace.created";
     public const string WorkspaceDeleted = "workspace.deleted";
     public const string MemberRemoved = "workspace.member_removed";
+    public const string MemberRoleChanged = "workspace.member.role_changed";
     public const string DocumentIngestionRequested = "workspace.document_ingestion_requested";
     public const string DocumentInvalidated = "workspace.document_invalidated";
 }
@@ -30,6 +31,20 @@ public sealed record MemberRemovedEventPayload(
     [property: JsonPropertyName("user_id")] string UserId,
     [property: JsonPropertyName("removed_by_user_id")] string RemovedByUserId,
     [property: JsonPropertyName("removed_at")] DateTime RemovedAt);
+
+public sealed record MemberRoleChangedEventPayload(
+    [property: JsonPropertyName("workspace_id")] string WorkspaceId,
+    [property: JsonPropertyName("target_user_id")] string TargetUserId,
+    [property: JsonPropertyName("old_role")] string OldRole,
+    [property: JsonPropertyName("new_role")] string NewRole,
+    [property: JsonPropertyName("changed_by_user_id")] string ChangedByUserId,
+    [property: JsonPropertyName("membership_type")] string MembershipType,
+    [property: JsonPropertyName("effective_behavior")] string EffectiveBehavior,
+    [property: JsonPropertyName("event_id")] string EventId,
+    [property: JsonPropertyName("correlation_id")] string? CorrelationId,
+    [property: JsonPropertyName("idempotency_key")] string? IdempotencyKey,
+    [property: JsonPropertyName("effective_at")] DateTime EffectiveAt,
+    [property: JsonPropertyName("occurred_at")] DateTime OccurredAt);
 
 public sealed record WorkspaceDocumentIngestionRequestedEventPayload(
     [property: JsonPropertyName("document_id")] string DocumentId,

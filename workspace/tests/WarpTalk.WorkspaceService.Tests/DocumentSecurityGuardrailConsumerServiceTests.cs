@@ -30,7 +30,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
     private readonly IServiceScope _serviceScope;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly IDocumentTextExtractor _textExtractor;
     private readonly IDocumentSecurityScanner _securityScanner;
@@ -48,14 +48,14 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         var serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
         _textExtractor = Substitute.For<IDocumentTextExtractor>();
         _securityScanner = Substitute.For<IDocumentSecurityScanner>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _embeddingPublisher = Substitute.For<IEmbeddingIndexPublisher>();
-        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver(
-            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Services.AiPolicyResolver>>());
+        _policyResolver = new WarpTalk.WorkspaceService.Infrastructure.Adapters.AiPolicyResolver(
+            Substitute.For<ILogger<WarpTalk.WorkspaceService.Infrastructure.Adapters.AiPolicyResolver>>());
         _database = Substitute.For<IDatabase>();
 
         _redis.GetDatabase(Arg.Any<int>(), Arg.Any<object?>()).Returns(_database);
@@ -137,7 +137,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         };
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Contact info: myemail@test.com and phone: 0912345678"));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -182,7 +182,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
         };
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Báo cáo doanh thu quý 2 năm 2026."));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -238,7 +238,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("Nội dung báo cáo có chứa doanh thu"));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 
@@ -289,7 +289,7 @@ public class DocumentSecurityGuardrailConsumerServiceTests
 
         _workspaceDocumentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        
+
         var contentStream = new MemoryStream(Encoding.UTF8.GetBytes("This is clean content with no PII and no forbidden keywords."));
         _storage.GetDecryptedStreamAsync(document, Arg.Any<CancellationToken>()).Returns(contentStream);
 

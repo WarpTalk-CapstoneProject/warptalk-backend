@@ -250,7 +250,7 @@ public class VoiceProfileService : IVoiceProfileService
                 _unitOfWork.VoiceProfileRepository.Add(profile);
                 if (sample != null)
                 {
-                    await _unitOfWork.Repository<VoiceSample>().AddAsync(sample, ct);
+                    await _unitOfWork.VoiceSampleRepository.AddAsync(sample, ct);
                 }
                 await _unitOfWork.SaveChangesAsync(ct);
             }

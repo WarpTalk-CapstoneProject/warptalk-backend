@@ -34,13 +34,13 @@ public sealed class BillingNotificationEventHandlerTests
             SchemaVersion = 1,
             PayloadJson = JsonSerializer.Serialize(envelope)
         };
-        var inboxRepository = new Mock<IGenericRepository<NotificationInboxMessage>>();
-        inboxRepository.Setup(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<NotificationInboxMessage, bool>>>()))
-            .ReturnsAsync(Array.Empty<NotificationInboxMessage>());
-        var notificationRepository = new Mock<IGenericRepository<NotificationMessage>>();
+        var inboxRepository = new Mock<INotificationInboxMessageRepository>();
+        inboxRepository.Setup(x => x.HasProcessedAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        var notificationRepository = new Mock<INotificationMessageRepository>();
         var unitOfWork = new Mock<IUnitOfWork>();
-        unitOfWork.Setup(x => x.Repository<NotificationInboxMessage>()).Returns(inboxRepository.Object);
-        unitOfWork.Setup(x => x.Repository<NotificationMessage>()).Returns(notificationRepository.Object);
+        unitOfWork.Setup(x => x.NotificationInboxMessageRepository).Returns(inboxRepository.Object);
+        unitOfWork.Setup(x => x.NotificationMessageRepository).Returns(notificationRepository.Object);
         var publisher = new Mock<IMessagePublisher>();
         var handler = new BillingNotificationEventHandler(unitOfWork.Object, publisher.Object);
 
@@ -48,7 +48,8 @@ public sealed class BillingNotificationEventHandlerTests
 
         Assert.True(processed);
         inboxRepository.Verify(x => x.AddAsync(It.Is<NotificationInboxMessage>(i =>
-            i.EventId == eventId && i.Consumer == BillingNotificationEventHandler.ConsumerName)), Times.Once);
+            i.EventId == eventId && i.Consumer == BillingNotificationEventHandler.ConsumerName),
+            It.IsAny<CancellationToken>()), Times.Once);
         notificationRepository.Verify(x => x.AddAsync(It.Is<NotificationMessage>(n =>
             n.UserId == userId && n.Type == "BILLING_PAYMENT_SUCCEEDED")), Times.Once);
         unitOfWork.Verify(x => x.SaveChangesAsync(), Times.Once);
@@ -64,14 +65,11 @@ public sealed class BillingNotificationEventHandlerTests
     public async Task HandleAsync_DuplicateDelivery_DoesNotWriteAgain()
     {
         var eventId = Guid.NewGuid();
-        var inboxRepository = new Mock<IGenericRepository<NotificationInboxMessage>>();
-        inboxRepository.Setup(x => x.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<NotificationInboxMessage, bool>>>()))
-            .ReturnsAsync(new[]
-            {
-                new NotificationInboxMessage { EventId = eventId, Consumer = BillingNotificationEventHandler.ConsumerName }
-            });
+        var inboxRepository = new Mock<INotificationInboxMessageRepository>();
+        inboxRepository.Setup(x => x.HasProcessedAsync(eventId, BillingNotificationEventHandler.ConsumerName, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         var unitOfWork = new Mock<IUnitOfWork>();
-        unitOfWork.Setup(x => x.Repository<NotificationInboxMessage>()).Returns(inboxRepository.Object);
+        unitOfWork.Setup(x => x.NotificationInboxMessageRepository).Returns(inboxRepository.Object);
         var publisher = new Mock<IMessagePublisher>();
         var handler = new BillingNotificationEventHandler(unitOfWork.Object, publisher.Object);
 

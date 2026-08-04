@@ -27,10 +27,11 @@ public class WorkspaceInvitationServiceTests
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
     private readonly IWorkspaceInvitationRepository _workspaceInvitationRepository;
-    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
+    private readonly IWorkspaceVerifiedDomainRepository _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
+    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
     private readonly WorkspaceInvitationService _workspaceInvitationService;
 
     public WorkspaceInvitationServiceTests()
@@ -39,30 +40,38 @@ public class WorkspaceInvitationServiceTests
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
         _workspaceInvitationRepository = Substitute.For<IWorkspaceInvitationRepository>();
-        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
         _emailComposer = Substitute.For<IWorkspaceInvitationEmailComposer>();
+        _billingSubscriptionClient = Substitute.For<IBillingSubscriptionClient>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _emailComposer.SendInvitationEmailAsync(
                 Arg.Any<WorkspaceInvitation>(),
                 Arg.Any<Workspace>(),
                 Arg.Any<string>(),
                 Arg.Any<string>(),
+                Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
             .Returns(new SendEmailResponse(true, "message-id", null));
+        _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(
+                Arg.Any<Guid>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
 
         _workspaceInvitationService = new WorkspaceInvitationService(
-            _unitOfWork, 
-            Substitute.For<ILogger<WorkspaceInvitationService>>(), 
+            _unitOfWork,
+            Substitute.For<ILogger<WorkspaceInvitationService>>(),
             _authIdentity,
             _translationRoomClient,
-            _emailComposer);
+            _emailComposer,
+            _billingSubscriptionClient,
+            new WorkspaceInvitationAcceptanceProcessor(_unitOfWork, _billingSubscriptionClient));
     }
 
     private void StubRoleName(Guid roleId, string roleName)
@@ -97,7 +106,7 @@ public class WorkspaceInvitationServiceTests
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
-        
+
         StubRoleName(inviterMember.RoleId, "Owner");
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
@@ -129,6 +138,74 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
+    public async Task InviteMemberAsync_ShouldSendEmailWithInviterNameAndInvitationToken()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws" };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+        _authIdentity.GetUserByIdAsync(inviterUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = inviterUserId, FullName = "Real Inviter", Email = "owner@warptalk.vn" });
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+        await _emailComposer.Received(1).SendInvitationEmailAsync(
+            Arg.Any<WorkspaceInvitation>(),
+            workspace,
+            "Real Inviter",
+            "Member",
+            Arg.Is<string>(token => token.Length == 64),
+            Arg.Any<CancellationToken>());
+        await _authIdentity.DidNotReceive().GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldUseConfiguredExpiryDaysAndPersistTokenHash()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Business WS",
+            Slug = "business-ws",
+            Settings = "{\"InvitationExpiryDays\":3}"
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
+        WorkspaceInvitation? addedInvitation = null;
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        _workspaceInvitationRepository
+            .AddAsync(Arg.Do<WorkspaceInvitation>(invitation => addedInvitation = invitation), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+
+        var before = DateTime.UtcNow;
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+        var after = DateTime.UtcNow;
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(addedInvitation);
+        Assert.False(string.IsNullOrWhiteSpace(addedInvitation!.TokenHash));
+        Assert.InRange(
+            addedInvitation.ExpiresAt,
+            before.AddDays(3).AddSeconds(-1),
+            after.AddDays(3).AddSeconds(1));
+    }
+
+    [Fact]
     public async Task InviteMemberAsync_ShouldReturnConflict_WhenActivePendingInvitationExists()
     {
         // Arrange
@@ -137,22 +214,22 @@ public class WorkspaceInvitationServiceTests
         var roleId = Guid.NewGuid();
         var workspace = new Workspace { Id = workspaceId, Name = "Business WS", Slug = "business-ws", AllowExternalCollaboration = true, RequireVerifiedDomainForInternal = true };
         var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
-        
-        var oldInvitation = new WorkspaceInvitation 
-        { 
-            Id = Guid.NewGuid(), 
-            WorkspaceId = workspaceId, 
-            Email = "invitee@warptalk.vn", 
-            Status = InvitationStatus.PENDING.ToString(), 
+
+        var oldInvitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = "invitee@warptalk.vn",
+            Status = InvitationStatus.PENDING.ToString(),
             RoleId = roleId,
             MembershipType = "Internal",
-            ExpiresAt = DateTime.UtcNow.AddDays(1) 
+            ExpiresAt = DateTime.UtcNow.AddDays(1)
         };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
         _workspaceInvitationRepository.GetPendingByEmailAsync(workspaceId, "invitee@warptalk.vn", Arg.Any<CancellationToken>()).Returns(oldInvitation);
-        
+
         StubRoleName(inviterMember.RoleId, "Owner");
         StubRoleId("Member", roleId);
         StubUserEmail("invitee@warptalk.vn", Guid.NewGuid());
@@ -200,7 +277,7 @@ public class WorkspaceInvitationServiceTests
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
-        
+
         StubRoleName(inviterMember.RoleId, "Owner");
         _workspaceVerifiedDomainRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
@@ -234,7 +311,7 @@ public class WorkspaceInvitationServiceTests
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
-        
+
         StubRoleName(inviterMember.RoleId, "Owner");
         _workspaceVerifiedDomainRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
@@ -252,6 +329,72 @@ public class WorkspaceInvitationServiceTests
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(WorkspaceConstants.Errors.ExternalMemberMustHaveMemberRole, result.Error);
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldFail_WhenTrialWorkspaceMemberLimitReached()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Trial WS",
+            Slug = "trial-ws",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        _workspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(4);
+        _workspaceInvitationRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceInvitation, bool>>>(),
+                "",
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceInvitation>
+            {
+                new()
+                {
+                    WorkspaceId = workspaceId,
+                    Email = "pending@warptalk.vn",
+                    Status = InvitationStatus.PENDING.ToString(),
+                    ExpiresAt = DateTime.UtcNow.AddDays(1)
+                }
+            });
+        _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(true);
+
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new()
+                {
+                    WorkspaceId = workspaceId,
+                    Domain = "warptalk.vn",
+                    Status = "verified",
+                    VerifiedAt = DateTime.UtcNow
+                }
+            });
+
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", "Internal");
+
+        // Act
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, result.Error);
+        await _workspaceInvitationRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceInvitation>(), Arg.Any<CancellationToken>());
     }
 
     #endregion
@@ -596,6 +739,45 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
+    public async Task AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            RoleId = roleId,
+            Email = "invitee@warptalk.vn",
+            Status = InvitationStatus.PENDING.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(5),
+            MembershipType = "Internal"
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(new Workspace { Id = workspaceId, Settings = "{\"VerifiedDomains\":[\"warptalk.vn\"]}" });
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns((WorkspaceMember?)null);
+        _workspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(WorkspaceConstants.TrialWorkspaceMemberLimit);
+        _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(true);
+
+        _workspaceVerifiedDomainRepository.AnyAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        var request = new AcceptInvitationRequest("valid_token");
+
+        // Act
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(request, Guid.NewGuid(), "invitee@warptalk.vn");
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, result.Error);
+        Assert.Equal(InvitationStatus.PENDING.ToString(), invitation.Status);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task PreviewInvitationAsync_ShouldReturnMaskedEmailAndSafeInfo_WhenTokenValid()
     {
         // Arrange
@@ -717,6 +899,307 @@ public class WorkspaceInvitationServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    #endregion
+
+    #region Join Request Tests
+
+    [Fact]
+    public async Task CreateJoinRequestAsync_ShouldClassifyAsExternal_WhenWorkspaceHasNoVerifiedDomain()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var email = "user@gmail.com";
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Slug = "small-workspace",
+            IsActive = true,
+            RequireVerifiedDomainForInternal = true,
+            AllowExternalCollaboration = true
+        };
+
+        _workspaceRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = roleId, Name = "Member" });
+        _workspaceInvitationRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceInvitation, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceInvitation?)null);
+        _workspaceVerifiedDomainRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var result = await _workspaceInvitationService.CreateJoinRequestAsync(
+            new CreateJoinRequestCommand(null, workspace.Slug), userId, email);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.REQUESTED.ToString(), result.Value!.Status);
+        Assert.Equal(MembershipType.External.ToString(), result.Value.MembershipType);
+
+        await _workspaceInvitationRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceInvitation>(invitation =>
+                invitation.RequestedBy == userId &&
+                invitation.InvitedBy == userId &&
+                invitation.RoleId == roleId &&
+                invitation.MembershipType == MembershipType.External.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateJoinRequestAsync_ShouldReturnPolicyAction_WhenExternalCollaborationDisabled()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var email = "user@gmail.com";
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Slug = "locked-workspace",
+            IsActive = true,
+            RequireVerifiedDomainForInternal = true,
+            AllowExternalCollaboration = false
+        };
+
+        _workspaceRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        StubRoleId("Member", roleId);
+        _workspaceInvitationRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceInvitation, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceInvitation?)null);
+        _workspaceVerifiedDomainRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var result = await _workspaceInvitationService.CreateJoinRequestAsync(
+            new CreateJoinRequestCommand(null, workspace.Slug), userId, email);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MembershipType.External.ToString(), result.Value!.MembershipType);
+        Assert.Empty(result.Value.AllowedFinalMembershipTypes!);
+        Assert.True(result.Value.RequiresPolicyAction);
+        Assert.Contains(JoinRequestSuggestedActions.EnableExternalCollaboration, result.Value.SuggestedActions!);
+        Assert.Contains(JoinRequestSuggestedActions.AddVerifiedDomain, result.Value.SuggestedActions!);
+    }
+
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldAcceptAndCreateMemberWithSelectedMembershipType()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = memberRoleId,
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace { Id = workspaceId, Name = "Acme", Slug = "acme", AllowExternalCollaboration = true };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, (WorkspaceMember?)null);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Owner" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _emailComposer.SendJoinRequestApprovedEmailAsync(
+            Arg.Any<WorkspaceInvitation>(), Arg.Any<Workspace>(), Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "approval-message", null));
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.External.ToString()));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
+        Assert.Equal(MembershipType.External.ToString(), invitation.MembershipType);
+        Assert.Equal(adminId, invitation.ReviewedBy);
+        Assert.NotNull(invitation.ReviewedAt);
+        Assert.NotNull(invitation.AcceptedAt);
+        await _workspaceMemberRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceMember>(member =>
+                member.UserId == requesterId &&
+                member.RoleId == memberRoleId &&
+                string.Equals(member.Status, "active", StringComparison.OrdinalIgnoreCase) &&
+                member.MembershipType == MembershipType.External.ToString()),
+            Arg.Any<CancellationToken>());
+        await _emailComposer.Received(1).SendJoinRequestApprovedEmailAsync(invitation, workspace, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldRejectInternal_WhenRequesterEmailDomainIsNotVerified()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = memberRoleId,
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Acme",
+            Slug = "acme",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true
+        };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = adminRoleId };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember);
+        StubRoleName(adminRoleId, "Owner");
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceVerifiedDomainRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.Internal.ToString()));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(InvitationStatus.REQUESTED.ToString(), invitation.Status);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+        await _emailComposer.DidNotReceive().SendJoinRequestApprovedEmailAsync(
+            Arg.Any<WorkspaceInvitation>(),
+            Arg.Any<Workspace>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldAllowInternal_WhenRequesterEmailDomainIsVerified()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@acme.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = memberRoleId,
+            MembershipType = MembershipType.Internal.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Acme",
+            Slug = "acme",
+            AllowExternalCollaboration = false,
+            RequireVerifiedDomainForInternal = true
+        };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = adminRoleId };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, (WorkspaceMember?)null);
+        _workspaceMemberRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
+        StubRoleName(adminRoleId, "Owner");
+        StubRoleId("Member", memberRoleId);
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceVerifiedDomainRepository.FindAsync(Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new()
+                {
+                    WorkspaceId = workspaceId,
+                    Domain = "acme.com",
+                    Status = "verified",
+                    VerifiedAt = DateTime.UtcNow
+                }
+            });
+        _emailComposer.SendJoinRequestApprovedEmailAsync(
+            Arg.Any<WorkspaceInvitation>(), Arg.Any<Workspace>(), Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "approval-message", null));
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.Internal.ToString()));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
+        Assert.Equal(MembershipType.Internal.ToString(), invitation.MembershipType);
+        await _workspaceMemberRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceMember>(member =>
+                member.UserId == requesterId &&
+                member.RoleId == memberRoleId &&
+                member.MembershipType == MembershipType.Internal.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RejectJoinRequestAsync_ShouldUseRejectedStatusAndReviewerTracking()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Status = InvitationStatus.REQUESTED.ToString(),
+            MembershipType = MembershipType.External.ToString(),
+            Email = "requester@gmail.com"
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Admin" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+
+        var result = await _workspaceInvitationService.RejectJoinRequestAsync(workspaceId, invitationId, adminId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.REJECTED.ToString(), invitation.Status);
+        Assert.Equal(adminId, invitation.ReviewedBy);
+        Assert.NotNull(invitation.ReviewedAt);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
 
     #endregion

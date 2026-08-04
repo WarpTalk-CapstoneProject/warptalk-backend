@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Presence;
 using WarpTalk.Shared.Protos;
 
 namespace WarpTalk.Gateway.Tests;
@@ -11,6 +12,7 @@ namespace WarpTalk.Gateway.Tests;
 public class NotificationHubTests
 {
     private readonly Mock<IConnectionManager> _mockConnectionManager;
+    private readonly Mock<IPresenceNotifier> _mockPresenceNotifier;
     private readonly Mock<ILogger<NotificationHub>> _mockLogger;
     private readonly Mock<NotificationGrpcService.NotificationGrpcServiceClient> _mockGrpcClient;
     private readonly Mock<IHubCallerClients> _mockClients;
@@ -25,8 +27,9 @@ public class NotificationHubTests
     public NotificationHubTests()
     {
         _mockConnectionManager = new Mock<IConnectionManager>();
+        _mockPresenceNotifier = new Mock<IPresenceNotifier>();
         _mockLogger = new Mock<ILogger<NotificationHub>>();
-        
+
         // Mock gRPC Client
         var mockCallInvoker = new Mock<CallInvoker>();
         _mockGrpcClient = new Mock<NotificationGrpcService.NotificationGrpcServiceClient>(mockCallInvoker.Object);
@@ -50,6 +53,7 @@ public class NotificationHubTests
 
         _hub = new NotificationHub(
             _mockConnectionManager.Object,
+            _mockPresenceNotifier.Object,
             _mockLogger.Object,
             _mockGrpcClient.Object)
         {
@@ -65,7 +69,7 @@ public class NotificationHubTests
         // Arrange
         var notificationId = Guid.NewGuid();
         var response = new MarkAsReadResponse { Success = true };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(
                 It.Is<MarkAsReadRequest>(r => r.UserId == _userId.ToString() && r.NotificationId == notificationId.ToString()),
@@ -93,7 +97,7 @@ public class NotificationHubTests
         // Arrange
         var notificationId = Guid.NewGuid();
         var response = new MarkAsReadResponse { Success = false, ErrorMessage = "Not Found" };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(It.IsAny<MarkAsReadRequest>(), null, null, default))
             .Returns(new Grpc.Core.AsyncUnaryCall<MarkAsReadResponse>(
@@ -118,7 +122,7 @@ public class NotificationHubTests
     {
         // Arrange
         var notificationId = Guid.NewGuid();
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAsReadAsync(It.IsAny<MarkAsReadRequest>(), null, null, default))
             .Throws(new RpcException(new Status(StatusCode.Unavailable, "Service down")));
@@ -138,7 +142,7 @@ public class NotificationHubTests
     {
         // Arrange
         var response = new MarkAllAsReadResponse { Success = true };
-        
+
         _mockGrpcClient
             .Setup(c => c.MarkAllAsReadAsync(
                 It.Is<MarkAllAsReadRequest>(r => r.UserId == _userId.ToString()),

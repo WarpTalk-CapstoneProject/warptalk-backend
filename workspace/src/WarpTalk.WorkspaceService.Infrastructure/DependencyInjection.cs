@@ -19,8 +19,9 @@ using WarpTalk.WorkspaceService.Infrastructure.Caching;
 using WarpTalk.WorkspaceService.Infrastructure.Clients;
 using WarpTalk.WorkspaceService.Infrastructure.Persistence;
 using WarpTalk.WorkspaceService.Infrastructure.Repositories;
-using WarpTalk.WorkspaceService.Infrastructure.Services;
+using WarpTalk.WorkspaceService.Infrastructure.Adapters;
 using WarpTalk.WorkspaceService.Infrastructure.Storage;
+using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Infrastructure.Outbox;
 
 namespace WarpTalk.WorkspaceService.Infrastructure;
@@ -152,6 +153,16 @@ public static class DependencyInjection
         })
         .AddWarpTalkGrpcClientDefaults(configuration, environment);
         services.AddScoped<ITranslationRoomClient, TranslationRoomGrpcClient>();
+
+        services.AddGrpcClient<BillingService.BillingServiceClient>(o =>
+        {
+            o.Address = configuration.GetRequiredServiceUri(
+                environment,
+                "GrpcSettings:BillingServiceUrl",
+                "http://localhost:50057");
+        })
+        .AddWarpTalkGrpcClientDefaults(configuration, environment);
+        services.AddScoped<IBillingSubscriptionClient, BillingSubscriptionGrpcClient>();
 
         return services;
     }

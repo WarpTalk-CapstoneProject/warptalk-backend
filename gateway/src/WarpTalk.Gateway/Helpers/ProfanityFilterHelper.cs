@@ -9,7 +9,7 @@ public static class ProfanityFilterHelper
     public static string MaskProfanity(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return text;
-        
+
         // Simple regex-based profanity masking (for Vietnamese and English common profanity)
         return Regex.Replace(text, ProfanityPattern, "***", RegexOptions.IgnoreCase);
     }

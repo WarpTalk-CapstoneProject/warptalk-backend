@@ -73,5 +73,7 @@ public sealed class ConnectionManager : IConnectionManager
 
     public bool IsUserOnline(string userId) => _userConnections.ContainsKey(userId);
 
+    public IReadOnlyCollection<string> GetOnlineUserIds() => _userConnections.Keys.ToArray();
+
     public int OnlineUserCount => _userConnections.Count;
 }

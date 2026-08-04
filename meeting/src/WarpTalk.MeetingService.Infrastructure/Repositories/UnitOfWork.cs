@@ -13,7 +13,14 @@ public class UnitOfWork : IUnitOfWork
     private IMeetingChatTranslationRepository? _meetingChatTranslationRepository;
     private IMeetingChatAssistantRequestRepository? _meetingChatAssistantRequestRepository;
     private IMeetingChatModerationEventRepository? _meetingChatModerationEventRepository;
-    private Dictionary<Type, object>? _repositories;
+    private IBreakoutSessionRepository? _breakoutSessionRepository;
+    private IBreakoutAssignmentRepository? _breakoutAssignmentRepository;
+    private IPollRepository? _pollRepository;
+    private IPollOptionRepository? _pollOptionRepository;
+    private IPollVoteRepository? _pollVoteRepository;
+    private IQuestionRepository? _questionRepository;
+    private IQuestionVoteRepository? _questionVoteRepository;
+    private IMeetingInvitationRepository? _meetingInvitationRepository;
 
     public UnitOfWork(MeetingDbContext context)
     {
@@ -28,14 +35,14 @@ public class UnitOfWork : IUnitOfWork
     public IMeetingChatAssistantRequestRepository MeetingChatAssistantRequestRepository => _meetingChatAssistantRequestRepository ??= new MeetingChatAssistantRequestRepository(_context);
     public IMeetingChatModerationEventRepository MeetingChatModerationEventRepository => _meetingChatModerationEventRepository ??= new MeetingChatModerationEventRepository(_context);
 
-    public IGenericRepository<T> Repository<T>() where T : class
-    {
-        _repositories ??= new Dictionary<Type, object>();
-        var type = typeof(T);
-        if (!_repositories.ContainsKey(type))
-            _repositories.Add(type, new GenericRepository<T>(_context));
-        return (IGenericRepository<T>)_repositories[type];
-    }
+    public IBreakoutSessionRepository BreakoutSessionRepository => _breakoutSessionRepository ??= new BreakoutSessionRepository(_context);
+    public IBreakoutAssignmentRepository BreakoutAssignmentRepository => _breakoutAssignmentRepository ??= new BreakoutAssignmentRepository(_context);
+    public IPollRepository PollRepository => _pollRepository ??= new PollRepository(_context);
+    public IPollOptionRepository PollOptionRepository => _pollOptionRepository ??= new PollOptionRepository(_context);
+    public IPollVoteRepository PollVoteRepository => _pollVoteRepository ??= new PollVoteRepository(_context);
+    public IQuestionRepository QuestionRepository => _questionRepository ??= new QuestionRepository(_context);
+    public IQuestionVoteRepository QuestionVoteRepository => _questionVoteRepository ??= new QuestionVoteRepository(_context);
+    public IMeetingInvitationRepository MeetingInvitationRepository => _meetingInvitationRepository ??= new MeetingInvitationRepository(_context);
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 

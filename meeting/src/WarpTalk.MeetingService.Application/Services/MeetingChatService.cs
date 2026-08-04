@@ -10,6 +10,7 @@ using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Mappers;
 using WarpTalk.Shared;
+using WarpTalk.MeetingService.Domain.Constants;
 using WarpTalk.MeetingService.Domain.Entities;
 using WarpTalk.MeetingService.Domain.Interfaces;
 
@@ -51,16 +52,31 @@ public class MeetingChatService : IMeetingChatService
             return Result.Failure<IEnumerable<MeetingChatMessageDto>>("Not a participant.", "FORBIDDEN");
 
         var messages = await _unitOfWork.MeetingChatMessageRepository.FindAsync(m => m.MeetingRoomId == room.Id, ct: ct);
-        
+
         var dtos = messages.Where(m => !m.IsHidden || room.CreatedBy == userId)
                            .OrderBy(m => m.CreatedAt)
                            .Select(m => m.ToDto());
-                           
+
         return Result.Success<IEnumerable<MeetingChatMessageDto>>(dtos);
     }
 
     public async Task<Result<MeetingChatMessageDto>> SendMessageAsync(Guid roomId, Guid userId, SendMeetingChatMessageRequest request, string? bearerToken = null, CancellationToken ct = default)
     {
+        // The column is TEXT and the desktop app posts to this same endpoint, so this check
+        // is what actually bounds a message — the editor cap in the web client is only a
+        // convenience on top of it (WT-237).
+        //
+        // Bound once into a local rather than testing request.OriginalText with `?.`: the DTO
+        // declares it `null!`, so a null-conditional here tells flow analysis it may be null and
+        // turns every later use into CS8601 — which a Release build treats as an error.
+        var originalText = request.OriginalText ?? string.Empty;
+        if (originalText.Length > MeetingChatConstants.MaxMessageLength)
+        {
+            return Result.Failure<MeetingChatMessageDto>(
+                $"Message must be {MeetingChatConstants.MaxMessageLength} characters or fewer.",
+                "VALIDATION_ERROR");
+        }
+
         var room = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == roomId, ct: ct);
         if (room == null)
             return Result.Failure<MeetingChatMessageDto>("Room not found.", "NOT_FOUND");
@@ -85,7 +101,7 @@ public class MeetingChatService : IMeetingChatService
 
         var dto = message.ToDto();
         await _chatNotifier.BroadcastMessageReceivedAsync(roomId, dto, ct);
-        
+
         var agentMentions = request.Mentions.Where(m => m.Type == "agent").ToList();
         if (agentMentions.Any())
         {
@@ -96,7 +112,7 @@ public class MeetingChatService : IMeetingChatService
                 MeetingRoomId = room.Id,
                 WorkspaceId = workspaceId,
                 RequestedByUserId = userId,
-                Prompt = request.OriginalText, // Extract prompt from mention if needed
+                Prompt = originalText, // Extract prompt from mention if needed
                 ContextScope = "recent_messages",
                 Status = "pending",
                 CreatedAt = DateTime.UtcNow
