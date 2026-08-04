@@ -24,6 +24,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<IAudioRouteEventProcessor> _mockAudioRouteEventProcessor;
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
+    private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
@@ -40,6 +41,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteEventProcessor = new Mock<IAudioRouteEventProcessor>();
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
+        _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -62,12 +64,18 @@ public class TranslationRoomServiceTests
         _mockLanguagePolicy.Setup(v => v.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
         _mockLanguagePolicy.Setup(v => v.ValidateParticipantLanguagesAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TranslationRoom>())).ReturnsAsync((string?)null);
 
+        // The workspace permits meeting creation unless a test says otherwise (WT-249).
+        _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             _mockUow.Object,
             _mockLanguagePolicy.Object,
             _mockAudioRouteEventProcessor.Object,
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
+            _mockWorkspaceMeetingPolicy.Object,
             _mockEmailService.Object,
             _mockRedisStateRepository.Object,
             _mockLogger.Object);
@@ -491,6 +499,78 @@ public class TranslationRoomServiceTests
             .ReturnsAsync(existing);
         _mockUow.Setup(u => u.Repository<TranslationRoomInvitation>()).Returns(repo.Object);
         return repo;
+    }
+
+    // WT-249 — WorkspaceService has always exposed ValidateMeetingCreation, but nothing called it,
+    // so revoking a member's host permission did not stop them opening rooms.
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_Denies_WhenTheWorkspaceRefusesTheCaller()
+    {
+        _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure("User does not have permission to create meetings.", ErrorCodes.Forbidden));
+
+        var request = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Standup", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US" }, null, null, null);
+
+        var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        // Nothing may be persisted — the room must not exist at all.
+        _mockRoomRepo.Verify(
+            r => r.AddAsync(It.IsAny<TranslationRoom>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_FailsClosed_WhenTheWorkspaceCannotBeReached()
+    {
+        _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure("Could not verify.", ErrorCodes.ServiceUnavailable));
+
+        var request = new CreateTranslationRoomRequest(
+            Guid.NewGuid(), "Standup", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US" }, null, null, null);
+
+        var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
+
+        // An unreachable WorkspaceService must not become a way around the permission check.
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ServiceUnavailable);
+        _mockRoomRepo.Verify(
+            r => r.AddAsync(It.IsAny<TranslationRoom>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateTranslationRoomAsync_ChecksThePolicyWithTheResolvedLanguages()
+    {
+        _mockRoomRepo
+            .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        var workspaceId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        var request = new CreateTranslationRoomRequest(
+            workspaceId, "Standup", null, "INSTANT", 10,
+            "vi-VN", new List<string> { "en-US", "ja-JP" }, null, null, null);
+
+        var result = await _service.CreateTranslationRoomAsync(request, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        // The workspace vetoes the languages actually being used, so the check has to run after
+        // language resolution rather than on the raw request.
+        _mockWorkspaceMeetingPolicy.Verify(p => p.ValidateMeetingCreationAsync(
+                workspaceId,
+                hostId,
+                It.Is<IEnumerable<string>>(langs => langs.SequenceEqual(new[] { "en-US", "ja-JP" })),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

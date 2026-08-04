@@ -14,6 +14,9 @@ public static class ErrorCodes
     public const string InvalidState = "INVALID_STATE";
     public const string ValidationError = "VALIDATION_ERROR";
     public const string Conflict = "CONFLICT";
+    /// <summary>A dependency needed to answer the request could not be reached. Distinct from
+    /// Forbidden: the answer is unknown, not "no".</summary>
+    public const string ServiceUnavailable = "SERVICE_UNAVAILABLE";
 
     // ── Billing ───────────────────────────────────────────
     public const string BillingSubscriptionNotFound = "BILLING_SUBSCRIPTION_NOT_FOUND";
