@@ -51,27 +51,22 @@ public class AdminWorkspaceAnalyticsService : IAdminWorkspaceAnalyticsService
             // One materialization of the window's usage rows feeds the total, the series, and
             // the breakdown, so the three cannot disagree — that is the reconciliation
             // requirement, enforced by construction rather than by a later assertion.
-            var usage = await _unitOfWork.UsageRecordRepository.Query()
-                .AsNoTracking()
-                .Where(record => record.WorkspaceId == workspaceId
+            var _usageList = await _unitOfWork.UsageRecordRepository.FindAsync(record => record.WorkspaceId == workspaceId
                                  && record.RecordedAt >= from
-                                 && record.RecordedAt < to)
-                .Select(record => new UsageProjection(
+                                 && record.RecordedAt < to, ct);
+            var usage = _usageList.Select(record => new UsageProjection(
                     record.RecordedAt,
                     record.UsageType,
                     record.CreditsConsumed,
                     record.Quantity,
                     record.TranslationRoomId,
-                    record.UserId))
-                .ToListAsync(ct);
+                    record.UserId)).ToList();
 
-            var toppedUp = await _unitOfWork.CreditTransactionRepository.Query()
-                .AsNoTracking()
-                .Where(tx => tx.WorkspaceId == workspaceId
+            var _toppedUpList = await _unitOfWork.CreditTransactionRepository.FindAsync(tx => tx.WorkspaceId == workspaceId
                              && tx.CreatedAt >= from
                              && tx.CreatedAt < to
-                             && tx.Amount > 0)
-                .SumAsync(tx => (int?)tx.Amount, ct) ?? 0;
+                             && tx.Amount > 0, ct);
+            var toppedUp = _toppedUpList.Sum(tx => (int?)tx.Amount) ?? 0;
 
             var series = usage
                 .GroupBy(record => record.RecordedAt.Date)
@@ -146,55 +141,34 @@ public class AdminWorkspaceAnalyticsService : IAdminWorkspaceAnalyticsService
 
         try
         {
-            // Scoped to the workspace in the very first predicate: no filter the caller supplies
-            // can widen it, so a mistyped reference id cannot leak another tenant's ledger.
-            var ledger = _unitOfWork.CreditTransactionRepository.Query()
-                .AsNoTracking()
-                .Where(tx => tx.WorkspaceId == workspaceId);
+            System.Linq.Expressions.Expression<Func<WarpTalk.BillingService.Domain.Entities.CreditTransaction, bool>> predicate = tx =>
+                tx.WorkspaceId == workspaceId &&
+                (string.IsNullOrWhiteSpace(query.Type) || tx.Type.ToLower() == query.Type.Trim().ToLowerInvariant()) &&
+                (!query.From.HasValue || tx.CreatedAt >= query.From.Value.ToUniversalTime()) &&
+                (!query.To.HasValue || tx.CreatedAt < query.To.Value.ToUniversalTime()) &&
+                (!query.ReferenceId.HasValue || tx.ReferenceId == query.ReferenceId.Value) &&
+                (!query.MinAmount.HasValue || tx.Amount >= query.MinAmount.Value) &&
+                (!query.MaxAmount.HasValue || tx.Amount <= query.MaxAmount.Value);
 
-            if (!string.IsNullOrWhiteSpace(query.Type))
-            {
-                var type = query.Type.Trim().ToLowerInvariant();
-                ledger = ledger.Where(tx => tx.Type.ToLower() == type);
-            }
+            var total = await _unitOfWork.CreditTransactionRepository.CountAsync(predicate, ct);
+            var pagedItems = await _unitOfWork.CreditTransactionRepository.GetPagedAsync(
+                predicate,
+                (page - 1) * pageSize,
+                pageSize,
+                q => q.OrderByDescending(tx => tx.CreatedAt).ThenByDescending(tx => tx.Id),
+                ct);
 
-            if (query.From is { } fromDate)
-                ledger = ledger.Where(tx => tx.CreatedAt >= fromDate.ToUniversalTime());
-
-            if (query.To is { } toDate)
-                ledger = ledger.Where(tx => tx.CreatedAt < toDate.ToUniversalTime());
-
-            if (query.ReferenceId is { } referenceId)
-                ledger = ledger.Where(tx => tx.ReferenceId == referenceId);
-
-            if (query.MinAmount is { } minAmount)
-                ledger = ledger.Where(tx => tx.Amount >= minAmount);
-
-            if (query.MaxAmount is { } maxAmount)
-                ledger = ledger.Where(tx => tx.Amount <= maxAmount);
-
-            // Id breaks ties so two entries booked in the same instant keep a stable order
-            // across pages — a ledger that reshuffles under pagination is not auditable.
-            var ordered = ledger
-                .OrderByDescending(tx => tx.CreatedAt)
-                .ThenByDescending(tx => tx.Id);
-
-            var total = await ordered.CountAsync(ct);
-            var items = await ordered
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .Select(tx => new AdminCreditTransactionDto(
-                    tx.Id,
-                    tx.CreatedAt,
-                    tx.Type,
-                    tx.Description,
-                    tx.ReferenceId,
-                    tx.ReferenceType,
-                    tx.Amount,
-                    tx.BalanceAfter,
-                    tx.Currency,
-                    tx.Status))
-                .ToListAsync(ct);
+            var items = pagedItems.Select(tx => new AdminCreditTransactionDto(
+                tx.Id,
+                tx.CreatedAt,
+                tx.Type,
+                tx.Description,
+                tx.ReferenceId,
+                tx.ReferenceType,
+                tx.Amount,
+                tx.BalanceAfter,
+                tx.Currency,
+                tx.Status)).ToList();
 
             return Result.Success(
                 new AdminPagedResult<AdminCreditTransactionDto>(items, page, pageSize, total));
@@ -213,12 +187,12 @@ public class AdminWorkspaceAnalyticsService : IAdminWorkspaceAnalyticsService
         Guid workspaceId,
         CancellationToken ct)
     {
-        var subscription = await _unitOfWork.SubscriptionRepository.Query()
-            .AsNoTracking()
-            .Where(sub => sub.WorkspaceId == workspaceId && sub.DeletedAt == null)
-            .OrderByDescending(sub => sub.IsActive)
-            .ThenByDescending(sub => sub.CurrentPeriodEnd)
-            .FirstOrDefaultAsync(ct);
+        var subs = await _unitOfWork.SubscriptionRepository.FindAsync(
+            sub => sub.WorkspaceId == workspaceId && sub.DeletedAt == null,
+            ct);
+        var subscription = subs.OrderByDescending(sub => sub.IsActive)
+                               .ThenByDescending(sub => sub.CurrentPeriodEnd)
+                               .FirstOrDefault();
 
         return subscription is null
             ? new AdminWorkspaceCreditSummaryDto(false, null, null, null, null, null)
@@ -237,5 +211,5 @@ public class AdminWorkspaceAnalyticsService : IAdminWorkspaceAnalyticsService
         int CreditsConsumed,
         decimal Quantity,
         Guid? TranslationRoomId,
-        Guid UserId);
+        Guid? UserId);
 }

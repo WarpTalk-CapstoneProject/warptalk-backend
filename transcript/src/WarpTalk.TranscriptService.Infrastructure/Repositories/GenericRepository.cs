@@ -73,9 +73,9 @@ public class GenericRepository<T> : IGenericRepository<T> where T : class
     }
 
     public async Task<IEnumerable<T>> GetPagedAsync(
-        Expression<Func<T, bool>> predicate, 
-        int skip, 
-        int take, 
+        Expression<Func<T, bool>> predicate,
+        int skip,
+        int take,
         Func<IQueryable<T>, IOrderedQueryable<T>>? orderBy = null,
         CancellationToken cancellationToken = default)
     {

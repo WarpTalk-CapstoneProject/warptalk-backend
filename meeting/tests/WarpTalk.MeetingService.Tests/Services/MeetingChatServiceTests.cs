@@ -193,7 +193,7 @@ public class MeetingChatServiceTests
         {
             OriginalText = "@WarpBot summarize",
             OriginalLanguage = "en",
-            Mentions = new List<ChatMentionDto> 
+            Mentions = new List<ChatMentionDto>
             {
                 new ChatMentionDto { Id = "warpbot", Display = "WarpBot", Type = "agent" }
             }

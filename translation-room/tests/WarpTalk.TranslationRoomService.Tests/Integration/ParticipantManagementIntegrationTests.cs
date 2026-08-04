@@ -18,7 +18,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         // 1. Arrange: Create room and join
         var hostId = Guid.NewGuid();
         var memberId = Guid.NewGuid();
-        
+
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
         var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
@@ -47,7 +47,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         var hostId = Guid.NewGuid();
         var memberId = Guid.NewGuid();
         var hackerId = Guid.NewGuid();
-        
+
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
         var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
@@ -76,7 +76,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         // 1. Arrange: Create room and join
         var hostId = Guid.NewGuid();
         var memberId = Guid.NewGuid();
-        
+
         Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
         var createRequest = new CreateTranslationRoomRequest(Guid.NewGuid(), "Test Room", "", "INSTANT", 10, "en", new List<string> { "vi" }, null, null, null);
         var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", createRequest);
@@ -98,7 +98,7 @@ public class ParticipantManagementIntegrationTests : BaseIntegrationTest
         // Verify member is kicked
         var getParticipants = await Client.GetAsync($"/api/v1/translation-rooms/{createdRoom.Id}/participants");
         var participants = await getParticipants.Content.ReadFromJsonAsync<List<TranslationRoomParticipantDto>>();
-        
+
         var kickedMember = participants!.Find(p => p.Id == joinData.Participant.Id);
         kickedMember!.Status.Should().Be("KICKED");
     }

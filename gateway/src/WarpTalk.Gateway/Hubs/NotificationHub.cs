@@ -17,7 +17,7 @@ public class NotificationHub : Hub
     private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient _grpcClient;
 
     public NotificationHub(
-        IConnectionManager connectionManager, 
+        IConnectionManager connectionManager,
         ILogger<NotificationHub> logger,
         WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient grpcClient)
     {
@@ -59,7 +59,7 @@ public class NotificationHub : Hub
 
     // ── Server Methods (Client → Server) ──────────────────
 
-    
+
     public async Task MarkAsRead(Guid notificationId)
     {
         var userId = GetUserId();
@@ -98,7 +98,7 @@ public class NotificationHub : Hub
         }
     }
 
-    
+
     public async Task MarkAllAsRead()
     {
         var userId = GetUserId();

@@ -12,4 +12,11 @@
   - `workspace/src/WarpTalk.WorkspaceService.Infrastructure/Persistence/WorkspaceDbContext.partial.cs`
   - `workspace/src/WarpTalk.WorkspaceService.Infrastructure/Repositories/UnitOfWork.cs`
 - Resolution notes: no unmerged paths remained when this heartbeat resumed; staged the existing resolution and preserved branch-specific repository interfaces.
+- Merge cleanup completed for the active sync:
+  - `meeting/src/WarpTalk.MeetingService.API/appsettings.json`
+  - `run-all-local.ps1`
+  - `workspace/src/WarpTalk.WorkspaceService.Application/Services/WorkspaceInvitationService.cs`
+  - `workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs`
+  - `workspace/src/WarpTalk.WorkspaceService.Domain/Interfaces/IWorkspaceMemberRepository.cs`
+- Result: no unresolved conflicts remain locally; branch-specific acceptance flow and repository interfaces were kept intact.
 - Commit SHA: pending before push.

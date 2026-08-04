@@ -11,3 +11,8 @@
   - `dotnet build auth/tests/WarpTalk.AuthService.Tests/WarpTalk.AuthService.Tests.csproj --nologo`: passed.
   - `dotnet build gateway/tests/WarpTalk.Gateway.Tests/WarpTalk.Gateway.Tests.csproj --nologo`: passed.
 - Remote checks after push: pending before push.
+- Latest local verification after merge:
+  - `dotnet build 'workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj'`: passed.
+- GitHub status at last read:
+  - `GitGuardian Security Checks`: `SUCCESS`
+  - `verify`: not surfaced in the latest check rollup, so it should be re-checked after push.

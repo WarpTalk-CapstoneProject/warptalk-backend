@@ -40,15 +40,15 @@ public class SlugGeneratorTests
         // Arrange
         var baseSlug = "warptalk-dev";
         _workspaceRepository.AnyAsync(Arg.Any<System.Linq.Expressions.Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>())
-            .Returns(x => 
+            .Returns(x =>
             {
                 var expr = x.ArgAt<System.Linq.Expressions.Expression<Func<Workspace, bool>>>(0);
                 var compiled = expr.Compile();
-                
+
                 // Simulate that "warptalk-dev" and "warptalk-dev-1" exist, but "warptalk-dev-2" does not.
                 var workspace1 = new Workspace { Slug = "warptalk-dev" };
                 var workspace2 = new Workspace { Slug = "warptalk-dev-1" };
-                
+
                 return compiled(workspace1) || compiled(workspace2);
             });
 

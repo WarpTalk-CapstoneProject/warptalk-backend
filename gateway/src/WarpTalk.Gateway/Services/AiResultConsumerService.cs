@@ -190,9 +190,9 @@ public sealed class AiResultConsumerService : BackgroundService
                 {
                     var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
                     if (string.IsNullOrEmpty(translationRoomId)) continue;
-                    
+
                     var originalText = RedisStreamService.GetField(entry, "text") ?? "";
-                    
+
                     if (await IsProfanityFilterEnabledAsync(translationRoomId, ct))
                     {
                         originalText = WarpTalk.Gateway.Helpers.ProfanityFilterHelper.MaskProfanity(originalText);

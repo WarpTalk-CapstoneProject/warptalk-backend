@@ -22,21 +22,21 @@ public class NotificationPublishTests
         // Arrange
         var userId = Guid.NewGuid();
         var notificationId = Guid.NewGuid();
-        
+
         var mockNotificationService = new Mock<INotificationService>();
         var mockRedis = new Mock<IConnectionMultiplexer>();
         var mockDb = new Mock<IDatabase>();
         var mockLogger = new Mock<ILogger>();
 
         var dto = new NotificationMessageDto(
-            notificationId, 
-            NotificationConstants.TypeSystemAlert, 
-            "Mock Notification", 
-            "This is a seeded notification for testing.", 
-            null, 
-            "{}", 
-            false, 
-            null, 
+            notificationId,
+            NotificationConstants.TypeSystemAlert,
+            "Mock Notification",
+            "This is a seeded notification for testing.",
+            null,
+            "{}",
+            false,
+            null,
             DateTime.UtcNow);
 
         mockNotificationService
@@ -47,11 +47,11 @@ public class NotificationPublishTests
 
         // Act - Simulating the old controller SeedMockNotification logic
         var createDto = new CreateNotificationMessageDto(
-            userId, 
-            NotificationConstants.TypeSystemAlert, 
-            "Mock Notification", 
-            "This is a seeded notification for testing.", 
-            null, 
+            userId,
+            NotificationConstants.TypeSystemAlert,
+            "Mock Notification",
+            "This is a seeded notification for testing.",
+            null,
             "{}"
         );
         var result = await mockNotificationService.Object.CreateNotificationAsync(createDto, CancellationToken.None);
@@ -70,9 +70,9 @@ public class NotificationPublishTests
             PayloadJson = result.Value.PayloadJson,
             CreatedAt = result.Value.CreatedAt.ToString("O")
         };
-        
+
         var json = JsonSerializer.Serialize(msg);
-        
+
         await mockRedis.Object.GetDatabase().PublishAsync(RedisChannel.Literal(NotificationConstants.RedisNewNotificationChannel), json);
 
         // Assert

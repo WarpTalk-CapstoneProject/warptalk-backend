@@ -80,11 +80,11 @@ public class TelemetryProcessorTests
 
         // Assert
         await act.Should().NotThrowAsync();
-        
+
         // Assert warmup_count increments to 2
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 d["warmup_count"] == "2" &&
                 d["last_timestamp"] == payload.Timestamp.ToString())), Times.Once);
 
@@ -137,7 +137,7 @@ public class TelemetryProcessorTests
         // 2600 is below 3000 degraded threshold, so no event should fire
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "stt_ema", 2600.0) &&
                 !HasKeyAndBoolValue(d, "is_stt_degraded", true))), Times.Once);
 
@@ -187,7 +187,7 @@ public class TelemetryProcessorTests
         // 3760 > 3000. So it degrades.
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "stt_ema", 3760.0) &&
                 HasKeyAndBoolValue(d, "is_stt_degraded", true))), Times.Once);
 
@@ -238,7 +238,7 @@ public class TelemetryProcessorTests
         // 1410 < 1500 (STT recovery threshold). So it recovers!
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "stt_ema", 1410.0) &&
                 HasKeyAndBoolValue(d, "is_stt_degraded", false))), Times.Once);
 
@@ -288,7 +288,7 @@ public class TelemetryProcessorTests
         // 6500 > 6000 (TTS degraded threshold). So it degrades!
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "tts_ema", 6500.0) &&
                 HasKeyAndBoolValue(d, "is_tts_degraded", true))), Times.Once);
 
@@ -339,7 +339,7 @@ public class TelemetryProcessorTests
         // 2750 < 3000 (TTS recovery threshold). So it recovers!
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "tts_ema", 2750.0) &&
                 HasKeyAndBoolValue(d, "is_tts_degraded", false))), Times.Once);
 
@@ -389,7 +389,7 @@ public class TelemetryProcessorTests
         // 2600 > 2500 (Translation degraded threshold). So it degrades!
         _mockRedisStateRepo.Verify(r => r.HashSetAsync(
             It.IsAny<string>(),
-            It.Is<Dictionary<string, string>>(d => 
+            It.Is<Dictionary<string, string>>(d =>
                 HasKeyAndValue(d, "translation_ema", 2600.0) &&
                 HasKeyAndBoolValue(d, "is_translation_degraded", true))), Times.Once);
 

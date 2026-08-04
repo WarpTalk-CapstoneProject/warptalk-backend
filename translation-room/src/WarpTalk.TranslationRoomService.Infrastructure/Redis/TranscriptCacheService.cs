@@ -19,7 +19,7 @@ public class TranscriptCacheService : ITranscriptCacheService
     {
         var db = _redis.GetDatabase();
         var transcriptCount = await db.ListLengthAsync(redisKey);
-        
+
         var sb = new StringBuilder();
         sb.AppendLine($"# WarpTalk Transcription Room - Room: {roomId}");
         sb.AppendLine($"Generated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");

@@ -12,7 +12,7 @@ namespace WarpTalk.WorkspaceService.Infrastructure.Repositories;
 public class UnitOfWork : IUnitOfWork
 {
     private readonly WorkspaceDbContext _context;
-    
+
     private IWorkspaceRepository? _workspaceRepository;
     private IWorkspaceMemberRepository? _workspaceMemberRepository;
     private IWorkspaceInvitationRepository? _workspaceInvitationRepository;
@@ -28,13 +28,13 @@ public class UnitOfWork : IUnitOfWork
         _context = context;
     }
 
-    public IWorkspaceRepository WorkspaceRepository => 
+    public IWorkspaceRepository WorkspaceRepository =>
         _workspaceRepository ??= new WorkspaceRepository(_context);
 
-    public IWorkspaceMemberRepository WorkspaceMemberRepository => 
+    public IWorkspaceMemberRepository WorkspaceMemberRepository =>
         _workspaceMemberRepository ??= new WorkspaceMemberRepository(_context);
 
-    public IWorkspaceInvitationRepository WorkspaceInvitationRepository => 
+    public IWorkspaceInvitationRepository WorkspaceInvitationRepository =>
         _workspaceInvitationRepository ??= new WorkspaceInvitationRepository(_context);
 
     public IWorkspaceDocumentRepository WorkspaceDocumentRepository =>

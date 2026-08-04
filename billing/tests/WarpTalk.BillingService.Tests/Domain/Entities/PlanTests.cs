@@ -12,14 +12,19 @@ public class PlanTests
     {
         // Arrange
         var id = Guid.NewGuid();
-        var name = "Pro Plan";
-        var slug = "pro-plan";
-        var tier = "Pro";
-        var price = 9.99m;
-        var currency = "USD";
+        var name = "Enterprise";
+        var slug = "enterprise";
+        var tier = "enterprise";
+        var price = 1900000m;
+        var currency = "VND";
         var billingCycle = "Monthly";
-        var creditsPerCycle = 1000;
-        
+        var creditsPerCycle = 700000;
+        var overageCapCredits = 105000;
+        var rolloverCapCredits = 700000;
+        var lowBalanceThresholdCredits = 140000;
+        var invoiceTermsDays = 15;
+        var invoiceGraceHours = 360;
+
         // Act
         var plan = new Plan
         {
@@ -31,6 +36,11 @@ public class PlanTests
             Currency = currency,
             BillingCycle = billingCycle,
             CreditsPerCycle = creditsPerCycle,
+            OverageCapCredits = overageCapCredits,
+            RolloverCapCredits = rolloverCapCredits,
+            LowBalanceThresholdCredits = lowBalanceThresholdCredits,
+            InvoiceTermsDays = invoiceTermsDays,
+            InvoiceGraceHours = invoiceGraceHours,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
@@ -44,6 +54,11 @@ public class PlanTests
         plan.Currency.Should().Be(currency);
         plan.BillingCycle.Should().Be(billingCycle);
         plan.CreditsPerCycle.Should().Be(creditsPerCycle);
+        plan.OverageCapCredits.Should().Be(overageCapCredits);
+        plan.RolloverCapCredits.Should().Be(rolloverCapCredits);
+        plan.LowBalanceThresholdCredits.Should().Be(lowBalanceThresholdCredits);
+        plan.InvoiceTermsDays.Should().Be(invoiceTermsDays);
+        plan.InvoiceGraceHours.Should().Be(invoiceGraceHours);
         plan.IsActive.Should().BeTrue();
     }
 }

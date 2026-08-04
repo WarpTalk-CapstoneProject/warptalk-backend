@@ -253,7 +253,6 @@ public class TranscriptRedisConsumerService : BackgroundService
                 streamKey);
             return false; // Bounded retry, then dead-letter instead of silently dropping
         }
-
         if (!Guid.TryParse(values.GetValueOrDefault("segment_id"), out var segmentId) ||
             !TranscriptConsumerPollingPolicy.TryResolveSpeaker(values, out var speakerId, out var speakerName))
         {

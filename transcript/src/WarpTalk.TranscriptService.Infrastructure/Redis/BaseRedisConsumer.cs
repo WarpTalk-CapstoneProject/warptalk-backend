@@ -11,7 +11,7 @@ public abstract class BaseRedisConsumer : BackgroundService
 {
     protected readonly IConnectionMultiplexer _redis;
     protected readonly ILogger _logger;
-    
+
     protected abstract string StreamKey { get; }
     protected abstract string ConsumerGroup { get; }
     protected abstract string ConsumerName { get; }

@@ -1,4 +1,5 @@
 using System;
+using WarpTalk.BillingService.Domain.Constants;
 
 namespace WarpTalk.BillingService.Application.DTOs;
 
@@ -12,15 +13,21 @@ public record PlanDto(
     string Currency,
     string BillingCycle,
     int CreditsPerCycle,
+    int OverageCapCredits,
+    decimal OveragePricePerCredit,
+    int LowBalanceThresholdCredits,
+    int RolloverCapCredits,
+    int InvoiceTermsDays,
+    int InvoiceGraceHours,
     int MaxParticipants,
-    int MaxLanguages,
-    bool VoiceCloneEnabled,
-    bool AiAssistantEnabled,
-    bool GlossaryEnabled,
-    bool DedicatedGpu,
     string Features,       // JSON blob
     int SortOrder,
-    bool IsActive
+    bool IsActive,
+    int MaxLanguages = SubscriptionConstants.PlanDefaults.MaxLanguages,
+    bool VoiceCloneEnabled = false,
+    bool AiAssistantEnabled = false,
+    bool GlossaryEnabled = false,
+    bool DedicatedGpu = false
 )
 {
     public PlanDto(Guid id, string name, decimal price, int creditsPerMonth, bool isActive, string? features)
@@ -30,18 +37,24 @@ public record PlanDto(
             string.Empty,
             string.Empty,
             price,
-            "VND",
-            "monthly",
+            PaymentConstants.Currencies.Usd,
+            SubscriptionConstants.BillingCycles.Monthly,
             creditsPerMonth,
             0,
+            SubscriptionConstants.PlanDefaults.OveragePricePerCredit,
             0,
-            false,
-            false,
-            false,
-            false,
-            features ?? "{}",
             0,
-            isActive)
+            SubscriptionConstants.PlanDefaults.InvoiceTermsDays,
+            SubscriptionConstants.PlanDefaults.InvoiceGraceHours,
+            0,
+            features ?? SubscriptionConstants.FeatureAccess.EmptyFeaturesJson,
+            0,
+            isActive,
+            SubscriptionConstants.PlanDefaults.MaxLanguages,
+            false,
+            false,
+            false,
+            false)
     {
     }
 }
@@ -55,12 +68,18 @@ public record PlanRequest(
     string BillingCycle,
     int CreditsPerCycle,
     int MaxParticipants,
-    int MaxLanguages,
-    bool VoiceCloneEnabled,
-    bool AiAssistantEnabled,
-    bool GlossaryEnabled,
-    bool DedicatedGpu,
     string Features,
     int SortOrder,
-    bool IsActive = true
+    int OverageCapCredits = 0,
+    decimal OveragePricePerCredit = SubscriptionConstants.PlanDefaults.OveragePricePerCredit,
+    int LowBalanceThresholdCredits = 0,
+    int RolloverCapCredits = 0,
+    int InvoiceTermsDays = SubscriptionConstants.PlanDefaults.InvoiceTermsDays,
+    int InvoiceGraceHours = SubscriptionConstants.PlanDefaults.InvoiceGraceHours,
+    bool IsActive = true,
+    int MaxLanguages = SubscriptionConstants.PlanDefaults.MaxLanguages,
+    bool VoiceCloneEnabled = false,
+    bool AiAssistantEnabled = false,
+    bool GlossaryEnabled = false,
+    bool DedicatedGpu = false
 );

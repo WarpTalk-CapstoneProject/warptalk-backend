@@ -65,10 +65,10 @@ public class CreateAdminNotificationValidatorTests
     [Fact]
     public void Should_Have_Error_When_TargetAudience_Is_SpecificUsers_But_List_Is_Empty()
     {
-        var model = CreateValidBaseDto() with 
-        { 
+        var model = CreateValidBaseDto() with
+        {
             TargetAudienceMode = NotificationConstants.TargetModeSpecificUsers,
-            SpecificUserIds = new List<Guid>() 
+            SpecificUserIds = new List<Guid>()
         };
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.SpecificUserIds);
@@ -77,10 +77,10 @@ public class CreateAdminNotificationValidatorTests
     [Fact]
     public void Should_Have_Error_When_TargetAudience_Is_Segment_But_Id_Is_Null()
     {
-        var model = CreateValidBaseDto() with 
-        { 
+        var model = CreateValidBaseDto() with
+        {
             TargetAudienceMode = NotificationConstants.TargetModeSegment,
-            SegmentId = null 
+            SegmentId = null
         };
         var result = _validator.TestValidate(model);
         result.ShouldHaveValidationErrorFor(x => x.SegmentId);
@@ -106,8 +106,8 @@ public class CreateAdminNotificationValidatorTests
     [Fact]
     public void SystemType_Should_Reject_Promotional_Fields()
     {
-        var model = CreateValidBaseDto(type: NotificationConstants.TypeSystem) with 
-        { 
+        var model = CreateValidBaseDto(type: NotificationConstants.TypeSystem) with
+        {
             DiscountCode = "SUMMER2026",
             Severity = "High"
         };
@@ -122,7 +122,7 @@ public class CreateAdminNotificationValidatorTests
     {
         var model = CreateValidBaseDto(type: NotificationConstants.TypeMaintenance);
         var result = _validator.TestValidate(model);
-        
+
         // Missing start/end
         result.ShouldHaveValidationErrorFor(x => x.DowntimeStart);
         result.ShouldHaveValidationErrorFor(x => x.DowntimeEnd);
@@ -131,13 +131,13 @@ public class CreateAdminNotificationValidatorTests
     [Fact]
     public void MaintenanceType_Should_Reject_End_Before_Start()
     {
-        var model = CreateValidBaseDto(type: NotificationConstants.TypeMaintenance) with 
+        var model = CreateValidBaseDto(type: NotificationConstants.TypeMaintenance) with
         {
             DowntimeStart = DateTime.UtcNow.AddHours(2),
             DowntimeEnd = DateTime.UtcNow.AddHours(1)
         };
         var result = _validator.TestValidate(model);
-        
+
         result.ShouldHaveValidationErrorFor(x => x.DowntimeEnd);
     }
 }
