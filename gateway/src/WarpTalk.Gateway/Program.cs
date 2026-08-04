@@ -11,6 +11,7 @@ using System.Threading.RateLimiting;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using WarpTalk.Gateway.Transforms;
 using WarpTalk.Shared.Grpc;
@@ -195,6 +196,14 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
 
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
+
+// Member presence. Registered after the multiplexer above because it is Redis-backed rather
+// than kept in the connection manager: the Members page has to read who is online outside the
+// socket that produced it, and a second Gateway instance must not report only its own half.
+builder.Services.AddSingleton<IPresenceStore, RedisPresenceStore>();
+builder.Services.AddSingleton<IPresenceNotifier, PresenceNotifier>();
+builder.Services.AddHostedService<PresenceHeartbeatService>();
+
 builder.Services.AddHostedService<AiResultConsumerService>();
 builder.Services.AddHostedService<NotificationRedisSubscriberService>();
 builder.Services.AddHostedService<TranslationRoomRedisSubscriberService>();
@@ -267,6 +276,8 @@ app.MapHub<NotificationHub>("/hubs/notification")
 
 app.MapHub<WarpTalk.Gateway.Hubs.BillingHub>(RealtimeConstants.Billing.HubPath)
     .RequireAuthorization("RequireAuth");
+
+app.MapPresenceEndpoints();
 
 
 

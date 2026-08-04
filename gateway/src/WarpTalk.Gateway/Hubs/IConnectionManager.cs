@@ -23,4 +23,10 @@ public interface IConnectionManager
 
     /// <summary>Get the count of online users.</summary>
     int OnlineUserCount { get; }
+
+    /// <summary>
+    /// Every user this instance currently holds a connection for. Snapshot, safe to enumerate
+    /// while connections come and go — the presence heartbeat walks it on a timer.
+    /// </summary>
+    IReadOnlyCollection<string> GetOnlineUserIds();
 }
