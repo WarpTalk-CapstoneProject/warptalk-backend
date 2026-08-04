@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using Moq;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Presence;
 using WarpTalk.Shared.Protos;
 
 namespace WarpTalk.Gateway.Tests;
@@ -11,6 +12,7 @@ namespace WarpTalk.Gateway.Tests;
 public class NotificationHubTests
 {
     private readonly Mock<IConnectionManager> _mockConnectionManager;
+    private readonly Mock<IPresenceNotifier> _mockPresenceNotifier;
     private readonly Mock<ILogger<NotificationHub>> _mockLogger;
     private readonly Mock<NotificationGrpcService.NotificationGrpcServiceClient> _mockGrpcClient;
     private readonly Mock<IHubCallerClients> _mockClients;
@@ -25,6 +27,7 @@ public class NotificationHubTests
     public NotificationHubTests()
     {
         _mockConnectionManager = new Mock<IConnectionManager>();
+        _mockPresenceNotifier = new Mock<IPresenceNotifier>();
         _mockLogger = new Mock<ILogger<NotificationHub>>();
 
         // Mock gRPC Client
@@ -50,6 +53,7 @@ public class NotificationHubTests
 
         _hub = new NotificationHub(
             _mockConnectionManager.Object,
+            _mockPresenceNotifier.Object,
             _mockLogger.Object,
             _mockGrpcClient.Object)
         {

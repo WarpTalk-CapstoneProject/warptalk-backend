@@ -6,6 +6,7 @@ using System;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using WarpTalk.Gateway.Hubs;
+using WarpTalk.Gateway.Presence;
 using WarpTalk.Gateway.Services;
 using Xunit;
 
@@ -33,6 +34,7 @@ public class TranslationRoomHubTests
 
         var hub = new TranslationRoomHub(
             connectionManagerMock.Object,
+            Mock.Of<IPresenceNotifier>(),
             streamService,
             translationRoomRegistry,
             redisMock.Object,
@@ -381,6 +383,7 @@ public class TranslationRoomHubTests
 
         var hub = new TranslationRoomHub(
             connectionManagerMock.Object,
+            Mock.Of<IPresenceNotifier>(),
             new RedisStreamService(redisMock.Object, new NullLogger<RedisStreamService>(), configMock.Object),
             new ActiveTranslationRoomRegistry(),
             redisMock.Object,
@@ -424,6 +427,7 @@ public class TranslationRoomHubTests
 
         var hub = new TranslationRoomHub(
             connectionManagerMock.Object,
+            Mock.Of<IPresenceNotifier>(),
             streamService,
             translationRoomRegistry,
             redisMock.Object,
