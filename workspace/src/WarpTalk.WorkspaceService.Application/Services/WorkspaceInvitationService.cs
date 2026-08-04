@@ -27,19 +27,22 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
+    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
 
     public WorkspaceInvitationService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceInvitationService> logger,
         IAuthIdentityClient authIdentity,
         ITranslationRoomClient translationRoomClient,
-        IWorkspaceInvitationEmailComposer emailComposer)
+        IWorkspaceInvitationEmailComposer emailComposer,
+        IBillingSubscriptionClient billingSubscriptionClient)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
         _translationRoomClient = translationRoomClient;
         _emailComposer = emailComposer;
+        _billingSubscriptionClient = billingSubscriptionClient;
     }
 
     public async Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default)
@@ -533,7 +536,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvalidOrExpiredToken, ErrorCodes.NotFound);
         }
 
-        return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+        try
+        {
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while accepting invitation {InvitationId}.", invitation.Id);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result> AcceptInvitationByIdAsync(Guid invitationId, Guid userId, string userEmail, CancellationToken ct = default)
@@ -544,7 +555,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
         }
 
-        return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+        try
+        {
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while accepting invitation {InvitationId}.", invitation.Id);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result<WorkspaceInvitationDto>> CreateJoinRequestAsync(CreateJoinRequestCommand command, Guid userId, string userEmail, CancellationToken ct = default)
