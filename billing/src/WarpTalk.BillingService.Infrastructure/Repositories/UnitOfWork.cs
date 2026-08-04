@@ -14,32 +14,32 @@ public class UnitOfWork : IUnitOfWork
     public UnitOfWork(BillingDbContext db)
     {
         _db = db;
-        Plans = new GenericRepository<Plan>(db);
+        Plans = new PlanRepository(db);
         SubscriptionRepository = new SubscriptionRepository(db);
         CreditTransactionRepository = new CreditTransactionRepository(db);
         CreditBalanceSnapshotRepository = new CreditBalanceSnapshotRepository(db);
-        UsageRecordRepository = new GenericRepository<UsageRecord>(db);
+        UsageRecordRepository = new UsageRecordRepository(db);
         PaymentRepository = new PaymentRepository(db);
         InvoiceRepository = new InvoiceRepository(db);
 
-        SalesInquiryRepository = new GenericRepository<SalesInquiry>(db);
+        SalesInquiryRepository = new SalesInquiryRepository(db);
         IdempotencyRecords = new IdempotencyRepository(db);
-        OutboxMessages = new GenericRepository<OutboxMessage>(db);
-        InboxMessages = new GenericRepository<InboxMessage>(db);
+        OutboxMessages = new OutboxMessageRepository(db);
+        InboxMessages = new InboxMessageRepository(db);
     }
 
-    public IGenericRepository<Plan> Plans { get; }
+    public IPlanRepository Plans { get; }
     public ISubscriptionRepository SubscriptionRepository { get; }
     public ICreditTransactionRepository CreditTransactionRepository { get; }
     public ICreditBalanceSnapshotRepository CreditBalanceSnapshotRepository { get; }
-    public IGenericRepository<UsageRecord> UsageRecordRepository { get; }
+    public IUsageRecordRepository UsageRecordRepository { get; }
     public IPaymentRepository PaymentRepository { get; }
     public IInvoiceRepository InvoiceRepository { get; }
 
-    public IGenericRepository<SalesInquiry> SalesInquiryRepository { get; }
+    public ISalesInquiryRepository SalesInquiryRepository { get; }
     public IIdempotencyRepository IdempotencyRecords { get; }
-    public IGenericRepository<OutboxMessage> OutboxMessages { get; }
-    public IGenericRepository<InboxMessage> InboxMessages { get; }
+    public IOutboxMessageRepository OutboxMessages { get; }
+    public IInboxMessageRepository InboxMessages { get; }
 
     public DbConnection GetDbConnection() => _db.Database.GetDbConnection();
 

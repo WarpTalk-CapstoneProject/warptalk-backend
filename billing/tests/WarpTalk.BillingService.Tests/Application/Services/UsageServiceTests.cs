@@ -24,8 +24,8 @@ public class UsageServiceTests
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
     private readonly Mock<ICreditTransactionRepository> _mockTxRepo;
-    private readonly Mock<IGenericRepository<UsageRecord>> _mockUsageRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<IUsageRecordRepository> _mockUsageRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<IUsageSettlementService> _mockSettlementService;
     private readonly Mock<IUsageRateCardResolverService> _mockRateCardResolver;
     private readonly UsageService _usageService;
@@ -35,8 +35,8 @@ public class UsageServiceTests
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
         _mockTxRepo = new Mock<ICreditTransactionRepository>();
-        _mockUsageRepo = new Mock<IGenericRepository<UsageRecord>>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockUsageRepo = new Mock<IUsageRecordRepository>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockSettlementService = new Mock<IUsageSettlementService>();
         _mockRateCardResolver = new Mock<IUsageRateCardResolverService>();
 

@@ -22,7 +22,7 @@ public class PaymentServiceTests
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IPaymentRepository> _mockPaymentRepo;
     private readonly Mock<ISubscriptionRepository> _mockSubRepo;
-    private readonly Mock<IGenericRepository<Plan>> _mockPlanRepo;
+    private readonly Mock<IPlanRepository> _mockPlanRepo;
     private readonly Mock<ICreditTransactionRepository> _mockCreditTxRepo;
     private readonly PaymentService _paymentService;
 
@@ -31,7 +31,7 @@ public class PaymentServiceTests
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _mockPaymentRepo = new Mock<IPaymentRepository>();
         _mockSubRepo = new Mock<ISubscriptionRepository>();
-        _mockPlanRepo = new Mock<IGenericRepository<Plan>>();
+        _mockPlanRepo = new Mock<IPlanRepository>();
         _mockCreditTxRepo = new Mock<ICreditTransactionRepository>();
 
         _mockUnitOfWork.Setup(u => u.PaymentRepository).Returns(_mockPaymentRepo.Object);
