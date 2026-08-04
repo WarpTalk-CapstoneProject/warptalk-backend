@@ -6,7 +6,6 @@ namespace WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 public class UnitOfWork : IUnitOfWork
 {
     private readonly TranslationRoomDbContext _context;
-    private readonly Dictionary<Type, object> _repositories = new();
 
     public ITranslationRoomRepository TranslationRoomRepository { get; }
     public ITranslationRoomParticipantRepository TranslationRoomParticipantRepository { get; }
@@ -14,6 +13,8 @@ public class UnitOfWork : IUnitOfWork
     public ILanguageRepository LanguageRepository { get; }
     public ITranslationRoomArtifactRepository TranslationRoomArtifactRepository { get; }
     public ITranslationRoomSessionRepository TranslationRoomSessionRepository { get; }
+    public ITranslationRoomInvitationRepository TranslationRoomInvitationRepository { get; }
+    public ITranslationRoomFeedbackRepository TranslationRoomFeedbackRepository { get; }
 
     public UnitOfWork(
         TranslationRoomDbContext context,
@@ -22,7 +23,9 @@ public class UnitOfWork : IUnitOfWork
         ITranslationRoomAudioRouteRepository translationRoomAudioRouteRepository,
         ILanguageRepository languageRepository,
         ITranslationRoomArtifactRepository translationRoomArtifactRepository,
-        ITranslationRoomSessionRepository translationRoomSessionRepository)
+        ITranslationRoomSessionRepository translationRoomSessionRepository,
+        ITranslationRoomInvitationRepository translationRoomInvitationRepository,
+        ITranslationRoomFeedbackRepository translationRoomFeedbackRepository)
     {
         _context = context;
         TranslationRoomRepository = translationRoomRepository;
@@ -31,17 +34,8 @@ public class UnitOfWork : IUnitOfWork
         LanguageRepository = languageRepository;
         TranslationRoomArtifactRepository = translationRoomArtifactRepository;
         TranslationRoomSessionRepository = translationRoomSessionRepository;
-    }
-
-    public IGenericRepository<T> Repository<T>() where T : class
-    {
-        var type = typeof(T);
-        if (!_repositories.ContainsKey(type))
-        {
-            var repositoryInstance = new GenericRepository<T>(_context);
-            _repositories.Add(type, repositoryInstance);
-        }
-        return (IGenericRepository<T>)_repositories[type];
+        TranslationRoomInvitationRepository = translationRoomInvitationRepository;
+        TranslationRoomFeedbackRepository = translationRoomFeedbackRepository;
     }
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;

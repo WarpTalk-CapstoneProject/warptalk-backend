@@ -217,7 +217,7 @@ public class TranslationRoomService : ITranslationRoomService
             {
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
-                var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
+                var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
 
                 var emailTasks = new List<Task>();
 
@@ -265,7 +265,7 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<IEnumerable<TranslationRoomInvitationDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             }
 
-            var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
+            var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
             var invitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoomId, ct: ct);
 
             var dtos = invitations.Select(i => new TranslationRoomInvitationDto(
@@ -419,7 +419,7 @@ public class TranslationRoomService : ITranslationRoomService
             // Mark invitation as ACCEPTED if userEmail is provided
             if (!string.IsNullOrEmpty(userEmail))
             {
-                var invitationRepo = _unitOfWork.Repository<TranslationRoomInvitation>();
+                var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
                 var invitation = await invitationRepo.FirstOrDefaultAsync(i => i.TranslationRoomId == translationRoom.Id && i.Email == userEmail, ct: ct);
                 if (invitation != null && invitation.Status == "PENDING")
                 {
@@ -827,7 +827,7 @@ public class TranslationRoomService : ITranslationRoomService
             {
                 var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
-                var invitationRepo = _unitOfWork.Repository<WarpTalk.TranslationRoomService.Domain.Entities.TranslationRoomInvitation>();
+                var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
 
                 var existingInvitations = await invitationRepo.FindAsync(i => i.TranslationRoomId == translationRoom.Id, ct: ct);
                 var existingEmails = existingInvitations.Select(i => i.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -939,7 +939,7 @@ public class TranslationRoomService : ITranslationRoomService
 
             var roomIds = roomEntities.Select(r => r.Id).ToList();
 
-            var participantEntities = await _unitOfWork.Repository<TranslationRoomParticipant>()
+            var participantEntities = await _unitOfWork.TranslationRoomParticipantRepository
                 .Query()
                 .Where(p => roomIds.Contains(p.TranslationRoomId))
                 .ToListAsync(ct);
@@ -947,7 +947,7 @@ public class TranslationRoomService : ITranslationRoomService
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
 
-            var artifactEntities = await _unitOfWork.Repository<TranslationRoomArtifact>()
+            var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
@@ -979,7 +979,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (!await CanAccessRoomAsync(translationRoomId, userId, ct))
                 return Result.Failure<List<TranslationRoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            var artifactEntities = await _unitOfWork.Repository<TranslationRoomArtifact>()
+            var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => a.TranslationRoomId == translationRoomId && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
@@ -1006,7 +1006,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (room.Status != "ENDED")
                 return Result.Failure<TranslationRoomFeedbackStateDto>("Feedback is only available after a room ends.", ErrorCodes.InvalidState);
 
-            var feedback = await _unitOfWork.Repository<TranslationRoomFeedback>()
+            var feedback = await _unitOfWork.TranslationRoomFeedbackRepository
                 .FirstOrDefaultAsync(f => f.TranslationRoomId == translationRoomId && f.UserId == userId, ct: ct);
 
             return Result.Success(new TranslationRoomFeedbackStateDto(feedback != null, feedback != null ? ToFeedbackDto(feedback) : null));
@@ -1029,7 +1029,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (room.Status != "ENDED")
                 return Result.Failure<TranslationRoomFeedbackDto>("Feedback is only available after a room ends.", ErrorCodes.InvalidState);
 
-            var feedbackRepository = _unitOfWork.Repository<TranslationRoomFeedback>();
+            var feedbackRepository = _unitOfWork.TranslationRoomFeedbackRepository;
             var existing = await feedbackRepository.FirstOrDefaultAsync(f => f.TranslationRoomId == translationRoomId && f.UserId == userId, ct: ct);
             if (existing != null)
                 return Result.Failure<TranslationRoomFeedbackDto>("Feedback has already been submitted for this room.", ErrorCodes.InvalidState);
@@ -1117,7 +1117,7 @@ public class TranslationRoomService : ITranslationRoomService
 
     private IQueryable<TranslationRoom> BuildAccessibleRoomsQuery(Guid userId, string? userEmail)
     {
-        var query = _unitOfWork.Repository<TranslationRoom>().Query();
+        var query = _unitOfWork.TranslationRoomRepository.Query();
         if (!string.IsNullOrEmpty(userEmail))
         {
             return query.Where(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId) || r.TranslationRoomInvitations.Any(i => i.Email == userEmail));
@@ -1163,7 +1163,7 @@ public class TranslationRoomService : ITranslationRoomService
 
     private Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, CancellationToken ct)
     {
-        return Task.FromResult(_unitOfWork.Repository<TranslationRoom>()
+        return Task.FromResult(_unitOfWork.TranslationRoomRepository
             .Query()
             .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive)
             .Any(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)));

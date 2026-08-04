@@ -79,6 +79,8 @@ builder.Services.AddScoped<ITranslationRoomParticipantRepository, TranslationRoo
 builder.Services.AddScoped<ITranslationRoomAudioRouteRepository, TranslationRoomAudioRouteRepository>();
 builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomArtifactRepository>();
 builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
+builder.Services.AddScoped<ITranslationRoomInvitationRepository, TranslationRoomInvitationRepository>();
+builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFeedbackRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();

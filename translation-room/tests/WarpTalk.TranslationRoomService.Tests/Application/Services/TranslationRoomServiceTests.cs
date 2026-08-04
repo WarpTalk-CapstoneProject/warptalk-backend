@@ -82,7 +82,10 @@ public class TranslationRoomServiceTests
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
-        _mockUow.Verify(u => u.Repository<TranslationRoom>(), Times.Never);
+        // Asserted on Query() rather than on the repository property: the constructor resolves
+        // that property, so "never fetched the repository" stopped meaning "never ran the query"
+        // once the history path moved off the generic Repository<T>() factory.
+        _mockRoomRepo.Verify(r => r.Query(), Times.Never);
     }
 
     [Fact]
@@ -480,16 +483,16 @@ public class TranslationRoomServiceTests
 
     private const string MeetingEventsChannel = "warptalk:meetings:events";
 
-    private Mock<IGenericRepository<TranslationRoomInvitation>> ArrangeInvitationRepo(
+    private Mock<ITranslationRoomInvitationRepository> ArrangeInvitationRepo(
         params TranslationRoomInvitation[] existing)
     {
-        var repo = new Mock<IGenericRepository<TranslationRoomInvitation>>();
+        var repo = new Mock<ITranslationRoomInvitationRepository>();
         repo.Setup(r => r.FindAsync(
                 It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(existing);
-        _mockUow.Setup(u => u.Repository<TranslationRoomInvitation>()).Returns(repo.Object);
+        _mockUow.Setup(u => u.TranslationRoomInvitationRepository).Returns(repo.Object);
         return repo;
     }
 
