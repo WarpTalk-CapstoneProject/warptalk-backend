@@ -10,12 +10,16 @@ public interface IUnitOfWork : IDisposable
     IWorkspaceRepository WorkspaceRepository { get; }
     IWorkspaceMemberRepository WorkspaceMemberRepository { get; }
     IWorkspaceInvitationRepository WorkspaceInvitationRepository { get; }
-    IGenericRepository<WorkspaceDocument> WorkspaceDocumentRepository { get; }
-    IGenericRepository<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicyRepository { get; }
-    IGenericRepository<WorkspaceDocumentAudit> WorkspaceDocumentAuditRepository { get; }
-    IGenericRepository<WorkspaceVerifiedDomain> WorkspaceVerifiedDomainRepository { get; }
-    IGenericRepository<WorkspaceAdminAction> WorkspaceAdminActionRepository { get; }
-    IGenericRepository<T> Repository<T>() where T : class;
+    IWorkspaceDocumentRepository WorkspaceDocumentRepository { get; }
+    IWorkspaceDocumentAccessPolicyRepository WorkspaceDocumentAccessPolicyRepository { get; }
+    IWorkspaceDocumentAuditRepository WorkspaceDocumentAuditRepository { get; }
+    IWorkspaceVerifiedDomainRepository WorkspaceVerifiedDomainRepository { get; }
+    IWorkspaceOutboxMessageRepository WorkspaceOutboxMessageRepository { get; }
+
+    // WorkspaceAdminAction is deliberately absent: it is the admin audit log, reached only
+    // through the append-only IAdminAuditLogRepository (WT-210). Exposing it as a general
+    // repository here handed every IUnitOfWork holder an Update()/Remove() on audit history.
+
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);
     Task CommitTransactionAsync(CancellationToken ct = default);

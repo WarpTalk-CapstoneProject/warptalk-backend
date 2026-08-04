@@ -27,7 +27,7 @@ public class WorkspaceInvitationServiceTests
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
     private readonly IWorkspaceInvitationRepository _workspaceInvitationRepository;
-    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
+    private readonly IWorkspaceVerifiedDomainRepository _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
@@ -40,7 +40,7 @@ public class WorkspaceInvitationServiceTests
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
         _workspaceInvitationRepository = Substitute.For<IWorkspaceInvitationRepository>();
-        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
         _emailComposer = Substitute.For<IWorkspaceInvitationEmailComposer>();
@@ -50,7 +50,7 @@ public class WorkspaceInvitationServiceTests
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceInvitationRepository.Returns(_workspaceInvitationRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _emailComposer.SendInvitationEmailAsync(
                 Arg.Any<WorkspaceInvitation>(),
                 Arg.Any<Workspace>(),

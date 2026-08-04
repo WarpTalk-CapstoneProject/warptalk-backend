@@ -32,8 +32,8 @@ public class WorkspaceDocumentServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
-    private readonly IGenericRepository<WorkspaceDocumentAudit> _workspaceDocumentAuditRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentAuditRepository _workspaceDocumentAuditRepository;
     private readonly IDocumentAccessEvaluator _accessEvaluator;
     private readonly IWorkspaceDocumentEventPublisher _eventPublisher;
     private readonly IAuthIdentityClient _authIdentity;
@@ -48,8 +48,8 @@ public class WorkspaceDocumentServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
-        _workspaceDocumentAuditRepository = Substitute.For<IGenericRepository<WorkspaceDocumentAudit>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
+        _workspaceDocumentAuditRepository = Substitute.For<IWorkspaceDocumentAuditRepository>();
         _accessEvaluator = Substitute.For<IDocumentAccessEvaluator>();
         _eventPublisher = Substitute.For<IWorkspaceDocumentEventPublisher>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();

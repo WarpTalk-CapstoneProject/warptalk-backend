@@ -27,7 +27,7 @@ public class WorkspaceServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
-    private readonly IGenericRepository<WorkspaceVerifiedDomain> _workspaceVerifiedDomainRepository;
+    private readonly IWorkspaceVerifiedDomainRepository _workspaceVerifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceCacheService _workspaceCache;
     private readonly IWorkspaceEventPublisher _eventPublisher;
@@ -38,7 +38,7 @@ public class WorkspaceServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
-        _workspaceVerifiedDomainRepository = Substitute.For<IGenericRepository<WorkspaceVerifiedDomain>>();
+        _workspaceVerifiedDomainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _workspaceCache = Substitute.For<IWorkspaceCacheService>();
         _eventPublisher = Substitute.For<IWorkspaceEventPublisher>();
@@ -46,7 +46,7 @@ public class WorkspaceServiceTests
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
         _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
-        _unitOfWork.Repository<WorkspaceVerifiedDomain>().Returns(_workspaceVerifiedDomainRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_workspaceVerifiedDomainRepository);
         _workspaceVerifiedDomainRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
                 Arg.Any<string>(),

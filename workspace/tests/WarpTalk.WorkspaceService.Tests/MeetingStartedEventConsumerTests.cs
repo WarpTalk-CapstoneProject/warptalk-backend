@@ -24,7 +24,7 @@ public class MeetingStartedEventConsumerTests
     private readonly IServiceProvider _serviceProvider;
     private readonly IServiceScope _serviceScope;
     private readonly IUnitOfWork _unitOfWork;
-    private readonly IGenericRepository<WorkspaceDocument> _workspaceDocumentRepository;
+    private readonly IWorkspaceDocumentRepository _workspaceDocumentRepository;
     private readonly IWorkspaceDocumentStorage _storage;
     private readonly MeetingStartedEventConsumer _service;
 
@@ -38,7 +38,7 @@ public class MeetingStartedEventConsumerTests
         _serviceScope = Substitute.For<IServiceScope>();
         var serviceScopeFactory = Substitute.For<IServiceScopeFactory>();
         _unitOfWork = Substitute.For<IUnitOfWork>();
-        _workspaceDocumentRepository = Substitute.For<IGenericRepository<WorkspaceDocument>>();
+        _workspaceDocumentRepository = Substitute.For<IWorkspaceDocumentRepository>();
         _storage = Substitute.For<IWorkspaceDocumentStorage>();
 
         _serviceProvider.GetService(typeof(IServiceScopeFactory)).Returns(serviceScopeFactory);
