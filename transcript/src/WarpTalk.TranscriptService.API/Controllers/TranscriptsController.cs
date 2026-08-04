@@ -15,10 +15,14 @@ namespace WarpTalk.TranscriptService.API.Controllers;
 public class TranscriptsController : ControllerBase
 {
     private readonly ITranscriptQueryService _transcriptQueryService;
+    private readonly ITranscriptCorrectionService _transcriptCorrectionService;
 
-    public TranscriptsController(ITranscriptQueryService transcriptQueryService)
+    public TranscriptsController(
+        ITranscriptQueryService transcriptQueryService,
+        ITranscriptCorrectionService transcriptCorrectionService)
     {
         _transcriptQueryService = transcriptQueryService;
+        _transcriptCorrectionService = transcriptCorrectionService;
     }
 
     [HttpGet("{id}")]
@@ -39,6 +43,28 @@ public class TranscriptsController : ControllerBase
 
         var result = await _transcriptQueryService.GetTranscriptByTranslationRoomAsync(translationRoomId, userId, cancellationToken);
         return ToActionResult(result);
+    }
+
+    [HttpPost("{id}/finalize")]
+    public async Task<IActionResult> FinalizeTranscript(Guid id, CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+            return Unauthorized();
+
+        var result = await _transcriptCorrectionService.FinalizeTranscriptAsync(
+            id,
+            userId,
+            cancellationToken);
+        if (result.IsSuccess)
+            return NoContent();
+
+        return result.ErrorCode switch
+        {
+            "NOT_FOUND" => NotFound(new { Message = result.Error }),
+            "UNAUTHORIZED" => StatusCode(403, new { Message = result.Error }),
+            "BAD_REQUEST" => BadRequest(new { Message = result.Error }),
+            _ => StatusCode(500, new { Message = result.Error })
+        };
     }
 
     private bool TryGetUserId(out Guid userId)
