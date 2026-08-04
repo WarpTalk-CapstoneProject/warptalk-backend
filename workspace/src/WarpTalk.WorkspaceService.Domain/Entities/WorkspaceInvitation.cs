@@ -37,5 +37,11 @@ public partial class WorkspaceInvitation
 
     public DateTime CreatedAt { get; set; }
 
+    public Guid? RequestedBy { get; set; }
+
+    public Guid? ReviewedBy { get; set; }
+
+    public DateTime? ReviewedAt { get; set; }
+
     public virtual Workspace Workspace { get; set; } = null!;
 }

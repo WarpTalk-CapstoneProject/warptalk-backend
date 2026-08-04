@@ -214,7 +214,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -245,7 +245,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -274,7 +274,7 @@ public class WorkspacesControllerTests
             5,
             30,
             true,
-            new List<string>(),
+            new List<string> { "company.com" },
             true,
             true,
             null,
@@ -292,4 +292,83 @@ public class WorkspacesControllerTests
         var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
         Assert.Equal(ErrorCodes.Forbidden, value.Code);
     }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldPreserveVerifiedDomains_WhenPatchOmitsThem()
+    {
+        var workspaceId = Guid.NewGuid();
+        var current = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string> { "company.com" },
+            true,
+            true,
+            null,
+            false);
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(current));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new WorkspaceSettingsPatchRequest(ArtifactRetentionDays: 60),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var merged = Assert.IsType<WorkspaceSettingsDto>(ok.Value);
+        Assert.Equal(new List<string> { "company.com" }, merged.VerifiedDomains);
+        Assert.Equal(new List<string> { "company.com" }, savedSettings?.VerifiedDomains);
+    }
+
+    [Fact]
+    public async Task PatchWorkspaceSettings_ShouldSendExplicitEmptyVerifiedDomains_WhenStrictModeIsOff()
+    {
+        var workspaceId = Guid.NewGuid();
+        var current = new WorkspaceSettingsDto(
+            "en",
+            "UTC",
+            new List<string>(),
+            true,
+            5,
+            30,
+            true,
+            new List<string> { "company.com" },
+            true,
+            false,
+            null,
+            false);
+        WorkspaceSettingsDto? savedSettings = null;
+
+        _workspaceService.GetWorkspaceSettingsAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success(current));
+        _workspaceService.UpdateWorkspaceSettingsAsync(
+                workspaceId,
+                Arg.Do<WorkspaceSettingsDto>(settings => savedSettings = settings),
+                _userId,
+                Arg.Any<CancellationToken>())
+            .Returns(Result.Success());
+
+        var result = await _controller.PatchWorkspaceSettings(
+            workspaceId,
+            new WorkspaceSettingsPatchRequest(VerifiedDomains: new List<string>()),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var merged = Assert.IsType<WorkspaceSettingsDto>(ok.Value);
+        Assert.Empty(merged.VerifiedDomains);
+        Assert.Empty(savedSettings?.VerifiedDomains ?? new List<string> { "unexpected" });
+    }
+
 }

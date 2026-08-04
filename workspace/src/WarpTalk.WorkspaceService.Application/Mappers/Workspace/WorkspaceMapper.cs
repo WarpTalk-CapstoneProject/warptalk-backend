@@ -79,11 +79,45 @@ public static class WorkspaceMapper
             MaxActiveRooms = dto.MaxActiveRooms,
             ArtifactRetentionDays = dto.ArtifactRetentionDays,
             EnforceHostApprovalDefault = dto.EnforceHostApprovalDefault,
-            VerifiedDomains = dto.VerifiedDomains,
+            VerifiedDomains = dto.VerifiedDomains ?? new List<string>(),
             AllowExternalCollaboration = dto.AllowExternalCollaboration,
             RequireVerifiedDomainForInternal = dto.RequireVerifiedDomainForInternal,
             AiUsagePolicy = dto.AiUsagePolicy?.ToConfiguration(),
             IsProfanityFilterEnabled = dto.IsProfanityFilterEnabled
+        };
+    }
+
+    public static WorkspaceSettingsDto ApplyPatch(this WorkspaceSettingsDto current, WorkspaceSettingsPatchRequest patch)
+    {
+        return current with
+        {
+            DefaultLanguage = patch.DefaultLanguage ?? current.DefaultLanguage,
+            Timezone = patch.Timezone ?? current.Timezone,
+            AllowedTargetLanguages = patch.AllowedTargetLanguages ?? current.AllowedTargetLanguages,
+            VoiceCloningEnabled = patch.VoiceCloningEnabled ?? current.VoiceCloningEnabled,
+            MaxActiveRooms = patch.MaxActiveRooms ?? current.MaxActiveRooms,
+            ArtifactRetentionDays = patch.ArtifactRetentionDays ?? current.ArtifactRetentionDays,
+            EnforceHostApprovalDefault = patch.EnforceHostApprovalDefault ?? current.EnforceHostApprovalDefault,
+            VerifiedDomains = patch.VerifiedDomains ?? current.VerifiedDomains,
+            AllowExternalCollaboration = patch.AllowExternalCollaboration ?? current.AllowExternalCollaboration,
+            RequireVerifiedDomainForInternal = patch.RequireVerifiedDomainForInternal ?? current.RequireVerifiedDomainForInternal,
+            AiUsagePolicy = patch.AiUsagePolicy == null
+                ? current.AiUsagePolicy
+                : ApplyPatch(current.AiUsagePolicy, patch.AiUsagePolicy),
+            IsProfanityFilterEnabled = patch.IsProfanityFilterEnabled ?? current.IsProfanityFilterEnabled
+        };
+    }
+
+    private static AiUsagePolicyDto ApplyPatch(AiUsagePolicyDto? current, AiUsagePolicyPatchDto patch)
+    {
+        current ??= new AiUsagePolicyDto(true, null, null, null, true);
+        return current with
+        {
+            AllowExternalLlm = patch.AllowExternalLlm ?? current.AllowExternalLlm,
+            RedactPii = patch.RedactPii ?? current.RedactPii,
+            Dlp = patch.Dlp ?? current.Dlp,
+            TranslationProfile = patch.TranslationProfile ?? current.TranslationProfile,
+            UseGlobalGlossary = patch.UseGlobalGlossary ?? current.UseGlobalGlossary
         };
     }
 

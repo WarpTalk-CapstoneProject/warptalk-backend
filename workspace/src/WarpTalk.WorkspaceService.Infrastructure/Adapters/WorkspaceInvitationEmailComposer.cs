@@ -9,7 +9,7 @@ using WarpTalk.Shared.Models;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Entities;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailComposer
 {

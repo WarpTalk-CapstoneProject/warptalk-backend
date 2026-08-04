@@ -9,7 +9,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.Settings;
 
-namespace WarpTalk.WorkspaceService.Infrastructure.Services;
+namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
 
 public class AiPolicyResolver : IAiPolicyResolver
 {

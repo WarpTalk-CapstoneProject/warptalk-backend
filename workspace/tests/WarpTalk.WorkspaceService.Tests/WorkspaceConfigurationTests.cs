@@ -37,7 +37,7 @@ public class WorkspaceConfigurationTests
     public void WorkspaceConfiguration_ShouldApplyDefaultsAndNormalize_WhenDeserializedFromNullOrInvalidJson()
     {
         // Arrange
-        var json = "{\"DefaultLanguage\":null,\"Timezone\":\"   \",\"AllowedTargetLanguages\":null,\"MaxActiveRooms\":-5,\"ArtifactRetentionDays\":0}";
+        var json = "{\"DefaultLanguage\":null,\"Timezone\":\"   \",\"AllowedTargetLanguages\":null,\"MaxActiveRooms\":-5,\"ArtifactRetentionDays\":-1}";
 
         // Act
         var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(json);
@@ -54,6 +54,16 @@ public class WorkspaceConfigurationTests
         Assert.True(config.AiUsagePolicy.AllowExternalLlm);
         Assert.NotNull(config.AiUsagePolicy.RedactPii);
         Assert.True(config.AiUsagePolicy.RedactPii.Enabled);
+    }
+
+    [Fact]
+    public void WorkspaceConfiguration_ShouldDefaultZeroRetention_WhenDeserialized()
+    {
+        var config = JsonSerializer.Deserialize<WorkspaceConfiguration>(
+            "{\"ArtifactRetentionDays\":0}");
+
+        Assert.NotNull(config);
+        Assert.Equal(WorkspaceConstants.DefaultWorkspaceArtifactRetentionDays, config.ArtifactRetentionDays);
     }
 
     [Fact]

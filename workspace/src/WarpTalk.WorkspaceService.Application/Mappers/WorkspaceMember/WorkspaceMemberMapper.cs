@@ -17,7 +17,7 @@ public static class WorkspaceMemberMapper
             WorkspaceId = workspaceId,
             UserId = userId,
             RoleId = roleId,
-            Status = WorkspaceMemberStatus.Active.ToString(),
+            Status = WorkspaceMemberStatus.Active.ToStorageValue(),
             MembershipType = MembershipType.Internal.ToString(),
             JoinedAt = now
         };
@@ -32,7 +32,7 @@ public static class WorkspaceMemberMapper
             WorkspaceId = workspaceId,
             UserId = userId,
             RoleId = roleId,
-            Status = WorkspaceMemberStatus.Active.ToString(),
+            Status = WorkspaceMemberStatus.Active.ToStorageValue(),
             MembershipType = membershipType,
             JoinedAt = now
         };

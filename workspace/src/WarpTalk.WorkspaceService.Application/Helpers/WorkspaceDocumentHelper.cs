@@ -56,4 +56,22 @@ public static class WorkspaceDocumentHelper
             ? contentType
             : "application/octet-stream";
     }
+
+    public static string? NormalizePolicySubjectType(string? subjectType)
+    {
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeUser, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeUser;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeRole, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeRole;
+        if (string.Equals(subjectType, WorkspacePolicyConstants.SubjectTypeMembershipType, StringComparison.OrdinalIgnoreCase))
+            return WorkspacePolicyConstants.SubjectTypeMembershipType;
+        return null;
+    }
+
+    public static bool IsSupportedPolicyPermission(string? permission)
+    {
+        return string.Equals(permission, WorkspaceDocumentPermissions.View, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.Download, StringComparison.Ordinal)
+            || string.Equals(permission, WorkspaceDocumentPermissions.AiRetrieval, StringComparison.Ordinal);
+    }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceMember;
@@ -15,8 +16,6 @@ using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.Shared;
-using MassTransit;
-using WarpTalk.Shared.Events;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
 
@@ -26,17 +25,20 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly ILogger<WorkspaceMemberService> _logger;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
+    private readonly IConfiguration _configuration;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceMemberService> logger,
         IAuthIdentityClient authIdentity,
-        IWorkspaceEventPublisher eventPublisher)
+        IWorkspaceEventPublisher eventPublisher,
+        IConfiguration configuration)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
     }
 
 
@@ -81,18 +83,35 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             var currentOwnerMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
+            if (currentOwnerMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            var targetOldRoleName = await _authIdentity.GetRoleNameByIdAsync(newOwnerMember.RoleId, ct);
+            if (targetOldRoleName.IsOwner())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.ValidationError);
+            }
 
             workspace.OwnerId = newOwnerId;
             _unitOfWork.WorkspaceRepository.Update(workspace);
 
-            if (currentOwnerMember != null)
-            {
-                currentOwnerMember.RoleId = adminRoleId.Value;
-                _unitOfWork.WorkspaceMemberRepository.Update(currentOwnerMember);
-            }
+            currentOwnerMember.RoleId = adminRoleId.Value;
+            _unitOfWork.WorkspaceMemberRepository.Update(currentOwnerMember);
 
             newOwnerMember.RoleId = ownerRoleId.Value;
             _unitOfWork.WorkspaceMemberRepository.Update(newOwnerMember);
+
+            var demotionId = Guid.NewGuid();
+            var promotionId = Guid.NewGuid();
+            var transferEffectiveAt = DateTime.UtcNow;
+            await _eventPublisher.PublishMemberRoleChangedAsync(
+                workspaceId, executingUserId, ownerRoleName, adminRoleName, executingUserId,
+                demotionId, null, currentOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{demotionId:N}", ct);
+            await _eventPublisher.PublishMemberRoleChangedAsync(
+                workspaceId, newOwnerId, targetOldRoleName, ownerRoleName, executingUserId,
+                promotionId, null, newOwnerMember.MembershipType, "next-request-or-session", transferEffectiveAt, $"transfer:{promotionId:N}", ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
             return Result.Success();
@@ -129,18 +148,40 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var callerRole = await _authIdentity.GetRoleNameByIdAsync(caller.RoleId, ct);
             var isOwnerOrAdmin = callerRole.IsOwnerOrAdmin();
 
-            List<WorkspaceMember> members;
-            if (isOwnerOrAdmin)
+            if (!string.IsNullOrWhiteSpace(query.Search))
             {
-                var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
-                members = allMembers.OrderBy(m => m.JoinedAt).ToList();
-            }
-            else
-            {
-                members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+                List<WorkspaceMember> membersForSearch;
+                if (isOwnerOrAdmin)
+                {
+                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
+                    membersForSearch = allMembers.OrderByDescending(m => m.JoinedAt).ToList();
+                }
+                else
+                {
+                    membersForSearch = (await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct))
+                        .OrderByDescending(m => m.JoinedAt)
+                        .ToList();
+                }
+
+                var search = query.Search.Trim();
+                var filteredDtos = (await WorkspaceMemberDtoHelper.BuildAsync(membersForSearch, _authIdentity, ct))
+                    .Where(m => m.FullName.Contains(search, StringComparison.OrdinalIgnoreCase)
+                                || m.Email.Contains(search, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                var searchedItems = filteredDtos
+                    .Skip(Math.Max(0, (query.Page - 1) * query.PageSize))
+                    .Take(query.PageSize)
+                    .ToList();
+
+                return Result.Success(new PagedResult<WorkspaceMemberDto>(
+                    searchedItems, query.Page, query.PageSize, filteredDtos.Count));
             }
 
-            // Fetch all user profiles in parallel (eliminates N sequential gRPC calls)
+            var (members, totalCount) = await _unitOfWork.WorkspaceMemberRepository.GetPagedMembersAsync(
+                workspaceId, query.Page, query.PageSize, isOwnerOrAdmin, isDescending: true, ct);
+
+            // Fetch user profiles for paged members in parallel
             var userResults = await Task.WhenAll(members.Select(m => _authIdentity.GetUserByIdAsync(m.UserId, ct)));
             var userMap = members.Zip(userResults, (m, u) => (m.UserId, User: u))
                 .ToDictionary(x => x.UserId, x => x.User);
@@ -151,8 +192,7 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             var roleMap = distinctRoleIds.Zip(roleResults, (id, r) => (id, Name: r?.Name ?? "Member"))
                 .ToDictionary(x => x.id, x => x.Name);
 
-            var filteredDtos = new List<WorkspaceMemberDto>();
-
+            var memberDtos = new List<WorkspaceMemberDto>();
             foreach (var m in members)
             {
                 var user = userMap.GetValueOrDefault(m.UserId);
@@ -164,22 +204,10 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 var avatarUrl = user?.AvatarUrl;
                 var roleName = roleMap.GetValueOrDefault(m.RoleId, "Member");
 
-                if (!string.IsNullOrWhiteSpace(query.Search))
-                {
-                    var searchLower = query.Search.ToLower();
-                    var userEmail = user?.Email ?? "Unknown";
-                    if (!fullName.ToLower().Contains(searchLower) && !userEmail.ToLower().Contains(searchLower))
-                        continue;
-                }
-
-                filteredDtos.Add(m.ToDto(fullName, email, avatarUrl, roleName));
+                memberDtos.Add(m.ToDto(fullName, email, avatarUrl, roleName));
             }
 
-            var totalCount = filteredDtos.Count;
-            var pagedItems = filteredDtos.Skip((query.Page - 1) * query.PageSize).Take(query.PageSize).ToList();
-
-            var pagedResult = new PagedResult<WorkspaceMemberDto>(pagedItems, query.Page, query.PageSize, totalCount);
-
+            var pagedResult = new PagedResult<WorkspaceMemberDto>(memberDtos, query.Page, query.PageSize, totalCount);
             return Result.Success(pagedResult);
         }
         catch (Exception ex)
@@ -193,12 +221,9 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     {
         try
         {
-            await _unitOfWork.BeginTransactionAsync(ct);
-
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
@@ -206,7 +231,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
@@ -219,33 +243,29 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                     var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
                     if (ownerRoleId == null)
                     {
-                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
                     }
 
                     var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
                     if (activeOwnersCount <= 1)
                     {
-                        await _unitOfWork.RollbackTransactionAsync(ct);
                         return Result.Failure(WorkspaceConstants.Errors.CannotLeaveAsLastOwner, ErrorCodes.ValidationError);
                     }
                 }
 
                 executingMember.RemovedAt = DateTime.UtcNow;
                 executingMember.RemovedBy = executingUserId;
-                executingMember.Status = WorkspaceMemberStatus.Removed.ToString();
+                executingMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
                 _unitOfWork.WorkspaceMemberRepository.Update(executingMember);
                 await _eventPublisher.PublishMemberRemovedAsync(workspaceId, executingUserId, executingUserId, ct);
                 await _unitOfWork.SaveChangesAsync(ct);
-                await _unitOfWork.CommitTransactionAsync(ct);
 
                 return Result.Success();
             }
 
             if (!execRoleName.IsOwnerOrAdmin())
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanRemoveMembers, ErrorCodes.Forbidden);
             }
 
@@ -253,7 +273,6 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
@@ -261,45 +280,41 @@ public class WorkspaceMemberService : IWorkspaceMemberService
 
             if (targetRoleName.IsOwner())
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.CannotRemoveOwner, ErrorCodes.Forbidden);
             }
 
             targetMember.RemovedAt = DateTime.UtcNow;
             targetMember.RemovedBy = executingUserId;
-            targetMember.Status = WorkspaceMemberStatus.Removed.ToString();
+            targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
             await _eventPublisher.PublishMemberRemovedAsync(workspaceId, memberUserId, executingUserId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
-            await _unitOfWork.CommitTransactionAsync(ct);
 
             return Result.Success();
         }
         catch (Exception ex)
         {
-            await _unitOfWork.RollbackTransactionAsync(ct);
             _logger.LogError(ex, "Error occurred while removing member. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 
-    public async Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default)
+    public Task<Result> ChangeMemberRoleAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default)
+        => ChangeMemberRoleCoreAsync(workspaceId, memberUserId, roleName, executingUserId, null, null, ct);
+
+    public async Task<Result> ChangeMemberRoleCoreAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, ApplyWorkspaceRoleChangeRequest? request, Guid? eventId, CancellationToken ct = default)
     {
         try
         {
-            await _unitOfWork.BeginTransactionAsync(ct);
-
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
             if (workspace == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             if (!roleName.IsAdmin() && roleName != WorkspaceMemberRole.Member.ToRoleName())
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
             }
 
@@ -307,14 +322,12 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
             if (executingMember == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
             }
 
             var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
-            if (!execRoleName.IsOwnerOrAdmin())
+            if (!execRoleName.IsOwner())
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
             }
 
@@ -322,76 +335,158 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
             if (targetMember == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
             }
 
             var targetRoleName = await _authIdentity.GetRoleNameByIdAsync(targetMember.RoleId, ct);
 
+            if (request != null)
+            {
+                if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+                {
+                    _logger.LogError("Role preview signing key is not configured.");
+                    return Result.Failure(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+                }
+
+                if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.InvalidIdempotencyKey, ErrorCodes.ValidationError);
+                }
+
+                if (!RolePreviewTokenHelper.TryReadPreviewToken(request.PreviewToken, previewSigningKey, out var preview)
+                    || preview.WorkspaceId != workspaceId
+                    || preview.TargetUserId != memberUserId)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.InvalidRoleChangePreview, ErrorCodes.ValidationError);
+                }
+                var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                if (preview.ExpiresAtUnix < nowUnix)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.RoleChangePreviewExpired, ErrorCodes.ValidationError);
+                }
+                if (!string.Equals(preview.NewRole, roleName, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(preview.OldRole, targetRoleName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.RoleChangeStale, ErrorCodes.Conflict);
+                }
+                if (roleName.IsAdmin() && preview.CoolingOffUntilUnix > nowUnix)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.CoolingOffNotComplete, ErrorCodes.Conflict);
+                }
+            }
+
+            if (string.Equals(targetMember.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.ExternalRoleImmutable, ErrorCodes.ValidationError);
+            }
+
             if (memberUserId == executingUserId)
             {
-                if (targetRoleName.IsOwner())
-                {
-                    var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
-                    if (ownerRoleId == null)
-                    {
-                        await _unitOfWork.RollbackTransactionAsync(ct);
-                        return Result.Failure(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
-                    }
-
-                    var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
-                    if (activeOwnersCount <= 1)
-                    {
-                        await _unitOfWork.RollbackTransactionAsync(ct);
-                        return Result.Failure(WorkspaceConstants.Errors.CannotDemoteLastOwner, ErrorCodes.ValidationError);
-                    }
-                }
-            }
-            else
-            {
-                if (targetRoleName.IsOwner())
-                {
-                    await _unitOfWork.RollbackTransactionAsync(ct);
-                    return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
-                }
+                return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnRole, ErrorCodes.ValidationError);
             }
 
-            if (execRoleName.IsAdmin())
+            if (targetRoleName.IsOwner())
             {
-                if (targetRoleName.IsAdmin() && memberUserId != executingUserId)
-                {
-                    await _unitOfWork.RollbackTransactionAsync(ct);
-                    return Result.Failure(WorkspaceConstants.Errors.AdminCannotChangeAdminRole, ErrorCodes.Forbidden);
-                }
+                return Result.Failure(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
+            }
 
-                if (roleName.IsAdmin() && memberUserId != executingUserId)
-                {
-                    await _unitOfWork.RollbackTransactionAsync(ct);
-                    return Result.Failure(WorkspaceConstants.Errors.AdminCannotPromoteToAdmin, ErrorCodes.Forbidden);
-                }
+            if (string.Equals(targetRoleName, roleName, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Success();
             }
 
             var newRoleId = await _authIdentity.GetRoleIdByNameAsync(roleName, ct);
             if (newRoleId == null)
             {
-                await _unitOfWork.RollbackTransactionAsync(ct);
                 return Result.Failure(WorkspaceConstants.Errors.RoleNotFound, ErrorCodes.ValidationError);
             }
 
             targetMember.RoleId = newRoleId.Value;
 
             _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
+
+            var committedEventId = eventId ?? Guid.NewGuid();
+            await _eventPublisher.PublishMemberRoleChangedAsync(
+                workspaceId, memberUserId, targetRoleName, roleName, executingUserId,
+                committedEventId, request?.CorrelationId, targetMember.MembershipType,
+                "next-request-or-session", DateTime.UtcNow, request?.IdempotencyKey, ct);
             await _unitOfWork.SaveChangesAsync(ct);
-            await _unitOfWork.CommitTransactionAsync(ct);
             return Result.Success();
         }
         catch (Exception ex)
         {
-            await _unitOfWork.RollbackTransactionAsync(ct);
             _logger.LogError(ex, "Error occurred while changing member role. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
+
+    public async Task<Result<WorkspaceRoleChangeResultDto>> ApplyMemberRoleChangeAsync(Guid workspaceId, Guid memberUserId, ApplyWorkspaceRoleChangeRequest request, Guid executingUserId, CancellationToken ct = default)
+    {
+        var eventId = Guid.NewGuid();
+        var memberBefore = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
+        var oldRole = memberBefore == null
+            ? string.Empty
+            : await _authIdentity.GetRoleNameByIdAsync(memberBefore.RoleId, ct);
+        var result = await ChangeMemberRoleCoreAsync(workspaceId, memberUserId, request.TargetRole, executingUserId, request, eventId, ct);
+        if (!result.IsSuccess)
+            return Result.Failure<WorkspaceRoleChangeResultDto>(result.Error ?? WorkspaceConstants.Errors.UnexpectedError, result.ErrorCode);
+
+        WorkspaceMemberDto? memberProjection = null;
+        var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == memberUserId, "", ct);
+        if (member != null)
+        {
+            var user = await _authIdentity.GetUserByIdAsync(memberUserId, ct);
+            var currentRole = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            memberProjection = member.ToDto(user?.FullName ?? string.Empty, user?.Email ?? string.Empty, user?.AvatarUrl, currentRole);
+        }
+
+        return Result.Success(new WorkspaceRoleChangeResultDto(
+            memberUserId,
+            oldRole,
+            request.TargetRole,
+            DateTime.UtcNow,
+            "next-request-or-session",
+            eventId,
+            memberProjection,
+            request.IdempotencyKey));
+    }
+
+    public async Task<Result<WorkspaceRoleChangePreviewDto>> PreviewMemberRoleChangeAsync(Guid workspaceId, Guid memberUserId, string roleName, Guid executingUserId, CancellationToken ct = default)
+    {
+        var actor = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == executingUserId && m.RemovedAt == null, "", ct);
+        if (actor == null) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+        var actorRole = await _authIdentity.GetRoleNameByIdAsync(actor.RoleId, ct);
+        if (!actorRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanChangeRoles, ErrorCodes.Forbidden);
+        var target = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(m => m.WorkspaceId == workspaceId && m.UserId == memberUserId && m.RemovedAt == null, "", ct);
+        if (target == null) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.TargetMemberNotFoundOrRemoved, ErrorCodes.NotFound);
+        var currentRole = await _authIdentity.GetRoleNameByIdAsync(target.RoleId, ct);
+        if (memberUserId == executingUserId) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.CannotChangeOwnRole, ErrorCodes.ValidationError);
+        if (currentRole.IsOwner()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.CannotChangeOwnerRole, ErrorCodes.Forbidden);
+        if (!string.Equals(target.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.ExternalRoleImmutable, ErrorCodes.ValidationError);
+        if (!roleName.IsAdmin() && !roleName.IsMember()) return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RoleMustBeAdminOrMember, ErrorCodes.ValidationError);
+        if (!RolePreviewSigningKeyHelper.TryResolve(_configuration, out var previewSigningKey))
+        {
+            _logger.LogError("Role preview signing key is not configured.");
+            return Result.Failure<WorkspaceRoleChangePreviewDto>(WorkspaceConstants.Errors.RolePreviewSigningKeyNotConfigured, ErrorCodes.ValidationError);
+        }
+
+        var now = DateTime.UtcNow;
+        var expiresAt = now.AddMinutes(15);
+        var coolingOffUntil = roleName.IsAdmin() ? now.AddSeconds(60) : (DateTime?)null;
+        var previewToken = RolePreviewTokenHelper.CreatePreviewToken(
+            workspaceId,
+            memberUserId,
+            currentRole,
+            roleName,
+            new DateTimeOffset(expiresAt).ToUnixTimeSeconds(),
+            new DateTimeOffset(coolingOffUntil ?? now).ToUnixTimeSeconds(),
+            previewSigningKey);
+
+        return Result.Success(new WorkspaceRoleChangePreviewDto(memberUserId, currentRole, roleName, target.MembershipType, target.CanCreateMeetings, [], expiresAt, previewToken, coolingOffUntil));
+    }
+
+
 
     public async Task<Result> UpdateMemberAsync(Guid workspaceId, Guid memberUserId, UpdateWorkspaceMemberRequest request, Guid executingUserId, CancellationToken ct = default)
     {

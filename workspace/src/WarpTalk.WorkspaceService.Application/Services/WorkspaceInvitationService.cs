@@ -27,6 +27,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
     private readonly ITranslationRoomClient _translationRoomClient;
     private readonly IWorkspaceInvitationEmailComposer _emailComposer;
     private readonly IBillingSubscriptionClient _billingSubscriptionClient;
+    private readonly IWorkspaceInvitationAcceptanceProcessor _acceptanceProcessor;
 
     public WorkspaceInvitationService(
         IUnitOfWork unitOfWork,
@@ -34,7 +35,8 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         IAuthIdentityClient authIdentity,
         ITranslationRoomClient translationRoomClient,
         IWorkspaceInvitationEmailComposer emailComposer,
-        IBillingSubscriptionClient billingSubscriptionClient)
+        IBillingSubscriptionClient billingSubscriptionClient,
+        IWorkspaceInvitationAcceptanceProcessor acceptanceProcessor)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -42,6 +44,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         _translationRoomClient = translationRoomClient;
         _emailComposer = emailComposer;
         _billingSubscriptionClient = billingSubscriptionClient;
+        _acceptanceProcessor = acceptanceProcessor;
     }
 
     public async Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default)
@@ -490,7 +493,15 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvalidOrExpiredToken, ErrorCodes.NotFound);
         }
 
-        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
+        try
+        {
+            return await _acceptanceProcessor.ProcessAcceptanceAsync(invitation, userId, userEmail, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while accepting invitation {InvitationId}.", invitation.Id);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result> AcceptInvitationByIdAsync(Guid invitationId, Guid userId, string userEmail, CancellationToken ct = default)
@@ -501,57 +512,9 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             return Result.Failure(WorkspaceConstants.Errors.InvitationNotFound, ErrorCodes.NotFound);
         }
 
-        return await ProcessAcceptInvitationAsync(invitation, userId, userEmail, ct);
-    }
-
-    private async Task<Result> ProcessAcceptInvitationAsync(WorkspaceInvitation invitation, Guid userId, string userEmail, CancellationToken ct = default)
-    {
         try
         {
-            var validationResult = await WorkspaceInvitationHelper.ValidateAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
-            if (!validationResult.IsSuccess)
-            {
-                return validationResult;
-            }
-
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(invitation.WorkspaceId, ct);
-            if (workspace == null)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
-            }
-
-            var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                _unitOfWork,
-                userEmail,
-                workspace,
-                ct);
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
-            }
-
-            var capacityCheck = await EnsureTrialAcceptCapacityAsync(invitation.WorkspaceId, ct);
-            if (!capacityCheck.IsSuccess)
-            {
-                return capacityCheck;
-            }
-
-            invitation.MembershipType = membershipType.ToString();
-            var newMember = WorkspaceMemberMapper.CreateInvitationMember(
-                invitation.WorkspaceId,
-                userId,
-                invitation.RoleId,
-                invitation.MembershipType);
-
-            invitation.Status = InvitationStatus.ACCEPTED.ToString();
-            invitation.AcceptedAt = DateTime.UtcNow;
-
-            await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
-            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
-            await _unitOfWork.SaveChangesAsync(ct);
-
-            return Result.Success();
+            return await _acceptanceProcessor.ProcessAcceptanceAsync(invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {
@@ -764,16 +727,4 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             : Result.Success();
     }
 
-    private async Task<Result> EnsureTrialAcceptCapacityAsync(Guid workspaceId, CancellationToken ct)
-    {
-        if (!await _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
-        {
-            return Result.Success();
-        }
-
-        var activeMemberCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, ct);
-        return activeMemberCount >= WorkspaceConstants.TrialWorkspaceMemberLimit
-            ? Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden)
-            : Result.Success();
-    }
 }

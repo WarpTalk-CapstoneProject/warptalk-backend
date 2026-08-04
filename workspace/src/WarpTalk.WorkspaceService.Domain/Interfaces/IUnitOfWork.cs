@@ -10,14 +10,11 @@ public interface IUnitOfWork : IDisposable
     IWorkspaceRepository WorkspaceRepository { get; }
     IWorkspaceMemberRepository WorkspaceMemberRepository { get; }
     IWorkspaceInvitationRepository WorkspaceInvitationRepository { get; }
-    IGenericRepository<WorkspaceDocument> WorkspaceDocumentRepository { get; }
-    IGenericRepository<WorkspaceDocumentAccessPolicy> WorkspaceDocumentAccessPolicyRepository { get; }
-    IGenericRepository<WorkspaceDocumentAudit> WorkspaceDocumentAuditRepository { get; }
-    IGenericRepository<WorkspaceVerifiedDomain> WorkspaceVerifiedDomainRepository { get; }
+    IWorkspaceDocumentRepository WorkspaceDocumentRepository { get; }
+    IWorkspaceDocumentAccessPolicyRepository WorkspaceDocumentAccessPolicyRepository { get; }
+    IWorkspaceDocumentAuditRepository WorkspaceDocumentAuditRepository { get; }
+    IWorkspaceVerifiedDomainRepository WorkspaceVerifiedDomainRepository { get; }
     IGenericRepository<WorkspaceAdminAction> WorkspaceAdminActionRepository { get; }
     IGenericRepository<T> Repository<T>() where T : class;
     Task<int> SaveChangesAsync(CancellationToken ct = default);
-    Task BeginTransactionAsync(CancellationToken ct = default);
-    Task CommitTransactionAsync(CancellationToken ct = default);
-    Task RollbackTransactionAsync(CancellationToken ct = default);
 }
