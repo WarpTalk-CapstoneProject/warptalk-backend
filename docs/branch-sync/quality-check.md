@@ -13,6 +13,12 @@
 - Remote checks after push: pending before push.
 - Latest local verification after merge:
   - `dotnet build 'workspace/src/WarpTalk.WorkspaceService.API/WarpTalk.WorkspaceService.API.csproj'`: passed.
+- Verify-failure follow-up on Tuesday, August 4, 2026:
+  - Remote failure reproduced locally with `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --filter "FullyQualifiedName~AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers" --nologo`: failed before the fix, passed after the fix.
+  - Focused regression sweep with `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --filter "FullyQualifiedName~WorkspaceInvitationServiceTests" --nologo`: passed (`19/19`).
+  - Wider local checks were environment-limited, not code-limited:
+    - `dotnet test workspace/tests/WarpTalk.WorkspaceService.Tests/WarpTalk.WorkspaceService.Tests.csproj --configuration Release --no-build --no-restore --nologo` hit Docker/Testcontainers failures in local integration tests.
+    - `dotnet build warptalk-backend.slnx --configuration Release --no-restore --nologo` surfaced existing Stripe reference/build errors outside the touched workspace invitation code.
 - GitHub status at last read:
   - `GitGuardian Security Checks`: `SUCCESS`
-  - `verify`: not surfaced in the latest check rollup, so it should be re-checked after push.
+  - `verify`: `FAILURE` on run `30897852692` / job `91954918291` because `WorkspaceInvitationServiceTests.AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers` returned success instead of forbidden at the five-member trial limit.

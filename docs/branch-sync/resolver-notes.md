@@ -19,4 +19,8 @@
   - `workspace/src/WarpTalk.WorkspaceService.Domain/Constants/WorkspaceConstants.cs`
   - `workspace/src/WarpTalk.WorkspaceService.Domain/Interfaces/IWorkspaceMemberRepository.cs`
 - Result: no unresolved conflicts remain locally; branch-specific acceptance flow and repository interfaces were kept intact.
+- Follow-up for remote `verify` failure on GitHub Actions run `30897852692` (`verify` job `91954918291`):
+  - Failure was isolated to `WorkspaceInvitationServiceTests.AcceptInvitationAsync_ShouldFail_WhenTrialWorkspaceAlreadyHasFiveMembers`.
+  - Root cause: the invitation acceptance flow was centralized into `WorkspaceInvitationHelper.ProcessAcceptanceAsync`, but the trial-workspace acceptance capacity check was not moved with it.
+  - Scoped fix: restored the trial acceptance guard inside the shared helper and passed `IBillingSubscriptionClient` into both invitation acceptance entry points so token-based and id-based acceptance follow the same limit check.
 - Commit SHA: pending before push.

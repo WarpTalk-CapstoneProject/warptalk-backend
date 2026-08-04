@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Shared;
+using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Mappers;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -120,6 +121,7 @@ public static class WorkspaceInvitationHelper
 
     public static async Task<Result> ProcessAcceptanceAsync(
         IUnitOfWork unitOfWork,
+        IBillingSubscriptionClient billingSubscriptionClient,
         WorkspaceInvitation invitation,
         Guid userId,
         string userEmail,
@@ -148,6 +150,12 @@ public static class WorkspaceInvitationHelper
             return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
         }
 
+        var capacityCheck = await EnsureTrialAcceptCapacityAsync(unitOfWork, billingSubscriptionClient, invitation.WorkspaceId, ct);
+        if (!capacityCheck.IsSuccess)
+        {
+            return capacityCheck;
+        }
+
         invitation.MembershipType = membershipType.ToString();
         var newMember = WorkspaceMemberMapper.CreateInvitationMember(
             invitation.WorkspaceId,
@@ -163,5 +171,22 @@ public static class WorkspaceInvitationHelper
         await unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success();
+    }
+
+    private static async Task<Result> EnsureTrialAcceptCapacityAsync(
+        IUnitOfWork unitOfWork,
+        IBillingSubscriptionClient billingSubscriptionClient,
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        if (!await billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
+        {
+            return Result.Success();
+        }
+
+        var activeMemberCount = await unitOfWork.WorkspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, ct);
+        return activeMemberCount >= WorkspaceConstants.TrialWorkspaceMemberLimit
+            ? Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden)
+            : Result.Success();
     }
 }

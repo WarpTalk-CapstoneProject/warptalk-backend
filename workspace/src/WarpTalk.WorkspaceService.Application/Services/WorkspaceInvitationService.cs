@@ -492,7 +492,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
         try
         {
-            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {
@@ -511,7 +511,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
         try
         {
-            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, invitation, userId, userEmail, ct);
+            return await WorkspaceInvitationHelper.ProcessAcceptanceAsync(_unitOfWork, _billingSubscriptionClient, invitation, userId, userEmail, ct);
         }
         catch (Exception ex)
         {
@@ -724,16 +724,4 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             : Result.Success();
     }
 
-    private async Task<Result> EnsureTrialAcceptCapacityAsync(Guid workspaceId, CancellationToken ct)
-    {
-        if (!await _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
-        {
-            return Result.Success();
-        }
-
-        var activeMemberCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, ct);
-        return activeMemberCount >= WorkspaceConstants.TrialWorkspaceMemberLimit
-            ? Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden)
-            : Result.Success();
-    }
 }
