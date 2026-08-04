@@ -565,6 +565,13 @@ public class MeetingRoomService : IMeetingRoomService
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
 
+        // WT-234: an explicit transfer is now the only way host moves, so it has to be the one
+        // that tells the room. The broadcast used to hang off the automatic election, which
+        // meant the deliberate path left every client showing stale host controls until its
+        // next full room refetch.
+        await PublishGatewayCommandAsync(
+            "HostChanged", translationRoomId, new { NewHostUserId = newHostUserId.ToString() });
+
         return Result.Success(true);
     }
 
@@ -813,21 +820,25 @@ public class MeetingRoomService : IMeetingRoomService
     // ── WT-08: Auto host fallback ──────────────────────────
 
     /// <summary>
-    /// Authoritative host-fallback election. Triggered ONLY from the Gateway hub's
-    /// OnDisconnectedAsync full-disconnect signal (via HostFallbackConsumerWorker
+    /// Releases the host claim when the host goes offline. Triggered ONLY from the Gateway
+    /// hub's OnDisconnectedAsync full-disconnect signal (via HostFallbackConsumerWorker
     /// subscribing to the same "translationRoom:participant-offline" channel the hub
     /// already publishes to unconditionally — see TranslationRoomHub.OnDisconnectedAsync).
     ///
-    /// MeetingWebhookService.HandleParticipantLeft (the OTHER participant-left signal,
-    /// from LiveKit's webhook) intentionally does NOT elect a new host — it only clears
-    /// ActiveHostId when the departing identity matches it, which is safe/idempotent to run
-    /// in either order relative to this method: whichever runs first "wins" the null-out,
-    /// and the equality check there means it never clobbers a host this method has already
-    /// elected. This method is the only place a NON-NULL ActiveHostId is ever assigned as a
-    /// fallback, so there is no double-election race between the two paths. It re-derives
-    /// "should I elect someone" from current DB state rather than trusting the webhook to
-    /// have already run, so it works correctly regardless of which of the two signals
-    /// arrives first.
+    /// WT-234: this used to elect the earliest-joined remaining participant and broadcast
+    /// HostChanged for them. Nobody had asked for that host, and ActiveHostId is a real
+    /// permission — it gates breakouts, polls, questions, recording and mute-all — so a
+    /// plain participant silently acquired host powers while still being displayed, and
+    /// still being stored in TranslationRoom, as a participant. Host now moves only through
+    /// TransferHostAsync, or back to the original host when they rejoin (see JoinRoomAsync).
+    ///
+    /// Leaving the room host-less is deliberate rather than a gap: workspace Owners/Admins
+    /// already hold host-like authority over every room in their workspace (WT-188), so an
+    /// abandoned room still has someone who can act on it.
+    ///
+    /// Idempotent against MeetingWebhookService.HandleParticipantLeft, the other
+    /// participant-left signal, which performs the same equality-guarded null-out from
+    /// LiveKit's webhook — whichever arrives first wins and the second is a no-op.
     /// </summary>
     public async Task<Result<bool>> HandleHostOfflineAsync(Guid translationRoomId, Guid departedUserId)
     {
@@ -836,26 +847,14 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Success(false);
 
-        bool departedWasHost = meetingRoom.ActiveHostId == departedUserId;
-        // Nothing to do if some other, still-current host is already assigned.
-        if (!departedWasHost && meetingRoom.ActiveHostId != null)
+        // Only the departing host's own claim is released. Anyone else leaving changes nothing,
+        // and a room that is already host-less stays that way.
+        if (meetingRoom.ActiveHostId != departedUserId)
             return Result.Success(false);
 
-        var activeParticipants = await _unitOfWork.MeetingParticipantRepository
-            .FindAsync(p => p.MeetingRoomId == meetingRoom.Id && p.IsActive && p.UserId != departedUserId);
-
-        var nextHost = activeParticipants.OrderBy(p => p.JoinedAt).FirstOrDefault();
-
-        // No active participants left: fall back to "no host", matching
-        // MeetingWebhookService.HandleParticipantLeft's existing null-out behavior.
-        meetingRoom.ActiveHostId = nextHost?.UserId;
+        meetingRoom.ActiveHostId = null;
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
-
-        if (nextHost != null)
-        {
-            await PublishGatewayCommandAsync("HostChanged", translationRoomId, new { NewHostUserId = nextHost.UserId.ToString() });
-        }
 
         return Result.Success(true);
     }
