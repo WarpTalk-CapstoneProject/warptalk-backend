@@ -442,10 +442,13 @@ public class TranscriptRedisConsumerService : BackgroundService
         var targetLang = values.GetValueOrDefault("target_lang", "unknown");
         var translatorModel = values.GetValueOrDefault("translator_model", "unknown");
 
-        // WT-277: same nullable rules as the STT path above — a missing/unparsable/sentinel value
-        // stores NULL instead of the old 1.0f default.
-        var confidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
-            values, TranscriptConsumerPollingPolicy.SttConfidenceField);
+        // WT-278: read "source_stt_confidence", NOT "confidence". The translator emits no quality
+        // score of its own; translation_worker copies the upstream STT segment's avg_logprob — a
+        // measurement of the *audio*, not of the translation. Persisting that under a field called
+        // "confidence" on a translation made it read as a translation quality signal, which it has
+        // never been. Nullable via WT-277's rules, so an absent field stores NULL rather than 1.0.
+        var sourceSttConfidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
+            values, TranscriptConsumerPollingPolicy.SourceSttConfidenceField);
 
         if (string.IsNullOrWhiteSpace(translatedText))
         {
@@ -492,7 +495,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                     TargetLanguage = targetLang,
                     TranslatedText = translatedText,
                     TranslatorModel = translatorModel,
-                    Confidence = confidence,
+                    SourceSttConfidence = sourceSttConfidence,
                     IsRetranslated = false,
                     Status = "done"
                 };

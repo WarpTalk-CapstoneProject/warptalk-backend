@@ -176,11 +176,11 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
                     LatencyMs = content.LatencyMs ?? 0
                 };
 
-                // WT-277: leave unset when unknown. This used to default to 1.0 — a
-                // maximum-confidence score invented here for a value nobody measured.
-                if (content.Confidence.HasValue)
+                // WT-277/WT-278: leave unset when unknown. This used to default to 1.0 — a
+                // maximum-confidence score, invented here, for a translation that was never scored.
+                if (content.SourceSttConfidence.HasValue)
                 {
-                    dto.Confidence = (double)content.Confidence.Value;
+                    dto.SourceSttConfidence = (double)content.SourceSttConfidence.Value;
                 }
 
                 return dto;

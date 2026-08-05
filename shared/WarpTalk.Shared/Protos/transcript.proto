@@ -23,8 +23,11 @@ message TranscriptTranslationDto {
   string target_language = 3;
   string translated_text = 4;
   string translator_model = 5;
-  // WT-277: `optional` so absent means unknown instead of a fabricated 1.0.
-  optional double confidence = 6;
+  // WT-278: the STT confidence of the SOURCE segment, not a translation quality score — the
+  // translator emits none. Renamed from "confidence" (same field number, wire-compatible) so no
+  // consumer can read it as translation quality. WT-277: `optional` so absent means unknown
+  // instead of a fabricated 1.0.
+  optional double source_stt_confidence = 6;
   bool is_retranslated = 7;
   int32 latency_ms = 8;
 }

@@ -25,7 +25,14 @@ public partial class TranslationContent
 
     public string TranslatorModel { get; set; } = null!;
 
-    public decimal? Confidence { get; set; }
+    /// <summary>
+    /// The STT confidence (avg_logprob) of the source segment this translation came from — NOT a
+    /// translation quality signal. WT-278: warptalk-ai's translator produces no score of its own,
+    /// so translation_worker copies the upstream STTResultMessage's value; under its old name
+    /// ("confidence") it read as if it measured the translation. Do not surface it as translation
+    /// quality anywhere. NULL means the source segment carried no usable confidence (WT-277).
+    /// </summary>
+    public decimal? SourceSttConfidence { get; set; }
 
     public bool IsRetranslated { get; set; }
 
