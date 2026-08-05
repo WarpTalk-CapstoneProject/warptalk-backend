@@ -185,6 +185,21 @@ internal static class GrpcBillingMapper
         };
     }
 
+    /// <summary>
+    /// Projects a subscription's plan onto the feature-access contract. Every quota and feature
+    /// field reads its own column on <see cref="Plan"/> — WT-262: these used to be hardcoded to
+    /// <c>true</c>, or derived from a <c>Tier</c> string comparison, which meant the columns on
+    /// <c>subscription.plans</c> were never actually consulted by anything.
+    ///
+    /// When <paramref name="plan"/> is null the plan row behind this subscription could not be
+    /// resolved, so no entitlement can be stated. That case falls back to
+    /// <see cref="SubscriptionConstants.PlanDefaults"/> — the documented contract minimums — and
+    /// to every feature OFF, rather than to the previous "grant everything". Fabricating
+    /// <c>true</c> here handed paid features to a workspace whose plan we failed to read, which is
+    /// the strictly worse failure of the two: an under-grant is visible and recoverable, an
+    /// over-grant is silent and unbilled. Callers are expected to key off
+    /// <c>has_active_subscription</c> before treating these numbers as a limit.
+    /// </summary>
     public static Protos.GetFeatureAccessResponse ToFeatureAccessResponse(this Subscription sub, Plan? plan)
     {
         bool hasActiveSubscription = sub.IsActive &&
@@ -195,15 +210,20 @@ internal static class GrpcBillingMapper
         {
             HasActiveSubscription = hasActiveSubscription,
             PlanTier = plan?.Tier ?? SubscriptionConstants.Tiers.NoActivePlan,
-            MaxParticipants = plan?.MaxParticipants ?? 2,
-            MaxLanguages = SubscriptionConstants.FeatureAccess.DefaultMaxLanguages,
-            VoiceCloneEnabled = true,
-            AiAssistantEnabled = true,
-            GlossaryEnabled = true,
-            DedicatedGpu = plan?.Tier == SubscriptionConstants.Tiers.Enterprise,
+            MaxParticipants = plan?.MaxParticipants ?? SubscriptionConstants.PlanDefaults.MaxParticipants,
+            MaxLanguages = plan?.MaxLanguages ?? SubscriptionConstants.PlanDefaults.MaxLanguages,
+            VoiceCloneEnabled = plan?.VoiceCloneEnabled ?? false,
+            AiAssistantEnabled = plan?.AiAssistantEnabled ?? false,
+            GlossaryEnabled = plan?.GlossaryEnabled ?? false,
+            DedicatedGpu = plan?.DedicatedGpu ?? false,
             FeaturesJson = plan?.Features ?? SubscriptionConstants.FeatureAccess.EmptyFeaturesJson,
-            AllowGlossary = true,
-            AllowAcl = plan?.Tier == SubscriptionConstants.Tiers.Enterprise
+            AllowGlossary = plan?.GlossaryEnabled ?? false,
+
+            // allow_acl has no backing column on subscription.plans. It is mirrored from
+            // ai_assistant_enabled because the assistant is the only ACL-scoped feature the plan
+            // models today. That is a stand-in, not a real entitlement — adding the column (or
+            // dropping the proto field) is tracked separately; it is deliberately NOT invented here.
+            AllowAcl = plan?.AiAssistantEnabled ?? false
         };
     }
 }

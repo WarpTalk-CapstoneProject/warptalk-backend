@@ -212,7 +212,7 @@ public class PlanService : IPlanService
             (request.InvoiceTermsDays <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceTermsInvalid),
             (request.InvoiceGraceHours <= 0, ApiMessageConstants.ValidationMessages.PlanInvoiceGraceInvalid),
             (request.MaxParticipants < 2, ApiMessageConstants.ValidationMessages.PlanMaxParticipantsInvalid),
-            (request.MaxLanguages < 1 || request.MaxLanguages > SubscriptionConstants.FeatureAccess.DefaultMaxLanguages, ApiMessageConstants.ValidationMessages.PlanMaxLanguagesInvalid),
+            (request.MaxLanguages < 1 || request.MaxLanguages > SubscriptionConstants.PlanDefaults.MaxLanguagesCeiling, ApiMessageConstants.ValidationMessages.PlanMaxLanguagesInvalid),
             (request.SortOrder < 0, ApiMessageConstants.ValidationMessages.PlanSortOrderInvalid),
             (isInvalidFeatures, ApiMessageConstants.ValidationMessages.PlanFeaturesInvalid)
         };
