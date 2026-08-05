@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 using StackExchange.Redis;
 using WarpTalk.AssistantService.Application.Interfaces;
 
-namespace WarpTalk.AssistantService.Infrastructure.Services;
+namespace WarpTalk.AssistantService.Infrastructure.Messaging;
 
 /// <summary>
 /// Publishes to the "assistant:chat_requests" Redis Stream that ai_assistant_worker's
