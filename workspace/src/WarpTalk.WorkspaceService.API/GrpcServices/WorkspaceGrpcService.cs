@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
 using WarpTalk.Shared.Protos;
@@ -11,18 +12,30 @@ namespace WarpTalk.WorkspaceService.API.GrpcServices;
 
 public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceBase
 {
+    /// <summary>
+    /// WT-262. Below this many target languages no plan can possibly forbid the request — the
+    /// smallest max_languages an admin may store is 1 (PlanService validation) — so the billing
+    /// round-trip is skipped entirely. This is what keeps the fail-closed branch below from turning
+    /// a billing outage into "nobody can start a meeting": ordinary single-language creation never
+    /// touches BillingService at all.
+    /// </summary>
+    private const int LanguageCountAlwaysWithinPlan = 1;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
 
     public WorkspaceGrpcService(
         IUnitOfWork unitOfWork,
         IAuthIdentityClient authIdentity,
-        ITranslationRoomClient translationRoomClient)
+        ITranslationRoomClient translationRoomClient,
+        IBillingSubscriptionClient billingSubscriptionClient)
     {
         _unitOfWork = unitOfWork;
         _authIdentity = authIdentity;
         _translationRoomClient = translationRoomClient;
+        _billingSubscriptionClient = billingSubscriptionClient;
     }
 
     public override async Task<GetWorkspaceMemberResponse> GetWorkspaceMemberDetails(
@@ -166,11 +179,80 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             };
         }
 
+        var planLanguageCheck = await ValidatePlanLanguageQuotaAsync(workspaceId, request.TargetLanguages?.Count ?? 0, ct);
+        if (planLanguageCheck != null)
+        {
+            return planLanguageCheck;
+        }
+
         return new ValidateMeetingCreationResponse
         {
             IsAllowed = true,
             ErrorMessage = ""
         };
+    }
+
+    /// <summary>
+    /// WT-262: enforces the subscription plan's <c>max_languages</c>. Returns null when the request
+    /// clears the quota, or a denial response when it does not.
+    ///
+    /// FAIL-CLOSED, deliberately, and this is the one contentious call in WT-262. It adds a second
+    /// remote dependency (BillingService) behind a gate whose first dependency already fails closed:
+    /// IWorkspaceMeetingPolicy is documented fail-closed and WorkspaceMeetingPolicyGrpcClient turns
+    /// any transport exception into ServiceUnavailable, on purpose, because this RPC *is* the
+    /// permission gate and an outage that let creations through would reopen WT-249. Answering
+    /// "allowed" here on a billing outage would make one half of this response trustworthy and the
+    /// other half not, which is not a contract a caller can reason about. The quota being protected
+    /// also has no after-the-fact remedy: once a room is created with five languages, nothing
+    /// revokes them, so a fail-open window is simply free paid capacity.
+    ///
+    /// Note that BillingSubscriptionGrpcClient's other method fails OPEN. That is not an
+    /// inconsistency being ignored — it is the difference between a check that widens (the trial
+    /// invite cap) and one that narrows. See IBillingSubscriptionClient.
+    ///
+    /// The cost of failing closed is bounded on purpose rather than accepted wholesale: billing is
+    /// consulted ONLY when the request carries more than one target language, so a billing outage
+    /// degrades multi-language meeting creation and leaves every ordinary meeting untouched.
+    /// </summary>
+    private async Task<ValidateMeetingCreationResponse?> ValidatePlanLanguageQuotaAsync(
+        Guid workspaceId,
+        int requestedLanguageCount,
+        CancellationToken ct)
+    {
+        if (requestedLanguageCount <= LanguageCountAlwaysWithinPlan)
+        {
+            return null;
+        }
+
+        var featureAccess = await _billingSubscriptionClient.GetWorkspaceFeatureAccessAsync(workspaceId, ct);
+
+        if (featureAccess == null)
+        {
+            return new ValidateMeetingCreationResponse
+            {
+                IsAllowed = false,
+                ErrorMessage = "Could not verify your plan's language limit right now. Please try again in a moment, or start the meeting with a single target language."
+            };
+        }
+
+        // No live plan means there is no max_languages in force to enforce. The workspace-level
+        // AllowedTargetLanguages policy checked above is what governs those workspaces, exactly as
+        // it did before WT-262 — this must not become an accidental "no subscription, no meetings".
+        if (!featureAccess.HasActiveSubscription)
+        {
+            return null;
+        }
+
+        if (featureAccess.MaxLanguages > 0 && requestedLanguageCount > featureAccess.MaxLanguages)
+        {
+            return new ValidateMeetingCreationResponse
+            {
+                IsAllowed = false,
+                ErrorMessage = $"Your plan allows {featureAccess.MaxLanguages} target language(s) per meeting; {requestedLanguageCount} were requested."
+            };
+        }
+
+        return null;
     }
 
     public override async Task<GetWorkspaceSettingsResponse> GetWorkspaceSettings(

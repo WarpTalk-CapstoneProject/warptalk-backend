@@ -65,7 +65,20 @@ public static class SubscriptionConstants
         public const int InvoiceTermsDays = 15;
         public const int InvoiceGraceHours = 360;
         public const int MaxParticipants = 2;
+
+        /// <summary>Value a plan row carries when nobody stated one. Mirrors the
+        /// <c>subscription.plans.max_languages</c> column default (2) and the
+        /// <see cref="Entities.Plan.MaxLanguages"/> property initializer — changing this changes
+        /// what a newly created plan gets, so it must stay in step with the SQL default.</summary>
         public const int MaxLanguages = 2;
+
+        /// <summary>Highest value an admin may store in <c>max_languages</c>. WT-262: this is the
+        /// real meaning of the former <c>FeatureAccess.DefaultMaxLanguages</c> — it was named a
+        /// "default" but was only ever used as the validation ceiling in PlanService, and
+        /// separately as a fabricated response value in the gRPC mapper. The mapper now reads the
+        /// column, so the ceiling is the only surviving use and it lives here, next to the default
+        /// it bounds.</summary>
+        public const int MaxLanguagesCeiling = 3;
     }
 
     public static class RateCardDefaults
@@ -94,12 +107,15 @@ public static class SubscriptionConstants
         public const int InvoiceTermsDays = 15;
         public const int InvoiceGraceHours = 360;
         public const int MaxParticipants = 500;
-        public const int MaxLanguages = 3;
+
+        /// <summary>The seeded Enterprise plan buys the maximum the platform allows, so this is
+        /// deliberately an alias of the ceiling rather than an independent 3. Production's
+        /// Enterprise row has max_languages = 3 and this keeps it there.</summary>
+        public const int MaxLanguages = PlanDefaults.MaxLanguagesCeiling;
     }
 
     public static class FeatureAccess
     {
-        public const int DefaultMaxLanguages = 3;
         public const string EmptyFeaturesJson = "{}";
         public const string GoogleMeetIntegration = "google_meet";
         public const string EnterpriseFeaturesJson =

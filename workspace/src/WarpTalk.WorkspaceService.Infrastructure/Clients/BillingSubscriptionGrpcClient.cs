@@ -2,6 +2,7 @@ using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared.Protos;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Application.Models;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Clients;
 
@@ -39,6 +40,31 @@ public sealed class BillingSubscriptionGrpcClient : IBillingSubscriptionClient
         {
             _logger.LogWarning(ex, "Billing subscription lookup failed for workspace {WorkspaceId}; invite limit will not apply.", workspaceId);
             return false;
+        }
+    }
+
+    public async Task<WorkspaceFeatureAccess?> GetWorkspaceFeatureAccessAsync(Guid workspaceId, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetWorkspaceFeatureAccessAsync(
+                new GetFeatureAccessRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            return new WorkspaceFeatureAccess(response.HasActiveSubscription, response.MaxLanguages);
+        }
+        catch (Exception ex)
+        {
+            // Returns null, NOT a permissive default. The rest of this class fails OPEN because it
+            // only relaxes limits, but this feeds a quota gate, so swallowing the outage into
+            // "unlimited" would be exactly the bypass the gate exists to close. The caller in
+            // WorkspaceGrpcService.ValidateMeetingCreation owns the fail-open/fail-closed decision
+            // and can only make it if it can tell "unknown" apart from an answer.
+            _logger.LogError(
+                ex,
+                "Billing feature-access lookup failed for workspace {WorkspaceId}; plan quotas cannot be evaluated.",
+                workspaceId);
+            return null;
         }
     }
 }

@@ -410,6 +410,35 @@ public class TranslationRoomService : ITranslationRoomService
 
             var isHost = translationRoom.HostId == userId;
 
+            // WT-262: enforce the room's own capacity. MaxParticipants is stamped at creation from
+            // TranslationRoomTypePolicy but was never read by anything, so a VIRTUAL_APPOINTMENT
+            // capped at 2 accepted an unbounded roster.
+            //
+            // Three carve-outs, in order:
+            //  - MaxParticipants <= 0 means UNLIMITED, matching how the workspace active-room cap
+            //    treats "> 0" in WorkspaceGrpcService.ValidateMeetingCreation. A room that never
+            //    got a sane value stored must not become unjoinable.
+            //  - The host is never turned away from their own room. They are the one person who
+            //    cannot route around a full room, and locking them out strands every guest inside.
+            //  - Somebody already holding a seat is re-entering, not taking a new one, so a
+            //    reconnect or a repeated join from a CONNECTED participant is never counted twice.
+            //    A DISCONNECTED/LEFT participant released their seat and does re-acquire one here.
+            if (translationRoom.MaxParticipants > 0 &&
+                !isHost &&
+                !TranslationRoomParticipantStatuses.HoldsSeat(participant?.Status))
+            {
+                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct);
+                if (seatsTaken >= translationRoom.MaxParticipants)
+                {
+                    // Conflict, not Forbidden or InvalidState: the caller is permitted and the room
+                    // is in a perfectly valid state — the request just collides with how many people
+                    // are in it right now, and it succeeds unchanged once a seat frees up.
+                    return Result.Failure<JoinTranslationRoomResponse>(
+                        string.Format(TranslationRoomConstants.ErrorRoomAtCapacity, translationRoom.MaxParticipants),
+                        ErrorCodes.Conflict);
+                }
+            }
+
             if (participant == null)
             {
                 participant = request.ToParticipantEntity(
