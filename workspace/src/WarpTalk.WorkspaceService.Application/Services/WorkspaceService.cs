@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
+using WarpTalk.WorkspaceService.Application.Entitlements;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -32,18 +34,27 @@ public class WorkspaceService : IWorkspaceService
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
 
+    /// <summary>
+    /// WT-263: used only to PUSH the owner's self-service entitlement settings to the resolver.
+    /// Optional so existing construction sites keep working; a null client simply means the
+    /// workspace's settings JSON stays the only record, which is the pre-WT-263 behaviour.
+    /// </summary>
+    private readonly IBillingSubscriptionClient? _billingSubscriptionClient;
+
     public WorkspaceService(
         IUnitOfWork unitOfWork,
         IWorkspaceCacheService workspaceCache,
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
-        IWorkspaceEventPublisher eventPublisher)
+        IWorkspaceEventPublisher eventPublisher,
+        IBillingSubscriptionClient? billingSubscriptionClient = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
+        _billingSubscriptionClient = billingSubscriptionClient;
     }
 
 
@@ -392,6 +403,31 @@ public class WorkspaceService : IWorkspaceService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-263: max_active_rooms is an entitlement, so the owner's chosen value has to reach
+            // the resolver — it is the only code that knows the plan ceiling and therefore the only
+            // code that can enforce "a workspace may tighten but never loosen". Billing rejects a
+            // loosening value and the settings save is refused with billing's own reason.
+            //
+            // The JSON copy above is still written. It is what every existing workspace's number
+            // lives in, and it remains the cold-start fallback until a snapshot arrives.
+            if (_billingSubscriptionClient is not null && settings.MaxActiveRooms > 0)
+            {
+                var rejection = await _billingSubscriptionClient.ApplyWorkspaceEntitlementOverridesAsync(
+                    workspaceId,
+                    new Dictionary<string, string>
+                    {
+                        [EntitlementKeys.MaxActiveRooms] = settings.MaxActiveRooms.ToString(CultureInfo.InvariantCulture)
+                    },
+                    userId,
+                    ct);
+
+                if (rejection != null)
+                {
+                    return Result.Failure(rejection, ErrorCodes.ValidationError);
+                }
+            }
+
             return Result.Success();
         }
         catch (Exception ex)

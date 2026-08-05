@@ -21,6 +21,7 @@ public class UnitOfWork : IUnitOfWork
     private IWorkspaceDocumentAuditRepository? _workspaceDocumentAuditRepository;
     private IWorkspaceVerifiedDomainRepository? _workspaceVerifiedDomainRepository;
     private IWorkspaceOutboxMessageRepository? _workspaceOutboxMessageRepository;
+    private IWorkspaceEntitlementSnapshotRepository? _workspaceEntitlementSnapshotRepository;
 
     public UnitOfWork(WorkspaceDbContext context)
     {
@@ -50,6 +51,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IWorkspaceOutboxMessageRepository WorkspaceOutboxMessageRepository =>
         _workspaceOutboxMessageRepository ??= new WorkspaceOutboxMessageRepository(_context);
+
+    public IWorkspaceEntitlementSnapshotRepository WorkspaceEntitlementSnapshotRepository =>
+        _workspaceEntitlementSnapshotRepository ??= new WorkspaceEntitlementSnapshotRepository(_context);
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _context.SaveChangesAsync(ct);
