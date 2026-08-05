@@ -1,7 +1,8 @@
 using NSubstitute;
 using WarpTalk.AuthService.API.GrpcServices;
-using WarpTalk.AuthService.Domain.Entities;
-using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.AuthService.Application.DTOs;
+using WarpTalk.AuthService.Application.Interfaces;
+using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 
 namespace WarpTalk.AuthService.Tests;
@@ -12,19 +13,13 @@ public class UserServiceGrpcTests
     public async Task GetUserSettings_ReturnsAuthoritativeLanguageDefaults()
     {
         var userId = Guid.NewGuid();
-        var unitOfWork = Substitute.For<IUnitOfWork>();
-        var settingsRepository = Substitute.For<IUserSettingRepository>();
-        unitOfWork.UserSettingRepository.Returns(settingsRepository);
-        settingsRepository
-            .GetByUserIdAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(new UserSetting
-            {
-                UserId = userId,
-                DefaultSpeakLanguage = "vi-VN",
-                DefaultListenLanguage = "en-US"
-            });
+        var userDirectory = Substitute.For<IUserDirectoryService>();
+        userDirectory
+            .GetLanguageDefaultsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success<UserLanguageDefaultsDto?>(
+                new UserLanguageDefaultsDto("vi-VN", "en-US")));
 
-        var service = new UserServiceGrpc(unitOfWork);
+        var service = new UserServiceGrpc(userDirectory);
 
         var response = await service.GetUserSettings(
             new GetUserRequest { Id = userId.ToString() },
@@ -33,5 +28,23 @@ public class UserServiceGrpcTests
         Assert.True(response.Found);
         Assert.Equal("vi-VN", response.DefaultSpeakLanguage);
         Assert.Equal("en-US", response.DefaultListenLanguage);
+    }
+
+    [Fact]
+    public async Task GetUserSettings_ReturnsNotFound_WhenUserHasNoSettings()
+    {
+        var userId = Guid.NewGuid();
+        var userDirectory = Substitute.For<IUserDirectoryService>();
+        userDirectory
+            .GetLanguageDefaultsAsync(userId, Arg.Any<CancellationToken>())
+            .Returns(Result.Success<UserLanguageDefaultsDto?>(null));
+
+        var service = new UserServiceGrpc(userDirectory);
+
+        var response = await service.GetUserSettings(
+            new GetUserRequest { Id = userId.ToString() },
+            null!);
+
+        Assert.False(response.Found);
     }
 }
