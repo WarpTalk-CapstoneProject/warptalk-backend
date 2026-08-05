@@ -77,16 +77,10 @@ public class GrpcFeatureAccessMapperTests
         response.MaxLanguages.Should().Be(SubscriptionConstants.PlanDefaults.MaxLanguagesCeiling);
     }
 
-    [Fact]
-    public void AllowAcl_MirrorsAiAssistantEnabled_BecauseNoAclColumnExists()
-    {
-        var plan = NonDefaultPlan();
-        plan.AiAssistantEnabled = true;
-
-        var response = ActiveSubscription().ToFeatureAccessResponse(plan);
-
-        response.AllowAcl.Should().BeTrue();
-    }
+    // WT-263: AllowAcl_MirrorsAiAssistantEnabled_BecauseNoAclColumnExists is gone with the field.
+    // allow_acl had no backing column and was mirrored from ai_assistant_enabled as a stand-in; the
+    // product decision was to drop it rather than add a column. Field 11 is reserved in
+    // billing.proto so the number cannot be silently reused.
 
     [Fact]
     public void UnresolvablePlan_DeniesFeaturesInsteadOfGrantingThemAll()
@@ -101,7 +95,6 @@ public class GrpcFeatureAccessMapperTests
         response.GlossaryEnabled.Should().BeFalse();
         response.DedicatedGpu.Should().BeFalse();
         response.AllowGlossary.Should().BeFalse();
-        response.AllowAcl.Should().BeFalse();
         response.FeaturesJson.Should().Be(SubscriptionConstants.FeatureAccess.EmptyFeaturesJson);
     }
 

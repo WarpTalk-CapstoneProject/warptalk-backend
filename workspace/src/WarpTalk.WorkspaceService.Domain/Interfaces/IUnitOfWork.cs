@@ -16,6 +16,9 @@ public interface IUnitOfWork : IDisposable
     IWorkspaceVerifiedDomainRepository WorkspaceVerifiedDomainRepository { get; }
     IWorkspaceOutboxMessageRepository WorkspaceOutboxMessageRepository { get; }
 
+    /// <summary>WT-263: the local entitlement snapshot enforcement reads instead of calling billing.</summary>
+    IWorkspaceEntitlementSnapshotRepository WorkspaceEntitlementSnapshotRepository { get; }
+
     // WorkspaceAdminAction is deliberately absent: it is the admin audit log, reached only
     // through the append-only IAdminAuditLogRepository (WT-210). Exposing it as a general
     // repository here handed every IUnitOfWork holder an Update()/Remove() on audit history.

@@ -43,26 +43,47 @@ public sealed class BillingSubscriptionGrpcClient : IBillingSubscriptionClient
         }
     }
 
-    public async Task<WorkspaceFeatureAccess?> GetWorkspaceFeatureAccessAsync(Guid workspaceId, CancellationToken ct = default)
+    public async Task<string?> ApplyWorkspaceEntitlementOverridesAsync(
+        Guid workspaceId,
+        IReadOnlyDictionary<string, string> overrides,
+        Guid setByUserId,
+        CancellationToken ct = default)
     {
+        if (overrides.Count == 0)
+        {
+            return null;
+        }
+
         try
         {
-            var response = await _client.GetWorkspaceFeatureAccessAsync(
-                new GetFeatureAccessRequest { WorkspaceId = workspaceId.ToString() },
-                cancellationToken: ct);
+            var request = new ApplyWorkspaceEntitlementOverridesRequest
+            {
+                WorkspaceId = workspaceId.ToString(),
+                SetByUserId = setByUserId.ToString()
+            };
 
-            return new WorkspaceFeatureAccess(response.HasActiveSubscription, response.MaxLanguages);
+            foreach (var (key, value) in overrides)
+            {
+                request.Overrides.Add(new WorkspaceEntitlementOverrideItem
+                {
+                    EntitlementKey = key,
+                    Value = value
+                });
+            }
+
+            var response = await _client.ApplyWorkspaceEntitlementOverridesAsync(request, cancellationToken: ct);
+            return response.Accepted ? null : response.ErrorMessage;
         }
         catch (Exception ex)
         {
-            // Returns null, NOT a permissive default. The rest of this class fails OPEN because it
-            // only relaxes limits, but this feeds a quota gate, so swallowing the outage into
-            // "unlimited" would be exactly the bypass the gate exists to close. The caller in
-            // WorkspaceGrpcService.ValidateMeetingCreation owns the fail-open/fail-closed decision
-            // and can only make it if it can tell "unknown" apart from an answer.
+            // Returns null (accepted) on an outage, and that is the correct direction HERE even
+            // though the WT-262 read path could not do the same. This is a write, not a gate: the
+            // owner's settings save must not fail because billing is down, and the value they chose
+            // is a TIGHTENING — the workspace keeps the looser limit it already had until the push
+            // succeeds, so an outage cannot grant anybody anything.
             _logger.LogError(
                 ex,
-                "Billing feature-access lookup failed for workspace {WorkspaceId}; plan quotas cannot be evaluated.",
+                "Failed to push workspace entitlement overrides for workspace {WorkspaceId}; the previous entitlements remain in force.",
                 workspaceId);
             return null;
         }

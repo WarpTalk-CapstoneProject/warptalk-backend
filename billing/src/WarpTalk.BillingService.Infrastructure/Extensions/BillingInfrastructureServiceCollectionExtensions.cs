@@ -84,6 +84,15 @@ public static class BillingInfrastructureServiceCollectionExtensions
         services.AddScoped<IStripeSdkClient, StripeSdkClient>();
         services.AddScoped<IOutboxClaimStore, OutboxClaimStore>();
 
+        // WT-263: the entitlement layer. The resolver is the single place entitlements are computed;
+        // the publisher is the single place they leave this service.
+        services.AddScoped<
+            WarpTalk.BillingService.Application.Entitlements.IEntitlementResolver,
+            WarpTalk.BillingService.Application.Entitlements.EntitlementResolver>();
+        services.AddScoped<
+            WarpTalk.BillingService.Application.Entitlements.IEntitlementChangePublisher,
+            WarpTalk.BillingService.Application.Entitlements.EntitlementChangePublisher>();
+
         return services;
     }
 

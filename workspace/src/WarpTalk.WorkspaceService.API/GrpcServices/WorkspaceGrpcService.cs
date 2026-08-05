@@ -7,35 +7,29 @@ using WarpTalk.Shared.Protos;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Helpers;
+using WarpTalk.WorkspaceService.Application.Entitlements;
 
 namespace WarpTalk.WorkspaceService.API.GrpcServices;
 
 public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceBase
 {
-    /// <summary>
-    /// WT-262. Below this many target languages no plan can possibly forbid the request — the
-    /// smallest max_languages an admin may store is 1 (PlanService validation) — so the billing
-    /// round-trip is skipped entirely. This is what keeps the fail-closed branch below from turning
-    /// a billing outage into "nobody can start a meeting": ordinary single-language creation never
-    /// touches BillingService at all.
-    /// </summary>
-    private const int LanguageCountAlwaysWithinPlan = 1;
+    // WT-263: LanguageCountAlwaysWithinPlan is gone with the call it protected. It existed to bound
+    // the blast radius of a fail-closed billing round-trip by skipping the round-trip for
+    // single-language meetings. There is no round-trip left to skip, so every request is now checked
+    // against the same local snapshot and the carve-out has nothing to bound.
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
-    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
 
     public WorkspaceGrpcService(
         IUnitOfWork unitOfWork,
         IAuthIdentityClient authIdentity,
-        ITranslationRoomClient translationRoomClient,
-        IBillingSubscriptionClient billingSubscriptionClient)
+        ITranslationRoomClient translationRoomClient)
     {
         _unitOfWork = unitOfWork;
         _authIdentity = authIdentity;
         _translationRoomClient = translationRoomClient;
-        _billingSubscriptionClient = billingSubscriptionClient;
     }
 
     public override async Task<GetWorkspaceMemberResponse> GetWorkspaceMemberDetails(
@@ -169,17 +163,29 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             }
         }
 
-        var activeRoomCount = await _translationRoomClient.GetActiveRoomCountAsync(workspaceId, ct);
-        if (config.MaxActiveRooms > 0 && activeRoomCount >= config.MaxActiveRooms)
+        // WT-263: ONE local read serves every plan-derived limit below. No network call is made from
+        // here on, which is why a BillingService outage can no longer affect meeting creation.
+        var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, ct);
+        var entitlements = snapshot == null
+            ? WorkspaceEntitlements.Unknown
+            : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+
+        var activeRoomLimit = ResolveMaxActiveRooms(entitlements, config);
+        if (activeRoomLimit > 0)
         {
-            return new ValidateMeetingCreationResponse
+            var activeRoomCount = await _translationRoomClient.GetActiveRoomCountAsync(workspaceId, ct);
+            if (activeRoomCount >= activeRoomLimit)
             {
-                IsAllowed = false,
-                ErrorMessage = $"Workspace active room limit ({config.MaxActiveRooms}) has been reached."
-            };
+                return new ValidateMeetingCreationResponse
+                {
+                    IsAllowed = false,
+                    ErrorMessage = $"Workspace active room limit ({activeRoomLimit}) has been reached."
+                };
+            }
         }
 
-        var planLanguageCheck = await ValidatePlanLanguageQuotaAsync(workspaceId, request.TargetLanguages?.Count ?? 0, ct);
+        var planLanguageCheck = ValidatePlanLanguageQuota(entitlements, request.TargetLanguages?.Count ?? 0);
         if (planLanguageCheck != null)
         {
             return planLanguageCheck;
@@ -193,66 +199,75 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
     }
 
     /// <summary>
-    /// WT-262: enforces the subscription plan's <c>max_languages</c>. Returns null when the request
-    /// clears the quota, or a denial response when it does not.
+    /// WT-263: enforces <c>max_languages</c> from the LOCAL entitlement snapshot. Returns null when
+    /// the request clears the quota, or a denial when it does not.
     ///
-    /// FAIL-CLOSED, deliberately, and this is the one contentious call in WT-262. It adds a second
-    /// remote dependency (BillingService) behind a gate whose first dependency already fails closed:
-    /// IWorkspaceMeetingPolicy is documented fail-closed and WorkspaceMeetingPolicyGrpcClient turns
-    /// any transport exception into ServiceUnavailable, on purpose, because this RPC *is* the
-    /// permission gate and an outage that let creations through would reopen WT-249. Answering
-    /// "allowed" here on a billing outage would make one half of this response trustworthy and the
-    /// other half not, which is not a contract a caller can reason about. The quota being protected
-    /// also has no after-the-fact remedy: once a room is created with five languages, nothing
-    /// revokes them, so a fail-open window is simply free paid capacity.
+    /// Synchronous and non-async, because there is nothing left to await. WT-262 phase 1 called
+    /// BillingService here and had to fail closed on an outage — it could not tell "unknown" from
+    /// "allowed", and a quota with no after-the-fact remedy cannot be handed out on a guess. That
+    /// call, its fail-closed branch, and the single-target-language carve-out that bounded its blast
+    /// radius are all deleted: the value is replicated ahead of time, so the question is answered
+    /// from this service's own database and BillingService's availability never enters into it.
     ///
-    /// Note that BillingSubscriptionGrpcClient's other method fails OPEN. That is not an
-    /// inconsistency being ignored — it is the difference between a check that widens (the trial
-    /// invite cap) and one that narrows. See IBillingSubscriptionClient.
+    /// What is NOT changed: the workspace-permission gate above still fails closed (WT-249). That
+    /// one is a permission decision with no local replica, and it must stay that way.
     ///
-    /// The cost of failing closed is bounded on purpose rather than accepted wholesale: billing is
-    /// consulted ONLY when the request carries more than one target language, so a billing outage
-    /// degrades multi-language meeting creation and leaves every ordinary meeting untouched.
+    /// A null limit means the quota is not in force — cold start, or no live subscription. Neither
+    /// is a denial; the workspace's own AllowedTargetLanguages policy governs those cases, exactly
+    /// as it did before WT-262. See WorkspaceEntitlements for the cold-start reasoning.
     /// </summary>
-    private async Task<ValidateMeetingCreationResponse?> ValidatePlanLanguageQuotaAsync(
-        Guid workspaceId,
-        int requestedLanguageCount,
-        CancellationToken ct)
+    private static ValidateMeetingCreationResponse? ValidatePlanLanguageQuota(
+        WorkspaceEntitlements entitlements,
+        int requestedLanguageCount)
     {
-        if (requestedLanguageCount <= LanguageCountAlwaysWithinPlan)
+        if (requestedLanguageCount <= 0)
         {
             return null;
         }
 
-        var featureAccess = await _billingSubscriptionClient.GetWorkspaceFeatureAccessAsync(workspaceId, ct);
-
-        if (featureAccess == null)
-        {
-            return new ValidateMeetingCreationResponse
-            {
-                IsAllowed = false,
-                ErrorMessage = "Could not verify your plan's language limit right now. Please try again in a moment, or start the meeting with a single target language."
-            };
-        }
-
-        // No live plan means there is no max_languages in force to enforce. The workspace-level
-        // AllowedTargetLanguages policy checked above is what governs those workspaces, exactly as
-        // it did before WT-262 — this must not become an accidental "no subscription, no meetings".
-        if (!featureAccess.HasActiveSubscription)
+        var maxLanguages = entitlements.Limit(EntitlementKeys.MaxLanguages);
+        if (maxLanguages is null or <= 0)
         {
             return null;
         }
 
-        if (featureAccess.MaxLanguages > 0 && requestedLanguageCount > featureAccess.MaxLanguages)
+        if (requestedLanguageCount > maxLanguages.Value)
         {
             return new ValidateMeetingCreationResponse
             {
                 IsAllowed = false,
-                ErrorMessage = $"Your plan allows {featureAccess.MaxLanguages} target language(s) per meeting; {requestedLanguageCount} were requested."
+                ErrorMessage = $"Your plan allows {maxLanguages.Value} target language(s) per meeting; {requestedLanguageCount} were requested."
             };
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// WT-263: <c>max_active_rooms</c> is now an ordinary entitlement key — no sentinel, no special
+    /// case.
+    ///
+    /// The old design called for a <c>-1</c> "inherit from plan" sentinel in the settings JSON.
+    /// Provenance replaces it: an owner-set value arrives resolved with source
+    /// <c>workspace_override</c>, an unset one resolves from the plan, and neither the caller nor
+    /// the storage needs a magic number to tell them apart. The resolver has already clamped an
+    /// owner's value to the plan ceiling, so whatever arrives here is enforceable as-is.
+    ///
+    /// The settings-JSON value remains the fallback for cold start only. It is where every existing
+    /// workspace's number lives today, and dropping straight to it keeps behaviour identical for a
+    /// workspace whose snapshot has not arrived — the same rule the pre-WT-263 code applied.
+    /// </summary>
+    private static int ResolveMaxActiveRooms(
+        WorkspaceEntitlements entitlements,
+        Domain.Settings.WorkspaceConfiguration config)
+    {
+        var resolved = entitlements.SelfServiceLimit(EntitlementKeys.MaxActiveRooms);
+        if (resolved.HasValue)
+        {
+            return (int)Math.Clamp(resolved.Value, int.MinValue, int.MaxValue);
+        }
+
+        return config.MaxActiveRooms;
     }
 
     public override async Task<GetWorkspaceSettingsResponse> GetWorkspaceSettings(

@@ -28,6 +28,17 @@ service BillingService {
   // Check feature access limits for a workspace
   rpc GetWorkspaceFeatureAccess (GetFeatureAccessRequest) returns (GetFeatureAccessResponse);
 
+  // WT-263: store a workspace's own (tightening-only) entitlement setting.
+  //
+  // The workspace owns the SCREEN; billing owns the DECISION. The self-service value has to reach
+  // the EntitlementResolver, because "a workspace may tighten but never loosen" can only be
+  // enforced where the plan ceiling is known — enforcing it in the service that owns the setting
+  // means it holds only for callers that go through that service.
+  //
+  // This is a WRITE-path call, never on an enforcement path: rejecting it costs an owner a settings
+  // save, not a meeting.
+  rpc ApplyWorkspaceEntitlementOverrides (ApplyWorkspaceEntitlementOverridesRequest) returns (ApplyWorkspaceEntitlementOverridesResponse);
+
   // Cancel an active subscription
   rpc CancelSubscription (CancelSubscriptionRequest) returns (SubscriptionResponse);
 
@@ -205,7 +216,39 @@ message GetFeatureAccessRequest {
   string workspace_id = 1;
 }
 
+// WT-263. Values are sent as strings so one message carries both numeric limits and boolean
+// capabilities; billing parses each against the key's declared shape and rejects what it cannot
+// read rather than guessing.
+message WorkspaceEntitlementOverrideItem {
+  string entitlement_key = 1;
+  string value           = 2;
+}
+
+message ApplyWorkspaceEntitlementOverridesRequest {
+  string workspace_id                                = 1;
+  repeated WorkspaceEntitlementOverrideItem overrides = 2;
+  string set_by_user_id                              = 3;
+}
+
+message ApplyWorkspaceEntitlementOverridesResponse {
+  bool   accepted      = 1;
+  // Populated when a requested value would LOOSEN a limit beyond what the plan allows. The setting
+  // is rejected outright rather than silently clamped, so the owner is told their workspace cannot
+  // grant itself something it has not bought.
+  string error_message = 2;
+}
+
 message GetFeatureAccessResponse {
+  // WT-263: allow_acl (field 11) removed. It never had a backing column on
+  // subscription.plans; WT-262 left it mirroring ai_assistant_enabled as a documented
+  // stand-in. The decision is to drop the field rather than add a column.
+  //
+  // The number is RESERVED, not merely deleted: a future field that reused 11 would be
+  // decoded by any still-running older peer as the old allow_acl bool. The RPC having no
+  // callers today does not help — the wire number is what a stale binary misreads.
+  reserved 11;
+  reserved "allow_acl";
+
   bool   has_active_subscription = 1;
   string plan_tier              = 2;
   int32  max_participants       = 3;
@@ -216,7 +259,6 @@ message GetFeatureAccessResponse {
   bool   dedicated_gpu          = 8;
   string features_json          = 9;
   bool   allow_glossary         = 10;
-  bool   allow_acl              = 11;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -236,6 +278,12 @@ message GetPlanByIdRequest {
 }
 
 message PlanResponse {
+  // WT-263: allow_acl (field 18) removed for the same reason as in
+  // GetFeatureAccessResponse — no backing column, and nothing ever populated it here (the
+  // mapper only ever set the feature-access copy). Number reserved, same rationale.
+  reserved 18;
+  reserved "allow_acl";
+
   string plan_id                = 1;
   string name                   = 2;
   string slug                   = 3;
@@ -253,7 +301,6 @@ message PlanResponse {
   string features               = 15; // JSON blob
   int32  sort_order             = 16;
   bool   allow_glossary         = 17;
-  bool   allow_acl              = 18;
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -132,6 +132,9 @@ public static class DependencyInjection
         services.AddHostedService<DocumentEmbeddingIndexResultConsumerService>();
         services.AddHostedService<MeetingStartedEventConsumer>();
         services.AddHostedService<WorkspaceOutboxWorker>();
+        // WT-263: replicates BillingService's resolved entitlements into the local snapshot table
+        // that meeting-creation enforcement reads. Guarded — see the class comment.
+        services.AddHostedService<EntitlementsChangedConsumer>();
 
         // 7. Inter-Service gRPC Clients
         services.AddGrpcClient<UserService.UserServiceClient>(o =>

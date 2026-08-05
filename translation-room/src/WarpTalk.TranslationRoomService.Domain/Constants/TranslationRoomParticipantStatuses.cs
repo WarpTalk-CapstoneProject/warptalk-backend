@@ -26,11 +26,19 @@ public static class TranslationRoomParticipantStatuses
     /// seats. Only CONNECTED does — the same definition of "in the room" the roster already reports
     /// as <c>IsActive</c> over gRPC.
     ///
-    /// Everything else is deliberately excluded: WAITING is still in the lobby and has not been
-    /// admitted; INVITED has not shown up; DISCONNECTED and LEFT released their seat when they
-    /// dropped, so they must re-acquire one on return like anybody else; KICKED and REJECTED are
-    /// terminal. Counting any of those would let a stale row lock a live user out of a room that
-    /// has room for them, which is the failure mode this cap must not introduce.
+    /// RATIFIED PRODUCT DECISION (owner, 2026-08-05): a participant sitting in the LOBBY does NOT
+    /// hold a seat. This is settled product policy, not an implementation guess left over from
+    /// WT-262 — do not "fix" WAITING back in on the reasoning that a lobby participant is about to
+    /// join. They are admitted one at a time and take their seat at admission.
+    ///
+    /// Everything else is deliberately excluded for the same reason: INVITED has not shown up;
+    /// DISCONNECTED and LEFT released their seat when they dropped, so they must re-acquire one on
+    /// return like anybody else; KICKED and REJECTED are terminal. Counting any of those would let a
+    /// stale row lock a live user out of a room that has space, which is the failure mode this cap
+    /// must not introduce.
+    ///
+    /// WT-263: this is now the SINGLE definition of "present in the room". IdleRoomMonitoringWorker
+    /// shares it via <see cref="HoldsSeat"/> rather than carrying its own status predicate.
     /// </summary>
     public static readonly string[] SeatHolding = [Connected];
 

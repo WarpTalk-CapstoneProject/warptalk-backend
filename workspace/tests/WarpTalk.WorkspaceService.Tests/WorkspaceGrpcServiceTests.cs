@@ -21,7 +21,6 @@ public class WorkspaceGrpcServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
-    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
     private readonly WorkspaceGrpcService _service;
     private readonly ServerCallContext _context;
 
@@ -30,20 +29,20 @@ public class WorkspaceGrpcServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
-        _billingSubscriptionClient = Substitute.For<IBillingSubscriptionClient>();
 
-        // WT-262: unless a test says otherwise the workspace is on a plan that comfortably covers
-        // whatever it asks for, so the language quota never accidentally explains a failure.
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 3));
-
-        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity, _translationRoomClient, _billingSubscriptionClient);
+        // WT-263: no IBillingSubscriptionClient here at all. The service no longer takes one,
+        // because meeting creation makes no call to BillingService — that is the ticket.
+        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity, _translationRoomClient);
         _context = new TestServerCallContext(CancellationToken.None);
     }
 
+    /// <summary>Builds the stored snapshot JSON in the shape the entitlements.changed consumer writes.</summary>
+    private static string SnapshotJson(params (string Key, string Value, string Source)[] entries) =>
+        "{" + string.Join(",", entries.Select(entry =>
+            $"\"{entry.Key}\":{{\"value\":\"{entry.Value}\",\"source\":\"{entry.Source}\"}}")) + "}";
+
     /// <summary>Arranges an active member of a workspace whose own settings permit everything, so a
-    /// WT-262 test only exercises the plan quota.</summary>
+    /// quota test only exercises the entitlement snapshot.</summary>
     private Guid ArrangePermittedMember(Guid workspaceId, string settings = "{\"MaxActiveRooms\":10}")
     {
         var userId = Guid.NewGuid();
@@ -64,17 +63,31 @@ public class WorkspaceGrpcServiceTests
         return userId;
     }
 
-    // ── WT-262: plan max_languages enforcement ────────────────────────────────
+    /// <summary>Gives the workspace a local entitlement snapshot, as the consumer would have.</summary>
+    private void ArrangeSnapshot(
+        Guid workspaceId,
+        string entitlementsJson,
+        bool hasActiveSubscription = true)
+    {
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceEntitlementSnapshot
+            {
+                WorkspaceId = workspaceId,
+                EntitlementsJson = entitlementsJson,
+                HasActiveSubscription = hasActiveSubscription,
+                ResolvedAt = DateTime.UtcNow
+            });
+    }
+
+    // ── WT-263: max_languages enforced from the local snapshot ────────────────
 
     [Fact]
     public async Task ValidateMeetingCreation_ShouldDeny_WhenTargetLanguagesExceedPlanQuota()
     {
         var workspaceId = Guid.NewGuid();
         var userId = ArrangePermittedMember(workspaceId);
-
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 2));
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")));
 
         var request = new ValidateMeetingCreationRequest
         {
@@ -94,10 +107,7 @@ public class WorkspaceGrpcServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var userId = ArrangePermittedMember(workspaceId);
-
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 3));
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "3", "plan:enterprise")));
 
         var request = new ValidateMeetingCreationRequest
         {
@@ -112,59 +122,65 @@ public class WorkspaceGrpcServiceTests
     }
 
     /// <summary>
-    /// The regression this ticket must not introduce: an unreachable BillingService returns null,
-    /// and the gate has to keep saying "no" rather than degrading to fail-open. WT-249 closed the
-    /// bypass on the permission half of this RPC; the quota half must not reopen one.
+    /// THE HEADLINE PROOF that the architecture works, and the exact inversion of the WT-262 test it
+    /// replaces (ValidateMeetingCreation_ShouldDeny_WhenBillingIsUnreachable).
+    ///
+    /// There is no billing client to make unreachable any more: the service does not take one, so
+    /// this test cannot even express "billing is down" — the dependency is gone. What it asserts is
+    /// the consequence: a multi-language meeting is created from the local snapshot alone, with no
+    /// remote call in the path, so BillingService's availability cannot deny it.
     /// </summary>
     [Fact]
-    public async Task ValidateMeetingCreation_ShouldDeny_WhenBillingIsUnreachable()
+    public async Task ValidateMeetingCreation_ShouldAllow_WithBillingUnreachable_BecauseItReadsTheLocalSnapshot()
     {
         var workspaceId = Guid.NewGuid();
         var userId = ArrangePermittedMember(workspaceId);
-
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns((WorkspaceFeatureAccess?)null);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "3", "plan:enterprise")));
 
         var request = new ValidateMeetingCreationRequest
         {
             WorkspaceId = workspaceId.ToString(),
             UserId = userId.ToString(),
-            TargetLanguages = { "vi", "en" }
-        };
-
-        var response = await _service.ValidateMeetingCreation(request, _context);
-
-        Assert.False(response.IsAllowed);
-        Assert.NotEmpty(response.ErrorMessage);
-    }
-
-    /// <summary>
-    /// The bound on that fail-closed behaviour: a single-language meeting cannot exceed any plan,
-    /// so billing is never consulted and a billing outage cannot block ordinary meeting creation.
-    /// </summary>
-    [Fact]
-    public async Task ValidateMeetingCreation_ShouldNotConsultBilling_ForASingleTargetLanguage()
-    {
-        var workspaceId = Guid.NewGuid();
-        var userId = ArrangePermittedMember(workspaceId);
-
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns((WorkspaceFeatureAccess?)null);
-
-        var request = new ValidateMeetingCreationRequest
-        {
-            WorkspaceId = workspaceId.ToString(),
-            UserId = userId.ToString(),
-            TargetLanguages = { "vi" }
+            TargetLanguages = { "vi", "en", "ja" }
         };
 
         var response = await _service.ValidateMeetingCreation(request, _context);
 
         Assert.True(response.IsAllowed);
-        await _billingSubscriptionClient.DidNotReceive()
-            .GetWorkspaceFeatureAccessAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        Assert.Empty(response.ErrorMessage);
+
+        // The only collaborators reached are local state and the room count. No billing client
+        // exists on this type — asserting that is what pins the stopgap as removed.
+        Assert.DoesNotContain(
+            typeof(WorkspaceGrpcService).GetConstructors().Single().GetParameters(),
+            parameter => parameter.ParameterType == typeof(IBillingSubscriptionClient));
+    }
+
+    /// <summary>
+    /// COLD START: a workspace with no snapshot yet. Plan quotas are not in force, so creation
+    /// succeeds — the same answer a workspace with no live subscription already got, and the reason
+    /// a brand-new workspace is not locked out while its first event is in flight.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldAllow_OnColdStart_WhenNoSnapshotExistsYet()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi", "en", "ja", "ko" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.True(response.IsAllowed);
     }
 
     /// <summary>
@@ -177,10 +193,10 @@ public class WorkspaceGrpcServiceTests
     {
         var workspaceId = Guid.NewGuid();
         var userId = ArrangePermittedMember(workspaceId);
-
-        _billingSubscriptionClient
-            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: false, MaxLanguages: 1));
+        ArrangeSnapshot(
+            workspaceId,
+            SnapshotJson(("max_languages", "1", "platform_default")),
+            hasActiveSubscription: false);
 
         var request = new ValidateMeetingCreationRequest
         {
@@ -192,6 +208,34 @@ public class WorkspaceGrpcServiceTests
         var response = await _service.ValidateMeetingCreation(request, _context);
 
         Assert.True(response.IsAllowed);
+    }
+
+    /// <summary>
+    /// WT-263: max_active_rooms is an ordinary entitlement key now. A resolved workspace_override
+    /// beats the settings-JSON copy, with no sentinel value anywhere.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldEnforceMaxActiveRooms_FromTheSnapshot()
+    {
+        var workspaceId = Guid.NewGuid();
+        // Settings JSON says 10; the resolved entitlement says the owner tightened to 2.
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":10}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "2", "workspace_override")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(2);
+
+        var response = await _service.ValidateMeetingCreation(
+            new ValidateMeetingCreationRequest
+            {
+                WorkspaceId = workspaceId.ToString(),
+                UserId = userId.ToString()
+            },
+            _context);
+
+        Assert.False(response.IsAllowed);
+        Assert.Contains("active room limit (2)", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -39,6 +39,25 @@ public partial class Plan
 
     public int MaxLanguages { get; set; } = SubscriptionConstants.PlanDefaults.MaxLanguages;
 
+    /// <summary>
+    /// WT-263. The plan-level ceiling on concurrently active rooms, backed by the new
+    /// <c>subscription.plans.max_active_rooms</c> column (migration 050).
+    ///
+    /// A COLUMN, deliberately, not an entry in the <see cref="Features"/> JSON. Every hard quota the
+    /// plan sells is already a typed column — <see cref="MaxParticipants"/>, <see cref="MaxLanguages"/>,
+    /// <see cref="CreditsPerCycle"/> — while <c>features</c> is an opaque marketing bag
+    /// (voice_clone_limit_mins, billing_model, external_integrations) that nothing validates and
+    /// nothing indexes. Putting an enforced limit in there would recreate precisely the failure this
+    /// ticket exists to end: an entitlement that each reader parses for itself. It would also be
+    /// unreachable to plan CRUD validation, so an admin could save max_active_rooms = 0 and make
+    /// every workspace on the plan unable to start a meeting, with no check anywhere.
+    ///
+    /// <c>allow_acl</c> is the counter-example already in the tree: with no column to read, the gRPC
+    /// mapper mirrors ai_assistant_enabled and documents it as a stand-in. That is what a
+    /// column-less entitlement costs.
+    /// </summary>
+    public int MaxActiveRooms { get; set; } = Constants.EntitlementConstants.PlatformDefaults.MaxActiveRooms;
+
     public bool VoiceCloneEnabled { get; set; }
 
     public bool AiAssistantEnabled { get; set; }

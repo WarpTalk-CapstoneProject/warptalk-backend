@@ -217,13 +217,12 @@ internal static class GrpcBillingMapper
             GlossaryEnabled = plan?.GlossaryEnabled ?? false,
             DedicatedGpu = plan?.DedicatedGpu ?? false,
             FeaturesJson = plan?.Features ?? SubscriptionConstants.FeatureAccess.EmptyFeaturesJson,
-            AllowGlossary = plan?.GlossaryEnabled ?? false,
+            AllowGlossary = plan?.GlossaryEnabled ?? false
 
-            // allow_acl has no backing column on subscription.plans. It is mirrored from
-            // ai_assistant_enabled because the assistant is the only ACL-scoped feature the plan
-            // models today. That is a stand-in, not a real entitlement — adding the column (or
-            // dropping the proto field) is tracked separately; it is deliberately NOT invented here.
-            AllowAcl = plan?.AiAssistantEnabled ?? false
+            // WT-263: allow_acl is gone. It had no backing column and was mirrored from
+            // ai_assistant_enabled as an admitted stand-in; the product decision was to drop the
+            // field rather than add a column, so it is not carried into the entitlement map either.
+            // Field number 11 is reserved in billing.proto.
         };
     }
 }

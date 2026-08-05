@@ -105,6 +105,35 @@ public sealed record OutboxEventMessage
     [JsonPropertyName("payload_json")] public string PayloadJson { get; init; } = string.Empty;
 }
 
+/// <summary>
+/// WT-263: one resolved entitlement, with the layer that decided it.
+///
+/// Provenance is carried on the wire rather than recomputed downstream on purpose. A consumer that
+/// only received <c>{key, value}</c> would have to know the resolution order to explain a limit,
+/// and knowing the order is one short step from re-deriving it — which is exactly how every
+/// service ended up with its own private idea of a plan quota before this ticket.
+/// </summary>
+public sealed record ResolvedEntitlementPayload(
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("source")] string Source
+);
+
+/// <summary>
+/// WT-263: the complete resolved entitlement map for one workspace, as published by BillingService's
+/// EntitlementResolver. This is a FULL snapshot, never a delta — a consumer that misses an event
+/// still converges on the next one, and there is no ordering requirement beyond
+/// <see cref="ResolvedAt"/>.
+/// </summary>
+public sealed record EntitlementsChangedEventPayload(
+    [property: JsonPropertyName("workspace_id")] Guid WorkspaceId,
+    [property: JsonPropertyName("plan_slug")] string? PlanSlug,
+    [property: JsonPropertyName("has_active_subscription")] bool HasActiveSubscription,
+    [property: JsonPropertyName("resolved_at")] DateTime ResolvedAt,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("entitlements")] IReadOnlyList<ResolvedEntitlementPayload> Entitlements
+);
+
 public static class BillingEventTypes
 {
     public const string PaymentSucceeded = "billing.payment_succeeded";
@@ -112,6 +141,20 @@ public static class BillingEventTypes
     public const string PaymentRefunded = "billing.payment_refunded";
     public const string PaymentDisputed = "billing.payment_disputed";
     public const string SubscriptionCancelled = "billing.subscription_cancelled";
+
+    /// <summary>
+    /// WT-263. Published whenever a subscription, a plan, a contract override or a workspace
+    /// self-service override changes what a workspace may do. Consumers persist the payload as a
+    /// local snapshot and enforce against that, never against a live billing call.
+    /// </summary>
+    public const string EntitlementsChanged = "billing.entitlements_changed";
+
+    /// <summary>
+    /// Redis Pub/Sub channel carrying <see cref="EntitlementsChanged"/>. Deliberately its own
+    /// channel rather than the billing notification channel: that one is user-facing realtime
+    /// chatter fanned out to SignalR, this one is service-to-service state replication.
+    /// </summary>
+    public const string EntitlementsChangedChannel = "warptalk:entitlements:changed";
 
     public static string ForStatus(string status) => status switch
     {
