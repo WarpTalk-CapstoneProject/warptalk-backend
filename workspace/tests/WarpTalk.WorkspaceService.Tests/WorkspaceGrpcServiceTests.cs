@@ -21,6 +21,7 @@ public class WorkspaceGrpcServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
+    private readonly IBillingSubscriptionClient _billingSubscriptionClient;
     private readonly WorkspaceGrpcService _service;
     private readonly ServerCallContext _context;
 
@@ -29,8 +30,168 @@ public class WorkspaceGrpcServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _translationRoomClient = Substitute.For<ITranslationRoomClient>();
-        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity, _translationRoomClient);
+        _billingSubscriptionClient = Substitute.For<IBillingSubscriptionClient>();
+
+        // WT-262: unless a test says otherwise the workspace is on a plan that comfortably covers
+        // whatever it asks for, so the language quota never accidentally explains a failure.
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 3));
+
+        _service = new WorkspaceGrpcService(_unitOfWork, _authIdentity, _translationRoomClient, _billingSubscriptionClient);
         _context = new TestServerCallContext(CancellationToken.None);
+    }
+
+    /// <summary>Arranges an active member of a workspace whose own settings permit everything, so a
+    /// WT-262 test only exercises the plan quota.</summary>
+    private Guid ArrangePermittedMember(Guid workspaceId, string settings = "{\"MaxActiveRooms\":10}")
+    {
+        var userId = Guid.NewGuid();
+
+        _unitOfWork.WorkspaceMemberRepository
+            .FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember
+            {
+                WorkspaceId = workspaceId,
+                UserId = userId,
+                Status = "Active",
+                CanCreateMeetings = true
+            });
+
+        _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, Settings = settings });
+
+        return userId;
+    }
+
+    // ── WT-262: plan max_languages enforcement ────────────────────────────────
+
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldDeny_WhenTargetLanguagesExceedPlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 2));
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi", "en", "ja" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.False(response.IsAllowed);
+        Assert.Contains("2", response.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldAllow_WhenTargetLanguagesFitThePlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: true, MaxLanguages: 3));
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi", "en", "ja" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.True(response.IsAllowed);
+    }
+
+    /// <summary>
+    /// The regression this ticket must not introduce: an unreachable BillingService returns null,
+    /// and the gate has to keep saying "no" rather than degrading to fail-open. WT-249 closed the
+    /// bypass on the permission half of this RPC; the quota half must not reopen one.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldDeny_WhenBillingIsUnreachable()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceFeatureAccess?)null);
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi", "en" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.False(response.IsAllowed);
+        Assert.NotEmpty(response.ErrorMessage);
+    }
+
+    /// <summary>
+    /// The bound on that fail-closed behaviour: a single-language meeting cannot exceed any plan,
+    /// so billing is never consulted and a billing outage cannot block ordinary meeting creation.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldNotConsultBilling_ForASingleTargetLanguage()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceFeatureAccess?)null);
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.True(response.IsAllowed);
+        await _billingSubscriptionClient.DidNotReceive()
+            .GetWorkspaceFeatureAccessAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// A workspace with no live plan has no max_languages in force. The workspace's own
+    /// AllowedTargetLanguages policy still governs it — this must not become "no subscription, no
+    /// meetings".
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreation_ShouldAllow_WhenWorkspaceHasNoActiveSubscription()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _billingSubscriptionClient
+            .GetWorkspaceFeatureAccessAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceFeatureAccess(HasActiveSubscription: false, MaxLanguages: 1));
+
+        var request = new ValidateMeetingCreationRequest
+        {
+            WorkspaceId = workspaceId.ToString(),
+            UserId = userId.ToString(),
+            TargetLanguages = { "vi", "en", "ja" }
+        };
+
+        var response = await _service.ValidateMeetingCreation(request, _context);
+
+        Assert.True(response.IsAllowed);
     }
 
     [Fact]
