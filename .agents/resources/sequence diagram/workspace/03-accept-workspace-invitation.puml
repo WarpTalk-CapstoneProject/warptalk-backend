@@ -1,0 +1,181 @@
+@startuml
+title WarpTalk - Accept Workspace Invitation
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Guest User" as User
+boundary "Mailbox Page" as Mailbox
+boundary "RegisterPage" as Register
+boundary "WorkspaceRoomsPage" as Web
+control "API Gateway" as Gateway
+
+box "Auth Service" #LightPink
+participant ":AuthController" as AuthController <<boundary>>
+participant ":AuthService" as AuthService <<service>>
+participant ":UserRepository" as UserRepository <<control>>
+participant ":RefreshTokenRepository" as RefreshTokenRepository <<control>>
+participant ":WorkspaceInvitation\nGrpcClient" as WorkspaceInvitationGrpcClient <<boundary>>
+database "Auth Database" as AuthDb
+end box
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceGrpcService" as WorkspaceGrpcService <<boundary>>
+participant ":WorkspaceInvitationService" as WorkspaceInvitationService <<service>>
+participant ":WorkspaceInvitationRepository" as WorkspaceInvitationRepository <<control>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+== STEP 1: OPEN EMAIL & INITIATE JOIN ==
+
+User -> Mailbox : Open Invitation Email
+activate Mailbox
+Mailbox -> Mailbox : Parse invitation details & token from email body
+Mailbox --> User : Display invitation email & "Accept & Join" link
+deactivate Mailbox
+
+User -> Mailbox : Click "Accept & Join" link
+activate Mailbox
+Mailbox -> Register : Open Registration Page (/[workspaceSlug]/join?token=rawToken)
+activate Register
+deactivate Mailbox
+
+== STEP 2: VERIFY EMAIL EXISTENCE ==
+
+Register -> Gateway : GET /api/v1/auth/check-email?email=guest@email.com
+activate Gateway
+Gateway -> AuthController : Forward Check Email Request
+activate AuthController
+AuthController -> AuthService : CheckEmailExistsAsync(email)
+activate AuthService
+AuthService -> UserRepository : GetByEmailAsync(email)
+activate UserRepository
+UserRepository -> AuthDb : SELECT * FROM Users WHERE Email = email
+activate AuthDb
+AuthDb --> UserRepository : User record / null (returns null)
+deactivate AuthDb
+UserRepository --> AuthService : null
+deactivate UserRepository
+AuthService --> AuthController : AccountExists (false)
+deactivate AuthService
+AuthController --> Gateway : 200 OK (AccountExists = false)
+deactivate AuthController
+Gateway --> Register : 200 OK (AccountExists = false)
+deactivate Gateway
+Register --> User : Render Registration form (Prompt for Password, Full Name)
+deactivate Register
+
+== STEP 3: REGISTER & JOIN WORKSPACE ==
+
+User -> Register : Enter Password, Full Name and Click "Register & Join"
+activate Register
+Register -> Gateway : POST /api/v1/auth/register-invited [Token, Password, FullName]
+activate Gateway
+Gateway -> AuthController : Forward Register Invited Request
+activate AuthController
+AuthController -> AuthService : RegisterInvitedAsync(token, password, fullName)
+activate AuthService
+
+AuthService -> WorkspaceInvitationGrpcClient : VerifyInvitationToken(Token)
+activate WorkspaceInvitationGrpcClient
+WorkspaceInvitationGrpcClient -> WorkspaceGrpcService : gRPC: VerifyInvitationToken(Token)
+activate WorkspaceGrpcService
+WorkspaceGrpcService -> WorkspaceInvitationService : GetInvitationByTokenAsync(token)
+activate WorkspaceInvitationService
+WorkspaceInvitationService -> WorkspaceInvitationRepository : GetInvitationByTokenAsync(token)
+activate WorkspaceInvitationRepository
+WorkspaceInvitationRepository -> WorkspaceDb : SELECT * FROM WorkspaceInvitations WHERE TokenHash = hash
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceInvitationRepository : Invitation details
+deactivate WorkspaceDb
+WorkspaceInvitationRepository --> WorkspaceInvitationService : Invitation details
+deactivate WorkspaceInvitationRepository
+WorkspaceInvitationService --> WorkspaceGrpcService : Invitation details
+deactivate WorkspaceInvitationService
+WorkspaceGrpcService --> WorkspaceInvitationGrpcClient : Invitation details
+deactivate WorkspaceGrpcService
+WorkspaceInvitationGrpcClient --> AuthService : Invitation details
+deactivate WorkspaceInvitationGrpcClient
+
+AuthService -> UserRepository : AddAsync(new User)
+activate UserRepository
+UserRepository --> AuthService : Done
+deactivate UserRepository
+
+AuthService -> UserRepository : SaveChangesAsync()
+activate UserRepository
+UserRepository -> AuthDb : INSERT INTO Users
+activate AuthDb
+AuthDb --> UserRepository : Saved
+deactivate AuthDb
+UserRepository --> AuthService : Saved
+deactivate UserRepository
+
+AuthService -> WorkspaceInvitationGrpcClient : AcceptInvitation(Token, UserId, Email)
+activate WorkspaceInvitationGrpcClient
+WorkspaceInvitationGrpcClient -> WorkspaceGrpcService : gRPC: AcceptInvitation(Token, UserId, Email)
+activate WorkspaceGrpcService
+WorkspaceGrpcService -> WorkspaceInvitationService : AcceptInvitationAsync(token, userId, email)
+activate WorkspaceInvitationService
+WorkspaceInvitationService -> WorkspaceMemberRepository : AddAsync(new WorkspaceMember with Active=true)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository --> WorkspaceInvitationService : Done
+deactivate WorkspaceMemberRepository
+WorkspaceInvitationService -> WorkspaceInvitationRepository : UpdateStatus(token, 'ACCEPTED')
+activate WorkspaceInvitationRepository
+WorkspaceInvitationRepository --> WorkspaceInvitationService : Done
+deactivate WorkspaceInvitationRepository
+WorkspaceInvitationService -> WorkspaceInvitationRepository : SaveChangesAsync()
+activate WorkspaceInvitationRepository
+WorkspaceInvitationRepository -> WorkspaceDb : Save changes (Insert Member, Update Invitation)
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceInvitationRepository : Saved
+deactivate WorkspaceDb
+WorkspaceInvitationRepository --> WorkspaceInvitationService : Saved
+deactivate WorkspaceInvitationRepository
+WorkspaceInvitationService --> WorkspaceGrpcService : Success
+deactivate WorkspaceInvitationService
+WorkspaceGrpcService --> WorkspaceInvitationGrpcClient : Success
+deactivate WorkspaceGrpcService
+WorkspaceInvitationGrpcClient --> AuthService : Success
+deactivate WorkspaceInvitationGrpcClient
+
+AuthService -> AuthService : Generate standard JWT & Refresh Token
+AuthService -> RefreshTokenRepository : AddAsync(new RefreshToken)
+activate RefreshTokenRepository
+RefreshTokenRepository --> AuthService : Done
+deactivate RefreshTokenRepository
+AuthService -> RefreshTokenRepository : SaveChangesAsync()
+activate RefreshTokenRepository
+RefreshTokenRepository -> AuthDb : Save Refresh Token
+activate AuthDb
+AuthDb --> RefreshTokenRepository : Saved
+deactivate AuthDb
+RefreshTokenRepository --> AuthService : Saved
+deactivate RefreshTokenRepository
+
+AuthService --> AuthController : Success (Tokens)
+deactivate AuthService
+AuthController --> Gateway : 200 OK (Tokens)
+deactivate AuthController
+Gateway --> Register : 200 OK (Workspace joined)
+deactivate Gateway
+Register -> Web : Route to Workspace Rooms Page (/[workspaceSlug]/rooms)
+activate Web
+deactivate Register
+Web --> User : Render Workspace Rooms page successfully (Join Completed)
+deactivate Web
+@enduml

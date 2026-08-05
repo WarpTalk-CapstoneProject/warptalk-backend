@@ -26,6 +26,7 @@ public class UnitOfWork : IUnitOfWork
         IdempotencyRecords = new IdempotencyRepository(db);
         OutboxMessages = new OutboxMessageRepository(db);
         InboxMessages = new InboxMessageRepository(db);
+        WorkspaceEntitlementOverrides = new WorkspaceEntitlementOverrideRepository(db);
     }
 
     public IPlanRepository Plans { get; }
@@ -40,6 +41,7 @@ public class UnitOfWork : IUnitOfWork
     public IIdempotencyRepository IdempotencyRecords { get; }
     public IOutboxMessageRepository OutboxMessages { get; }
     public IInboxMessageRepository InboxMessages { get; }
+    public IWorkspaceEntitlementOverrideRepository WorkspaceEntitlementOverrides { get; }
 
     public void ClearTracking() => _db.ChangeTracker.Clear();
 

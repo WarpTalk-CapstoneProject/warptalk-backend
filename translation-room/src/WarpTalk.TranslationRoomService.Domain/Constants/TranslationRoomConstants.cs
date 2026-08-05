@@ -34,6 +34,9 @@ public static class TranslationRoomConstants
     public const string ErrorFailedToEndRoomTitle = "Failed to end translation room";
     public const string ErrorParticipantKicked = "You have been permanently removed from this room and cannot rejoin.";
 
+    /// <summary>WT-262. Format arg {0} is the room's MaxParticipants.</summary>
+    public const string ErrorRoomAtCapacity = "This room is full ({0} participants). Ask the host to remove someone or start a larger room.";
+
     // Participant Errors
     public const string ErrorOnlyHostCanManageAudio = "Only the host can manage participant audio.";
     public const string ErrorParticipantNotFound = "Participant not found.";

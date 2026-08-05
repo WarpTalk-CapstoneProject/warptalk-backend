@@ -1,0 +1,72 @@
+﻿@startuml
+title WarpTalk - Compile Transcript & AI Artifacts Generation (Async)
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+queue "Redis Meeting Stream" as Stream
+participant ":MeetingEndedConsumer" as Consumer <<boundary>>
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptService" as Service <<service>>
+participant ":TranscriptRepository" as Repository <<control>>
+participant ":AiAssistantGrpcClient" as AiClient <<boundary>>
+database "Transcript Database" as Db
+end box
+
+box "AI Assistant Service" #LightGreen
+participant ":AiAssistantGrpcService" as AiService <<boundary>>
+participant ":AiAssistantWorker" as AiWorker <<service>>
+end box
+
+Stream -> Consumer : Consume 'MeetingEndedEvent'
+activate Consumer
+Consumer -> Service : CompileAndGenerateArtifactsAsync(meetingId)
+activate Service
+
+Service -> Repository : GetSegments(meetingId)
+activate Repository
+Repository -> Db : SELECT * FROM Segments WHERE MeetingId = ...
+activate Db
+Db --> Repository : Segments List
+deactivate Db
+Repository --> Service : Segments List
+deactivate Repository
+
+Service -> Service : Compile raw transcript text
+Service -> AiClient : RequestSummaryAsync(compiledText)
+activate AiClient
+AiClient -> AiService : gRPC: GenerateSummaryAndIssues(compiledText)
+activate AiService
+AiService -> AiWorker : GeneratePostMeetingDetails(text)
+activate AiWorker
+AiWorker -> AiWorker : Run LLM Summary & Action Items prompts
+AiWorker --> AiService : Summary & Issues JSON
+deactivate AiWorker
+AiService --> AiClient : gRPC response
+deactivate AiService
+AiClient --> Service : Summary & Issues Data
+deactivate AiClient
+
+Service -> Repository : SaveSummaryAndIssues(meetingId, data)
+activate Repository
+Repository -> Db : INSERT INTO Artifacts ...
+activate Db
+Db --> Repository : Saved
+deactivate Db
+Repository --> Service : Done
+deactivate Repository
+
+Service --> Consumer : Success
+deactivate Service
+Consumer -> Stream : Acknowledge
+activate Stream
+deactivate Consumer
+deactivate Stream
+@enduml

@@ -54,6 +54,12 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
 
         var response = new GetParticipantsByRoomIdResponse();
 
+        // WT-263: the roster's IsActive is the same question the WT-262 capacity cap asks, so it
+        // answers from the shared seat definition instead of its own status literal. Safe as a method
+        // call because the directory service has already materialised the rows — this loop is
+        // LINQ-to-Objects, not an EF predicate (the cap uses SeatHolding.Contains, which is what
+        // translates to SQL). The null-coalescing the boundary used to apply now lives in the
+        // projection that builds the summary, so these strings arrive non-null.
         foreach (var p in result.Value!)
         {
             response.Participants.Add(new Shared.Protos.Participant
@@ -62,7 +68,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
                 DisplayName = p.DisplayName,
                 Role = p.Role,
                 Language = p.SpeakLanguage,
-                IsActive = p.IsConnected
+                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status)
             });
         }
 

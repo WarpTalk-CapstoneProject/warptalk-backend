@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
-using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
@@ -37,7 +36,7 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
                 p.DisplayName ?? string.Empty,
                 p.Role ?? string.Empty,
                 p.SpeakLanguage ?? string.Empty,
-                p.Status == nameof(TranslationRoomParticipantStatus.CONNECTED)))
+                p.Status ?? string.Empty))
             .ToList();
 
         return Result.Success<IReadOnlyList<TranslationRoomParticipantSummaryDto>>(summaries);

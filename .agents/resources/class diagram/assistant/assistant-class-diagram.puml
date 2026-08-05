@@ -1,0 +1,165 @@
+@startuml
+title 3.5 Transcripts & AI Module - Assistant Service Class Diagram
+
+top to bottom direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 85
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam classBackgroundColor White
+skinparam classBorderColor Black
+skinparam ArrowColor Black
+
+package "API Layer" as ApiLayer {
+  class AssistantConversationsController <<boundary>> {
+    +GetConversations(workspaceId)
+    +GetMessages(conversationId)
+    +PostMessage(conversationId, request)
+  }
+
+  class AssistantHub <<boundary>> {
+    +JoinConversation(conversationId)
+    +LeaveConversation(conversationId)
+  }
+
+  class AssistantChatResultConsumerService <<boundary>> {
+    +ExecuteAsync(stoppingToken)
+  }
+
+  class AssistantNotifier <<boundary>> {
+    +NotifyMessageChunkAsync(conversationId, chunk)
+    +NotifyCompletionAsync(conversationId)
+  }
+
+  AssistantConversationsController -[hidden]right- AssistantHub
+  AssistantHub -[hidden]right- AssistantChatResultConsumerService
+  AssistantChatResultConsumerService -[hidden]right- AssistantNotifier
+}
+
+package "Application Layer" as ApplicationLayer {
+  class AssistantConversationService <<control>> {
+    +CreateConversationAsync(userId, workspaceId, title)
+    +SendMessageAsync(conversationId, userPrompt, actorId)
+    +AppendAssistantResultAsync(messageId, result)
+    +ExecuteToolCallsAsync(toolCalls, context)
+  }
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class UnitOfWork <<control>> {
+    +SaveChangesAsync()
+  }
+
+  class AssistantConversationRepository <<control>> {
+    +GetByWorkspaceAndUserAsync(workspaceId, userId)
+    +GetByIdAsync(id)
+    +AddAsync(conversation)
+  }
+
+  class AssistantMessageRepository <<control>> {
+    +GetByConversationIdAsync(conversationId)
+    +AddAsync(message)
+    +Update(message)
+  }
+
+  class AssistantToolCallRepository <<control>> {
+    +GetByMessageIdAsync(messageId)
+    +AddAsync(toolCall)
+  }
+
+  class RedisAssistantChatRequestPublisher <<control>> {
+    +PublishChatRequestAsync(conversationId, messageId)
+  }
+
+  UnitOfWork -[hidden]right- AssistantConversationRepository
+  AssistantConversationRepository -[hidden]right- AssistantMessageRepository
+  AssistantMessageRepository -[hidden]right- AssistantToolCallRepository
+  AssistantToolCallRepository -[hidden]right- RedisAssistantChatRequestPublisher
+
+  UnitOfWork o-- AssistantConversationRepository
+  UnitOfWork o-- AssistantMessageRepository
+  UnitOfWork o-- AssistantToolCallRepository
+}
+
+package "Domain Layer" as DomainLayer {
+  class AssistantConversation <<entity>> {
+    -Id: Guid
+    -UserId: Guid
+    -WorkspaceId: Guid
+    -Title: String
+    -CreatedAt: DateTime
+  }
+
+  class AssistantMessage <<entity>> {
+    -Id: Guid
+    -ConversationId: Guid
+    -Role: String
+    -Content: String
+    -CreatedAt: DateTime
+  }
+
+  class AssistantToolCall <<entity>> {
+    -Id: Guid
+    -MessageId: Guid
+    -ToolName: String
+    -ArgumentsJson: String
+    -ResultJson: String
+  }
+
+  AssistantConversation "1" *-- "0..*" AssistantMessage : contains messages
+  AssistantMessage "1" *-- "0..*" AssistantToolCall : invokes tools
+}
+
+package "External Systems" as ExternalSystems {
+  class RedisServer <<external system>> {
+    +PublishChatRequest(request)
+    +ConsumeAssistantResult(result)
+  }
+
+  class WarptalkAiWorker <<external system>> {
+    +GenerateAssistantResponse(message)
+  }
+
+  class SignalRClients <<external system>> {
+    +ReceiveAssistantChunk(chunk)
+  }
+
+  RedisServer -[hidden]right- WarptalkAiWorker
+  WarptalkAiWorker -[hidden]right- SignalRClients
+}
+
+AssistantConversationsController --> AssistantConversationService
+AssistantHub --> AssistantNotifier
+AssistantChatResultConsumerService --> AssistantConversationService
+AssistantChatResultConsumerService --> AssistantNotifier
+
+AssistantConversationService ..> RedisAssistantChatRequestPublisher
+
+AssistantConversationRepository ..> AssistantConversation : persists
+AssistantMessageRepository ..> AssistantMessage : persists
+AssistantToolCallRepository ..> AssistantToolCall : persists
+
+RedisAssistantChatRequestPublisher ..> RedisServer : publishes requests
+RedisServer ..> WarptalkAiWorker : dispatches prompt
+WarptalkAiWorker ..> RedisServer : returns result
+AssistantNotifier ..> SignalRClients : streams response
+
+ApiLayer -[hidden]down- ApplicationLayer
+ApplicationLayer -[hidden]down- InfrastructureLayer
+InfrastructureLayer -[hidden]down- DomainLayer
+InfrastructureLayer -[hidden]right- ExternalSystems
+
+ApiLayer -down..> ApplicationLayer : delegates requests
+ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
+InfrastructureLayer -down..> DomainLayer : persists entities
+InfrastructureLayer -right..> ExternalSystems : integrates APIs
+@enduml

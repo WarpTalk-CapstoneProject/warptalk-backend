@@ -1,0 +1,190 @@
+@startuml
+title WarpTalk - Invite Workspace Member
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Workspace Owner/Admin" as Admin
+boundary "WorkspaceMembersPage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceInvitations\nController" as WorkspaceInvitationsController <<boundary>>
+participant ":WorkspaceInvitation\nService" as WorkspaceInvitationService <<service>>
+participant ":WorkspaceMember\nRepository" as WorkspaceMemberRepository <<control>>
+participant ":WorkspaceInvitation\nRepository" as WorkspaceInvitationRepository <<control>>
+participant ":UserService\nGrpcClient" as UserServiceGrpcClient <<boundary>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as UserServiceGrpc <<boundary>>
+participant ":ProfileService" as ProfileService <<service>>
+participant ":RoleRepository" as RoleRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+control "Mailbox API" as MailboxApi
+actor "Invitee" as Invitee
+
+Admin -> Web : Access Workspace Members page
+activate Web
+Web --> Admin : Display members list & "Invite Member" button
+deactivate Web
+
+Admin -> Web : Click "Invite Member" button
+activate Web
+Web --> Admin : Display Invitation Form
+deactivate Web
+
+Admin -> Web : Enter email, membership type & role
+activate Web
+Admin -> Web : Click "Send Invitation"
+
+Web -> Web : Validate form schema (Zod)
+alt client validation fails
+    Web --> Admin : Show validation error
+    deactivate Web
+else client validation passes
+    Web -> Gateway : POST /api/v1/workspaces/{workspaceId}/invitations\n[with Admin Token]
+    activate Gateway
+    
+    Gateway -> Gateway : Authenticate Token & extract Admin ID
+    alt Token invalid
+        Gateway --> Web : 401 Unauthorized
+        deactivate Gateway
+        Web --> Admin : Show unauthorized error
+    else Token valid
+        Gateway -> WorkspaceInvitationsController : Forward Invitation Request
+        activate WorkspaceInvitationsController
+        
+        WorkspaceInvitationsController -> WorkspaceInvitationService :\n        InviteMemberAsync(workspaceId, request, adminId)
+        activate WorkspaceInvitationService
+    
+        WorkspaceInvitationService -> WorkspaceMemberRepository :\n        GetWorkspaceMemberAsync(workspaceId, adminId)
+        activate WorkspaceMemberRepository
+        WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers\nWHERE WorkspaceId = workspaceId AND UserId = adminId
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceMemberRepository : Member details
+        deactivate WorkspaceDb
+        WorkspaceMemberRepository --> WorkspaceInvitationService :\n        Member details & Workspace IsActive status
+        deactivate WorkspaceMemberRepository
+        
+        alt Workspace is Inactive
+            WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (WorkspaceInactive)
+            deactivate WorkspaceInvitationService
+            WorkspaceInvitationsController --> Gateway : 403 Forbidden ("Workspace is inactive")
+            deactivate WorkspaceInvitationsController
+            Gateway --> Web : 403 Forbidden
+            Web --> Admin : Display "Workspace deactivated" error
+        else Workspace is Active
+            WorkspaceInvitationService -> UserServiceGrpcClient : GetUserRoleAndPermissions(adminId)
+            activate UserServiceGrpcClient
+            UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetUserRoleAnd\nPermissions(adminId)
+            activate UserServiceGrpc
+            UserServiceGrpc -> ProfileService :\nGetUserRoleAnd\nPermissionsAsync(adminId)
+            activate ProfileService
+            ProfileService --> UserServiceGrpc :\nRole & Permissions details
+            deactivate ProfileService
+            UserServiceGrpc --> UserServiceGrpcClient : Role & Permissions details
+            deactivate UserServiceGrpc
+            UserServiceGrpcClient --> WorkspaceInvitationService : Role & Permissions details
+            deactivate UserServiceGrpcClient
+            
+            WorkspaceInvitationService -> WorkspaceInvitationRepository :\nValidateDomainAndEmailAsync(email, workspaceId)
+            activate WorkspaceInvitationRepository
+            WorkspaceInvitationRepository -> WorkspaceDb : Query active invitations &\ndomain validation constraints
+            activate WorkspaceDb
+            WorkspaceDb --> WorkspaceInvitationRepository : Validation constraints result
+            deactivate WorkspaceDb
+            WorkspaceInvitationRepository --> WorkspaceInvitationService : Validation Result
+            deactivate WorkspaceInvitationRepository
+            
+            alt Validation fails (Invalid domain/role/permissions)
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (ValidationFailed)
+                WorkspaceInvitationsController --> Gateway : 400 BadRequest / 403 Forbidden
+                Gateway --> Web : Error Response
+                Web --> Admin : Display error message
+            else Validation passes
+                WorkspaceInvitationService -> UserServiceGrpcClient : GetRoleByName(targetRoleName)
+                activate UserServiceGrpcClient
+                UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleByName\n(targetRoleName)
+                activate UserServiceGrpc
+                UserServiceGrpc -> ProfileService :\nGetRoleByNameAsync\n(targetRoleName)
+                activate ProfileService
+                ProfileService -> RoleRepository :\nFirstOrDefaultAsync\n(r => r.Name == targetRoleName)
+                activate RoleRepository
+                RoleRepository -> AuthDb : SELECT * FROM Roles\n                WHERE Name = targetRoleName
+                activate AuthDb
+                AuthDb --> RoleRepository : Role record
+                deactivate AuthDb
+                RoleRepository --> ProfileService :\nRole details
+                deactivate RoleRepository
+                ProfileService --> UserServiceGrpc :\nRole details
+                deactivate ProfileService
+                UserServiceGrpc --> UserServiceGrpcClient : Target Role ID
+                deactivate UserServiceGrpc
+                UserServiceGrpcClient --> WorkspaceInvitationService : Target Role ID
+                deactivate UserServiceGrpcClient
+
+                WorkspaceInvitationService -> WorkspaceInvitationRepository :\nGetPendingInvitationByEmailAsync(email, workspaceId)
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository -> WorkspaceDb : SELECT * FROM WorkspaceInvitations\nWHERE Email = email AND Status = 'PENDING'
+                activate WorkspaceDb
+                WorkspaceDb --> WorkspaceInvitationRepository : Existing invitation record / null
+                deactivate WorkspaceDb
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Existing pending invitation / null
+                deactivate WorkspaceInvitationRepository
+                
+                opt Existing invitation found
+                    WorkspaceInvitationService -> WorkspaceInvitationRepository : Update status to 'REPLACED'
+                    activate WorkspaceInvitationRepository
+                    WorkspaceInvitationRepository --> WorkspaceInvitationService : Done
+                    deactivate WorkspaceInvitationRepository
+                end
+                
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : AddAsync(new WorkspaceInvitation)
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Done
+                deactivate WorkspaceInvitationRepository
+                
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : SaveChangesAsync()
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository -> WorkspaceDb : Save Changes (Transaction committed)
+                activate WorkspaceDb
+                WorkspaceDb --> WorkspaceInvitationRepository : Saved successfully
+                deactivate WorkspaceDb
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Save Successful
+                deactivate WorkspaceInvitationRepository
+
+                ' --- Send Email via Mailbox API ---
+                WorkspaceInvitationService -> MailboxApi : SendInvitationEmailAsync\n(Email, WorkspaceName, "Member", rawToken)
+                activate MailboxApi
+                MailboxApi -> Invitee : Deliver email containing logo, name,\nrole, and rawToken inside the email body
+                MailboxApi --> WorkspaceInvitationService : Sent successfully
+                deactivate MailboxApi
+
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Success (InviteMemberResponse)
+                
+                WorkspaceInvitationsController --> Gateway : 200 OK (Invitation details)
+                
+                Gateway --> Web : 200 OK (Invitation details)
+                
+                Web --> Admin : Display success status
+            end
+        end
+    end
+end
+@enduml

@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
+using WarpTalk.WorkspaceService.API.GrpcServices;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.WorkspaceService.Application.Services;
@@ -221,6 +223,180 @@ public class WorkspaceDirectoryServiceTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsAllowed);
         Assert.Contains("active room limit", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ── WT-263: plan limits enforced from the LOCAL entitlement snapshot ──────
+    // These cases arrived from WorkspaceGrpcServiceTests when WT-239 moved the snapshot read and
+    // both plan-limit rules off the boundary. They assert the same behaviour against the layer that
+    // now owns it.
+
+    /// <summary>Builds the stored snapshot JSON in the shape the entitlements.changed consumer writes.</summary>
+    private static string SnapshotJson(params (string Key, string Value, string Source)[] entries) =>
+        "{" + string.Join(",", entries.Select(entry =>
+            $"\"{entry.Key}\":{{\"value\":\"{entry.Value}\",\"source\":\"{entry.Source}\"}}")) + "}";
+
+    /// <summary>Arranges an active member of a workspace whose own settings permit everything, so a
+    /// quota test only exercises the entitlement snapshot.</summary>
+    private Guid ArrangePermittedMember(Guid workspaceId, string settings = "{\"MaxActiveRooms\":10}")
+    {
+        var userId = Guid.NewGuid();
+
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = settings });
+
+        return userId;
+    }
+
+    /// <summary>Gives the workspace a local entitlement snapshot, as the consumer would have.</summary>
+    private void ArrangeSnapshot(
+        Guid workspaceId,
+        string entitlementsJson,
+        bool hasActiveSubscription = true)
+    {
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceEntitlementSnapshot
+            {
+                WorkspaceId = workspaceId,
+                EntitlementsJson = entitlementsJson,
+                HasActiveSubscription = hasActiveSubscription,
+                ResolvedAt = DateTime.UtcNow
+            });
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldDeny_WhenTargetLanguagesExceedPlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "2", "plan:startup")));
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en", "ja" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("2", result.Value.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_WhenTargetLanguagesFitThePlanQuota()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "3", "plan:enterprise")));
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en", "ja" });
+
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// THE HEADLINE PROOF that the architecture works, and the exact inversion of the WT-262 test it
+    /// replaces (ValidateMeetingCreation_ShouldDeny_WhenBillingIsUnreachable).
+    ///
+    /// There is no billing client to make unreachable any more: neither the gRPC boundary nor the
+    /// directory service that now owns the decision takes one, so this test cannot even express
+    /// "billing is down" — the dependency is gone. What it asserts is the consequence: a
+    /// multi-language meeting is created from the local snapshot alone, with no remote call to
+    /// BillingService in the path, so its availability cannot deny it.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_WithBillingUnreachable_BecauseItReadsTheLocalSnapshot()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_languages", "3", "plan:enterprise")));
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en", "ja" });
+
+        Assert.True(result.Value!.IsAllowed);
+        Assert.Empty(result.Value.ErrorMessage);
+
+        // The only collaborators reached are local state and the room count. No billing client
+        // exists on either type — asserting that is what pins the stopgap as removed. WT-239 moved
+        // the rule, so both constructors are checked; reintroducing the dependency at either layer
+        // would restore the coupling WT-263 deleted.
+        Assert.DoesNotContain(
+            typeof(WorkspaceDirectoryService).GetConstructors().Single().GetParameters(),
+            parameter => parameter.ParameterType == typeof(IBillingSubscriptionClient));
+        Assert.DoesNotContain(
+            typeof(WorkspaceGrpcService).GetConstructors().Single().GetParameters(),
+            parameter => parameter.ParameterType == typeof(IBillingSubscriptionClient));
+    }
+
+    /// <summary>
+    /// COLD START: a workspace with no snapshot yet. Plan quotas are not in force, so creation
+    /// succeeds — the same answer a workspace with no live subscription already got, and the reason
+    /// a brand-new workspace is not locked out while its first event is in flight.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_OnColdStart_WhenNoSnapshotExistsYet()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en", "ja", "ko" });
+
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// A workspace with no live plan has no max_languages in force. The workspace's own
+    /// AllowedTargetLanguages policy still governs it — this must not become "no subscription, no
+    /// meetings".
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_WhenWorkspaceHasNoActiveSubscription()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(
+            workspaceId,
+            SnapshotJson(("max_languages", "1", "platform_default")),
+            hasActiveSubscription: false);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en", "ja" });
+
+        Assert.True(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// WT-263: max_active_rooms is an ordinary entitlement key now. A resolved workspace_override
+    /// beats the settings-JSON copy, with no sentinel value anywhere.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldEnforceMaxActiveRooms_FromTheSnapshot()
+    {
+        var workspaceId = Guid.NewGuid();
+        // Settings JSON says 10; the resolved entitlement says the owner tightened to 2.
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":10}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "2", "workspace_override")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(2);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, Array.Empty<string>());
+
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("active room limit (2)", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

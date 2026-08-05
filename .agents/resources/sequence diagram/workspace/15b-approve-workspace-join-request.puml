@@ -1,0 +1,176 @@
+@startuml
+title WarpTalk - Approve Workspace Join Request
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Workspace Owner/Admin" as Admin
+boundary "WorkspaceInvitationsPage" as AdminWeb
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceInvitationsController" as WorkspaceInvitationsController <<boundary>>
+participant ":WorkspaceInvitationService" as WorkspaceInvitationService <<control>>
+participant ":AuthIdentityClient" as AuthIdentityClient <<boundary>>
+participant ":WorkspaceInvitationRepository" as WorkspaceInvitationRepository <<entity>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<entity>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+Admin -> AdminWeb : Open invitation management page
+activate AdminWeb
+AdminWeb -> Gateway : GET /api/v1/workspaces/{workspaceId}/invitations\n?page=1&pageSize=10
+activate Gateway
+Gateway -> WorkspaceInvitationsController : ListInvitations(workspaceId, query)
+activate WorkspaceInvitationsController
+
+WorkspaceInvitationsController -> WorkspaceInvitationService : ListInvitationsAsync(workspaceId, query, userId)
+activate WorkspaceInvitationService
+WorkspaceInvitationService -> WorkspaceMemberRepository : FirstOrDefaultAsync(active member by workspaceId, userId)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository -> WorkspaceDb : SELECT active member by WorkspaceId and UserId
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceMemberRepository : Member / null
+deactivate WorkspaceDb
+WorkspaceMemberRepository --> WorkspaceInvitationService : Member / null
+deactivate WorkspaceMemberRepository
+
+alt Caller is not a workspace member
+    WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (OnlyOwnerAdminCanViewInvitations)
+    deactivate WorkspaceInvitationService
+    WorkspaceInvitationsController --> Gateway : 400 BadRequest
+    deactivate WorkspaceInvitationsController
+    Gateway --> AdminWeb : 400 BadRequest
+    deactivate Gateway
+    AdminWeb --> Admin : Show access error
+    deactivate AdminWeb
+else Caller is a workspace member
+    WorkspaceInvitationService -> AuthIdentityClient : GetRoleNameByIdAsync(member.RoleId)
+    activate AuthIdentityClient
+    AuthIdentityClient --> WorkspaceInvitationService : RoleName
+    deactivate AuthIdentityClient
+
+    alt Caller is not Owner/Admin
+        WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (OnlyOwnerAdminCanViewInvitations)
+        WorkspaceInvitationsController --> Gateway : 400 BadRequest
+        Gateway --> AdminWeb : 400 BadRequest
+        AdminWeb --> Admin : Show access error
+    else Caller is Owner/Admin
+        WorkspaceInvitationService -> WorkspaceInvitationRepository : GetInvitationsByWorkspaceAsync(workspaceId, page, pageSize)
+        activate WorkspaceInvitationRepository
+        WorkspaceInvitationRepository -> WorkspaceDb : SELECT invitations by WorkspaceId
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceInvitationRepository : Invitations page
+        deactivate WorkspaceDb
+        WorkspaceInvitationRepository --> WorkspaceInvitationService : Invitations page
+        deactivate WorkspaceInvitationRepository
+
+        loop Map each invitation to DTO
+            WorkspaceInvitationService -> AuthIdentityClient : GetRoleNameByIdAsync(invitation.RoleId)
+            activate AuthIdentityClient
+            AuthIdentityClient --> WorkspaceInvitationService : RoleName
+            deactivate AuthIdentityClient
+        end
+
+        WorkspaceInvitationService --> WorkspaceInvitationsController : Success (PagedResult<WorkspaceInvitationDto>)
+        WorkspaceInvitationsController --> Gateway : 200 OK
+        Gateway --> AdminWeb : 200 OK
+        AdminWeb --> Admin : Display invitations and highlight REQUESTED items
+    end
+end
+
+Admin -> AdminWeb : Approve a REQUESTED join request
+activate AdminWeb
+AdminWeb -> Gateway : POST /api/v1/workspaces/{workspaceId}/join-requests/{invitationId}/approve
+activate Gateway
+Gateway -> WorkspaceInvitationsController : ApproveJoinRequest(workspaceId, invitationId)
+activate WorkspaceInvitationsController
+
+WorkspaceInvitationsController -> WorkspaceInvitationService : ApproveJoinRequestAsync(workspaceId, invitationId, adminUserId)
+activate WorkspaceInvitationService
+WorkspaceInvitationService -> WorkspaceMemberRepository : FirstOrDefaultAsync(active member by workspaceId, adminUserId)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository -> WorkspaceDb : SELECT active member by WorkspaceId and UserId
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceMemberRepository : Admin member / null
+deactivate WorkspaceDb
+WorkspaceMemberRepository --> WorkspaceInvitationService : Admin member / null
+deactivate WorkspaceMemberRepository
+
+alt Caller is not a workspace member
+    WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (UserNotMember)
+    deactivate WorkspaceInvitationService
+    WorkspaceInvitationsController --> Gateway : 403 Forbidden
+    deactivate WorkspaceInvitationsController
+    Gateway --> AdminWeb : 403 Forbidden
+    deactivate Gateway
+    AdminWeb --> Admin : Show access error
+    deactivate AdminWeb
+else Caller is a workspace member
+    WorkspaceInvitationService -> AuthIdentityClient : GetRoleNameByIdAsync(adminMember.RoleId)
+    activate AuthIdentityClient
+    AuthIdentityClient --> WorkspaceInvitationService : RoleName
+    deactivate AuthIdentityClient
+
+    alt Caller is not Owner/Admin
+        WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (OnlyOwnerAdminCanApprove)
+        WorkspaceInvitationsController --> Gateway : 403 Forbidden
+        Gateway --> AdminWeb : 403 Forbidden
+        AdminWeb --> Admin : Show access error
+    else Caller is Owner/Admin
+        WorkspaceInvitationService -> WorkspaceInvitationRepository : GetByIdAsync(invitationId)
+        activate WorkspaceInvitationRepository
+        WorkspaceInvitationRepository -> WorkspaceDb : SELECT invitation by Id
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceInvitationRepository : Invitation / null
+        deactivate WorkspaceDb
+        WorkspaceInvitationRepository --> WorkspaceInvitationService : Invitation / null
+        deactivate WorkspaceInvitationRepository
+
+        alt Invitation not found or belongs to another workspace
+            WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (InvitationNotFound)
+            WorkspaceInvitationsController --> Gateway : 404 NotFound
+            Gateway --> AdminWeb : 404 NotFound
+            AdminWeb --> Admin : Show "Invitation not found"
+        else Invitation found
+            alt Invitation status is not REQUESTED
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (OnlyRequestedCanBeApproved)
+                WorkspaceInvitationsController --> Gateway : 400 BadRequest
+                Gateway --> AdminWeb : 400 BadRequest
+                AdminWeb --> Admin : Show invalid state error
+            else Invitation status is REQUESTED
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : Update(invitation)\nStatus = PENDING
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Tracked
+                deactivate WorkspaceInvitationRepository
+
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : SaveChangesAsync()
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository -> WorkspaceDb : UPDATE WorkspaceInvitation SET Status = 'PENDING'
+                activate WorkspaceDb
+                WorkspaceDb --> WorkspaceInvitationRepository : Saved
+                deactivate WorkspaceDb
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Save successful
+                deactivate WorkspaceInvitationRepository
+
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Success
+                WorkspaceInvitationsController --> Gateway : 204 NoContent
+                Gateway --> AdminWeb : 204 NoContent
+                AdminWeb --> Admin : Show approval success
+            end
+        end
+    end
+end
+@enduml

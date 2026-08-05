@@ -24,6 +24,10 @@ public partial class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.
     private readonly IWorkspaceAuthorizationService _workspaceAuthService;
     private readonly ILogger<BillingServiceGrpc> _logger;
 
+    // WT-263: the resolver and its publisher. Nothing else in this class may compute an entitlement.
+    private readonly Application.Entitlements.IEntitlementResolver _entitlementResolver;
+    private readonly Application.Entitlements.IEntitlementChangePublisher _entitlementChangePublisher;
+
     public BillingServiceGrpc(
         ICreditService creditService,
         ISubscriptionService subscriptionService,
@@ -31,7 +35,9 @@ public partial class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.
         IPaymentAppService paymentAppService,
         IUnitOfWork unitOfWork,
         IWorkspaceAuthorizationService workspaceAuthService,
-        ILogger<BillingServiceGrpc> logger)
+        ILogger<BillingServiceGrpc> logger,
+        Application.Entitlements.IEntitlementResolver entitlementResolver,
+        Application.Entitlements.IEntitlementChangePublisher entitlementChangePublisher)
     {
         _creditService = creditService;
         _subscriptionService = subscriptionService;
@@ -40,6 +46,8 @@ public partial class BillingServiceGrpc : WarpTalk.Shared.Protos.BillingService.
         _unitOfWork = unitOfWork;
         _workspaceAuthService = workspaceAuthService;
         _logger = logger;
+        _entitlementResolver = entitlementResolver;
+        _entitlementChangePublisher = entitlementChangePublisher;
     }
 
 }

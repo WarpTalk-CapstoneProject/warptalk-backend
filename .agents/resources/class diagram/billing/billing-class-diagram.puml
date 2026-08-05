@@ -1,0 +1,329 @@
+@startuml
+title 3.6 Billing Module Class Diagram
+
+top to bottom direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 85
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam classBackgroundColor White
+skinparam classBorderColor Black
+skinparam ArrowColor Black
+
+package "API Layer" as ApiLayer {
+  class BillingController <<boundary>> {
+    +GetPlans()
+    +CreateSubscription(workspaceId, request)
+    +ConsumeCredits(workspaceId, request)
+  }
+
+  class CreditsController <<boundary>> {
+    +GetWorkspaceCredits(workspaceId)
+    +AdjustCredits(workspaceId, request)
+    +GetGlobalCreditHistory(query)
+  }
+
+  class PaymentsController <<boundary>> {
+    +CreatePayment(request)
+    +CreateCheckoutSession(request)
+    +HandleWebhook(payload)
+  }
+
+  class PlansController <<boundary>> {
+    +CreatePlan(request)
+    +UpdatePlan(id, request)
+    +DeactivatePlan(id)
+  }
+
+  class SubscriptionsController <<boundary>> {
+    +CreateSubscription(request)
+    +ChangeSubscription(id, request)
+    +CancelSubscription(id)
+  }
+
+  class UsagesController <<boundary>> {
+    +RecordUsage(request)
+    +GetBillingReport(query)
+    +GetGlobalMetrics()
+  }
+
+  class BillingGrpcService <<boundary>> {
+    +ConsumeCredits(request)
+    +GetBalance(request)
+    +ReserveCredits(request)
+  }
+
+  class StripeBillingGateway <<boundary>> {
+    +CreateCheckoutAsync(request)
+    +ParseWebhook(payload, signature)
+  }
+
+  BillingController -[hidden]right- CreditsController
+  CreditsController -[hidden]right- PaymentsController
+  PaymentsController -[hidden]right- PlansController
+  PlansController -[hidden]right- SubscriptionsController
+  SubscriptionsController -[hidden]right- UsagesController
+  UsagesController -[hidden]right- BillingGrpcService
+  BillingGrpcService -[hidden]right- StripeBillingGateway
+}
+
+package "Application Layer" as ApplicationLayer {
+  class BillingService <<control>> {
+    +CreateSubscriptionAsync(workspaceId, planId)
+    +ConsumeCreditsAsync(workspaceId, request)
+    +CancelSubscriptionAsync(workspaceId, reason)
+  }
+
+  class CreditService <<control>> {
+    +ReserveCreditsAsync(workspaceId, request)
+    +ConfirmConsumeAsync(reservationId)
+    +AdjustCreditsAsync(workspaceId, request)
+  }
+
+  class UsageService <<control>> {
+    +CalculateCreditCost(audioSeconds, tokenCount, gpuMs, voiceClone)
+    +RecordUsageAsync(request)
+    +GetBillingReportAsync(query)
+  }
+
+  class SubscriptionService <<control>> {
+    +CreateSubscriptionAsync(request)
+    +ChangeSubscriptionAsync(id, request)
+    +CancelSubscriptionAsync(id)
+  }
+
+  class PlanService <<control>> {
+    +CreatePlanAsync(request)
+    +UpdatePlanAsync(id, request)
+    +DeactivatePlanAsync(id)
+  }
+
+  class PaymentAndLedgerService <<control>> {
+    +CreatePaymentAsync(request)
+    +UpdatePaymentStatusAsync(id, status)
+    +HandleWebhookAsync(request)
+  }
+
+  class InvoiceService <<control>> {
+    +GetInvoicesAsync(query)
+    +GetGlobalInvoicesAsync(query)
+  }
+
+  class RefundService <<control>> {
+    +RefundPaymentAsync(request)
+  }
+
+  BillingService -[hidden]right- CreditService
+  CreditService -[hidden]right- UsageService
+  UsageService -[hidden]right- SubscriptionService
+  SubscriptionService -[hidden]right- PlanService
+  PlanService -[hidden]right- PaymentAndLedgerService
+  PaymentAndLedgerService -[hidden]right- InvoiceService
+  InvoiceService -[hidden]right- RefundService
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class UnitOfWork <<control>> {
+    +SaveChangesAsync()
+  }
+
+  class PlanRepository <<control>> {
+    +GetByIdAsync(id)
+    +AddAsync(plan)
+    +Update(plan)
+  }
+
+  class SubscriptionRepository <<control>> {
+    +FirstOrDefaultAsync(predicate)
+    +AddAsync(subscription)
+    +Update(subscription)
+  }
+
+  class CreditTransactionRepository <<control>> {
+    +AddAsync(transaction)
+    +GetPagedAsync(query)
+  }
+
+  class UsageRecordRepository <<control>> {
+    +AddAsync(usage)
+    +GetPagedAsync(query)
+  }
+
+  class PaymentRepository <<control>> {
+    +AddAsync(payment)
+    +Update(payment)
+  }
+
+  class InvoiceRepository <<control>> {
+    +GetPagedAsync(query)
+  }
+
+  class RefundRepository <<control>> {
+    +AddAsync(refund)
+  }
+
+  class IdempotencyRepository <<control>> {
+    +GetAsync(key)
+    +StoreAsync(record)
+  }
+
+  class WorkspaceDirectoryGrpcClient <<control>> {
+    +GetNamesAsync(workspaceIds)
+  }
+
+  UnitOfWork -[hidden]right- PlanRepository
+  PlanRepository -[hidden]right- SubscriptionRepository
+  SubscriptionRepository -[hidden]right- CreditTransactionRepository
+  CreditTransactionRepository -[hidden]right- UsageRecordRepository
+  UsageRecordRepository -[hidden]right- PaymentRepository
+  PaymentRepository -[hidden]right- InvoiceRepository
+  InvoiceRepository -[hidden]right- RefundRepository
+  RefundRepository -[hidden]right- IdempotencyRepository
+  IdempotencyRepository -[hidden]right- WorkspaceDirectoryGrpcClient
+
+  UnitOfWork o-- PlanRepository
+  UnitOfWork o-- SubscriptionRepository
+  UnitOfWork o-- CreditTransactionRepository
+  UnitOfWork o-- UsageRecordRepository
+  UnitOfWork o-- PaymentRepository
+  UnitOfWork o-- InvoiceRepository
+  UnitOfWork o-- RefundRepository
+  UnitOfWork o-- IdempotencyRepository
+}
+
+package "Domain Layer" as DomainLayer {
+  class Plan <<entity>> {
+    -Id: Guid
+    -Slug: String
+    -Name: String
+    -MonthlyPrice: Decimal
+    -IncludedCredits: Int
+  }
+
+  class Subscription <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -PlanId: Guid
+    -Status: SubscriptionStatus
+    -CurrentPeriodEnd: DateTime
+  }
+
+  class CreditTransaction <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -SubscriptionId: Guid
+    -Amount: Decimal
+    -Type: TransactionType
+  }
+
+  class UsageRecord <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -ServiceCode: String
+    -AudioSeconds: Int
+    -CreditsCharged: Decimal
+  }
+
+  class Payment <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -Amount: Decimal
+    -Status: PaymentStatus
+  }
+
+  class Invoice <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -PaymentId: Guid
+    -Total: Decimal
+  }
+
+  class Refund <<entity>> {
+    -Id: Guid
+    -PaymentId: Guid
+    -Amount: Decimal
+    -Reason: String
+  }
+
+  class IdempotencyRecord <<entity>> {
+    -Id: Guid
+    -Key: String
+    -Operation: String
+    -ResponseJson: String
+  }
+
+  Plan "1" -- "0..*" Subscription : prices subscriptions
+  Subscription "1" *-- "0..*" CreditTransaction : records ledger
+  Subscription "1" *-- "0..*" UsageRecord : tracks usage
+  Payment "1" *-- "0..1" Invoice : generates invoice
+  Payment "1" *-- "0..*" Refund : may refund
+}
+
+package "External Systems" as ExternalSystems {
+  class StripePaymentGateway <<external system>> {
+    +CreateCheckoutSession(request)
+    +SendWebhook(event)
+  }
+
+  class WorkspaceServiceGrpcServer <<external system>> {
+    +GetWorkspaceNames(workspaceIds)
+  }
+
+  class RedisEventStream <<external system>> {
+    +PublishBillingEvent(event)
+  }
+
+  StripePaymentGateway -[hidden]right- WorkspaceServiceGrpcServer
+  WorkspaceServiceGrpcServer -[hidden]right- RedisEventStream
+}
+
+BillingController --> BillingService
+CreditsController --> CreditService
+PaymentsController --> PaymentAndLedgerService
+PlansController --> PlanService
+SubscriptionsController --> SubscriptionService
+UsagesController --> UsageService
+BillingGrpcService --> CreditService
+PaymentsController --> StripeBillingGateway
+
+BillingService ..> SubscriptionRepository
+CreditService ..> CreditTransactionRepository
+UsageService ..> UsageRecordRepository
+PlanService ..> PlanRepository
+PaymentAndLedgerService ..> PaymentRepository
+InvoiceService ..> InvoiceRepository
+RefundService ..> RefundRepository
+CreditService ..> WorkspaceDirectoryGrpcClient
+
+PlanRepository ..> Plan : persists
+SubscriptionRepository ..> Subscription : persists
+CreditTransactionRepository ..> CreditTransaction : persists
+UsageRecordRepository ..> UsageRecord : persists
+PaymentRepository ..> Payment : persists
+InvoiceRepository ..> Invoice : persists
+RefundRepository ..> Refund : persists
+IdempotencyRepository ..> IdempotencyRecord : persists
+
+StripeBillingGateway ..> StripePaymentGateway : creates checkout
+WorkspaceDirectoryGrpcClient ..> WorkspaceServiceGrpcServer : resolves workspace
+PaymentAndLedgerService ..> RedisEventStream : publishes events
+
+ApiLayer -[hidden]down- ApplicationLayer
+ApplicationLayer -[hidden]down- InfrastructureLayer
+InfrastructureLayer -[hidden]down- DomainLayer
+InfrastructureLayer -[hidden]right- ExternalSystems
+
+ApiLayer -down..> ApplicationLayer : delegates requests
+ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
+InfrastructureLayer -down..> DomainLayer : persists entities
+InfrastructureLayer -right..> ExternalSystems : integrates APIs
+@enduml

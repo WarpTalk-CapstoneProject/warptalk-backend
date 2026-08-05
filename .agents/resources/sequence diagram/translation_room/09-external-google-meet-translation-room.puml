@@ -1,0 +1,231 @@
+﻿@startuml
+title WarpTalk - External Google Meet Translation Room
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 110
+
+actor "Workspace Member" as Member
+boundary "CreateRoomPage" as CreateRoomPage
+boundary "RoomDetailsPage" as RoomDetailsPage
+boundary "GoogleMeetPage" as GoogleMeetPage <<external system>>
+boundary "PopupWidget" as PopupWidget
+
+control "API Gateway" as Gateway <<control>>
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRooms\nController" as Controller <<boundary>>
+participant ":TranslationRoom\nAudioRouteController" as RouteController <<boundary>>
+participant ":TranslationRoom\nService" as Service <<service>>
+participant ":TranslationRoom\nAudioRouteService" as RouteService <<service>>
+participant ":TranslationRoom\nRepository" as RoomRepo <<control>>
+participant ":AudioRouteCache\nService" as CacheService <<service>>
+database "Translation Room DB" as RoomDb
+end box
+
+box "Meeting Service" #PaleGreen
+participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+end box
+
+== STEP 1: CREATE ROOM ON MAIN APP PAGE & REDIRECT TO ROOM DETAILS ==
+
+Member -> CreateRoomPage : Open WarpTalk App, fill Title,\nLanguages & paste Google Meet Link
+activate CreateRoomPage
+CreateRoomPage -> Gateway : POST /api/v1/translation-rooms\n[Title, TargetLanguages,\nPlatform='GoogleMeet', ExternalUrl]
+activate Gateway
+Gateway -> Controller : CreateTranslationRoom\n(request)
+activate Controller
+Controller -> Service : CreateTranslationRoomAsync\n(request, memberId)
+activate Service
+Service -> RoomRepo : AddAsync\n(translationRoom)
+activate RoomRepo
+RoomRepo -> RoomDb : INSERT INTO\nTranslationRooms
+activate RoomDb
+RoomDb --> RoomRepo : Saved
+deactivate RoomDb
+RoomRepo --> Service : Done
+deactivate RoomRepo
+Service --> Controller : Result.Success\n(TranslationRoomDto)
+deactivate Service
+Controller --> Gateway : 201 Created\n(TranslationRoomDto)
+deactivate Controller
+Gateway --> CreateRoomPage : 201 Created\n(TranslationRoomDto)
+deactivate Gateway
+
+CreateRoomPage -> RoomDetailsPage : Redirect to Room Details page
+activate RoomDetailsPage
+deactivate CreateRoomPage
+RoomDetailsPage --> Member : Display room info, languages &\nGoogle Meet link
+deactivate RoomDetailsPage
+
+== STEP 2: OPEN FLOATING POPUP OVERLAY OVER GOOGLE MEET (IDLE MODE) ==
+
+Member -> RoomDetailsPage : Click "Open Floating Overlay on Google Meet"
+activate RoomDetailsPage
+RoomDetailsPage -> PopupWidget : Launch Floating Popup Widget over Google Meet\n(in IDLE / READY state) & minimize main app
+activate PopupWidget
+deactivate RoomDetailsPage
+
+Member -> GoogleMeetPage : Switch to Google Meet call window
+activate GoogleMeetPage
+GoogleMeetPage --> Member : Render active Google Meet meeting\nwith WarpTalk Popup Widget floating on top
+deactivate GoogleMeetPage
+
+== STEP 3: START TRANSLATION SESSION RIGHT ON POPUP WIDGET ==
+
+Member -> PopupWidget : Click "â–¶ Start Translation" on Popup Widget
+PopupWidget -> Gateway : POST /api/v1/translation-rooms\n/{roomId}/audio-routes/generate
+activate Gateway
+Gateway -> RouteController : GenerateRoutes\n(roomId)
+activate RouteController
+RouteController -> RouteService : GenerateRoutesAsync\n(roomId)
+activate RouteService
+RouteService -> RoomDb : INSERT INTO\nTranslationRoomAudioRoutes
+activate RoomDb
+RoomDb --> RouteService : Saved
+deactivate RoomDb
+RouteService --> RouteController : Result.Success\n(AudioRoutesDto)
+deactivate RouteService
+RouteController --> Gateway : 200 OK\n(AudioRoutesDto)
+deactivate RouteController
+Gateway --> PopupWidget : 200 OK\n(AudioRoutesDto)
+deactivate Gateway
+
+PopupWidget -> Gateway : POST /api/v1/translation-rooms\n/{roomId}/start
+activate Gateway
+Gateway -> Controller : StartTranslationRoom\n(roomId)
+activate Controller
+Controller -> Service : StartTranslationRoomAsync\n(roomId, memberId)
+activate Service
+Service -> RoomRepo : Update\n(status = "IN_PROGRESS")
+activate RoomRepo
+RoomRepo -> RoomDb : UPDATE TranslationRooms\nSET Status='IN_PROGRESS'
+activate RoomDb
+RoomDb --> RoomRepo : Saved
+deactivate RoomDb
+RoomRepo --> Service : Done
+deactivate RoomRepo
+Service -> CacheService : PublishRoutesUpdateAsync\n(roomId)
+activate CacheService
+CacheService --> Service : Published to Redis
+deactivate CacheService
+Service --> Controller : Result.Success()
+deactivate Service
+Controller --> Gateway : 200 OK
+deactivate Controller
+Gateway --> PopupWidget : 200 OK
+deactivate Gateway
+PopupWidget --> Member : Change state to ACTIVE &\nbegin capturing Google Meet audio
+deactivate PopupWidget
+
+== STEP 4: REAL-TIME USER INTERACTION & FLOATING POPUP SUBTITLES ==
+
+Member -> GoogleMeetPage : Speak in Google Meet call (Main Window)
+activate GoogleMeetPage
+GoogleMeetPage -> PopupWidget : Audio captured by WarpTalk App\n(Native Audio Capture)
+activate PopupWidget
+deactivate GoogleMeetPage
+
+PopupWidget -> Hub : Stream audio & receive real-time translated subtitles\n(See Flow 05 & 19 for Background AI & Transcript Workers)
+activate Hub
+Hub --> PopupWidget : SignalR: ReceiveSubtitle & PlayClonedAudio
+deactivate Hub
+
+PopupWidget -> PopupWidget : Route cloned voice to Virtual Mic & play to Headphones\n(See Flow 07 for Virtual Audio Driver details)
+PopupWidget --> Member : Render real-time translated subtitles\n& live transcript inside Popup Widget
+deactivate PopupWidget
+
+== STEP 5: QUICK SETTINGS & CONTROLS INSIDE POPUP WIDGET ==
+
+alt Member toggles Voice Clone consent
+  Member -> PopupWidget : Toggle "Voice Clone" switch on Popup Widget
+  activate PopupWidget
+  PopupWidget -> Gateway : PATCH /api/v1/translation-rooms\n/{roomId}/audio-routes/{routeId}/voice-clone
+  activate Gateway
+  Gateway -> RouteController : ToggleVoiceClone\n(roomId, routeId, dto)
+  activate RouteController
+  RouteController -> RouteService : ToggleVoiceCloneAsync\n(roomId, routeId, dto)
+  activate RouteService
+  RouteService -> RoomDb : UPDATE AudioRoutes\nSET VoiceCloneEnabled=true/false
+  activate RoomDb
+  RoomDb --> RouteService : Saved
+  deactivate RoomDb
+  deactivate RouteService
+  RouteService --> RouteController : Result.Success()
+  RouteController --> Gateway : 200 OK
+  deactivate RouteController
+  Gateway --> PopupWidget : 200 OK
+  deactivate Gateway
+  PopupWidget --> Member : Update Voice Clone indicator on Popup Widget
+  deactivate PopupWidget
+else Member pauses / resumes translation
+  Member -> PopupWidget : Click "Pause Translation" on Popup Widget
+  activate PopupWidget
+  PopupWidget -> Gateway : POST /api/v1/translation-rooms\n/{roomId}/pause
+  activate Gateway
+  Gateway -> Controller : PauseTranslationRoom\n(roomId)
+  activate Controller
+  Controller -> Service : PauseTranslationRoomAsync\n(roomId, memberId)
+  activate Service
+  Service -> RoomDb : UPDATE TranslationRooms\nSET Status='PAUSED'
+  activate RoomDb
+  RoomDb --> Service : Saved
+  deactivate RoomDb
+  Service -> CacheService : PublishRoutesUpdateAsync\n(roomId)
+  activate CacheService
+  CacheService --> Service : Published
+  deactivate CacheService
+  Service --> Controller : Result.Success()
+  deactivate Service
+  Controller --> Gateway : 204 No Content
+  deactivate Controller
+  Gateway --> PopupWidget : 204 No Content
+  deactivate Gateway
+  PopupWidget --> Member : Update Paused state on Popup Widget
+  deactivate PopupWidget
+end
+
+== STEP 6: END TRANSLATION SESSION FROM POPUP WIDGET ==
+
+Member -> PopupWidget : Click "End Translation" on Popup Widget
+activate PopupWidget
+PopupWidget -> Gateway : POST /api/v1/translation-rooms\n/{roomId}/end
+activate Gateway
+Gateway -> Controller : EndTranslationRoom\n(roomId)
+activate Controller
+Controller -> Service : EndTranslationRoomAsync\n(roomId, memberId)
+activate Service
+Service -> RoomRepo : Update\n(status = "ENDED")
+activate RoomRepo
+RoomRepo -> RoomDb : UPDATE TranslationRooms\nSET Status='ENDED'
+activate RoomDb
+RoomDb --> RoomRepo : Saved
+deactivate RoomDb
+RoomRepo --> Service : Done
+deactivate RoomRepo
+Service -> CacheService : PublishRoutesUpdateAsync\n(roomId)
+activate CacheService
+CacheService --> Service : Published
+deactivate CacheService
+Service --> Controller : Result.Success()
+deactivate Service
+Controller --> Gateway : 204 No Content
+deactivate Controller
+Gateway --> PopupWidget : 204 No Content
+deactivate Gateway
+
+PopupWidget --> Member : Release Virtual Driver &\nclose Popup Widget cleanly
+deactivate PopupWidget
+
+@enduml

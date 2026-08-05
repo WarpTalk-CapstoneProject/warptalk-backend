@@ -1,0 +1,212 @@
+@startuml
+title WarpTalk - Background Document Security & RAG Ingestion
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 220
+
+queue "Redis Document Stream\nworkspace-document-events" as DocStream
+participant ":DocumentSecurityGuardrailConsumerService" as GuardrailWorker <<boundary>>
+participant ":WorkspaceDocumentService" as DocumentService <<service>>
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceDocumentRepository" as DocumentRepo <<control>>
+participant ":WorkspaceDocumentEventPublisher" as DocEventPublisher <<control>>
+participant ":IEmbeddingIndexPublisher" as EmbeddingPublisher <<control>>
+participant ":IDocumentEmbeddingResultProcessor" as ResultProcessor <<control>>
+participant ":WorkspaceDocumentRepository" as ResultDocRepo <<control>>
+database "Workspace Database" as Db
+end box
+
+database "Encrypted Storage" as Storage
+participant ":IDocumentTextExtractor" as TextExtractor <<service>>
+participant ":IDocumentSecurityScanner" as SecurityScanner <<service>>
+participant ":IAiPolicyResolver" as PolicyResolver <<service>>
+participant "warptalk-ai\nEmbedding Worker" as AiWorker <<external system>>
+queue "Redis Embedding Stream\nembedding:index_requests" as EmbeddingRequests
+queue "Redis Result Stream\nembedding:index_results" as EmbeddingResults
+
+== DOCUMENT UPLOAD PUBLISHES INGESTION REQUEST ==
+DocumentService -> DocEventPublisher : PublishDocumentUploadedAsync(documentId, workspaceId, storageKey, ...)
+activate DocEventPublisher
+DocEventPublisher -> DocStream : XADD DocumentUploaded
+activate DocStream
+DocStream --> DocEventPublisher : stream id
+deactivate DocStream
+DocEventPublisher --> DocumentService : queued
+deactivate DocEventPublisher
+
+== GUARDRAIL CONSUMER PROCESSES DOCUMENT ==
+DocStream -> GuardrailWorker : Consume DocumentUploaded
+activate GuardrailWorker
+GuardrailWorker -> DocumentRepo : GetByIdAsync(documentId)
+activate DocumentRepo
+DocumentRepo -> Db : SELECT document row
+activate Db
+Db --> DocumentRepo : document / null
+deactivate Db
+DocumentRepo --> GuardrailWorker : document
+deactivate DocumentRepo
+
+alt document missing or deleted
+  GuardrailWorker -> DocStream : Acknowledge message
+  activate DocStream
+  deactivate GuardrailWorker
+else document exists
+  GuardrailWorker -> GuardrailWorker : Check basic eligibility\n(status, retention, restricted, IsAiAllowed)
+  activate GuardrailWorker
+
+  alt not eligible for AI indexing
+    GuardrailWorker -> DocumentRepo : Update ingestion status = skipped\nAiEligible = false
+    activate DocumentRepo
+    DocumentRepo -> Db : UPDATE document status
+    activate Db
+    Db --> DocumentRepo : saved
+    deactivate Db
+    DocumentRepo --> GuardrailWorker : done
+    deactivate DocumentRepo
+    GuardrailWorker -> DocEventPublisher : PublishDocumentLifecycleAsync(..., skipped/updated)
+    activate DocEventPublisher
+    GuardrailWorker -> DocStream : Acknowledge message
+  else eligible for processing
+    GuardrailWorker -> DocumentRepo : Update ingestion status = processing
+    activate DocumentRepo
+    DocumentRepo -> Db : UPDATE document status
+    activate Db
+    Db --> DocumentRepo : saved
+    deactivate Db
+    DocumentRepo --> GuardrailWorker : done
+    deactivate DocumentRepo
+    GuardrailWorker -> DocEventPublisher : PublishDocumentLifecycleAsync(..., processing)
+
+    GuardrailWorker -> PolicyResolver : ResolvePolicySettingsAsync(document)
+    activate PolicyResolver
+    PolicyResolver --> GuardrailWorker : policy settings
+    deactivate PolicyResolver
+
+    GuardrailWorker -> Storage : GetDecryptedStreamAsync(document)
+    activate Storage
+    Storage --> GuardrailWorker : decrypted stream
+    deactivate Storage
+
+    GuardrailWorker -> TextExtractor : ExtractTextAsync(stream)
+    activate TextExtractor
+    TextExtractor --> GuardrailWorker : extracted text
+    deactivate TextExtractor
+
+    GuardrailWorker -> Storage : SaveExtractedTextAsync(document, json)
+    activate Storage
+    Storage --> GuardrailWorker : done
+    deactivate Storage
+
+    GuardrailWorker -> SecurityScanner : ScanAsync(fullText, pii, dlp, keywords)
+    activate SecurityScanner
+    SecurityScanner --> GuardrailWorker : scan result / masked text
+    deactivate SecurityScanner
+
+    alt scan blocks indexing
+      GuardrailWorker -> DocumentRepo : Update ingestion status = skipped/failed\nAiEligible = false
+      activate DocumentRepo
+      DocumentRepo -> Db : UPDATE document row
+      activate Db
+      Db --> DocumentRepo : saved
+      deactivate Db
+      DocumentRepo --> GuardrailWorker : done
+      deactivate DocumentRepo
+      GuardrailWorker ->> DocEventPublisher : PublishDocumentLifecycleAsync(..., skipped/failed)
+    else can publish embedding request
+      GuardrailWorker -> EmbeddingPublisher : PublishEmbeddingIndexRequestAsync(document, text, allowExternalLlm)
+      activate EmbeddingPublisher
+      EmbeddingPublisher -> EmbeddingRequests : XADD embedding:index_requests
+      activate EmbeddingRequests
+      EmbeddingRequests --> EmbeddingPublisher : job id
+      deactivate EmbeddingRequests
+      EmbeddingPublisher --> GuardrailWorker : job id
+      deactivate EmbeddingPublisher
+      GuardrailWorker -> DocumentRepo : Update ingestion status = processing\nAiEligible = false
+      activate DocumentRepo
+      DocumentRepo -> Db : UPDATE document row
+      activate Db
+      Db --> DocumentRepo : saved
+      deactivate Db
+      DocumentRepo --> GuardrailWorker : done
+      deactivate DocumentRepo
+      GuardrailWorker ->> DocEventPublisher : PublishDocumentLifecycleAsync(..., processing)
+    end
+
+    GuardrailWorker -> DocStream : Acknowledge message
+    deactivate GuardrailWorker
+  end
+end
+
+== EMBEDDING WORKER WRITES RESULT ==
+EmbeddingRequests -> AiWorker : Consume embedding:index_requests
+activate AiWorker
+AiWorker -> AiWorker : Chunk text and call embedding provider
+alt embedding indexed
+  AiWorker ->> EmbeddingResults : XADD embedding:index_results\nstatus=indexed
+else embedding blocked
+  AiWorker ->> EmbeddingResults : XADD embedding:index_results\nstatus=blocked
+else embedding failed
+  AiWorker ->> EmbeddingResults : XADD embedding:index_results\nstatus=failed
+end
+deactivate AiWorker
+
+== RESULT CONSUMER FINALIZES DOCUMENT ==
+EmbeddingResults -> ResultProcessor : ProcessResultAsync(values)
+activate ResultProcessor
+ResultProcessor -> ResultDocRepo : GetByIdAsync(documentId)
+activate ResultDocRepo
+ResultDocRepo -> Db : SELECT document row
+activate Db
+Db --> ResultDocRepo : document
+deactivate Db
+ResultDocRepo --> ResultProcessor : document
+deactivate ResultDocRepo
+
+alt status = indexed
+  ResultProcessor -> ResultDocRepo : Update LastIndexedAt, IndexVersion,\nIngestionStatus=completed, AiEligible=true
+  activate ResultDocRepo
+  ResultDocRepo -> Db : UPDATE document row
+  activate Db
+  Db --> ResultDocRepo : saved
+  deactivate Db
+  ResultDocRepo --> ResultProcessor : done
+  deactivate ResultDocRepo
+  ResultProcessor ->> DocEventPublisher : PublishDocumentLifecycleAsync(..., completed)
+else status = blocked
+  ResultProcessor -> ResultDocRepo : Update IngestionStatus=skipped, AiEligible=false
+  activate ResultDocRepo
+  ResultDocRepo -> Db : UPDATE document row
+  activate Db
+  Db --> ResultDocRepo : saved
+  deactivate Db
+  ResultDocRepo --> ResultProcessor : done
+  deactivate ResultDocRepo
+  ResultProcessor ->> DocEventPublisher : PublishDocumentLifecycleAsync(..., updated)
+else status = failed
+  ResultProcessor -> ResultDocRepo : Update IngestionStatus=failed, AiEligible=false
+  activate ResultDocRepo
+  ResultDocRepo -> Db : UPDATE document row
+  activate Db
+  Db --> ResultDocRepo : saved
+  deactivate Db
+  ResultDocRepo --> ResultProcessor : done
+  deactivate ResultDocRepo
+  ResultProcessor ->> DocEventPublisher : PublishDocumentLifecycleAsync(..., failed)
+end
+ResultProcessor --> EmbeddingResults : acknowledge
+deactivate ResultProcessor
+
+@enduml

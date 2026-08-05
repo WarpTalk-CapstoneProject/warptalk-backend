@@ -5,6 +5,12 @@
     <ProjectReference Include="..\WarpTalk.BillingService.Infrastructure\WarpTalk.BillingService.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- WT-262: GrpcBillingMapper is internal and is where the plan columns are read; the feature
+         access projection needs to be testable without also standing up a gRPC host. -->
+    <InternalsVisibleTo Include="WarpTalk.BillingService.Tests" />
+  </ItemGroup>
+
 
 
   <ItemGroup>

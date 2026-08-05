@@ -112,6 +112,51 @@ public sealed class OutboxClaimStore(BillingDbContext context) : IOutboxClaimSto
         return result;
     }
 
+    public async Task MarkPublishedAsync(
+        Guid id,
+        DateTime publishedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await GetOpenConnectionAsync(cancellationToken);
+
+        await using var command = new NpgsqlCommand(
+            """
+            UPDATE subscription.outbox_messages
+            SET published_at = @published_at,
+                locked_at = NULL,
+                last_error = NULL
+            WHERE id = @id;
+            """,
+            connection,
+            GetCurrentTransaction());
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("published_at", publishedAtUtc);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ReleaseFailedAsync(
+        Guid id,
+        string error,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await GetOpenConnectionAsync(cancellationToken);
+
+        // locked_at is cleared so the next sweep picks the row up immediately rather than waiting
+        // out the five-minute stale-lock window; attempt_count was already incremented by the claim.
+        await using var command = new NpgsqlCommand(
+            """
+            UPDATE subscription.outbox_messages
+            SET locked_at = NULL,
+                last_error = @last_error
+            WHERE id = @id;
+            """,
+            connection,
+            GetCurrentTransaction());
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("last_error", error.Length > 2000 ? error[..2000] : error);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private async Task<NpgsqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
         var connection = (NpgsqlConnection)context.Database.GetDbConnection();

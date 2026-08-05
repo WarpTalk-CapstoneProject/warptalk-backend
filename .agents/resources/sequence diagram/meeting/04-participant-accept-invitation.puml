@@ -1,0 +1,164 @@
+﻿@startuml
+title WarpTalk - Participant Accept Invitation
+
+autonumber
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Participant\n(Workspace Member)" as Part
+boundary "AcceptInvitationPage" as Web
+boundary "RoomDetailsPage" as RoomDetailsWeb
+control "API Gateway" as Gateway
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoomInvitationsController" as Controller <<boundary>>
+participant ":TranslationRoomInvitationService" as Service <<service>>
+participant ":TranslationRoomInvitationRepository" as InviteRepo <<control>>
+participant ":TranslationRoomParticipantRepository" as PartRepo <<control>>
+participant ":WorkspaceServiceClient" as WpClient <<boundary>>
+database "Translation Room DB" as Db
+end box
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceServiceGrpc" as WpGrpc <<boundary>>
+participant ":WorkspaceService" as WpService <<service>>
+participant ":WorkspaceMemberRepository" as WpMemberRepo <<control>>
+database "Workspace DB" as WpDb
+end box
+
+== VALIDATE INVITATION TOKEN ==
+
+Part -> Web : Open invitation link `/invitations/{token}`
+activate Web
+Web -> Gateway : GET /api/v1/translation-room-invitations/{token}
+activate Gateway
+Gateway -> Controller : GetInvitationByToken(token)
+activate Controller
+Controller -> Service : GetInvitationByTokenAsync(token, participantId)
+activate Service
+
+Service -> InviteRepo : GetByTokenAsync(token)
+activate InviteRepo
+InviteRepo -> Db : SELECT * FROM TranslationRoomInvitations\nWHERE Token = token
+activate Db
+Db --> InviteRepo : Invitation Record / null
+deactivate Db
+InviteRepo --> Service : Invitation Entity / null
+deactivate InviteRepo
+
+alt Invitation token invalid
+    Service --> Controller : Result.Failure(InvalidInvitationTokenError)
+    deactivate Service
+    Controller --> Gateway : 404 Not Found
+    deactivate Controller
+    Gateway --> Web : 404 Not Found
+    deactivate Gateway
+    Web --> Part : Display invalid invitation message
+    deactivate Web
+else Invitation expired or already used
+    Service --> Controller : Result.Failure(InvitationExpiredOrUsedError)
+    Controller --> Gateway : 410 Gone
+    Gateway --> Web : 410 Gone
+    Web --> Part : Display expired invitation message
+else Invitation is valid
+    Service -> WpClient : CheckMembershipAsync(participantId, invitation.WorkspaceId)
+    activate WpClient
+    WpClient -> WpGrpc : gRPC: CheckWorkspaceMember(participantId, workspaceId)
+    activate WpGrpc
+    WpGrpc -> WpService : CheckWorkspaceMemberAsync(participantId, workspaceId)
+    activate WpService
+    WpService -> WpMemberRepo : FirstOrDefaultAsync(participantId, workspaceId)
+    activate WpMemberRepo
+    WpMemberRepo -> WpDb : SELECT * FROM WorkspaceMembers\nWHERE UserId = participantId AND WorkspaceId = workspaceId
+    activate WpDb
+    WpDb --> WpMemberRepo : WorkspaceMember Record
+    deactivate WpDb
+    WpMemberRepo --> WpService : WorkspaceMember Entity
+    deactivate WpMemberRepo
+    WpService --> WpGrpc : MembershipResult
+    deactivate WpService
+    WpGrpc --> WpClient : gRPC response
+    deactivate WpGrpc
+    WpClient --> Service : MembershipResult
+    deactivate WpClient
+
+    alt Participant is not workspace member
+        Service --> Controller : Result.Failure(ForbiddenError)
+        Controller --> Gateway : 403 Forbidden
+        Gateway --> Web : 403 Forbidden
+        Web --> Part : Display not allowed message
+    else Participant is workspace member
+        Service --> Controller : Invitation details\n(Room title, scheduled time, host)
+        Controller --> Gateway : 200 OK (Invitation details)
+        Gateway --> Web : 200 OK (Invitation details)
+        Web --> Part : Render invitation details & Accept action
+
+        == ACCEPT INVITATION ==
+
+        Part -> Web : Click "Accept Invitation"
+        activate Web
+        Web -> Gateway : POST /api/v1/translation-room-invitations/{token}/accept
+        activate Gateway
+        Gateway -> Controller : AcceptInvitation(token)
+        activate Controller
+        Controller -> Service : AcceptInvitationAsync(token, participantId)
+        activate Service
+
+        Service -> InviteRepo : GetByTokenAsync(token)
+        activate InviteRepo
+        InviteRepo -> Db : SELECT * FROM TranslationRoomInvitations\nWHERE Token = token
+        activate Db
+        Db --> InviteRepo : Invitation Record
+        deactivate Db
+        InviteRepo --> Service : Invitation Entity
+        deactivate InviteRepo
+
+        alt Invitation expired before accept
+            Service --> Controller : Result.Failure(InvitationExpiredOrUsedError)
+            deactivate Service
+            Controller --> Gateway : 410 Gone
+            deactivate Controller
+            Gateway --> Web : 410 Gone
+            deactivate Gateway
+            Web --> Part : Display expired invitation message
+            deactivate Web
+        else Invitation can be accepted
+            Service -> PartRepo : AddOrUpdateParticipantAsync(participant)
+            activate PartRepo
+            PartRepo -> Db : INSERT INTO TranslationRoomParticipants\n(Status = 'INVITED_ACCEPTED')
+            activate Db
+            Db --> PartRepo : Saved
+            deactivate Db
+            PartRepo --> Service : Done
+            deactivate PartRepo
+
+            Service -> InviteRepo : Update(invitation.Status = 'ACCEPTED')
+            activate InviteRepo
+            Service -> InviteRepo : SaveChangesAsync()
+            InviteRepo -> Db : UPDATE TranslationRoomInvitations\nSET Status = 'ACCEPTED', AcceptedAt = UtcNow
+            activate Db
+            Db --> InviteRepo : Saved
+            deactivate Db
+            InviteRepo --> Service : Done
+            deactivate InviteRepo
+
+            Service --> Controller : Result.Success(RoomDetailsDto)
+            Controller --> Gateway : 200 OK (Room details)
+            Gateway --> Web : 200 OK (Room details)
+            Web -> RoomDetailsWeb : Redirect to `/workspace/{workspaceSlug}/rooms/{roomId}`
+            activate RoomDetailsWeb
+            RoomDetailsWeb --> Part : Render meeting details & join action
+            deactivate RoomDetailsWeb
+        end
+    end
+end
+@enduml

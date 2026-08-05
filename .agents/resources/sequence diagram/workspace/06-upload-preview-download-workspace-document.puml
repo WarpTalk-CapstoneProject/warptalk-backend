@@ -1,0 +1,214 @@
+@startuml
+title WarpTalk - Upload, View Details & Download Workspace Document
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 240
+
+
+actor "Workspace Member" as Member
+boundary "WorkspaceDocumentsPage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceDocumentsController" as WorkspaceDocumentsController <<boundary>>
+participant ":WorkspaceDocumentService" as WorkspaceDocumentService <<service>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
+participant ":WorkspaceDocumentRepository" as WorkspaceDocumentRepository <<control>>
+participant ":WorkspaceRepository" as WorkspaceRepository <<control>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+participant "Encrypted Storage" as Storage <<external system>>
+queue "Redis Document Stream" as Stream
+
+== UPLOAD Workspace Document ==
+Member -> Web : Select document, set AiEligible & ConfidentialityLevel, and click upload
+activate Web
+
+Web -> Gateway : POST /api/v1/workspaces/{workspaceId}/documents\n[Multipart FormData (file, AiEligible, ConfidentialityLevel) + JWT Token]
+activate Gateway
+
+Gateway -> Gateway : Authenticate Member & verify access policy
+alt Access Denied
+    Gateway --> Web : 401 Unauthorized / 403 Forbidden
+    deactivate Gateway
+    Web --> Member : Show error message
+    deactivate Web
+else Access Allowed
+    Gateway -> WorkspaceDocumentsController : Forward Upload request
+    activate WorkspaceDocumentsController
+    
+    WorkspaceDocumentsController -> WorkspaceDocumentService : UploadDocumentAsync(workspaceId, request, memberId)
+    activate WorkspaceDocumentService
+    
+    WorkspaceDocumentService -> WorkspaceRepository : GetByIdAsync(workspaceId)
+    activate WorkspaceRepository
+    WorkspaceRepository -> WorkspaceDb : SELECT * FROM Workspaces WHERE Id = workspaceId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceRepository : Workspace details / null
+    deactivate WorkspaceDb
+    WorkspaceRepository --> WorkspaceDocumentService : Workspace details
+    deactivate WorkspaceRepository
+    
+    alt Workspace is Inactive
+        WorkspaceDocumentService --> WorkspaceDocumentsController : Failure (WorkspaceInactive)
+        deactivate WorkspaceDocumentService
+        WorkspaceDocumentsController --> Gateway : 403 Forbidden ("Workspace is inactive")
+        deactivate WorkspaceDocumentsController
+        Gateway --> Web : 403 Forbidden
+        Web --> Member : Display "Workspace deactivated" error
+    else Workspace is Active
+        WorkspaceDocumentService -> WorkspaceMemberRepository : GetMemberAsync(workspaceId, memberId)
+        activate WorkspaceMemberRepository
+        WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = memberId
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceMemberRepository : Member details / null
+        deactivate WorkspaceDb
+        WorkspaceMemberRepository --> WorkspaceDocumentService : Member details
+        deactivate WorkspaceMemberRepository
+
+        WorkspaceDocumentService -> Storage : Save encrypted document file
+        activate Storage
+        Storage --> WorkspaceDocumentService : Storage Key (Path)
+        deactivate Storage
+
+        WorkspaceDocumentService -> WorkspaceDocumentRepository : AddAsync(new WorkspaceDocument)
+        activate WorkspaceDocumentRepository
+        WorkspaceDocumentRepository --> WorkspaceDocumentService : Done
+        deactivate WorkspaceDocumentRepository
+        
+        WorkspaceDocumentService -> WorkspaceDocumentRepository : SaveChangesAsync()
+        activate WorkspaceDocumentRepository
+        WorkspaceDocumentRepository -> WorkspaceDb : INSERT INTO WorkspaceDocuments (status='PENDING', ...)
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceDocumentRepository : Document ID saved
+        deactivate WorkspaceDb
+        WorkspaceDocumentRepository --> WorkspaceDocumentService : Save successful
+        deactivate WorkspaceDocumentRepository
+
+        WorkspaceDocumentService ->> Stream : Publish 'DocumentUploaded' event (DocumentID)
+        
+        WorkspaceDocumentService --> WorkspaceDocumentsController : Success (DocumentDto)
+        deactivate WorkspaceDocumentService
+        WorkspaceDocumentsController --> Gateway : 200 OK (Document metadata)
+        deactivate WorkspaceDocumentsController
+        Gateway --> Web : 200 OK
+        deactivate Gateway
+        Web --> Member : Show uploaded document metadata
+        deactivate Web
+    end
+end
+
+== VIEW Workspace Document Details ==
+Member -> Web : Open document details
+activate Web
+
+Web -> Gateway : GET /api/v1/workspaces/{workspaceId}/documents/{documentId}\n[with JWT Token]
+activate Gateway
+
+Gateway -> Gateway : Authenticate Member & verify access policy
+alt Access Denied
+    Gateway --> Web : 401 Unauthorized / 403 Forbidden
+    deactivate Gateway
+    Web --> Member : Show error message
+    deactivate Web
+else Access Allowed
+    Gateway -> WorkspaceDocumentsController : Forward GetDocumentById request
+    activate WorkspaceDocumentsController
+    
+    WorkspaceDocumentsController -> WorkspaceDocumentService : GetDocumentByIdAsync(workspaceId, documentId, memberId)
+    activate WorkspaceDocumentService
+    
+    WorkspaceDocumentService -> WorkspaceMemberRepository : GetMemberAsync(workspaceId, memberId)
+    activate WorkspaceMemberRepository
+    WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = memberId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceMemberRepository : Member info
+    deactivate WorkspaceDb
+    WorkspaceMemberRepository --> WorkspaceDocumentService : Member info
+    deactivate WorkspaceMemberRepository
+
+    WorkspaceDocumentService -> WorkspaceDocumentRepository : GetByIdAsync(documentId)
+    activate WorkspaceDocumentRepository
+    WorkspaceDocumentRepository -> WorkspaceDb : SELECT * FROM WorkspaceDocuments WHERE Id = documentId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceDocumentRepository : Document details (StorageKey)
+    deactivate WorkspaceDb
+    WorkspaceDocumentRepository --> WorkspaceDocumentService : Document details
+    deactivate WorkspaceDocumentRepository
+
+    WorkspaceDocumentService --> WorkspaceDocumentsController : Success (WorkspaceDocumentDto)
+    deactivate WorkspaceDocumentService
+    WorkspaceDocumentsController --> Gateway : 200 OK (Document metadata)
+    deactivate WorkspaceDocumentsController
+    Gateway --> Web : 200 OK
+    deactivate Gateway
+    Web --> Member : Display document details
+    deactivate Web
+end
+
+== DOWNLOAD Workspace Document ==
+Member -> Web : Click "Download" next to document
+activate Web
+
+Web -> Gateway : GET /api/v1/workspaces/{workspaceId}/documents/{documentId}/download\n[with JWT Token]
+activate Gateway
+
+Gateway -> Gateway : Authenticate Member & verify access policy
+alt Access Denied
+    Gateway --> Web : 401 Unauthorized / 403 Forbidden
+    deactivate Gateway
+    Web --> Member : Show error message
+    deactivate Web
+else Access Allowed
+    Gateway -> WorkspaceDocumentsController : Forward Download request
+    activate WorkspaceDocumentsController
+    
+    WorkspaceDocumentsController -> WorkspaceDocumentService : DownloadDocumentAsync(workspaceId, documentId, memberId)
+    activate WorkspaceDocumentService
+    
+    WorkspaceDocumentService -> WorkspaceMemberRepository : GetMemberAsync(workspaceId, memberId)
+    activate WorkspaceMemberRepository
+    WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = memberId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceMemberRepository : Member info
+    deactivate WorkspaceDb
+    WorkspaceMemberRepository --> WorkspaceDocumentService : Member info
+    deactivate WorkspaceMemberRepository
+
+    WorkspaceDocumentService -> WorkspaceDocumentRepository : GetByIdAsync(documentId)
+    activate WorkspaceDocumentRepository
+    WorkspaceDocumentRepository -> WorkspaceDb : SELECT * FROM WorkspaceDocuments WHERE Id = documentId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceDocumentRepository : Document details (StorageKey)
+    deactivate WorkspaceDb
+    WorkspaceDocumentRepository --> WorkspaceDocumentService : Document details
+    deactivate WorkspaceDocumentRepository
+
+    WorkspaceDocumentService -> Storage : Get decrypted document stream
+    activate Storage
+    Storage --> WorkspaceDocumentService : Decrypted Stream
+    deactivate Storage
+
+    WorkspaceDocumentService --> WorkspaceDocumentsController : Success (File Stream / DocumentDto)
+    deactivate WorkspaceDocumentService
+    WorkspaceDocumentsController --> Gateway : 200 OK (File Stream / Document DTO)
+    deactivate WorkspaceDocumentsController
+    Gateway --> Web : 200 OK
+    deactivate Gateway
+    Web --> Member : Trigger browser download / metadata
+    deactivate Web
+end
+@enduml

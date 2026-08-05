@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Entitlements;
 using WarpTalk.BillingService.Application.Helpers;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Mappers;
@@ -26,6 +27,7 @@ public class SubscriptionService : ISubscriptionService
     private readonly IAiServiceStateStore? _aiServiceStateStore;
     private readonly IUsageRateCardAdminService _pricingConfigService;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IEntitlementChangePublisher? _entitlementChangePublisher;
 
     public SubscriptionService(
         IUnitOfWork unitOfWork,
@@ -34,7 +36,8 @@ public class SubscriptionService : ISubscriptionService
         IStripePaymentService stripePaymentService,
         IUsageRateCardAdminService pricingConfigService,
         IWorkspaceClient workspaceClient,
-        IAiServiceStateStore? aiServiceStateStore = null)
+        IAiServiceStateStore? aiServiceStateStore = null,
+        IEntitlementChangePublisher? entitlementChangePublisher = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -43,6 +46,42 @@ public class SubscriptionService : ISubscriptionService
         _pricingConfigService = pricingConfigService;
         _workspaceClient = workspaceClient;
         _aiServiceStateStore = aiServiceStateStore;
+        _entitlementChangePublisher = entitlementChangePublisher;
+    }
+
+    /// <summary>
+    /// WT-263: re-resolve and enqueue the workspace's entitlements after a subscription change.
+    ///
+    /// Runs AFTER the business SaveChanges, not before: the resolver reads the subscription back
+    /// through this same unit of work, and an EF query does not see uncommitted changes, so
+    /// resolving first would publish the values the workspace had a moment ago. The cost is a small
+    /// window in which the change is committed and its event is not yet written — the backfill
+    /// script in warptalk-infrastructure is the reconciliation path for that, and consumers converge
+    /// on the next event regardless because the payload is a full snapshot.
+    ///
+    /// Never allowed to fail the caller. A subscription that was paid for must not be rolled back
+    /// because an outbox insert failed; the same reconciliation path covers it.
+    /// </summary>
+    private async Task PublishEntitlementsAsync(Guid workspaceId, string reason, CancellationToken ct)
+    {
+        if (_entitlementChangePublisher is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _entitlementChangePublisher.EnqueueAsync(workspaceId, reason, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Failed to enqueue entitlement change for workspace {WorkspaceId} ({Reason}).",
+                workspaceId,
+                reason);
+        }
     }
 
     public async Task<Result<SubscriptionDto>> GetActiveSubscriptionAsync(
@@ -154,6 +193,10 @@ public class SubscriptionService : ISubscriptionService
 
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            await PublishEntitlementsAsync(
+                subscription.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
 
             await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
                 _messagePublisher,
@@ -214,6 +257,12 @@ public class SubscriptionService : ISubscriptionService
 
             await _unitOfWork.SubscriptionRepository.AddAsync(subscription, cancellationToken);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            // A trial subscription is created as part of workspace onboarding, so this is the event
+            // that gives a brand-new workspace its first snapshot and takes it out of cold start.
+            await PublishEntitlementsAsync(
+                subscription.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
 
             await BillingNotificationHelper.PublishSubscriptionUpdateAsync(
                 _messagePublisher,
@@ -257,6 +306,10 @@ public class SubscriptionService : ISubscriptionService
 
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
 
             var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
 
@@ -313,6 +366,10 @@ public class SubscriptionService : ISubscriptionService
             sub.ResumeAiService();
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
 
             if (_aiServiceStateStore is not null)
             {
@@ -394,6 +451,12 @@ public class SubscriptionService : ISubscriptionService
 
             _unitOfWork.SubscriptionRepository.Update(sub);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            // Contract terms are layer 3 of the resolution order, so a change here can move an
+            // entitlement even when the plan and the workspace's own settings are untouched.
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.ContractOverrideChanged,
+                cancellationToken);
 
             if (isResumed && _aiServiceStateStore is not null)
             {

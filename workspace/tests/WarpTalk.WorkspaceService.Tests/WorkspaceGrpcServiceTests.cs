@@ -26,6 +26,10 @@ public class WorkspaceGrpcServiceTests
 
     public WorkspaceGrpcServiceTests()
     {
+        // WT-263: no IBillingSubscriptionClient here at all — and after WT-239 no unit of work
+        // either. The boundary takes the directory service and nothing else; the entitlement
+        // snapshot cases that used to be arranged here now live in WorkspaceDirectoryServiceTests
+        // against the layer that reads it.
         _workspaceDirectory = Substitute.For<IWorkspaceDirectoryService>();
         _service = new WorkspaceGrpcService(_workspaceDirectory);
         _context = new TestServerCallContext(CancellationToken.None);

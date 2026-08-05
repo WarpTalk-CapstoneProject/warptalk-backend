@@ -1,0 +1,51 @@
+﻿@startuml
+title WarpTalk - Export & Download Transcript
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Workspace Member" as Member
+boundary "MeetingArtifactsPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptsController" as Controller <<boundary>>
+participant ":TranscriptService" as Service <<service>>
+participant ":TranscriptRepository" as Repository <<control>>
+database "Transcript Database" as Db
+end box
+
+Member -> Web : Click "Export PDF"
+activate Web
+Web -> Gateway : GET /api/v1/transcripts/{meetingId}/export?format=pdf
+activate Gateway
+Gateway -> Controller : ExportTranscript(meetingId, format)
+activate Controller
+Controller -> Service : GenerateExportBytesAsync(meetingId, format)
+activate Service
+
+Service -> Repository : GetFullTranscript(meetingId)
+activate Repository
+Repository -> Db : SELECT * FROM TranscriptSegments ...
+activate Db
+Db --> Repository : Segments List
+deactivate Db
+Repository --> Service : Segments List
+deactivate Repository
+
+Service -> Service : Generate PDF file binary stream
+Service --> Controller : FileBytes
+deactivate Service
+Controller --> Gateway : 200 OK (ByteStream)
+deactivate Controller
+Gateway --> Web : File Stream
+deactivate Gateway
+Web --> Member : Trigger browser file download
+deactivate Web
+@enduml

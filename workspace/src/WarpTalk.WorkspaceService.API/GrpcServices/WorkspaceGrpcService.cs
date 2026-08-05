@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
 using WarpTalk.Shared.Protos;
@@ -10,6 +11,15 @@ namespace WarpTalk.WorkspaceService.API.GrpcServices;
 
 public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.WorkspaceServiceBase
 {
+    // WT-263: LanguageCountAlwaysWithinPlan is gone with the call it protected. It existed to bound
+    // the blast radius of a fail-closed billing round-trip by skipping the round-trip for
+    // single-language meetings. There is no round-trip left to skip, so every request is now checked
+    // against the same local snapshot and the carve-out has nothing to bound.
+    //
+    // WT-239: the snapshot read and both plan-limit rules moved with the rest of the decision into
+    // WorkspaceDirectoryService. No IBillingSubscriptionClient here — and none there either; the
+    // entitlement value is replicated ahead of time and read locally.
+
     private readonly IWorkspaceDirectoryService _workspaceDirectory;
 
     public WorkspaceGrpcService(IWorkspaceDirectoryService workspaceDirectory)
