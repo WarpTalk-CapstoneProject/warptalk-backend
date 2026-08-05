@@ -19,8 +19,8 @@ public class LanguageRepository : ILanguageRepository
     /// Whether the platform supports a language, regardless of which spelling either side uses.
     ///
     /// This lookup sits where two keyings meet, and they have never agreed. The catalog
-    /// (translation_room.supported_languages, a view over platform.supported_languages) is
-    /// seeded with locale tags — 'en-US', 'vi-VN' — by
+    /// (translation_room.supported_languages, this service's own view over the
+    /// platform-owned table) is seeded with locale tags — 'en-US', 'vi-VN' — by
     /// 20260730141000_seed_supported_languages.sql, while callers hand us the bare ISO-639-1
     /// code, because TranslationRoomService and LanguagePolicy both run every value through
     /// LanguageHelper.NormalizeLanguageCode first. An exact match therefore could not hit, and
