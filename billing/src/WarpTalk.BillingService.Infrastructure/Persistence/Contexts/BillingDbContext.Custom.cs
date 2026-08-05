@@ -19,8 +19,44 @@ public partial class BillingDbContext
     public DbSet<BillingPricingConfig> BillingPricingConfigs => Set<BillingPricingConfig>();
     public DbSet<BillingPolicyConfig> BillingPolicyConfigs => Set<BillingPolicyConfig>();
 
+    /// <summary>WT-263: the workspace self-service entitlement overrides (migration 050).</summary>
+    public DbSet<WorkspaceEntitlementOverride> WorkspaceEntitlementOverrides => Set<WorkspaceEntitlementOverride>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        // WT-263: columns added by migration 050. Mapped here rather than in the scaffolded file so
+        // a re-scaffold cannot drop them.
+        modelBuilder.Entity<Plan>(entity =>
+        {
+            entity.Property(e => e.MaxActiveRooms)
+                .HasDefaultValue(Domain.Constants.EntitlementConstants.PlatformDefaults.MaxActiveRooms)
+                .HasColumnName("max_active_rooms");
+        });
+
+        modelBuilder.Entity<Subscription>(entity =>
+        {
+            // Contract-negotiated entitlement overrides. jsonb rather than a column per key: the
+            // key set grows with each new capability, and a per-key column would mean a migration
+            // every time. The typed *_override columns beside it stay as they are — they carry
+            // commercial terms (credits, overage, invoice days), not capabilities.
+            entity.Property(e => e.EntitlementOverrides)
+                .HasColumnType("jsonb")
+                .HasColumnName("entitlement_overrides");
+        });
+
+        modelBuilder.Entity<WorkspaceEntitlementOverride>(entity =>
+        {
+            entity.HasKey(e => new { e.WorkspaceId, e.EntitlementKey })
+                .HasName("workspace_entitlement_overrides_pkey");
+            entity.ToTable("workspace_entitlement_overrides", "subscription");
+
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.EntitlementKey).HasColumnName("entitlement_key").HasMaxLength(60);
+            entity.Property(e => e.Value).HasColumnName("value").HasMaxLength(40);
+            entity.Property(e => e.SetBy).HasColumnName("set_by");
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
+        });
+
         modelBuilder.Entity<UsageRateCard>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("usage_rate_card_pkey");
