@@ -65,6 +65,8 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddDbContext<MeetingDbContext>(options =>
     options.UseNpgsql(dataSource));
+builder.Services.AddWarpTalkServiceHealthChecks<MeetingDbContext>(
+    "meeting-database");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -171,5 +173,6 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<WarpTalk.MeetingService.API.Hubs.MeetingChatHub>("/api/v1/meetings/chat-hub");
+app.MapWarpTalkServiceHealthChecks();
 
 app.Run();
