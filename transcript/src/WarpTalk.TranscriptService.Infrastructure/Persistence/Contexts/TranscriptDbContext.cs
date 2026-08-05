@@ -486,7 +486,8 @@ public partial class TranscriptDbContext : DbContext
             entity.Property(e => e.TargetLanguage).HasMaxLength(15).HasColumnName("target_language");
             entity.Property(e => e.TranslatedText).HasColumnName("translated_text");
             entity.Property(e => e.TranslatorModel).HasMaxLength(100).HasColumnName("translator_model");
-            entity.Property(e => e.Confidence).HasPrecision(5, 4).HasColumnName("confidence");
+            // WT-278: renamed from "confidence" — see TranslationContent.SourceSttConfidence.
+            entity.Property(e => e.SourceSttConfidence).HasPrecision(5, 4).HasColumnName("source_stt_confidence");
             entity.Property(e => e.IsRetranslated).HasDefaultValue(false).HasColumnName("is_retranslated");
             entity.Property(e => e.PreviousTranslationContentId).HasColumnName("previous_translation_content_id");
             entity.Property(e => e.LatencyMs).HasColumnName("latency_ms");

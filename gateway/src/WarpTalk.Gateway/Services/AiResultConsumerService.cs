@@ -206,7 +206,7 @@ public sealed class AiResultConsumerService : BackgroundService
                         OriginalLanguage: RedisStreamService.GetField(entry, "language") ?? "unknown",
                         TranslatedText: null,
                         TargetLanguage: null,
-                        Confidence: float.TryParse(RedisStreamService.GetField(entry, "confidence"), out var conf) ? conf : 1.0f,
+                        Confidence: TryReadSttConfidence(entry),
                         StartTimeMs: int.TryParse(RedisStreamService.GetField(entry, "start_ms"), out var start) ? start : 0,
                         EndTimeMs: int.TryParse(RedisStreamService.GetField(entry, "end_ms"), out var end) ? end : 0);
 
@@ -438,6 +438,20 @@ public sealed class AiResultConsumerService : BackgroundService
     /// no way to render either case, and falling through to the legacy branch would put it
     /// in the summary panel instead.
     /// </summary>
+    /// <summary>
+    /// Reads the STT model's confidence off an stt:results entry, or <c>null</c> when the producer
+    /// reported none.
+    /// </summary>
+    /// <remarks>
+    /// WT-277: this used to be <c>float.TryParse(...) ? conf : 1.0f</c>, so a segment with no
+    /// confidence at all was pushed to every client as maximum confidence. The rules (absent /
+    /// unparsable / warptalk-ai's -1.0 "no logprobs" sentinel ⇒ unknown) live in
+    /// <see cref="WarpTalk.Shared.ModelConfidence"/> so this and TranscriptService's persistence
+    /// consumer cannot drift apart — the live caption and the stored row must agree.
+    /// </remarks>
+    public static float? TryReadSttConfidence(StreamEntry entry) =>
+        (float?)WarpTalk.Shared.ModelConfidence.Parse(RedisStreamService.GetField(entry, "confidence"));
+
     public static AiSuggestionDto? TryReadSuggestion(StreamEntry entry, string translationRoomId)
     {
         if (RedisStreamService.GetField(entry, "type") != "suggestion")

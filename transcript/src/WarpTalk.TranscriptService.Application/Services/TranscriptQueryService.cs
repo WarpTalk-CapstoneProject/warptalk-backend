@@ -162,7 +162,7 @@ public class TranscriptQueryService : ITranscriptQueryService
                         l.TargetLanguage,
                         content.TranslatedText,
                         content.TranslatorModel,
-                        content.Confidence,
+                        content.SourceSttConfidence,
                         content.IsRetranslated,
                         content.LatencyMs);
                 });

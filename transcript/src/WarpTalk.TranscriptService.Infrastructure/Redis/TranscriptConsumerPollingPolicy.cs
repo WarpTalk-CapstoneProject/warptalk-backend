@@ -1,3 +1,5 @@
+using WarpTalk.Shared;
+
 namespace WarpTalk.TranscriptService.Infrastructure.Redis;
 
 public enum TranscriptResultStreamKind
@@ -88,6 +90,35 @@ public static class TranscriptConsumerPollingPolicy
         speakerName = string.Empty;
         return false;
     }
+
+    /// <summary>
+    /// The Redis field carrying the STT model's own confidence for a transcribed segment.
+    /// </summary>
+    public const string SttConfidenceField = "confidence";
+
+    /// <summary>
+    /// The Redis field carrying the STT confidence of the segment a translation was derived from.
+    /// </summary>
+    /// <remarks>
+    /// WT-278: this used to be called "confidence" on translate:results as well, but the
+    /// translator produces no score of its own — warptalk-ai/translation_worker copies the
+    /// upstream <c>STTResultMessage.confidence</c> (an avg_logprob of the *audio*) onto the
+    /// translation. Named for what it actually is so nothing can read it as translation quality.
+    /// </remarks>
+    public const string SourceSttConfidenceField = "source_stt_confidence";
+
+    /// <summary>
+    /// Reads an optional confidence off a result message payload, returning <c>null</c> when the
+    /// producer did not actually report one. See <see cref="ModelConfidence"/> for the rules.
+    /// </summary>
+    /// <remarks>
+    /// WT-277: the previous inline <c>float.TryParse(...) ? conf : 1.0f</c> turned every missing,
+    /// unparsable or sentinel confidence into a stored 1.0000 — the maximum — which is why the
+    /// return type here is nullable and the callers write it straight through to the nullable
+    /// column instead of coalescing.
+    /// </remarks>
+    public static decimal? ResolveConfidence(IReadOnlyDictionary<string, string> values, string field) =>
+        ModelConfidence.Parse(values.GetValueOrDefault(field));
 
     public static bool ShouldDeadLetter(long deliveryAttempts) =>
         deliveryAttempts >= MaxDeliveryAttempts;
