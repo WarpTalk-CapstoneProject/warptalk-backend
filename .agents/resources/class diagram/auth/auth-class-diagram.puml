@@ -1,0 +1,295 @@
+@startuml
+title 3.1 Auth Module Class Diagram
+
+top to bottom direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 85
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam classBackgroundColor White
+skinparam classBorderColor Black
+skinparam ArrowColor Black
+
+package "API Layer" as ApiLayer {
+  class AuthController <<boundary>> {
+    +Register(request)
+    +RegisterInvited(request)
+    +Login(request)
+    +VerifyEmail(request)
+    +ResetPassword(request)
+  }
+
+  class GoogleAuthController <<boundary>> {
+    +GoogleLogin(request)
+    +LinkGoogle(request)
+    +UnlinkGoogle()
+  }
+
+  class TokenController <<boundary>> {
+    +Refresh(request)
+    +Logout(request)
+  }
+
+  class ProfileController <<boundary>> {
+    +GetProfile()
+    +UpdateProfile(request)
+    +ChangePassword(request)
+  }
+
+  class UserSettingsController <<boundary>> {
+    +GetSettings()
+    +UpdateSettings(request)
+  }
+
+  class VoiceProfilesController <<boundary>> {
+    +CreateVoiceProfile(request)
+    +UploadVoiceSample(request)
+    +SetDefaultProfile(id)
+  }
+
+  AuthController -[hidden]right- GoogleAuthController
+  GoogleAuthController -[hidden]right- TokenController
+  TokenController -[hidden]right- ProfileController
+  ProfileController -[hidden]right- UserSettingsController
+  UserSettingsController -[hidden]right- VoiceProfilesController
+}
+
+package "Application Layer" as ApplicationLayer {
+  class AuthService <<control>> {
+    +RegisterAsync(request)
+    +RegisterInvitedAsync(request)
+    +LoginAsync(request)
+    +VerifyEmailAsync(request)
+    +ResetPasswordAsync(request)
+  }
+
+  class GoogleAuthService <<control>> {
+    +GoogleLoginAsync(request)
+    +LinkGoogleAsync(userId, request)
+    +UnlinkGoogleAsync(userId)
+  }
+
+  class TokenService <<control>> {
+    +RefreshTokenAsync(request)
+    +LogoutAsync(userId, refreshToken)
+  }
+
+  class ProfileService <<control>> {
+    +GetProfileAsync(userId)
+    +UpdateProfileAsync(userId, request)
+    +ChangePasswordAsync(userId, request)
+  }
+
+  class UserSettingsService <<control>> {
+    +GetSettingsAsync(userId)
+    +UpdateSettingsAsync(userId, request)
+  }
+
+  class VoiceProfileService <<control>> {
+    +CreateAsync(userId, request)
+    +AddSampleAsync(userId, profileId, file)
+    +SetDefaultAsync(userId, profileId)
+  }
+
+  AuthService -[hidden]right- GoogleAuthService
+  GoogleAuthService -[hidden]right- TokenService
+  TokenService -[hidden]right- ProfileService
+  ProfileService -[hidden]right- UserSettingsService
+  UserSettingsService -[hidden]right- VoiceProfileService
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class UnitOfWork <<control>> {
+    +SaveChangesAsync()
+  }
+
+  class UserRepository <<control>> {
+    +GetByEmailWithRolesAsync(email)
+    +GetByIdWithRolesAsync(userId)
+    +Update(user)
+  }
+
+  class RefreshTokenRepository <<control>> {
+    +GetByTokenHashAsync(tokenHash)
+    +RevokeFamilyAsync(familyId)
+    +Update(token)
+  }
+
+  class UserSettingRepository <<control>> {
+    +GetByUserIdAsync(userId)
+    +Add(settings)
+  }
+
+  class VoiceProfileRepository <<control>> {
+    +GetByUserIdAsync(userId)
+    +Add(profile)
+    +Update(profile)
+  }
+
+  class PasswordHasher <<control>> {
+    +Hash(password)
+    +Verify(password, hash)
+  }
+
+  class JwtTokenGenerator <<control>> {
+    +GenerateToken(user, roles)
+  }
+
+  class GoogleTokenVerifier <<control>> {
+    +VerifyGoogleTokenAsync(idToken)
+  }
+
+  class ResendAuthEmailSender <<control>> {
+    +SendVerificationEmailAsync(user, token)
+    +SendPasswordResetEmailAsync(user, token)
+  }
+
+  class WorkspaceInvitationGrpcClient <<control>> {
+    +VerifyInvitationTokenAsync(token)
+    +AcceptInvitationAsync(token, userId, email)
+  }
+
+  class RedisVoiceCatalogDirectory <<control>> {
+    +GetAvailableVoicesAsync()
+  }
+
+  UnitOfWork -[hidden]right- UserRepository
+  UserRepository -[hidden]right- RefreshTokenRepository
+  RefreshTokenRepository -[hidden]right- UserSettingRepository
+  UserSettingRepository -[hidden]right- VoiceProfileRepository
+  VoiceProfileRepository -[hidden]right- PasswordHasher
+  PasswordHasher -[hidden]right- JwtTokenGenerator
+  JwtTokenGenerator -[hidden]right- GoogleTokenVerifier
+  GoogleTokenVerifier -[hidden]right- ResendAuthEmailSender
+  ResendAuthEmailSender -[hidden]right- WorkspaceInvitationGrpcClient
+  WorkspaceInvitationGrpcClient -[hidden]right- RedisVoiceCatalogDirectory
+
+  UnitOfWork o-- UserRepository
+  UnitOfWork o-- RefreshTokenRepository
+  UnitOfWork o-- UserSettingRepository
+  UnitOfWork o-- VoiceProfileRepository
+}
+
+package "Domain Layer" as DomainLayer {
+  class User <<entity>> {
+    -Id: Guid
+    -Email: String
+    -PasswordHash: String
+    -FullName: String
+    -PreferredLanguage: String
+    -Timezone: String
+    -IsActive: Boolean
+    -IsLocked: Boolean
+    -EmailVerified: Boolean
+    -GoogleId: String
+  }
+
+  class RefreshToken <<entity>> {
+    -Id: Guid
+    -UserId: Guid
+    -FamilyId: Guid
+    -TokenHash: String
+    -DeviceInfo: String
+    -IpAddress: String
+    -ExpiresAt: DateTime
+    -RevokedAt: DateTime
+  }
+
+  class UserSetting <<entity>> {
+    -Id: Guid
+    -UserId: Guid
+    -DefaultSpeakLanguage: String
+    -DefaultListenLanguage: String
+    -VoiceCloneEnabled: Boolean
+    -MicNoiseSuppression: Boolean
+    -Theme: String
+    -TranscriptFontSize: Int
+  }
+
+  class VoiceProfile <<entity>> {
+    -Id: Guid
+    -UserId: Guid
+    -DisplayName: String
+    -ProviderVoiceId: String
+    -IsDefault: Boolean
+  }
+
+  class VoiceSample <<entity>> {
+    -Id: Guid
+    -VoiceProfileId: Guid
+    -StorageKey: String
+    -DurationSeconds: Int
+  }
+
+  User "1" *-- "0..*" RefreshToken : owns sessions
+  User "1" *-- "0..1" UserSetting : has preferences
+  User "1" *-- "0..*" VoiceProfile : owns voices
+  VoiceProfile "1" *-- "0..*" VoiceSample : contains samples
+}
+
+package "External Systems" as ExternalSystems {
+  class GoogleOAuthApi <<external system>> {
+    +VerifyToken(idToken)
+  }
+
+  class ResendMailServer <<external system>> {
+    +SendEmail(payload)
+  }
+
+  class WorkspaceServiceGrpcServer <<external system>> {
+    +VerifyInvitation(token)
+  }
+
+  class RedisVoiceCatalog <<external system>> {
+    +ReadAvailableVoices()
+  }
+
+  GoogleOAuthApi -[hidden]right- ResendMailServer
+  ResendMailServer -[hidden]right- WorkspaceServiceGrpcServer
+  WorkspaceServiceGrpcServer -[hidden]right- RedisVoiceCatalog
+}
+
+AuthController --> AuthService
+GoogleAuthController --> GoogleAuthService
+TokenController --> TokenService
+ProfileController --> ProfileService
+UserSettingsController --> UserSettingsService
+VoiceProfilesController --> VoiceProfileService
+
+AuthService ..> PasswordHasher
+AuthService ..> JwtTokenGenerator
+TokenService ..> JwtTokenGenerator
+GoogleAuthService ..> GoogleTokenVerifier
+AuthService ..> ResendAuthEmailSender
+AuthService ..> WorkspaceInvitationGrpcClient
+VoiceProfileService ..> RedisVoiceCatalogDirectory
+
+UserRepository ..> User : persists
+RefreshTokenRepository ..> RefreshToken : persists
+UserSettingRepository ..> UserSetting : persists
+VoiceProfileRepository ..> VoiceProfile : persists
+
+GoogleTokenVerifier ..> GoogleOAuthApi : validates token
+ResendAuthEmailSender ..> ResendMailServer : sends email
+WorkspaceInvitationGrpcClient ..> WorkspaceServiceGrpcServer : verifies invitation
+RedisVoiceCatalogDirectory ..> RedisVoiceCatalog : reads voices
+
+ApiLayer -[hidden]down- ApplicationLayer
+ApplicationLayer -[hidden]down- InfrastructureLayer
+InfrastructureLayer -[hidden]down- DomainLayer
+InfrastructureLayer -[hidden]right- ExternalSystems
+
+ApiLayer -down..> ApplicationLayer : delegates requests
+ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
+InfrastructureLayer -down..> DomainLayer : persists entities
+InfrastructureLayer -right..> ExternalSystems : integrates APIs
+@enduml

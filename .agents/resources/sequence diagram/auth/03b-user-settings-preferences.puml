@@ -1,0 +1,147 @@
+﻿@startuml
+title WarpTalk - User Settings & Preferences
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "User" as Actor
+boundary "UserSettingsPage" as Web
+control "API Gateway" as Gateway
+
+box "Auth Service" #LightPink
+participant ":ProfileController" as ProfileController <<boundary>>
+participant ":UserSettingsController" as UserSettingsController <<boundary>>
+participant ":ProfileService" as ProfileService <<service>>
+participant ":UserSettingsService" as UserSettingsService <<service>>
+participant ":UserRepository" as UserRepository <<control>>
+participant ":UserSettingRepository" as UserSettingRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+== SCENARIO 1: UPDATE PROFILE ==
+
+Actor -> Web : Modify Full Name, Phone or Avatar URL & click "Save Changes"
+activate Web
+Web -> Gateway : PUT /api/v1/profile [with Auth JWT, Body details]
+activate Gateway
+Gateway -> Gateway : Authenticate Token & extract User ID
+Gateway -> ProfileController : Forward Update Profile Request (UserId)
+activate ProfileController
+
+ProfileController -> ProfileService : UpdateProfileAsync(userId, request)
+activate ProfileService
+
+ProfileService -> UserRepository : GetByIdAsync(userId)
+activate UserRepository
+UserRepository -> AuthDb : SELECT * FROM Users WHERE Id = userId
+activate AuthDb
+AuthDb --> UserRepository : User entity / null
+deactivate AuthDb
+UserRepository --> ProfileService : User entity / null
+deactivate UserRepository
+
+alt User not found
+    ProfileService --> ProfileController : Failure (UserNotFound)
+    deactivate ProfileService
+    ProfileController --> Gateway : 404 NotFound
+    deactivate ProfileController
+    Gateway --> Web : 404 NotFound
+    deactivate Gateway
+    Web --> Actor : Display error message
+    deactivate Web
+else User found
+    ProfileService -> ProfileService : Update fields via Domain method (FullName, Phone, AvatarUrl)
+    activate ProfileService
+    
+    ProfileService -> UserRepository : SaveChangesAsync()
+    activate UserRepository
+    UserRepository -> AuthDb : UPDATE Users SET FullName = ..., Phone = ..., AvatarUrl = ...
+    activate AuthDb
+    AuthDb --> UserRepository : Saved
+    deactivate AuthDb
+    UserRepository --> ProfileService : Saved
+    deactivate UserRepository
+    
+    ProfileService --> ProfileController : Success (Updated UserProfileDto)
+    deactivate ProfileService
+    ProfileController --> Gateway : 200 OK (Updated UserProfileDto)
+    Gateway --> Web : 200 OK
+    Web --> Actor : Display success message & updated profile details
+end
+
+== SCENARIO 2: UPDATE SETTINGS PREFERENCES ==
+
+Actor -> Web : Click on Settings Menu & open settings tab
+activate Web
+Web --> Actor : Display user settings configuration form
+deactivate Web
+
+Actor -> Web : Change user settings/preferences & click "Save"
+activate Web
+Web -> Gateway : PUT /api/v1/users/settings [with Auth JWT, settings body]
+activate Gateway
+Gateway -> Gateway : Authenticate Token & extract User ID
+Gateway -> UserSettingsController : Forward Update Settings Request (UserId)
+activate UserSettingsController
+
+UserSettingsController -> UserSettingsService : UpdateSettingsAsync(userId, request)
+activate UserSettingsService
+
+UserSettingsService -> UserSettingRepository : FirstOrDefaultAsync(s => s.UserId == userId)
+activate UserSettingRepository
+UserSettingRepository -> AuthDb : SELECT * FROM UserSettings WHERE UserId = userId
+activate AuthDb
+AuthDb --> UserSettingRepository : User settings record / null
+deactivate AuthDb
+UserSettingRepository --> UserSettingsService : User settings record / null
+deactivate UserSettingRepository
+
+alt Settings record not found
+    UserSettingsService -> UserSettingRepository : AddAsync(new UserSetting with request values)
+    activate UserSettingRepository
+    UserSettingRepository --> UserSettingsService : Done
+    deactivate UserSettingRepository
+    
+    UserSettingsService -> UserSettingRepository : SaveChangesAsync()
+    activate UserSettingRepository
+    UserSettingRepository -> AuthDb : INSERT INTO UserSettings
+    activate AuthDb
+    AuthDb --> UserSettingRepository : Saved
+    deactivate AuthDb
+    UserSettingRepository --> UserSettingsService : Saved
+    deactivate UserSettingRepository
+else Settings record found
+    UserSettingsService -> UserSettingsService : Update user settings and preferences
+    
+    UserSettingsService -> UserSettingRepository : SaveChangesAsync()
+    activate UserSettingRepository
+    UserSettingRepository -> AuthDb : UPDATE UserSettings SET settings = ...
+    activate AuthDb
+    AuthDb --> UserSettingRepository : Saved
+    deactivate AuthDb
+    UserSettingRepository --> UserSettingsService : Saved
+    deactivate UserSettingRepository
+end
+
+UserSettingsService --> UserSettingsController : Success (Updated UserSettingsDto)
+deactivate UserSettingsService
+UserSettingsController --> Gateway : 200 OK (Updated UserSettingsDto)
+deactivate UserSettingsController
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Actor : Apply settings dynamically
+deactivate Web
+
+@enduml

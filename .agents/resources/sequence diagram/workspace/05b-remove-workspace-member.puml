@@ -1,0 +1,112 @@
+@startuml
+title WarpTalk - Remove Workspace Member
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 180
+
+actor "Workspace Owner/Admin" as Admin
+boundary "Workspace Members Page" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceMembersController" as Controller <<boundary>>
+participant ":WorkspaceMemberService" as Service <<service>>
+participant ":WorkspaceMemberRepository" as MemberRepo <<control>>
+participant ":WorkspaceRepository" as WorkspaceRepo <<control>>
+participant ":WorkspaceEventPublisher" as EventPublisher <<control>>
+database "Workspace Database" as Db
+end box
+
+Admin -> Web : Select member and click "Remove"
+activate Web
+Web -> Gateway : DELETE /api/v1/workspaces/{workspaceId}/members/{userId}
+activate Gateway
+Gateway -> Gateway : Authenticate JWT and extract current user id
+Gateway -> Controller : Forward remove request
+activate Controller
+Controller -> Service : RemoveMemberAsync(workspaceId, userId, currentUserId)
+activate Service
+
+Service -> WorkspaceRepo : GetByIdAsync(workspaceId)
+activate WorkspaceRepo
+WorkspaceRepo -> Db : SELECT workspace by id
+activate Db
+Db --> WorkspaceRepo : workspace / null
+deactivate Db
+deactivate WorkspaceRepo
+
+alt workspace not found
+  Service --> Controller : failure
+  deactivate Service
+  Controller --> Gateway : 404 Not Found
+  deactivate Controller
+  Gateway --> Web : 404 Not Found
+  deactivate Gateway
+else workspace found
+  Service -> MemberRepo : FirstOrDefaultAsync(executing member)
+  activate MemberRepo
+  MemberRepo -> Db : SELECT current user membership
+  activate Db
+  Db --> MemberRepo : current membership / null
+  deactivate Db
+  MemberRepo --> Service : current membership / null
+  deactivate MemberRepo
+
+  alt current user not active member
+    Service --> Controller : forbidden
+    Controller --> Gateway : 403 Forbidden
+    Gateway --> Web : 403 Forbidden
+  else current user active
+    Service -> Service : Validate Owner/Admin permission
+    activate Service
+    Service -> MemberRepo : FirstOrDefaultAsync(target member)
+    activate MemberRepo
+    MemberRepo -> Db : SELECT target membership
+    activate Db
+    Db --> MemberRepo : target membership / null
+    deactivate Db
+    MemberRepo --> Service : target membership / null
+    deactivate MemberRepo
+
+    alt target missing or owner target
+      Service --> Controller : failure
+      deactivate Service
+      Controller --> Gateway : 404/403
+      Gateway --> Web : 404/403
+    else target removable
+      Service -> MemberRepo : Update RemovedAt/RemovedBy/Status
+      activate MemberRepo
+      MemberRepo -> Db : UPDATE workspace_members
+      activate Db
+      Service -> EventPublisher : PublishMemberRemovedAsync(workspaceId, userId, currentUserId)
+      activate EventPublisher
+      Service -> MemberRepo : SaveChangesAsync()
+      MemberRepo -> Db : COMMIT
+      Db --> MemberRepo : saved
+      deactivate Db
+      MemberRepo --> Service : done
+      deactivate MemberRepo
+      Service --> Controller : success
+      Controller --> Gateway : 204 NoContent
+      Gateway --> Web : 204 NoContent
+      Web --> Admin : Refresh member list
+      deactivate Web
+    end
+  end
+end
+
+
+deactivate EventPublisher
+@enduml

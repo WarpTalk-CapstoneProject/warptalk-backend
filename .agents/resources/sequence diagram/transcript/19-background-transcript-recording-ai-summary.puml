@@ -1,0 +1,118 @@
+@startuml
+title WarpTalk - Background Transcript Recording & AI Summary Flow
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Participant" as User
+boundary "MeetingRoomPage" as Web
+control "API Gateway" as Gateway
+queue "Redis Audio Pipeline Stream" as Stream
+database "Redis State Store" as Redis
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptSegmentRecorderConsumer" as RecorderConsumer <<boundary>>
+participant ":TranscriptService" as TranscriptService <<service>>
+participant ":TranscriptRepository" as TranscriptRepository <<control>>
+database "Transcript Database" as TranscriptDb
+end box
+
+box "AI Assistant Service" #LightSalmon
+participant ":AIAssistantWorker" as AiWorker <<boundary>>
+participant ":MeetingAssistant" as Assistant <<service>>
+end box
+
+participant "OpenAI API" as OpenAI <<external system>>
+
+== PHASE 1: BACKGROUND TRANSLATION RECORDING ==
+
+[-> Stream : Publish 'TextTranslatedEvent'
+
+Stream -> RecorderConsumer : Consume 'TextTranslatedEvent'
+activate RecorderConsumer
+RecorderConsumer -> TranscriptService : RecordSegmentAsync(roomId, speakerId, originalText, translatedText)
+activate TranscriptService
+TranscriptService -> TranscriptRepository : SaveSegmentAsync(segment)
+activate TranscriptRepository
+TranscriptRepository -> TranscriptDb : INSERT INTO TranscriptSegments ...
+activate TranscriptDb
+TranscriptDb --> TranscriptRepository : Saved
+deactivate TranscriptDb
+TranscriptRepository --> TranscriptService : Success
+deactivate TranscriptRepository
+TranscriptService --> RecorderConsumer : Success
+deactivate TranscriptService
+RecorderConsumer -> Stream : Acknowledge
+activate Stream
+deactivate RecorderConsumer
+
+== PHASE 2: POST-MEETING COMPILATION & AI ARTIFACT GENERATION ==
+
+[-> Stream : Publish STTResultMessage [text = "__MEETING_END__"]
+Stream ->> AiWorker : Consume 'stt:results' (including "__MEETING_END__")
+activate AiWorker
+
+AiWorker -> AiWorker : Compile accumulated transcript segments
+
+AiWorker -> Redis : GET meeting:{meeting_id}:context_snapshot
+activate Redis
+Redis --> AiWorker : Context snapshot details
+deactivate Redis
+
+AiWorker -> Assistant : summarize(transcript, context)
+activate Assistant
+Assistant -> OpenAI : POST /v1/chat/completions (Generate Summary)
+activate OpenAI
+OpenAI --> Assistant : Summary text
+deactivate OpenAI
+Assistant --> AiWorker : Summary text
+deactivate Assistant
+
+AiWorker -> Redis : HSET meeting:{meeting_id}:summary content = summary
+activate Redis
+Redis --> AiWorker : Saved
+deactivate Redis
+
+AiWorker -> Stream : Publish 'ai_assistant:results' [type = "summary"]
+Stream --> AiWorker : Published
+deactivate Stream
+
+AiWorker -> Assistant : extract_action_items(transcript, context)
+activate Assistant
+Assistant -> OpenAI : POST /v1/chat/completions (Generate Action Items)
+activate OpenAI
+OpenAI --> Assistant : Action items text
+deactivate OpenAI
+Assistant --> AiWorker : Action items text
+deactivate Assistant
+
+AiWorker -> Redis : HSET meeting:{meeting_id}:summary action_items = action_items
+activate Redis
+Redis --> AiWorker : Saved
+deactivate Redis
+
+AiWorker -> Stream : Publish 'ai_assistant:results' [type = "action_items"]
+activate Stream
+Stream --> AiWorker : Published
+deactivate Stream
+
+deactivate AiWorker
+
+== REAL-TIME DELIVERY TO CLIENT ==
+
+Stream ->> Gateway : Consume 'ai_assistant:results'
+activate Gateway
+Gateway -> Web : SignalR broadcast: 'AiAssistantResult' [summary / action_items]
+activate Web
+Web --> User : Display AI Meeting Summary & Action Items
+deactivate Web
+deactivate Gateway
+@enduml

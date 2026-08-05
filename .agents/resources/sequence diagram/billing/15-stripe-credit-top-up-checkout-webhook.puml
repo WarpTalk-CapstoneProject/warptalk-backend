@@ -1,0 +1,128 @@
+@startuml
+title WarpTalk - Stripe Credit Top-Up Checkout and Webhook
+
+autonumber
+skinparam maxMessageSize 160
+
+actor "Workspace Owner/Admin" as Owner
+actor "Stripe Payment Gateway" as Stripe <<external system>>
+boundary "Billing Service Gateway\n/api/v1/payments" as Gateway
+
+box "Billing Service" #LightCyan
+participant ":PaymentsController" as Controller <<boundary>>
+participant ":CheckoutPricingService" as PricingService <<service>>
+participant ":StripeBillingGateway" as StripeGateway <<service>>
+control ":BillingGrpcService" as BillingEvents <<control>>
+participant ":PlanService" as PlanService <<service>>
+participant ":UnitOfWork" as UnitOfWork <<control>>
+database "Billing Database" as BillingDb
+queue "Billing Outbox" as Outbox <<entity>>
+end box
+
+Owner -> Gateway : POST /api/v1/payments/checkout\n(CreateCheckoutSessionRequest)
+activate Gateway
+Gateway -> Controller : CreateCheckoutSession(request)
+activate Controller
+Controller -> PricingService : ResolveAsync(request, authenticatedUserId)
+activate PricingService
+
+alt paymentType = "CreditTopUp"
+  PricingService -> PricingService : Validate workspaceId, VND,\namount range
+else paymentType = "Subscription"
+  PricingService -> PlanService : GetPlanBySlugAsync(planSlug)
+  activate PlanService
+  PlanService --> PricingService : active billable plan
+  deactivate PlanService
+else invalid request
+  PricingService --> Controller : validation/forbidden failure
+  deactivate PricingService
+  Controller --> Gateway : 400/403
+  deactivate Controller
+end
+
+PricingService --> Controller : ResolvedCheckout
+Controller -> StripeGateway : CreateCheckoutAsync(resolvedCheckout)
+activate StripeGateway
+StripeGateway -> Stripe : Create Checkout Session\n(metadata: UserId, WorkspaceId,\nPaymentType, PlanSlug, BillingCycle)
+Stripe --> StripeGateway : checkout URL
+StripeGateway --> Controller : checkout URL
+deactivate StripeGateway
+Controller --> Gateway : 200 OK { url }
+Gateway --> Owner : Redirect/return Stripe checkout URL
+deactivate Gateway
+
+Stripe -> Gateway : POST /api/v1/payments/webhook\n(Stripe-Signature, event payload)
+activate Gateway
+Gateway -> Controller : HandleWebhook()
+activate Controller
+Controller -> StripeGateway : ParseWebhook(payload, Stripe-Signature)
+activate StripeGateway
+
+alt invalid signature or invalid payload
+  StripeGateway --> Controller : StripeException
+  deactivate StripeGateway
+  Controller --> Gateway : 400 Bad Request
+  deactivate Controller
+  Gateway --> Stripe : invalid webhook response
+  deactivate Gateway
+else unsupported Stripe event
+  StripeGateway --> Controller : null
+  Controller --> Gateway : 200 OK
+  Gateway --> Stripe : acknowledged
+else checkout.session.completed
+  StripeGateway --> Controller : ProcessPaymentEventRequest\n(status="paid", providerTransactionId,\nstripeSessionId, metadata)
+  Controller -> BillingEvents : ProcessPaymentEventCoreAsync(paymentEvent)
+  activate BillingEvents
+  BillingEvents -> UnitOfWork : Find Payment by providerTransactionId
+  activate UnitOfWork
+  UnitOfWork -> BillingDb : SELECT payment by provider transaction id
+  activate BillingDb
+  BillingDb --> UnitOfWork : existing/new payment state
+  deactivate BillingDb
+  UnitOfWork --> BillingEvents : payment lookup result
+  deactivate UnitOfWork
+
+  alt payment already in same status
+    BillingEvents -> UnitOfWork : SaveChangesAsync()
+    activate UnitOfWork
+    BillingEvents --> Controller : Success
+    deactivate BillingEvents
+  else new paid payment
+    BillingEvents -> UnitOfWork : Find active subscription by workspaceId
+    UnitOfWork -> BillingDb : SELECT/INSERT subscription if needed
+    activate BillingDb
+    BillingDb --> UnitOfWork : subscription
+    deactivate BillingDb
+    UnitOfWork --> BillingEvents : subscription
+    deactivate UnitOfWork
+
+    alt paymentType = "CreditTopUp"
+      BillingEvents -> BillingEvents : Calculate top-up credits\nfrom paid VND amount
+      activate BillingEvents
+    else subscription purchase/renewal
+      BillingEvents -> PlanService : GetPlanByIdAsync(subscription.PlanId)
+      activate PlanService
+      PlanService --> BillingEvents : plan credits and billing policy
+      deactivate PlanService
+    end
+
+    BillingEvents -> UnitOfWork : Add CreditTransaction,\nPayment, Invoice
+    activate UnitOfWork
+    UnitOfWork -> BillingDb : INSERT ledger/payment/invoice\nUPDATE subscription credits/status
+    activate BillingDb
+    BillingEvents -> Outbox : Enqueue payment event
+    activate Outbox
+    UnitOfWork -> BillingDb : SaveChangesAsync()
+    BillingDb --> UnitOfWork : persisted
+    deactivate BillingDb
+    UnitOfWork --> BillingEvents : done
+    deactivate UnitOfWork
+    BillingEvents --> Controller : Success
+    deactivate BillingEvents
+  end
+
+  Controller --> Gateway : 200 OK
+  Gateway --> Stripe : acknowledged
+end
+deactivate Outbox
+@enduml

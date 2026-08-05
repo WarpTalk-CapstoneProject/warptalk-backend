@@ -1,0 +1,148 @@
+@startuml
+title WarpTalk - Request Join Workspace via Slug
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Authenticated User" as Actor
+boundary "JoinWorkspacePage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceInvitationsController" as WorkspaceInvitationsController <<boundary>>
+participant ":WorkspaceInvitationService" as WorkspaceInvitationService <<control>>
+participant ":AuthIdentityClient" as AuthIdentityClient <<boundary>>
+participant ":WorkspaceRepository" as WorkspaceRepository <<entity>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<entity>>
+participant ":WorkspaceInvitationRepository" as WorkspaceInvitationRepository <<entity>>
+participant ":WorkspaceVerifiedDomainRepository" as WorkspaceVerifiedDomainRepository <<entity>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+Actor -> Web : Enter workspace slug and send join request
+activate Web
+Web -> Gateway : POST /api/v1/workspaces/join-requests\n[JWT, { workspaceSlug }]
+activate Gateway
+Gateway -> WorkspaceInvitationsController : CreateJoinRequest(command)
+activate WorkspaceInvitationsController
+
+WorkspaceInvitationsController -> WorkspaceInvitationService : CreateJoinRequestAsync(command, userId, userEmail)
+activate WorkspaceInvitationService
+WorkspaceInvitationService -> WorkspaceRepository : FirstOrDefaultAsync(w => w.Slug == workspaceSlug)
+activate WorkspaceRepository
+WorkspaceRepository -> WorkspaceDb : SELECT workspace by Slug
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceRepository : Workspace / null
+deactivate WorkspaceDb
+WorkspaceRepository --> WorkspaceInvitationService : Workspace / null
+deactivate WorkspaceRepository
+
+alt Workspace slug not found
+    WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (WorkspaceNotFound)
+    deactivate WorkspaceInvitationService
+    WorkspaceInvitationsController --> Gateway : 404 NotFound
+    deactivate WorkspaceInvitationsController
+    Gateway --> Web : 404 NotFound
+    deactivate Gateway
+    Web --> Actor : Show "Workspace not found"
+    deactivate Web
+else Workspace found
+    WorkspaceInvitationService -> WorkspaceMemberRepository : FirstOrDefaultAsync(active member by workspaceId, userId)
+    activate WorkspaceMemberRepository
+    WorkspaceMemberRepository -> WorkspaceDb : SELECT active member by WorkspaceId and UserId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceMemberRepository : Member / null
+    deactivate WorkspaceDb
+    WorkspaceMemberRepository --> WorkspaceInvitationService : Member / null
+    deactivate WorkspaceMemberRepository
+
+    alt User is already a member
+        WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (AlreadyMember)
+        WorkspaceInvitationsController --> Gateway : 400 BadRequest
+        Gateway --> Web : 400 BadRequest
+        Web --> Actor : Show "You are already a member"
+    else User is not a member
+        WorkspaceInvitationService -> WorkspaceInvitationRepository : FirstOrDefaultAsync(email, status = REQUESTED)
+        activate WorkspaceInvitationRepository
+        WorkspaceInvitationRepository -> WorkspaceDb : SELECT pending join request by WorkspaceId and Email
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceInvitationRepository : Existing request / null
+        deactivate WorkspaceDb
+        WorkspaceInvitationRepository --> WorkspaceInvitationService : Existing request / null
+        deactivate WorkspaceInvitationRepository
+
+        alt Existing REQUESTED join request
+            WorkspaceInvitationService -> AuthIdentityClient : GetRoleNameByIdAsync(roleId)
+            activate AuthIdentityClient
+            AuthIdentityClient --> WorkspaceInvitationService : "Member"
+            deactivate AuthIdentityClient
+
+            WorkspaceInvitationService --> WorkspaceInvitationsController : Success (existing WorkspaceInvitationDto)
+            WorkspaceInvitationsController --> Gateway : 200 OK
+            Gateway --> Web : 200 OK
+            Web --> Actor : Show existing pending request
+        else No existing REQUESTED request
+            WorkspaceInvitationService -> AuthIdentityClient : GetRoleIdByNameAsync("Member")
+            activate AuthIdentityClient
+            AuthIdentityClient --> WorkspaceInvitationService : Member RoleId
+            deactivate AuthIdentityClient
+
+            WorkspaceInvitationService -> WorkspaceRepository : GetByIdAsync(workspaceId)
+            activate WorkspaceRepository
+            WorkspaceRepository -> WorkspaceDb : SELECT workspace by Id
+            activate WorkspaceDb
+            WorkspaceDb --> WorkspaceRepository : Workspace
+            deactivate WorkspaceDb
+            WorkspaceRepository --> WorkspaceInvitationService : Workspace
+            deactivate WorkspaceRepository
+
+            WorkspaceInvitationService -> WorkspaceVerifiedDomainRepository : FindAsync(verified domains)
+            activate WorkspaceVerifiedDomainRepository
+            WorkspaceVerifiedDomainRepository -> WorkspaceDb : SELECT verified domains by WorkspaceId
+            activate WorkspaceDb
+            WorkspaceDb --> WorkspaceVerifiedDomainRepository : Domains
+            deactivate WorkspaceDb
+            WorkspaceVerifiedDomainRepository --> WorkspaceInvitationService : Domains
+            deactivate WorkspaceVerifiedDomainRepository
+
+            alt External user and external collaboration is disabled
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Failure (ExternalCollaborationNotAllowed)
+                WorkspaceInvitationsController --> Gateway : 403 Forbidden
+                Gateway --> Web : 403 Forbidden
+                Web --> Actor : Show "Workspace does not allow external collaborators"
+            else Join request is allowed
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : AddAsync(new WorkspaceInvitation)\nStatus = REQUESTED\nRole = Member
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Tracked
+                deactivate WorkspaceInvitationRepository
+
+                WorkspaceInvitationService -> WorkspaceInvitationRepository : SaveChangesAsync()
+                activate WorkspaceInvitationRepository
+                WorkspaceInvitationRepository -> WorkspaceDb : INSERT WorkspaceInvitation
+                activate WorkspaceDb
+                WorkspaceDb --> WorkspaceInvitationRepository : Saved
+                deactivate WorkspaceDb
+                WorkspaceInvitationRepository --> WorkspaceInvitationService : Save successful
+                deactivate WorkspaceInvitationRepository
+
+                WorkspaceInvitationService --> WorkspaceInvitationsController : Success (WorkspaceInvitationDto)\nStatus = REQUESTED
+                WorkspaceInvitationsController --> Gateway : 200 OK
+                Gateway --> Web : 200 OK
+                Web --> Actor : Show "Request sent"
+            end
+        end
+    end
+end
+@enduml

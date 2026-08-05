@@ -1,0 +1,192 @@
+@startuml
+title WarpTalk - Admin Global Glossary Setup
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "System Admin" as Admin
+boundary "AdminDashboardPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #LightBlue
+participant ":GlobalGlossariesController" as Controller <<boundary>>
+participant ":GlobalGlossaryService" as Service <<control>>
+participant ":GlobalGlossaryTermsRepository" as TermsRepository <<entity>>
+participant ":GlobalGlossaryAuditsRepository" as AuditsRepository <<entity>>
+database "Transcript Database" as TranscriptDb
+queue "Redis Stream\nembedding:index_requests" as EmbeddingRequests
+end box
+
+box "AI Service" #LightYellow
+participant ":EmbeddingWorker" as EmbeddingWorker <<external>>
+database "Qdrant Vector DB" as Qdrant <<external>>
+end box
+
+== BULK IMPORT GLOBAL TERMS ==
+
+Admin -> Web : Submit global glossary rows
+activate Web
+Web -> Gateway : POST /api/v1/admin/global-glossary/bulk-import\n[admin JWT, rows]
+activate Gateway
+Gateway -> Controller : BulkImport(request)
+activate Controller
+Controller -> Controller : Read actor user id from JWT
+Controller -> Service : BulkImportAsync(request, actorUserId)
+activate Service
+
+loop For each imported row
+    Service -> Service : Validate term, translation, languages,\nbusiness domain, priority
+    Service -> TermsRepository : ExistsAsync(term, languages, domain)
+    activate TermsRepository
+    TermsRepository -> TranscriptDb : SELECT duplicate active term
+    activate TranscriptDb
+    TranscriptDb --> TermsRepository : Duplicate / null
+    deactivate TranscriptDb
+    TermsRepository --> Service : Duplicate / null
+    deactivate TermsRepository
+
+    alt Invalid or duplicate row
+        Service -> Service : Add row error and increment skipped count
+    else Valid row
+        Service -> TermsRepository : AddAsync(new GlobalGlossaryTerm)\nStatus = draft
+        activate TermsRepository
+        TermsRepository --> Service : Tracked
+        deactivate TermsRepository
+
+        Service -> TermsRepository : SaveChangesAsync()
+        activate TermsRepository
+        TermsRepository -> TranscriptDb : INSERT transcript.global_glossary_terms
+        activate TranscriptDb
+        TranscriptDb --> TermsRepository : Saved
+        deactivate TranscriptDb
+        TermsRepository --> Service : Save successful
+        deactivate TermsRepository
+
+        Service -> AuditsRepository : AddAsync(GlobalGlossaryAudit)\nAction = created
+        activate AuditsRepository
+        AuditsRepository -> TranscriptDb : INSERT transcript.global_glossary_audits
+        activate TranscriptDb
+        TranscriptDb --> AuditsRepository : Saved
+        deactivate TranscriptDb
+        AuditsRepository --> Service : Audit saved
+        deactivate AuditsRepository
+    end
+end
+
+Service --> Controller : BulkImportResultDto(imported, skipped, errors)
+deactivate Service
+Controller --> Gateway : 200 OK
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Admin : Display import result and draft terms
+deactivate Web
+
+== PUBLISH GLOBAL TERM ==
+
+Admin -> Web : Publish selected global term
+activate Web
+Web -> Gateway : POST /api/v1/admin/global-glossary/{id}/publish\n[admin JWT]
+activate Gateway
+Gateway -> Controller : PublishTerm(id)
+activate Controller
+Controller -> Controller : Read actor user id from JWT
+Controller -> Service : PublishTermAsync(id, actorUserId)
+activate Service
+
+Service -> TermsRepository : GetByIdAsync(id)
+activate TermsRepository
+TermsRepository -> TranscriptDb : SELECT global glossary term by Id
+activate TranscriptDb
+TranscriptDb --> TermsRepository : Term / null
+deactivate TranscriptDb
+TermsRepository --> Service : Term / null
+deactivate TermsRepository
+
+alt Term missing or deleted
+    Service --> Controller : Failure (NOT_FOUND)
+    deactivate Service
+    Controller --> Gateway : 404 NotFound
+    deactivate Controller
+    Gateway --> Web : 404 NotFound
+    deactivate Gateway
+    Web --> Admin : Show "term not found"
+    deactivate Web
+else Term found
+    alt Definition is missing
+        Service --> Controller : Failure (BAD_REQUEST)
+        Controller --> Gateway : 400 BadRequest
+        Gateway --> Web : 400 BadRequest
+        Web --> Admin : Show "definition required"
+    else Term can be published
+        Service -> TermsRepository : CountAsync(published terms)
+        activate TermsRepository
+        TermsRepository -> TranscriptDb : SELECT COUNT published active terms
+        activate TranscriptDb
+        TranscriptDb --> TermsRepository : Published count
+        deactivate TranscriptDb
+        TermsRepository --> Service : Published count
+        deactivate TermsRepository
+
+        alt Published term cap reached
+            Service --> Controller : Failure (BAD_REQUEST)
+            Controller --> Gateway : 400 BadRequest
+            Gateway --> Web : 400 BadRequest
+            Web --> Admin : Show cap limit error
+        else Publish allowed
+            Service -> TermsRepository : Update(term)\nStatus = published
+            activate TermsRepository
+            TermsRepository --> Service : Tracked
+            deactivate TermsRepository
+
+            Service -> TermsRepository : SaveChangesAsync()
+            activate TermsRepository
+            TermsRepository -> TranscriptDb : UPDATE transcript.global_glossary_terms
+            activate TranscriptDb
+            TranscriptDb --> TermsRepository : Saved
+            deactivate TermsRepository
+            TermsRepository --> Service : Save successful
+            deactivate TermsRepository
+
+            Service -> AuditsRepository : AddAsync(GlobalGlossaryAudit)\nAction = published
+            activate AuditsRepository
+            AuditsRepository -> TranscriptDb : INSERT transcript.global_glossary_audits
+            activate TranscriptDb
+            TranscriptDb --> AuditsRepository : Saved
+            deactivate TranscriptDb
+            AuditsRepository --> Service : Audit saved
+            deactivate AuditsRepository
+
+            Service -> EmbeddingRequests : XADD embedding:index_requests\ncollection_id = global_glossary\nsource_type = global_glossary_term
+            activate EmbeddingRequests
+            EmbeddingRequests --> Service : Queued
+            deactivate EmbeddingRequests
+
+            Service --> Controller : Success
+            Controller --> Gateway : 200 OK
+            Gateway --> Web : 200 OK
+            Web --> Admin : Display published term
+
+            EmbeddingRequests -> EmbeddingWorker : Consume indexing request
+            activate EmbeddingWorker
+            EmbeddingWorker -> Qdrant : Upsert global glossary vector
+            activate Qdrant
+            Qdrant --> EmbeddingWorker : Upserted
+            deactivate Qdrant
+            deactivate EmbeddingWorker
+        end
+    end
+end
+@enduml

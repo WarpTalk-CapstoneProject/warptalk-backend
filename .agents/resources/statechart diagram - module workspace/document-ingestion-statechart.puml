@@ -1,0 +1,39 @@
+@startuml
+title WarpTalk - Workspace Document Ingestion Statechart Diagram
+
+[*] --> Pending : Document Uploaded
+
+state Pending {
+    [*] --> AwaitingProcessing
+    AwaitingProcessing --> Processing : IsAiAllowed == true / Update status to 'processing'
+    AwaitingProcessing --> Skipped : IsAiAllowed == false / Update status to 'skipped', ai_eligible = false
+}
+
+state Processing {
+    state "Text Extraction" as TextExtraction {
+        [*] --> DecryptingFile : Read from storage
+        DecryptingFile --> ExtractingText : Decrypted stream
+        ExtractingText --> RawTextCached : Success / Save to storage
+    }
+    
+    state "RAG Embedding Generation" as EmbeddingGeneration {
+        [*] --> EnqueueingRequest : Publish 'EmbeddingIndexRequest'
+        EnqueueingRequest --> EvaluatingUsagePolicy : Consume from Redis
+        EvaluatingUsagePolicy --> RequestingEmbeddings : Valid policy
+        RequestingEmbeddings --> SavingVectors : OpenAI Success / Safe content
+        RequestingEmbeddings --> RejectingContent : OpenAI Content Filter / Unsafe content
+    }
+    
+    TextExtraction --> EmbeddingGeneration : RawTextCached
+}
+
+Skipped --> [*]
+
+SavingVectors --> Completed : Publish 'indexed' / Update status to 'completed', ai_eligible = true
+RejectingContent --> Failed : Publish 'blocked' (content_filter) / Update status to 'failed', ai_eligible = false
+Processing --> Failed : System Exception / Update status to 'failed', ai_eligible = false
+
+Completed --> [*]
+Failed --> [*]
+
+@enduml

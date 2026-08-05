@@ -1,0 +1,103 @@
+@startuml
+title WarpTalk - In-Meeting Chat & AI Mentions
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Participant" as Actor
+boundary "MeetingRoomPage" as Web
+control "API Gateway" as Gateway
+
+box "Meeting Service" #PaleGreen
+participant ":MeetingChatController" as Controller <<boundary>>
+participant ":MeetingChatService" as Service <<service>>
+participant ":RedisService" as Redis <<control>>
+participant ":MeetingChatMessageRepository" as MsgRepo <<control>>
+participant ":MeetingChatAssistantRequestRepository" as AssistRepo <<control>>
+database "Meeting DB" as Db
+participant ":MeetingChatNotifier" as Notifier <<service>>
+participant ":MeetingChatHub" as Hub <<boundary>>
+end box
+
+boundary "MeetingRoomPage (Other Participant)" as OtherClient
+actor "Other Participant" as OtherActor
+
+Actor -> Web : Type chat text & press Send
+activate Web
+Web -> Gateway : POST /api/v1/meetings/rooms/{roomId}/chat\n[with JWT, Text, Mentions]
+activate Gateway
+Gateway -> Controller : SendMessage(roomId, request)
+activate Controller
+Controller -> Service : SendMessageAsync(roomId, userId, request)
+activate Service
+
+Service -> Service : VerifyRoomAndParticipantAsync(roomId, userId)
+Service -> MsgRepo : AddAsync(message)
+activate MsgRepo
+MsgRepo -> Db : INSERT INTO MeetingChatMessages ...
+activate Db
+Db --> MsgRepo : Saved
+deactivate Db
+MsgRepo --> Service : Message Entity
+deactivate MsgRepo
+Service -> MsgRepo : SaveChangesAsync()
+activate MsgRepo
+MsgRepo -> Db : Commit Changes
+activate Db
+Db --> MsgRepo : Saved
+deactivate Db
+MsgRepo --> Service : Saved
+deactivate MsgRepo
+
+Service -> Notifier : BroadcastMessageReceivedAsync(roomId, messageDto)
+activate Notifier
+Notifier -> Hub : SendMessageToRoom(roomId, messageDto)
+activate Hub
+Hub -> OtherClient : SignalR: BroadcastChatMessage(messageDto)
+activate OtherClient
+OtherClient -> OtherActor : Render chat bubble in UI
+deactivate OtherClient
+Hub --> Notifier : Done
+deactivate Hub
+Notifier --> Service : Done
+deactivate Notifier
+
+alt Mentions contain AI Assistant ("agent")
+    Service -> AssistRepo : AddAsync(assistantRequest)
+    activate AssistRepo
+    AssistRepo -> Db : INSERT INTO MeetingChatAssistantRequests ...
+    activate Db
+    Db --> AssistRepo : Saved
+    deactivate Db
+    AssistRepo --> Service : Request Entity
+    deactivate AssistRepo
+    Service -> AssistRepo : SaveChangesAsync()
+    activate AssistRepo
+AssistRepo -> Db : Commit Changes
+activate Db
+Db --> AssistRepo : Saved
+deactivate Db
+AssistRepo --> Service : Saved
+deactivate AssistRepo
+    
+    Service -> Redis : PublishEventAsync("meeting.chat.assistant_requested", payload)
+    activate Redis
+    Redis --> Service : Acknowledged
+    deactivate Redis
+end
+
+Service --> Controller : Result.Success(messageDto)
+deactivate Service
+Controller --> Gateway : 200 OK (messageDto)
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Actor : Display message in local chat list
+deactivate Web
+@enduml

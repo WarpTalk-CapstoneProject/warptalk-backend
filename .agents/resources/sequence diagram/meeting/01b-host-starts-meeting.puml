@@ -1,0 +1,152 @@
+@startuml
+title WarpTalk - Start Real-Time Translation Session
+
+autonumber
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Host" as Host
+boundary "RoomDetailsPage" as MeetingWeb
+
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+participant ":TranslationRoomRedisSubscriberService" as RedisSub <<boundary>>
+participant ":TranslationRoomHub" as Hub <<boundary>>
+end box
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoomsController" as Controller <<boundary>>
+participant ":TranslationRoomService" as Service <<service>>
+participant ":TranslationRoomRepository" as RoomRepo <<control>>
+participant ":TranslationRoomAudioRouteRepository" as RouteRepo <<control>>
+participant ":AudioRouteEventProcessor" as EventProc <<service>>
+participant ":AudioRouteTransitionProcessor" as TransProc <<service>>
+participant ":AudioRouteCacheService" as CacheService <<service>>
+database "Translation Room DB" as Db
+queue "Redis State Store" as Redis
+end box
+
+== START REAL-TIME TRANSLATION SESSION ==
+
+Host -> MeetingWeb : Click "Start Translation" on WaitingWebPage
+activate MeetingWeb
+MeetingWeb -> Gateway : POST /api/v1/translation-rooms/{id}/start
+activate Gateway
+Gateway -> Controller : StartTranslationRoom(id)
+activate Controller
+Controller -> Service : StartTranslationRoomAsync(id, hostId)
+activate Service
+
+Service -> RoomRepo : GetByIdAsync(id)
+activate RoomRepo
+RoomRepo -> Db : SELECT * FROM TranslationRooms WHERE Id = id
+activate Db
+Db --> RoomRepo : Room Entity
+deactivate Db
+RoomRepo --> Service : Room Entity
+deactivate RoomRepo
+
+Service -> RouteRepo : GetRoutesByRoomIdAsync(id)
+activate RouteRepo
+RouteRepo -> Db : SELECT * FROM TranslationRoomAudioRoutes WHERE RoomId = id
+activate Db
+Db --> RouteRepo : List of Audio Routes
+deactivate Db
+RouteRepo --> Service : List of Audio Routes
+deactivate RouteRepo
+
+alt No Audio Routes Configured
+    Service --> Controller : Result.Failure(ErrorNoAudioRoutesConfigured)
+    Controller --> Gateway : 400 Bad Request (No routes)
+    Gateway --> MeetingWeb : 400 Bad Request
+    MeetingWeb --> Host : Display setup error message
+else Audio Routes Configured
+    Service -> Service : Set Status = "IN_PROGRESS"\nSet StartedAt = DateTime.UtcNow
+    Service -> RoomRepo : Update(room)
+    Service -> RoomRepo : SaveChangesAsync()
+    activate RoomRepo
+    RoomRepo -> Db : UPDATE TranslationRooms SET Status='IN_PROGRESS'...
+    activate Db
+    Db --> RoomRepo : Saved
+    deactivate Db
+    RoomRepo --> Service : Done
+    deactivate RoomRepo
+    
+    Service -> EventProc : ProcessEventAsync(id, null, "session_starts", "{}")
+    activate EventProc
+    
+    loop For each route
+        EventProc -> TransProc : ProcessTransition(route, session_starts, payload)
+        activate TransProc
+        TransProc --> EventProc : Transition Success
+        deactivate TransProc
+    end
+    
+    EventProc -> RouteRepo : UpdateRoutesAsync(routesToUpdate)
+    EventProc -> RouteRepo : SaveChangesAsync()
+    activate RouteRepo
+    RouteRepo -> Db : UPDATE TranslationRoomAudioRoutes...
+    activate Db
+    Db --> RouteRepo : Saved
+    deactivate Db
+    RouteRepo --> EventProc : Done
+    deactivate RouteRepo
+    
+    EventProc -> CacheService : PublishRoutesUpdateAsync(id)
+    activate CacheService
+    
+    CacheService -> RouteRepo : GetRoutesByRoomIdAsync(id)
+    activate RouteRepo
+    RouteRepo -> Db : SELECT * FROM TranslationRoomAudioRoutes
+    activate Db
+    Db --> RouteRepo : Active routes list
+    deactivate Db
+    RouteRepo --> CacheService : Active routes list
+    deactivate RouteRepo
+    
+    CacheService -> Redis : StringSetAsync($"translationRoom:{id}:audio_routes", payloadJson)
+    activate Redis
+    Redis --> CacheService : Cache Saved
+    deactivate Redis
+    
+    CacheService -> Redis : PublishAsync($"translationRoom:{id}:events", pubSubPayload)
+    activate Redis
+    Redis --> CacheService : Message Published
+    deactivate Redis
+    
+    CacheService --> EventProc : Updated routes list
+    deactivate CacheService
+    EventProc --> Service : Result.Success()
+    deactivate EventProc
+    
+    Service --> Controller : Result.Success(TranslationRoomDto)
+    deactivate Service
+    Controller --> Gateway : 200 OK (Room Dto)
+    deactivate Controller
+    Gateway --> MeetingWeb : 200 OK (Room Dto)
+    deactivate Gateway
+    
+    == BACKGROUND EVENTS & HUB ROUTING ==
+    
+    Redis -->> RedisSub : Consume 'AUDIO_ROUTES_UPDATED' event via Pub/Sub
+    activate RedisSub
+    RedisSub -> Hub : Get IHubContext<TranslationRoomHub>
+    activate Hub
+    Hub -> MeetingWeb : SignalR Broadcast: Send 'audio_routes_updated'
+    Hub --> RedisSub : Done
+    deactivate Hub
+    deactivate RedisSub
+    
+    MeetingWeb --> Host : Display translation session active (STT/TTS routing running)
+    deactivate MeetingWeb
+end
+@enduml

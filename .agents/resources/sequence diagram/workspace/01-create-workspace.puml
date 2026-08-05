@@ -1,0 +1,183 @@
+@startuml
+title WarpTalk - Create Workspace
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Authenticated User" as User
+boundary "CreateWorkspacePage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspacesController" as WorkspacesController <<boundary>>
+participant ":WorkspaceService" as WorkspaceService <<service>>
+participant ":WorkspaceRepository" as WorkspaceRepository <<control>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
+participant ":WorkspaceVerifiedDomainRepository" as WorkspaceVerifiedDomainRepository <<control>>
+participant ":UserService\nGrpcClient" as UserServiceGrpcClient <<boundary>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as UserServiceGrpc <<boundary>>
+participant ":ProfileService" as ProfileService <<service>>
+participant ":UserRepository" as UserRepository <<control>>
+participant ":RoleRepository" as RoleRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+User -> Web : Enter workspace name & settings\n(Verified Domains, Require Domain Verification)
+activate Web
+User -> Web : Click "Create Workspace"
+Web -> Web : Validate form schema (Zod)
+
+alt client validation fails
+    Web --> User : Show validation error
+    deactivate Web
+else client validation passes
+    Web -> Gateway : POST /api/v1/workspaces\n[with User JWT Token]
+    activate Gateway
+
+    Gateway -> Gateway : Authenticate Token & extract User ID
+    alt Token invalid
+        Gateway --> Web : 401 Unauthorized
+        deactivate Gateway
+    else Token valid
+        Gateway -> WorkspacesController : Forward Create Workspace Request
+        activate WorkspacesController
+        
+        WorkspacesController -> WorkspaceService : CreateWorkspaceAsync(request, userId)
+        activate WorkspaceService
+        
+        WorkspaceService -> UserServiceGrpcClient : GetUserById(userId)
+        activate UserServiceGrpcClient
+        UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetUserById(userId)
+        activate UserServiceGrpc
+        
+        UserServiceGrpc -> ProfileService : GetUserProfileByIdAsync(userId)
+        activate ProfileService
+        
+        ProfileService -> UserRepository : GetByIdAsync(userId)
+        activate UserRepository
+        UserRepository -> AuthDb : SELECT * FROM Users WHERE Id = userId
+        activate AuthDb
+        AuthDb --> UserRepository : User record
+        deactivate AuthDb
+        UserRepository --> ProfileService : User profile details
+        deactivate UserRepository
+        ProfileService --> UserServiceGrpc : User profile details
+        deactivate ProfileService
+        
+        UserServiceGrpc --> UserServiceGrpcClient : User profile (Email)
+        deactivate UserServiceGrpc
+        UserServiceGrpcClient --> WorkspaceService : User profile (Email)
+        deactivate UserServiceGrpcClient
+
+        alt User not found or Email invalid
+            WorkspaceService --> WorkspacesController : Failure (UserNotFound)
+            deactivate WorkspaceService
+            WorkspacesController --> Gateway : 400 BadRequest / 404 NotFound
+            deactivate WorkspacesController
+        end
+
+        opt Require Verified Domain = True
+            WorkspaceService -> WorkspaceVerifiedDomainRepository : GetVerifiedDomainsByWorkspaceAsync(workspaceId)
+            activate WorkspaceVerifiedDomainRepository
+            WorkspaceVerifiedDomainRepository -> WorkspaceDb : SELECT * FROM WorkspaceVerifiedDomains
+            activate WorkspaceDb
+            WorkspaceDb --> WorkspaceVerifiedDomainRepository : Domain records
+            deactivate WorkspaceDb
+            WorkspaceVerifiedDomainRepository --> WorkspaceService : Verified domains list
+            deactivate WorkspaceVerifiedDomainRepository
+            
+            WorkspaceService -> WorkspaceService : Validate domain constraints:\n- User cannot be internal elsewhere\n- Domains must not be public (e.g. gmail.com)\n- Domains must not be registered elsewhere
+            activate WorkspaceService
+            
+            alt Constraints violated
+                WorkspaceService --> WorkspacesController : Failure (ConstraintsViolated)
+                deactivate WorkspaceService
+                WorkspacesController --> Gateway : 400 BadRequest / 403 Forbidden
+                Gateway --> Web : Error Response
+            end
+        end
+
+        WorkspaceService -> WorkspaceService : Generate unique slug (Resolve collisions)
+        activate WorkspaceService
+        
+        WorkspaceService -> WorkspaceRepository : AnyAsync(w => w.Slug == slug)
+        activate WorkspaceRepository
+        WorkspaceRepository -> WorkspaceDb : SELECT COUNT(*) WHERE Slug = slug
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceRepository : Count
+        deactivate WorkspaceDb
+        WorkspaceRepository --> WorkspaceService : Boolean (Exists)
+        deactivate WorkspaceRepository
+
+        WorkspaceService -> UserServiceGrpcClient : GetRoleByName("Owner")
+        activate UserServiceGrpcClient
+        UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleByName("Owner")
+        activate UserServiceGrpc
+        UserServiceGrpc -> ProfileService : GetRoleByNameAsync("Owner")
+        activate ProfileService
+        ProfileService -> RoleRepository : FirstOrDefaultAsync(r => r.Name == name)
+        activate RoleRepository
+        RoleRepository -> AuthDb : SELECT * FROM Roles WHERE Name = 'Owner'
+        activate AuthDb
+        AuthDb --> RoleRepository : Role record
+        deactivate AuthDb
+        RoleRepository --> ProfileService : Role details
+        deactivate RoleRepository
+        ProfileService --> UserServiceGrpc : Role details
+        deactivate ProfileService
+        UserServiceGrpc --> UserServiceGrpcClient : Owner Role ID / null
+        deactivate UserServiceGrpc
+        UserServiceGrpcClient --> WorkspaceService : Owner Role ID / null
+        deactivate UserServiceGrpcClient
+
+        alt Owner role not found
+            WorkspaceService --> WorkspacesController : Failure (RoleNotFound)
+            deactivate WorkspaceService
+            WorkspacesController --> Gateway : 400 BadRequest (RoleNotFound)
+            Gateway --> Web : Error Response
+        else Owner role found
+            WorkspaceService -> WorkspaceRepository : AddAsync(new Workspace)
+            activate WorkspaceRepository
+            WorkspaceRepository --> WorkspaceService : Done
+            deactivate WorkspaceRepository
+
+            WorkspaceService -> WorkspaceMemberRepository : AddAsync(new WorkspaceMember)
+            activate WorkspaceMemberRepository
+            WorkspaceMemberRepository --> WorkspaceService : Done
+            deactivate WorkspaceMemberRepository
+
+            WorkspaceService -> WorkspaceService : SaveChangesAsync() via Unit of Work
+            activate WorkspaceService
+            WorkspaceService -> WorkspaceDb : Commit Transaction (Save Workspace, Member, & Verified Domains)
+            activate WorkspaceDb
+            WorkspaceDb --> WorkspaceService : Saved Successfully
+            deactivate WorkspaceDb
+            deactivate WorkspaceService
+
+            WorkspaceService --> WorkspacesController : Success (WorkspaceDto)
+            
+            WorkspacesController --> Gateway : 200 OK (WorkspaceDto)
+            
+            Gateway --> Web : 200 OK (WorkspaceDto)
+            
+            Web --> User : Redirect to Workspace Rooms Page (/[workspaceSlug]/rooms)
+        end
+    end
+end
+@enduml

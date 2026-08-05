@@ -1,0 +1,68 @@
+@startuml
+title WarpTalk - Credit Deduction Tick (Heartbeat)
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+box "Meeting Service" #PaleGreen
+participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+participant ":BillingServiceClient" as BillingClient <<boundary>>
+end box
+
+box "Billing Service" #LightCyan
+participant ":BillingServiceGrpc" as BillingGrpc <<boundary>>
+participant ":CreditService" as Service <<service>>
+participant ":UsageService" as UsageService <<service>>
+participant ":RedisBillingStore" as RedisStore <<control>>
+participant ":BillingRepository" as Repository <<control>>
+database "Billing Database" as Db
+end box
+
+activate Hub
+Hub -> BillingClient : ConsumeCreditsAsync(workspaceId, duration=60)
+activate BillingClient
+
+BillingClient -> BillingGrpc : gRPC: ConsumeCredits(workspaceId, duration=60)
+activate BillingGrpc
+
+BillingGrpc -> Service : ConsumeCreditsAsync(workspaceId, duration)
+activate Service
+
+Service -> UsageService : CalculateCreditCost(duration)
+activate UsageService
+UsageService --> Service : creditCost
+deactivate UsageService
+
+Service -> RedisStore : GetWorkspaceCredits(workspaceId)
+activate RedisStore
+RedisStore --> Service : Cached Balance
+deactivate RedisStore
+
+Service -> RedisStore : DeductCredits(workspaceId, creditCost)
+activate RedisStore
+RedisStore --> Service : Updated Cached Balance
+deactivate RedisStore
+
+Service -> Repository : RecordTransaction(creditCost)
+activate Repository
+Repository -> Db : INSERT INTO CreditTransactions ...
+activate Db
+Db --> Repository : Saved
+deactivate Db
+Repository --> Service : Done
+deactivate Repository
+
+Service --> BillingGrpc : Success(Remaining)
+deactivate Service
+BillingGrpc --> BillingClient : gRPC response (Success)
+deactivate BillingGrpc
+BillingClient --> Hub : Success
+deactivate BillingClient
+deactivate Hub
+@enduml

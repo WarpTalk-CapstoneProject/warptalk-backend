@@ -1,0 +1,206 @@
+@startuml
+title WarpTalk - Real-Time Transcript Segmentation (Background Worker)
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+box "STT Worker Service (stt_worker)" #LightGreen
+participant ":STTWorker" as STTWorker <<boundary>>
+end box
+control "Redis Stream" as Redis
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptRedisConsumerService" as Consumer <<boundary>>
+participant ":UnitOfWork" as UoW <<service>>
+participant ":TranscriptRepository" as TranscriptRepo <<control>>
+participant ":TranscriptSegmentRepository" as SegmentRepo <<control>>
+database "Transcript DB" as Db
+participant ":TranslationRoomServiceClient" as RoomClient <<boundary>>
+participant ":UserServiceClient" as UserClient <<boundary>>
+end box
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoomServiceGrpc" as RoomGrpc <<boundary>>
+participant ":TranslationRoomService" as RoomService <<service>>
+database "Room DB" as RoomDb
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as UserGrpc <<boundary>>
+participant ":UserService" as UserService <<service>>
+database "Auth DB" as UserDb
+end box
+
+== PHASE 1: EVENT CONSUMPTION ==
+
+STTWorker -> Redis : Publish segment chunk\n[stt:results:<roomId>]\n(segment_id, speaker_id, text, start_ms, end_ms, is_final)
+activate Redis
+deactivate Redis
+
+loop Every 2 seconds
+  Consumer -> Redis : StreamReadGroupAsync("stt:results:*", group, consumer)
+  activate Redis
+  activate Consumer
+  Redis --> Consumer : Stream entries list
+  deactivate Redis
+  
+  alt Entry list is not empty
+    == PHASE 2: TRANSCRIPT HEAD RESOLUTION ==
+    
+    Consumer -> UoW : Transcripts.FirstOrDefaultAsync(t => t.TranslationRoomId == roomId && t.IsCurrent)
+    activate UoW
+    UoW -> TranscriptRepo : FirstOrDefaultAsync(...)
+    activate TranscriptRepo
+    TranscriptRepo -> Db : SELECT * FROM transcripts\nWHERE translation_room_id = roomId\nAND is_current = true
+    activate Db
+    Db --> TranscriptRepo : Current Transcript (or null)
+    deactivate Db
+    TranscriptRepo --> UoW : Current Transcript (or null)
+    deactivate TranscriptRepo
+    UoW --> Consumer : Current Transcript (or null)
+    deactivate UoW
+    
+    alt Current Transcript is null (New meeting session)
+      Consumer -> RoomClient : GetTranslationRoomByIdAsync(roomId)
+      activate RoomClient
+      RoomClient -> RoomGrpc : gRPC: GetTranslationRoomById(roomId)
+      activate RoomGrpc
+      RoomGrpc -> RoomService : GetByIdAsync(roomId)
+      activate RoomService
+      RoomService -> RoomDb : SELECT * FROM translation_rooms WHERE id = roomId
+      activate RoomDb
+      RoomDb --> RoomService : Room Details
+      deactivate RoomDb
+      RoomService --> RoomGrpc : Room Details
+      deactivate RoomService
+      RoomGrpc --> RoomClient : gRPC Response
+      deactivate RoomGrpc
+      RoomClient --> Consumer : Room Details (WorkspaceId)
+      deactivate RoomClient
+      
+      Consumer -> UoW : Transcripts.FindAsync(t => t.TranslationRoomId == roomId)
+      activate UoW
+      UoW -> Db : SELECT * FROM transcripts WHERE translation_room_id = roomId
+      activate Db
+      Db --> UoW : Past Transcripts list
+      deactivate Db
+      UoW --> Consumer : Past Transcripts list
+      deactivate UoW
+      
+      Consumer -> Consumer : Order past transcripts descending\nand deactivate previous current
+      
+      opt Previous current transcript exists
+        Consumer -> UoW : Transcripts.Update(previousTranscript)
+        activate UoW
+        UoW -> TranscriptRepo : Update(...)
+        activate TranscriptRepo
+        TranscriptRepo --> UoW : Done
+        deactivate TranscriptRepo
+        UoW --> Consumer : Done
+        deactivate UoW
+      end
+      
+      Consumer -> Consumer : Instantiate new Transcript\n(IsCurrent = true, Version = 1)
+      
+      Consumer -> UoW : Transcripts.AddAsync(newTranscript)
+      activate UoW
+      UoW -> TranscriptRepo : AddAsync(...)
+      activate TranscriptRepo
+      TranscriptRepo --> UoW : Done
+      deactivate TranscriptRepo
+      UoW --> Consumer : Done
+      deactivate UoW
+      
+      Consumer -> UoW : SaveChangesAsync()
+      activate UoW
+      UoW -> Db : INSERT INTO transcripts ...
+      activate Db
+      Db --> UoW : Done
+      deactivate Db
+      UoW --> Consumer : Done
+      deactivate UoW
+    end
+    
+    == PHASE 3: IDEMPOTENCY CHECK & SEGMENT PERSISTENCE ==
+    
+    Consumer -> UoW : TranscriptSegments.GetByIdAsync(segmentId)
+    activate UoW
+    UoW -> SegmentRepo : GetByIdAsync(...)
+    activate SegmentRepo
+    SegmentRepo -> Db : SELECT * FROM transcript_segments WHERE id = segmentId
+    activate Db
+    Db --> SegmentRepo : TranscriptSegment (or null)
+    deactivate Db
+    SegmentRepo --> UoW : TranscriptSegment (or null)
+    deactivate SegmentRepo
+    UoW --> Consumer : TranscriptSegment (or null)
+    deactivate UoW
+    
+    alt Segment is new (Idempotent check passed)
+      Consumer -> UoW : AdvanceTranscriptForNewSegmentAsync(transcript.Id, endMs)
+      activate UoW
+      UoW -> Db : UPDATE transcripts SET total_segments = total_segments + 1,\ntotal_duration_ms = endMs,\nlast_sequence_order = last_sequence_order + 1\nWHERE id = transcript.Id\nRETURNING last_sequence_order
+      activate Db
+      Db --> UoW : sequenceOrder
+      deactivate Db
+      UoW --> Consumer : sequenceOrder
+      deactivate UoW
+      
+      Consumer -> UserClient : GetUserByIdAsync(speakerId)
+      activate UserClient
+      UserClient -> UserGrpc : gRPC: GetUserById(speakerId)
+      activate UserGrpc
+      UserGrpc -> UserService : GetByIdAsync(speakerId)
+      activate UserService
+      UserService -> UserDb : SELECT * FROM users WHERE id = speakerId
+      activate UserDb
+      UserDb --> UserService : User profile
+      deactivate UserDb
+      UserService --> UserGrpc : User profile
+      deactivate UserService
+      UserGrpc --> UserClient : gRPC Response
+      deactivate UserGrpc
+      UserClient --> Consumer : User profile (FullName)
+      deactivate UserClient
+      
+      Consumer -> Consumer : Instantiate new TranscriptSegment\n(SequenceOrder = sequenceOrder, SpeakerName = FullName)
+      
+      Consumer -> UoW : TranscriptSegments.AddAsync(newSegment)
+      activate UoW
+      UoW -> SegmentRepo : AddAsync(...)
+      activate SegmentRepo
+      SegmentRepo --> UoW : Done
+      deactivate SegmentRepo
+      UoW --> Consumer : Done
+      deactivate UoW
+      
+      Consumer -> UoW : SaveChangesAsync()
+      activate UoW
+      UoW -> Db : INSERT INTO transcript_segments\n(id, transcript_id, speaker_participant_id, speaker_name,\noriginal_text, original_language, confidence,\nstart_time_ms, end_time_ms, sequence_order, is_final) ...
+      activate Db
+      Db --> UoW : Done
+      deactivate Db
+      UoW --> Consumer : Done
+      deactivate UoW
+      
+      Consumer -> Redis : StreamAcknowledgeAsync("stt:results:*", group, entry.Id)
+      activate Redis
+      Redis --> Consumer : Done
+      deactivate Redis
+    end
+  end
+  
+  deactivate Consumer
+end
+
+@enduml

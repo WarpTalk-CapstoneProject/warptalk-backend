@@ -1,0 +1,124 @@
+@startuml
+title WarpTalk - Real-Time Translation Session
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 120
+
+boundary "MeetingRoomPage" as Client
+queue "Redis: audio:chunks" as AudioStream
+
+box "STT Worker Service (stt_worker)" #LightGreen
+participant ":STTWorker" as STTWorker <<boundary>>
+participant ":OpenAISTT" as STTModel <<service>>
+end box
+
+queue "Redis: stt:results" as STTStream
+
+box "Translation Worker Service (translation_worker)" #LightYellow
+participant ":TranslationWorker" as TransWorker <<boundary>>
+participant ":OpenAITranslator" as Translator <<service>>
+end box
+
+participant "Qdrant Vector DB" as QdrantDb <<external system>>
+queue "Redis: translate:results" as TransStream
+
+box "TTS Worker Service (tts_worker)" #LightPink
+participant ":TTSWorker" as TTSWorker <<boundary>>
+participant ":CartesiaSynthesizer" as Synthesizer <<service>>
+end box
+
+queue "Redis: tts:results" as TTSStream
+control "API Gateway" as Gateway
+
+box "Meeting Service" #PaleGreen
+participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+end box
+
+== STEP 1: SPEECH-TO-TEXT WORKER PIPELINE (stt_worker) ==
+
+Client ->> AudioStream : Publish AudioChunkMessage [audio_data, sample_rate, speaker_id]
+
+AudioStream -> STTWorker : Consume AudioChunkMessage from group 'stt-workers'
+activate STTWorker
+
+STTWorker -> STTWorker : Check _paused_rooms & publish telemetry latency
+STTWorker -> STTModel : transcribe(audio_data, sample_rate, language_hint)
+activate STTModel
+STTModel --> STTWorker : List of TranscribedSegment [text, language, confidence]
+deactivate STTModel
+
+STTWorker ->> STTStream : Publish STTResultMessage to 'stt:results:{meetingId}' & global stream
+deactivate STTWorker
+
+== STEP 2: TRANSLATION WORKER PIPELINE (translation_worker) ==
+
+STTStream -> TransWorker : Consume STTResultMessage from group 'translate-workers'
+activate TransWorker
+
+TransWorker -> QdrantDb : Search glossary terms for workspace RAG
+activate QdrantDb
+QdrantDb --> TransWorker : Glossary term matches
+deactivate QdrantDb
+
+TransWorker -> Translator : translate(text, source_lang, target_lang, glossary_terms)
+activate Translator
+Translator --> TransWorker : Translated text result
+deactivate Translator
+
+TransWorker ->> TransStream : Publish TranslationResultMessage to 'translate:results:{meetingId}'
+deactivate TransWorker
+
+== STEP 3: TEXT-TO-SPEECH WORKER PIPELINE (tts_worker) ==
+
+TransStream -> TTSWorker : Consume TranslationResultMessage from group 'tts-workers'
+activate TTSWorker
+
+TTSWorker -> TTSWorker : Check is_voice_clone_consented(roomId, speakerId)
+TTSWorker -> TTSWorker : _get_voice_id(meetingId, speakerId)
+TTSWorker -> Synthesizer : synthesize(translated_text, voice_id/default)
+activate Synthesizer
+Synthesizer --> TTSWorker : Synthesized PCM audio bytes
+deactivate Synthesizer
+
+TTSWorker ->> TTSStream : Publish TTSResultMessage to 'tts:results:{meetingId}'
+deactivate TTSWorker
+
+== STEP 4: SIGNALR BROADCAST VIA GATEWAY TO WEB CLIENT ==
+
+TransStream -> Hub : Consume TranslationResultMessage
+activate Hub
+Hub -> Gateway : Broadcast Subtitle Event
+activate Gateway
+Gateway -> Client : SignalR: ReceiveSubtitle(translatedText, originalText)
+activate Client
+deactivate Hub
+deactivate Gateway
+
+Client -> Client : Render real-time translated subtitles on overlay
+deactivate Client
+
+TTSStream -> Hub : Consume TTSResultMessage
+activate Hub
+Hub -> Gateway : Broadcast Audio Stream
+activate Gateway
+Gateway -> Client : SignalR: PlayClonedAudio(audioBytes)
+activate Client
+deactivate Hub
+deactivate Gateway
+
+Client -> Client : Play cloned audio via Virtual Mic / Headphones
+deactivate Client
+
+@enduml
