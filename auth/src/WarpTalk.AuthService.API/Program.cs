@@ -89,6 +89,7 @@ builder.Services.AddScoped<IAuthEmailSender, ResendAuthEmailSender>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
 builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
+builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 

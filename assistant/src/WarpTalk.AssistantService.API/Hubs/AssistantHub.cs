@@ -3,18 +3,18 @@ using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
-using WarpTalk.AssistantService.Domain.Interfaces;
+using WarpTalk.AssistantService.Application.Interfaces;
 
 namespace WarpTalk.AssistantService.API.Hubs;
 
 [Authorize]
 public class AssistantHub : Hub
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly IAssistantConversationService _conversationService;
 
-    public AssistantHub(IUnitOfWork unitOfWork)
+    public AssistantHub(IAssistantConversationService conversationService)
     {
-        _unitOfWork = unitOfWork;
+        _conversationService = conversationService;
     }
 
     public async Task JoinConversation(Guid conversationId)
@@ -23,8 +23,9 @@ public class AssistantHub : Hub
         if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out var userId))
             throw new HubException("Unauthorized");
 
-        var conversation = await _unitOfWork.AssistantConversationRepository.GetByIdAsync(conversationId);
-        if (conversation == null || conversation.UserId != userId)
+        var access = await _conversationService.AuthorizeConversationAccessAsync(
+            conversationId, userId, Context.ConnectionAborted);
+        if (!access.IsSuccess)
             throw new HubException("Forbidden: this conversation does not belong to you.");
 
         await Groups.AddToGroupAsync(Context.ConnectionId, GetConversationGroupName(conversationId));
