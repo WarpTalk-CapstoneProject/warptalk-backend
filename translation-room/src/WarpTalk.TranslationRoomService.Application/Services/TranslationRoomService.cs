@@ -133,6 +133,35 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-281: the host's own name for the participant row seeded at room creation.
+    ///
+    /// Falls back to the role label when the directory cannot answer. That degraded value is the
+    /// old bug's literal string, and that is intentional: it is only reachable when Auth is
+    /// unreachable or does not know the user, and refusing to create the room over a cosmetic
+    /// label would be far worse than a roster entry that briefly reads "Host".
+    /// </summary>
+    private async Task<string> ResolveHostDisplayNameAsync(Guid hostId, CancellationToken ct)
+    {
+        try
+        {
+            var name = await _userSettingsDirectory.GetDisplayNameAsync(hostId, ct);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not resolve a display name for HostId: {HostId}; seeding the host participant with the role label.",
+                hostId);
+        }
+
+        return TranslationRoomConstants.HostDisplayNameFallback;
+    }
+
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -209,15 +238,38 @@ public class TranslationRoomService : ITranslationRoomService
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
+            // WT-281: the host row used to be seeded with the literal string "Host", which is
+            // exactly what production rendered in the roster. Resolved through the same Auth
+            // directory this method already uses for language defaults.
+            var hostDisplayName = await ResolveHostDisplayNameAsync(hostId, ct);
+
+            // WT-281: the host LISTENS in a language the room actually translates INTO. Both sides
+            // used to be seeded from sourceLang, so a Vietnamese -> English room showed its own
+            // host as "English -> English", which is not a translation at all.
+            //
+            // A multi-target room has to collapse to a single value on this one row. First target,
+            // deliberately:
+            //  - targetLangs is ordered exactly as the creator supplied it, so its first entry is
+            //    the language the room was primarily opened for.
+            //  - The host's stored DefaultListenLanguage is NOT consulted. It is a global
+            //    preference that need not be among this room's targets at all, so honouring it
+            //    could seed a language the room never produces — and it would silently contradict
+            //    the room the host had just explicitly configured.
+            //  - Null is not an option: ListenLanguage is NOT NULL on the participant row and the
+            //    audio-route pipeline keys off it.
+            // The host can still change this in-meeting through the participant language update;
+            // this is the seed, not a lock.
+            var hostListenLanguage = targetLangs[0];
+
             // WT-82: Auto-add the Host as a participant so they exist in the DB
             var hostParticipant = new TranslationRoomParticipant
             {
                 Id = Guid.CreateVersion7(),
                 TranslationRoomId = room.Id,
                 UserId = hostId,
-                DisplayName = "Host",
+                DisplayName = hostDisplayName,
                 SpeakLanguage = sourceLang,
-                ListenLanguage = sourceLang,
+                ListenLanguage = hostListenLanguage,
                 Role = "HOST",
                 Status = TranslationRoomParticipantStatuses.Connected,
                 ConnectionType = "WEBRTC",
