@@ -1,73 +1,59 @@
 using System;
-using System.Data;
-using System.Data.Common;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class BillingPolicyRepository : IBillingPolicyRepository
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly BillingDbContext _context;
 
-    public BillingPolicyRepository(IUnitOfWork unitOfWork)
+    public BillingPolicyRepository(BillingDbContext context)
     {
-        _unitOfWork = unitOfWork;
+        _context = context;
     }
-
-
 
     public async Task<decimal> ReadPolicyValueAsync(string key, decimal seedValue, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT value
-            FROM subscription.billing_policy_config
-            WHERE key = @key
-            """;
-        AddParameter(command, "key", key);
+        var row = await _context.BillingPolicyConfigs
+            .AsNoTracking()
+            .Where(e => e.Key == key)
+            .Select(e => (decimal?)e.Value)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null || value == DBNull.Value
-            ? seedValue
-            : Convert.ToDecimal(value);
+        return row ?? seedValue;
     }
 
     public async Task UpsertPolicyValueAsync(string key, decimal value, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO subscription.billing_policy_config (key, value, updated_at)
-            VALUES (@key, @value, NOW())
-            ON CONFLICT (key)
-            DO UPDATE SET value = EXCLUDED.value,
-                          updated_at = NOW()
-            """;
-        AddParameter(command, "key", key);
-        AddParameter(command, "value", value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
+        // The previous implementation used INSERT ... ON CONFLICT, which EF Core
+        // cannot express. Read-then-write is equivalent here because policy keys
+        // are edited only from the single-writer admin surface; a concurrent
+        // insert of the same key surfaces as a unique-violation DbUpdateException
+        // rather than silently overwriting.
+        var existing = await _context.BillingPolicyConfigs
+            .FirstOrDefaultAsync(e => e.Key == key, cancellationToken);
 
-    private async Task<DbConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
-    {
-        var connection = _unitOfWork.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
+        if (existing is null)
         {
-            await connection.OpenAsync(cancellationToken);
+            _context.BillingPolicyConfigs.Add(new BillingPolicyConfig
+            {
+                Key = key,
+                Value = value,
+                UpdatedAt = DateTime.UtcNow
+            });
         }
-        return connection;
-    }
+        else
+        {
+            existing.Value = value;
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
 
-    private static void AddParameter(IDbCommand command, string name, object value)
-    {
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.Value = value;
-        command.Parameters.Add(parameter);
+        await _context.SaveChangesAsync(cancellationToken);
     }
 }

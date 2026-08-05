@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json.Nodes;
 using System.Text.Json;
@@ -108,9 +109,9 @@ public static class UsageSettlementMapper
             .Select(group => new
             {
                 unit = group.Key.Unit,
-                quantity = group.Sum(x => x.Quantity).ToString("0.######"),
+                quantity = group.Sum(x => x.Quantity).ToString("0.######", CultureInfo.InvariantCulture),
                 pricing_rate_card_id = group.Key.PricingRateCardId,
-                unit_price_snapshot = group.Key.UnitPriceSnapshot?.ToString("0.######"),
+                unit_price_snapshot = group.Key.UnitPriceSnapshot?.ToString("0.######", CultureInfo.InvariantCulture),
                 provider = string.IsNullOrWhiteSpace(group.Key.Provider) ? null : group.Key.Provider,
                 model = string.IsNullOrWhiteSpace(group.Key.Model) ? null : group.Key.Model
             })
@@ -176,7 +177,11 @@ public static class UsageSettlementMapper
 
             var unit = item["unit"]?.GetValue<string>();
             var quantityText = item["quantity"]?.GetValue<string>();
-            if (string.IsNullOrWhiteSpace(unit) || !decimal.TryParse(quantityText, out var quantity))
+            // The breakdown is machine-written JSON, so it is always invariant —
+            // parsing it with the ambient culture turns "0.006575" into 6575 on a
+            // comma-decimal host and splits what should be one aggregation group.
+            if (string.IsNullOrWhiteSpace(unit) ||
+                !decimal.TryParse(quantityText, NumberStyles.Number, CultureInfo.InvariantCulture, out var quantity))
                 continue;
 
             Guid? pricingRateCardId = null;
@@ -186,7 +191,7 @@ public static class UsageSettlementMapper
 
             decimal? unitPriceSnapshot = null;
             var unitPriceSnapshotText = item["unit_price_snapshot"]?.GetValue<string>();
-            if (decimal.TryParse(unitPriceSnapshotText, out var parsedPrice))
+            if (decimal.TryParse(unitPriceSnapshotText, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedPrice))
                 unitPriceSnapshot = parsedPrice;
 
             yield return new UnitBreakdownItem(

@@ -4,30 +4,61 @@ using System.Data.Common;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
+/// <summary>
+/// APPROVED RAW-SQL PRIMITIVE — do not "clean up" into EF Core LINQ.
+///
+/// Usage settlement is a single atomic money operation: it debits credits,
+/// writes the usage record and credit transaction, enforces the idempotency key,
+/// and re-evaluates overage/suspension state. That logic lives in the PostgreSQL
+/// function subscription.settle_usage_charge so it commits or aborts as one unit
+/// inside the database, and so concurrent settlements for the same subscription
+/// serialise there rather than in application code.
+///
+/// EF Core has no LINQ representation for invoking a table-valued function with
+/// 17 arguments and reading its composite result row. Rewriting this as tracked
+/// entity writes would move the atomicity guarantee out of the database and into
+/// C#, which is a correctness regression on the billing path — not a cleanup.
+///
+/// The raw SQL is confined to this file and reaches the database through the
+/// DbContext's own connection, so it shares the ambient EF transaction when the
+/// caller has one open.
+///
+/// Counterpart primitive: <see cref="OutboxClaimStore"/>.
+/// Both are allowlisted by warptalk-infrastructure/scripts/check-production-deployment.sh.
+/// </summary>
 public class UsageSettlementRepository : IUsageSettlementRepository
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly BillingDbContext _context;
 
-    public UsageSettlementRepository(IUnitOfWork unitOfWork)
+    public UsageSettlementRepository(BillingDbContext context)
     {
-        _unitOfWork = unitOfWork;
+        _context = context;
     }
 
     public async Task<SettleUsageChargeResult?> ExecuteSettlementAsync(
         SettleUsageChargeRequest request,
         CancellationToken cancellationToken = default)
     {
-        var connection = _unitOfWork.GetDbConnection();
+        var connection = _context.Database.GetDbConnection();
         if (connection.State != ConnectionState.Open)
             await connection.OpenAsync(cancellationToken);
 
         await using var command = connection.CreateCommand();
+
+        // Enlist in the caller's EF transaction when one is open, otherwise this
+        // command would run outside it and could commit independently.
+        var currentTransaction = _context.Database.CurrentTransaction;
+        if (currentTransaction is not null)
+            command.Transaction = currentTransaction.GetDbTransaction();
+
         command.CommandText = """
             SELECT applied, transaction_id, usage_record_id, balance_after, service_state, suspended_reason, just_entered_overage
             FROM subscription.settle_usage_charge(

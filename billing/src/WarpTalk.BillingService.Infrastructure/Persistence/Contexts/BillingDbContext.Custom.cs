@@ -11,8 +11,63 @@ public partial class BillingDbContext
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 
+    // Rate card and admin-editable config tables. These were previously reached
+    // only through hand-written ADO.NET commands on the raw connection; mapping
+    // them here lets their repositories use EF Core like every other billing
+    // repository, and keeps their transactions inside the same DbContext.
+    public DbSet<UsageRateCard> UsageRateCards => Set<UsageRateCard>();
+    public DbSet<BillingPricingConfig> BillingPricingConfigs => Set<BillingPricingConfig>();
+    public DbSet<BillingPolicyConfig> BillingPolicyConfigs => Set<BillingPolicyConfig>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<UsageRateCard>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("usage_rate_card_pkey");
+            entity.ToTable("usage_rate_card", "subscription");
+
+            entity.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("uuidv7()");
+            entity.Property(e => e.ChargeType).HasColumnName("charge_type").HasMaxLength(30).IsRequired();
+            entity.Property(e => e.Unit).HasColumnName("unit").HasMaxLength(30);
+            entity.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(50);
+            entity.Property(e => e.Model).HasColumnName("model").HasMaxLength(100);
+            entity.Property(e => e.SourceLanguageCode).HasColumnName("source_language_code").HasMaxLength(15);
+            entity.Property(e => e.TargetLanguageCode).HasColumnName("target_language_code").HasMaxLength(15);
+            // Widened from numeric(12,6) to numeric(18,6) by migration 005.
+            entity.Property(e => e.UnitPrice).HasColumnName("unit_price").HasPrecision(18, 6);
+            entity.Property(e => e.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+            entity.Property(e => e.ProviderUnitCost).HasColumnName("provider_unit_cost").HasPrecision(18, 10);
+            entity.Property(e => e.MarkupMultiplier).HasColumnName("markup_multiplier").HasPrecision(10, 4);
+            entity.Property(e => e.EffectiveFrom).HasColumnName("effective_from");
+            entity.Property(e => e.EffectiveTo).HasColumnName("effective_to");
+            // Deliberately no HasDefaultValue(true): the column defaults to true in
+            // the database, but declaring that here would make EF treat an explicit
+            // false as "unset" and omit it from the INSERT, so deactivating a rate
+            // card would silently insert it as active instead.
+            entity.Property(e => e.IsActive).HasColumnName("is_active");
+            entity.Property(e => e.Notes).HasColumnName("notes");
+        });
+
+        modelBuilder.Entity<BillingPricingConfig>(entity =>
+        {
+            entity.HasKey(e => e.Key).HasName("billing_pricing_config_pkey");
+            entity.ToTable("billing_pricing_config", "subscription");
+
+            entity.Property(e => e.Key).HasColumnName("key").HasMaxLength(80);
+            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(18, 6);
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
+        });
+
+        modelBuilder.Entity<BillingPolicyConfig>(entity =>
+        {
+            entity.HasKey(e => e.Key).HasName("billing_policy_config_pkey");
+            entity.ToTable("billing_policy_config", "subscription");
+
+            entity.Property(e => e.Key).HasColumnName("key").HasMaxLength(100);
+            entity.Property(e => e.Value).HasColumnName("value").HasPrecision(18, 6);
+            entity.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
+        });
+
         modelBuilder.Entity<OutboxMessage>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("outbox_messages_pkey");

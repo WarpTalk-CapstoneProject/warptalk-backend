@@ -1,300 +1,229 @@
 using System;
 using System.Collections.Generic;
-using System.Data;
-using System.Data.Common;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
-using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Entities;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
 public class UsageRateCardRepository : IUsageRateCardRepository
 {
     private const string DefaultCurrency = "VND";
-    private readonly IUnitOfWork _unitOfWork;
-    private DbTransaction? _currentTransaction;
+    private const string UpsertNotes = "Updated from admin pricing controls";
 
-    public UsageRateCardRepository(IUnitOfWork unitOfWork)
+    private readonly BillingDbContext _context;
+    private IDbContextTransaction? _currentTransaction;
+
+    public UsageRateCardRepository(BillingDbContext context)
     {
-        _unitOfWork = unitOfWork;
+        _context = context;
     }
-
-
 
     public async Task<IReadOnlyList<UsageRateCardDto>> GetActiveRateCardsAsync(CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT id,
-                   charge_type,
-                   COALESCE(unit, '') AS unit,
-                   COALESCE(provider, '') AS provider,
-                   COALESCE(model, '') AS model,
-                   source_language_code,
-                   target_language_code,
-                   unit_price,
-                   currency,
-                   provider_unit_cost,
-                   markup_multiplier,
-                   effective_from,
-                   effective_to,
-                   is_active
-            FROM subscription.usage_rate_card
-            WHERE effective_to IS NULL
-            ORDER BY charge_type, unit, provider, model, source_language_code NULLS LAST, target_language_code NULLS LAST
-            """;
+        // Ordering matches the previous SQL: the coalesced-to-empty columns sort
+        // first, then the nullable language codes. PostgreSQL already sorts NULLs
+        // last for ASC, so the old explicit NULLS LAST was redundant.
+        var rows = await _context.UsageRateCards
+            .AsNoTracking()
+            .Where(e => e.EffectiveTo == null)
+            .OrderBy(e => e.ChargeType)
+            .ThenBy(e => e.Unit ?? string.Empty)
+            .ThenBy(e => e.Provider ?? string.Empty)
+            .ThenBy(e => e.Model ?? string.Empty)
+            .ThenBy(e => e.SourceLanguageCode)
+            .ThenBy(e => e.TargetLanguageCode)
+            .ToListAsync(cancellationToken);
 
-        var rows = new List<UsageRateCardDto>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            rows.Add(ReadRateCard(reader));
-        }
-        return rows;
+        return rows.Select(ToDto).ToList();
     }
 
     public async Task<bool> RateCardIdentityExistsAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        if (_currentTransaction != null) command.Transaction = _currentTransaction;
-        
-        command.CommandText = """
-            SELECT EXISTS (
-                SELECT 1
-                FROM subscription.usage_rate_card
-                WHERE charge_type = @charge_type
-                  AND unit = @unit
-                  AND currency = @currency
-                  AND provider = @provider
-                  AND model = @model
-                  AND source_language_code IS NOT DISTINCT FROM @source_language_code
-                  AND target_language_code IS NOT DISTINCT FROM @target_language_code
-            )
-            """;
-
-        AddParameter(command, "charge_type", request.ChargeType.Trim());
-        AddParameter(command, "unit", request.Unit.Trim());
-        AddParameter(command, "currency", NormalizeCurrency(request.Currency));
-        AddParameter(command, "provider", request.Provider.Trim());
-        AddParameter(command, "model", request.Model.Trim());
-        AddParameter(command, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-        AddParameter(command, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is bool exists && exists;
+        return await FilterByIdentity(_context.UsageRateCards.AsNoTracking(), request)
+            .AnyAsync(cancellationToken);
     }
 
     public async Task<UsageRateCardDto> UpsertRateCardAsync(UpsertUsageRateCardRequest request, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        
-        await using (var deactivate = connection.CreateCommand())
-        {
-            if (_currentTransaction != null) deactivate.Transaction = _currentTransaction;
-            deactivate.CommandText = """
-                UPDATE subscription.usage_rate_card
-                   SET is_active = false,
-                       effective_to = NOW()
-                 WHERE is_active = true
-                   AND effective_to IS NULL
-                   AND charge_type = @charge_type
-                   AND unit = @unit
-                   AND currency = @currency
-                   AND provider = @provider
-                   AND model = @model
-                   AND source_language_code IS NOT DISTINCT FROM @source_language_code
-                   AND target_language_code IS NOT DISTINCT FROM @target_language_code
-                """;
+        // Rate cards are append-only: supersede the current active row for this
+        // identity, then insert the new priced row. The unique index
+        // ux_usage_rate_card_active_lookup allows at most one such row, but the
+        // loop keeps this correct if historical data ever violated that.
+        var supersededAt = DateTime.UtcNow;
 
-            AddParameter(deactivate, "charge_type", request.ChargeType.Trim());
-            AddParameter(deactivate, "unit", request.Unit.Trim());
-            AddParameter(deactivate, "currency", NormalizeCurrency(request.Currency));
-            AddParameter(deactivate, "provider", request.Provider.Trim());
-            AddParameter(deactivate, "model", request.Model.Trim());
-            AddParameter(deactivate, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-            AddParameter(deactivate, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-            await deactivate.ExecuteNonQueryAsync(cancellationToken);
+        var current = await FilterByIdentity(_context.UsageRateCards, request)
+            .Where(e => e.IsActive && e.EffectiveTo == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (var row in current)
+        {
+            row.IsActive = false;
+            row.EffectiveTo = supersededAt;
         }
 
-        await using (var insert = connection.CreateCommand())
+        // Flush the supersede before inserting. ux_usage_rate_card_active_lookup is
+        // a partial unique index over (identity) WHERE is_active AND effective_to IS
+        // NULL, so the old row must stop being active before the new one exists.
+        // Batching both into one SaveChangesAsync would leave that on EF's command
+        // ordering, which is an implementation detail, not a contract. Both
+        // statements run inside the caller's transaction, so this stays atomic.
+        if (current.Count > 0)
+            await _context.SaveChangesAsync(cancellationToken);
+
+        var inserted = new UsageRateCard
         {
-            if (_currentTransaction != null) insert.Transaction = _currentTransaction;
-            insert.CommandText = """
-                INSERT INTO subscription.usage_rate_card (
-                    id,
-                    charge_type,
-                    unit,
-                    currency,
-                    provider,
-                    model,
-                    source_language_code,
-                    target_language_code,
-                    provider_unit_cost,
-                    markup_multiplier,
-                    unit_price,
-                    effective_from,
-                    is_active,
-                    notes
-                )
-                VALUES (
-                    uuidv7(),
-                    @charge_type,
-                    @unit,
-                    @currency,
-                    @provider,
-                    @model,
-                    @source_language_code,
-                    @target_language_code,
-                    @provider_unit_cost,
-                    @markup_multiplier,
-                    @unit_price,
-                    NOW(),
-                    @is_active,
-                    'Updated from admin pricing controls'
-                )
-                RETURNING id,
-                          charge_type,
-                          unit,
-                          provider,
-                          model,
-                          source_language_code,
-                          target_language_code,
-                          unit_price,
-                          currency,
-                          provider_unit_cost,
-                          markup_multiplier,
-                          effective_from,
-                          effective_to,
-                          is_active
-                """;
+            ChargeType = request.ChargeType.Trim(),
+            Unit = request.Unit.Trim(),
+            Currency = NormalizeCurrency(request.Currency),
+            Provider = request.Provider.Trim(),
+            Model = request.Model.Trim(),
+            SourceLanguageCode = NormalizeLanguageCode(request.SourceLanguageCode),
+            TargetLanguageCode = NormalizeLanguageCode(request.TargetLanguageCode),
+            ProviderUnitCost = request.ProviderUnitCostUsd,
+            MarkupMultiplier = request.MarkupMultiplier,
+            UnitPrice = request.UnitPrice,
+            EffectiveFrom = supersededAt,
+            IsActive = request.IsActive ?? true,
+            Notes = UpsertNotes
+        };
 
-            AddParameter(insert, "charge_type", request.ChargeType.Trim());
-            AddParameter(insert, "unit", request.Unit.Trim());
-            AddParameter(insert, "currency", NormalizeCurrency(request.Currency));
-            AddParameter(insert, "provider", request.Provider.Trim());
-            AddParameter(insert, "model", request.Model.Trim());
-            AddParameter(insert, "source_language_code", NormalizeLanguageCode(request.SourceLanguageCode) ?? (object)DBNull.Value);
-            AddParameter(insert, "target_language_code", NormalizeLanguageCode(request.TargetLanguageCode) ?? (object)DBNull.Value);
-            AddParameter(insert, "provider_unit_cost", request.ProviderUnitCostUsd ?? (object)DBNull.Value);
-            AddParameter(insert, "markup_multiplier", request.MarkupMultiplier ?? (object)DBNull.Value);
-            AddParameter(insert, "unit_price", request.UnitPrice);
-            AddParameter(insert, "is_active", request.IsActive ?? true);
+        _context.UsageRateCards.Add(inserted);
+        await _context.SaveChangesAsync(cancellationToken);
 
-            await using var reader = await insert.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
-                throw new InvalidOperationException("Unable to create usage rate card.");
-
-            return ReadRateCard(reader);
-        }
+        // Id and any other store-generated values are populated by EF from the
+        // INSERT's RETURNING clause, which is what the previous hand-written
+        // RETURNING list was doing.
+        return ToDto(inserted);
     }
 
     public async Task<decimal> ReadPricingConfigValueAsync(string key, decimal defaultValue, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        if (_currentTransaction != null) command.Transaction = _currentTransaction;
-        
-        command.CommandText = """
-            SELECT value
-            FROM subscription.billing_pricing_config
-            WHERE key = @key
-            """;
-        AddParameter(command, "key", key);
+        var value = await _context.BillingPricingConfigs
+            .AsNoTracking()
+            .Where(e => e.Key == key)
+            .Select(e => (decimal?)e.Value)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        var value = await command.ExecuteScalarAsync(cancellationToken);
-        return value is null || value == DBNull.Value
-            ? defaultValue
-            : Convert.ToDecimal(value);
+        return value ?? defaultValue;
     }
 
     public async Task UpsertPricingConfigValueAsync(string key, decimal value, CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        if (_currentTransaction != null) command.Transaction = _currentTransaction;
-        
-        command.CommandText = """
-            INSERT INTO subscription.billing_pricing_config (key, value, updated_at)
-            VALUES (@key, @value, NOW())
-            ON CONFLICT (key)
-            DO UPDATE SET value = EXCLUDED.value,
-                          updated_at = NOW()
-            """;
-        AddParameter(command, "key", key);
-        AddParameter(command, "value", value);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        // Replaces INSERT ... ON CONFLICT, which EF Core cannot express. Pricing
+        // keys are written only from the admin surface, and the callers wrap a
+        // batch of these in one transaction, so a read-then-write is equivalent;
+        // a genuinely concurrent insert of the same key fails loudly on the
+        // primary key rather than silently overwriting.
+        var existing = await _context.BillingPricingConfigs
+            .FirstOrDefaultAsync(e => e.Key == key, cancellationToken);
+
+        if (existing is null)
+        {
+            _context.BillingPricingConfigs.Add(new BillingPricingConfig
+            {
+                Key = key,
+                Value = value,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            existing.Value = value;
+            existing.UpdatedAt = DateTime.UtcNow;
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
     }
 
     public async Task BeginTransactionAsync(CancellationToken cancellationToken = default)
     {
-        var connection = await GetOpenConnectionAsync(cancellationToken);
-        _currentTransaction = await connection.BeginTransactionAsync(cancellationToken);
+        // Uses the DbContext's own transaction so writes made through the change
+        // tracker and this transaction are the same unit of work. The previous
+        // implementation opened a DbTransaction directly on the connection,
+        // which ran alongside (and independently of) the context's transaction.
+        _currentTransaction ??= await _context.Database.BeginTransactionAsync(cancellationToken);
     }
 
     public async Task CommitTransactionAsync(CancellationToken cancellationToken = default)
     {
-        if (_currentTransaction != null)
-        {
-            await _currentTransaction.CommitAsync(cancellationToken);
-            _currentTransaction.Dispose();
-            _currentTransaction = null;
-        }
+        if (_currentTransaction is null)
+            return;
+
+        await _currentTransaction.CommitAsync(cancellationToken);
+        await _currentTransaction.DisposeAsync();
+        _currentTransaction = null;
     }
 
     public async Task RollbackTransactionAsync(CancellationToken cancellationToken = default)
     {
-        if (_currentTransaction != null)
-        {
-            await _currentTransaction.RollbackAsync(cancellationToken);
-            _currentTransaction.Dispose();
-            _currentTransaction = null;
-        }
+        if (_currentTransaction is null)
+            return;
+
+        await _currentTransaction.RollbackAsync(cancellationToken);
+        await _currentTransaction.DisposeAsync();
+        _currentTransaction = null;
     }
 
-    private async Task<DbConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Reproduces the SQL identity match, including its IS NOT DISTINCT FROM
+    /// handling of the nullable language codes: a null code must match only rows
+    /// whose code is also null, which <c>== null</c> in LINQ does not guarantee
+    /// once the value is parameterised.
+    /// </summary>
+    private static IQueryable<UsageRateCard> FilterByIdentity(
+        IQueryable<UsageRateCard> query,
+        UpsertUsageRateCardRequest request)
     {
-        var connection = _unitOfWork.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-        {
-            await connection.OpenAsync(cancellationToken);
-        }
-        return connection;
+        var chargeType = request.ChargeType.Trim();
+        var unit = request.Unit.Trim();
+        var currency = NormalizeCurrency(request.Currency);
+        var provider = request.Provider.Trim();
+        var model = request.Model.Trim();
+        var sourceLanguageCode = NormalizeLanguageCode(request.SourceLanguageCode);
+        var targetLanguageCode = NormalizeLanguageCode(request.TargetLanguageCode);
+
+        query = query.Where(e =>
+            e.ChargeType == chargeType &&
+            e.Unit == unit &&
+            e.Currency == currency &&
+            e.Provider == provider &&
+            e.Model == model);
+
+        query = sourceLanguageCode is null
+            ? query.Where(e => e.SourceLanguageCode == null)
+            : query.Where(e => e.SourceLanguageCode == sourceLanguageCode);
+
+        query = targetLanguageCode is null
+            ? query.Where(e => e.TargetLanguageCode == null)
+            : query.Where(e => e.TargetLanguageCode == targetLanguageCode);
+
+        return query;
     }
 
-    private static UsageRateCardDto ReadRateCard(IDataRecord reader)
+    private static UsageRateCardDto ToDto(UsageRateCard entity)
     {
         return new UsageRateCardDto(
-            reader.GetGuid(reader.GetOrdinal("id")),
-            reader.GetString(reader.GetOrdinal("charge_type")),
-            reader.GetString(reader.GetOrdinal("unit")),
-            reader.GetString(reader.GetOrdinal("provider")),
-            reader.GetString(reader.GetOrdinal("model")),
-            ReadNullableString(reader, "source_language_code"),
-            ReadNullableString(reader, "target_language_code"),
-            reader.GetDecimal(reader.GetOrdinal("unit_price")),
-            reader.GetString(reader.GetOrdinal("currency")),
-            ReadNullableDecimal(reader, "provider_unit_cost"),
-            ReadNullableDecimal(reader, "markup_multiplier"),
-            reader.GetDateTime(reader.GetOrdinal("effective_from")),
-            reader.IsDBNull(reader.GetOrdinal("effective_to")) ? null : reader.GetDateTime(reader.GetOrdinal("effective_to")),
-            reader.GetBoolean(reader.GetOrdinal("is_active")));
-    }
-
-    private static decimal? ReadNullableDecimal(IDataRecord reader, string columnName)
-    {
-        var ordinal = reader.GetOrdinal(columnName);
-        return reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
-    }
-
-    private static string? ReadNullableString(IDataRecord reader, string columnName)
-    {
-        var ordinal = reader.GetOrdinal(columnName);
-        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+            entity.Id,
+            entity.ChargeType,
+            entity.Unit ?? string.Empty,
+            entity.Provider ?? string.Empty,
+            entity.Model ?? string.Empty,
+            entity.SourceLanguageCode,
+            entity.TargetLanguageCode,
+            entity.UnitPrice,
+            entity.Currency,
+            entity.ProviderUnitCost,
+            entity.MarkupMultiplier,
+            entity.EffectiveFrom,
+            entity.EffectiveTo,
+            entity.IsActive);
     }
 
     private static string? NormalizeLanguageCode(string? languageCode)
@@ -309,13 +238,5 @@ public class UsageRateCardRepository : IUsageRateCardRepository
         return string.IsNullOrWhiteSpace(currency)
             ? DefaultCurrency
             : currency.Trim().ToUpperInvariant();
-    }
-
-    private static void AddParameter(IDbCommand command, string name, object value)
-    {
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.Value = value;
-        command.Parameters.Add(parameter);
     }
 }

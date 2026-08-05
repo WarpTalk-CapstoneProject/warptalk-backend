@@ -27,9 +27,10 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         
         var scope = ServiceProvider.CreateScope();
         _db = scope.ServiceProvider.GetRequiredService<BillingDbContext>();
-        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        
-        var repository = new UsageSettlementRepository(unitOfWork);
+
+        // Same DbContext instance the test writes its fixtures through, so the
+        // settlement command sees those rows and shares their connection.
+        var repository = new UsageSettlementRepository(_db);
         _settlementService = new PostgresUsageSettlementService(
             repository,
             scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgresUsageSettlementService>>());

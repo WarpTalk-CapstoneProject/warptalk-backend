@@ -41,8 +41,6 @@ public class UnitOfWork : IUnitOfWork
     public IOutboxMessageRepository OutboxMessages { get; }
     public IInboxMessageRepository InboxMessages { get; }
 
-    public DbConnection GetDbConnection() => _db.Database.GetDbConnection();
-
     public void ClearTracking() => _db.ChangeTracker.Clear();
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)

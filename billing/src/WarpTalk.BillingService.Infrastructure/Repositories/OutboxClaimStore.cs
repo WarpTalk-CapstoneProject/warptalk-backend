@@ -1,19 +1,40 @@
 using System.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Infrastructure.Persistence;
 
 namespace WarpTalk.BillingService.Infrastructure.Repositories;
 
-public sealed class OutboxClaimStore(IUnitOfWork unitOfWork) : IOutboxClaimStore
+/// <summary>
+/// APPROVED RAW-SQL PRIMITIVE — do not "clean up" into EF Core LINQ.
+///
+/// ClaimAsync is the outbox dispatcher's row-claim primitive. Several dispatcher
+/// instances poll the same table concurrently, and correctness depends on
+/// FOR UPDATE SKIP LOCKED: each instance claims a disjoint batch, and rows locked
+/// by a peer are skipped instead of blocking. EF Core cannot express SKIP LOCKED,
+/// so a LINQ rewrite would either serialise the dispatchers behind each other or
+/// let two instances claim the same row and publish the event twice.
+///
+/// The claim is also a single statement — the UPDATE that stamps locked_at and
+/// the SELECT that chooses the rows must not be separable, or a row can be
+/// selected by one instance and stamped by another.
+///
+/// PurgePublishedBeforeAsync is a set-based DELETE kept here for the same reason
+/// it always was: it must not load rows into the change tracker to delete them.
+///
+/// Counterpart primitive: <see cref="UsageSettlementRepository"/>.
+/// Both are allowlisted by warptalk-infrastructure/scripts/check-production-deployment.sh.
+/// </summary>
+public sealed class OutboxClaimStore(BillingDbContext context) : IOutboxClaimStore
 {
     public async Task<int> PurgePublishedBeforeAsync(
         DateTime cutoffUtc,
         CancellationToken cancellationToken = default)
     {
-        var connection = (NpgsqlConnection)unitOfWork.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-            await connection.OpenAsync(cancellationToken);
+        var connection = await GetOpenConnectionAsync(cancellationToken);
 
         await using var command = new NpgsqlCommand(
             """
@@ -21,7 +42,8 @@ public sealed class OutboxClaimStore(IUnitOfWork unitOfWork) : IOutboxClaimStore
             WHERE published_at IS NOT NULL
               AND published_at < @cutoff_utc;
             """,
-            connection);
+            connection,
+            GetCurrentTransaction());
         command.Parameters.AddWithValue("cutoff_utc", cutoffUtc);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -31,9 +53,7 @@ public sealed class OutboxClaimStore(IUnitOfWork unitOfWork) : IOutboxClaimStore
         DateTime nowUtc,
         CancellationToken cancellationToken = default)
     {
-        var connection = (NpgsqlConnection)unitOfWork.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-            await connection.OpenAsync(cancellationToken);
+        var connection = await GetOpenConnectionAsync(cancellationToken);
 
         await using var command = new NpgsqlCommand(
             """
@@ -58,7 +78,8 @@ public sealed class OutboxClaimStore(IUnitOfWork unitOfWork) : IOutboxClaimStore
                       target.attempt_count, target.available_at, target.published_at,
                       target.locked_at, target.dead_lettered_at, target.last_error, target.created_at;
             """,
-            connection);
+            connection,
+            GetCurrentTransaction());
         command.Parameters.AddWithValue("now_utc", nowUtc);
         command.Parameters.AddWithValue("lock_cutoff", nowUtc.AddMinutes(-5));
         command.Parameters.AddWithValue("batch_size", batchSize);
@@ -90,4 +111,20 @@ public sealed class OutboxClaimStore(IUnitOfWork unitOfWork) : IOutboxClaimStore
 
         return result;
     }
+
+    private async Task<NpgsqlConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
+    {
+        var connection = (NpgsqlConnection)context.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync(cancellationToken);
+        return connection;
+    }
+
+    /// <summary>
+    /// Enlists in the caller's EF transaction when one is open. Without this the
+    /// claim would commit independently of the surrounding unit of work, so a
+    /// rolled-back dispatch could leave rows stamped as locked.
+    /// </summary>
+    private NpgsqlTransaction? GetCurrentTransaction()
+        => context.Database.CurrentTransaction?.GetDbTransaction() as NpgsqlTransaction;
 }
