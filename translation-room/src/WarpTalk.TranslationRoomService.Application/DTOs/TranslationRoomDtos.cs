@@ -89,6 +89,12 @@ public record TranslationRoomDto(
     int? DurationSeconds,
     DateTime CreatedAt,
     RoomSettingsResponse Settings,
+    // WT-280: how many people are actually in the room right now — CONNECTED participants only,
+    // per TranslationRoomParticipantStatuses.SeatHolding. Room detail never carried this at all,
+    // so the client's fallback for the list's occupancy was reading a field that did not exist.
+    // Deliberately has no default: every construction site must supply a real count rather than
+    // inherit a silent 0, which is precisely how the list bug went unnoticed.
+    int ParticipantCount,
     List<RoomArtifactDto>? Artifacts = null
 );
 

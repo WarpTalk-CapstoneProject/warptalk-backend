@@ -265,8 +265,10 @@ public class TranslationRoomService : ITranslationRoomService
                 await Task.WhenAll(emailTasks);
             }
 
-            // 5. Return mapped response
-            return Result.Success(room.ToResponseDto());
+            // 5. Return mapped response. WT-280: seats are counted in the database, after the
+            // host row above was committed, so a freshly created room correctly reports 1.
+            return Result.Success(room.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -315,7 +317,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -343,7 +346,18 @@ public class TranslationRoomService : ITranslationRoomService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var rooms = roomEntities.Select(r => ToListItemDto(r, userId)).ToList();
+            // WT-280: occupancy is counted in the DATABASE, not by loading each room's roster.
+            // Eager-loading would work too, but it would have to be repeated on every path that
+            // renders a room and any path that forgot silently reports 0 — which is the bug. One
+            // grouped count over the page keeps the number impossible to get accidentally-empty,
+            // and transfers a scalar per room instead of every participant row.
+            var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
+                roomEntities.Select(r => r.Id).ToList(),
+                ct);
+
+            var rooms = roomEntities
+                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .ToList();
 
             return Result.Success(new TranslationRoomListResponse(rooms, total, page, pageSize));
         }
@@ -482,7 +496,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                translationRoom.ToResponseDto(),
+                translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)),
                 TranslationRoomParticipantMapper.ToDto(participant)
             ));
         }
@@ -533,7 +548,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
-                return Result.Success(translationRoom.ToResponseDto());
+                return Result.Success(translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -566,7 +582,8 @@ public class TranslationRoomService : ITranslationRoomService
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -701,7 +718,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -996,6 +1014,16 @@ public class TranslationRoomService : ITranslationRoomService
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
 
+            // WT-280: history is the one path that already has the full roster in memory, so the
+            // seat count comes from it rather than from a second database round trip.
+            // HoldsSeat(...) — the METHOD form — is correct here precisely because these rows are
+            // already materialised; it must never appear inside a query EF has to translate.
+            var occupancyByRoom = participantEntities
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
+
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
@@ -1006,7 +1034,7 @@ public class TranslationRoomService : ITranslationRoomService
                 .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
 
             var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
-                    ToListItemDto(room, userId),
+                    ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
                     participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
                     artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
                 ))
@@ -1218,7 +1246,14 @@ public class TranslationRoomService : ITranslationRoomService
             .Any(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)));
     }
 
-    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId)
+    /// <summary>
+    /// WT-280: <paramref name="seatsTaken"/> is supplied by the caller, which has counted CONNECTED
+    /// participants in the database. This used to read <c>room.TranslationRoomParticipants.Count</c>,
+    /// which was wrong twice over: it counted every row whatever its status (LEFT, KICKED, REJECTED,
+    /// still in the lobby), and — since no list query Includes that navigation — it silently returned
+    /// 0, which is how a room with a CONNECTED host rendered as "0/100".
+    /// </summary>
+    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId, int seatsTaken)
     {
         // Same reader the detail endpoints use — the list used to deserialize the snake_case
         // blob straight into the PascalCase response record (without even
@@ -1244,7 +1279,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.DurationSeconds,
             room.CreatedAt,
             settings,
-            room.TranslationRoomParticipants.Count,
+            seatsTaken,
             room.HostId == userId
         );
     }

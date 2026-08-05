@@ -47,7 +47,13 @@ public static class TranslationRoomMapper
             settings.BreakoutsEnabled);
     }
 
-    public static TranslationRoomDto ToResponseDto(this TranslationRoom room)
+    /// <summary>
+    /// WT-280: <paramref name="participantCount"/> is how many participants currently hold a seat
+    /// (CONNECTED only, per TranslationRoomParticipantStatuses.SeatHolding). It is a required
+    /// argument rather than something read off <c>room.TranslationRoomParticipants</c>, because
+    /// that navigation is not loaded on most paths and counting it silently yields 0.
+    /// </summary>
+    public static TranslationRoomDto ToResponseDto(this TranslationRoom room, int participantCount)
     {
         var settings = ReadSettings(room.Settings);
 
@@ -69,7 +75,8 @@ public static class TranslationRoomMapper
             room.EndedAt,
             room.DurationSeconds,
             room.CreatedAt,
-            settings
+            settings,
+            participantCount
         );
     }
 
@@ -125,7 +132,8 @@ public static class TranslationRoomMapper
         };
     }
 
-    public static TranslationRoomDto ToHistoryDto(this TranslationRoom room)
+    /// <inheritdoc cref="ToResponseDto(TranslationRoom, int)" path="/summary"/>
+    public static TranslationRoomDto ToHistoryDto(this TranslationRoom room, int participantCount)
     {
         var settings = ReadSettings(room.Settings);
 
@@ -150,6 +158,7 @@ public static class TranslationRoomMapper
             room.DurationSeconds,
             room.CreatedAt,
             settings,
+            participantCount,
             artifacts
         );
     }
