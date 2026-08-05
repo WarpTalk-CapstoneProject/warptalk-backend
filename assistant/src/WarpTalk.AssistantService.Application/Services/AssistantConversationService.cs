@@ -194,4 +194,13 @@ public class AssistantConversationService : IAssistantConversationService
 
         return Result.Success();
     }
+
+    public async Task<Result> AuthorizeConversationAccessAsync(Guid conversationId, Guid userId, CancellationToken ct = default)
+    {
+        var conversation = await _unitOfWork.AssistantConversationRepository.GetByIdAsync(conversationId, ct);
+        if (conversation == null || conversation.UserId != userId)
+            return Result.Failure("Conversation not found.", "NOT_FOUND");
+
+        return Result.Success();
+    }
 }
