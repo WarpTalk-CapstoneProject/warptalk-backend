@@ -124,6 +124,35 @@ public class AiResultConsumerServiceTests
             AiResultConsumerService.TryReadSuggestion(SuggestionEntry(content: "   "), RoomId));
     }
 
+    // ── STT confidence on the live caption path (WT-277) ──────
+
+    [Fact]
+    public void TryReadSttConfidence_IsNullWhenTheSegmentCarriesNoConfidence()
+    {
+        // WT-277: this used to default to 1.0f, so a segment the model reported nothing about was
+        // pushed to every client looking maximally confident.
+        var entry = Entry(("meeting_id", RoomId), ("segment_id", "segment-1"), ("text", "hello"));
+
+        Assert.Null(AiResultConsumerService.TryReadSttConfidence(entry));
+    }
+
+    [Fact]
+    public void TryReadSttConfidence_IsNullForTheSttWorkerUnknownSentinel()
+    {
+        // stt_worker/model.py's explicit "no logprobs on this event" value.
+        var entry = Entry(("meeting_id", RoomId), ("confidence", "-1.0"));
+
+        Assert.Null(AiResultConsumerService.TryReadSttConfidence(entry));
+    }
+
+    [Fact]
+    public void TryReadSttConfidence_RoundTripsAGenuineMeasurement()
+    {
+        var entry = Entry(("meeting_id", RoomId), ("confidence", "-0.3421"));
+
+        Assert.Equal(-0.3421f, AiResultConsumerService.TryReadSttConfidence(entry)!.Value, 4);
+    }
+
     // ── Culture ───────────────────────────────────────────────
 
     [Fact]

@@ -24,6 +24,11 @@ public partial class TranscriptSegment
 
     public int EndTimeMs { get; set; }
 
+    /// <summary>
+    /// The STT model's own confidence for this segment (an avg_logprob, so ≤ 0), or NULL when the
+    /// producer reported none. WT-277: NULL genuinely means "unknown" — it must never be coalesced
+    /// to a number on write, because a fabricated 1.0000 is indistinguishable from a perfect score.
+    /// </summary>
     public decimal? Confidence { get; set; }
 
     public int SequenceOrder { get; set; }

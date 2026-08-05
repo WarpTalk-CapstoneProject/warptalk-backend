@@ -262,7 +262,12 @@ public class TranscriptRedisConsumerService : BackgroundService
 
         var text = values.GetValueOrDefault("text", "");
         var language = values.GetValueOrDefault("language", "unknown");
-        var confidence = float.TryParse(values.GetValueOrDefault("confidence"), out var conf) ? conf : 1.0f;
+        // WT-277: nullable on purpose. A missing/unparsable confidence, or stt_worker's explicit
+        // -1.0 "this event carried no logprobs" sentinel, is stored as NULL — it used to default
+        // to 1.0f and persist as 1.0000, making "we do not know" indistinguishable from "the model
+        // was maximally sure".
+        var confidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
+            values, TranscriptConsumerPollingPolicy.SttConfidenceField);
         var startMs = int.TryParse(values.GetValueOrDefault("start_ms"), out var sMs) ? sMs : 0;
         var endMs = int.TryParse(values.GetValueOrDefault("end_ms"), out var eMs) ? eMs : 0;
         // shared/schemas.py STTResultMessage.to_redis() serializes this as "1"/"0", default false.
@@ -359,7 +364,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                     SpeakerName = speakerName,
                     OriginalText = text,
                     OriginalLanguage = language,
-                    Confidence = (decimal)confidence,
+                    Confidence = confidence,
                     StartTimeMs = startMs,
                     EndTimeMs = endMs,
                     SequenceOrder = sequenceOrder,
@@ -436,7 +441,11 @@ public class TranscriptRedisConsumerService : BackgroundService
         var translatedText = values.GetValueOrDefault("translated_text", "");
         var targetLang = values.GetValueOrDefault("target_lang", "unknown");
         var translatorModel = values.GetValueOrDefault("translator_model", "unknown");
-        var confidence = float.TryParse(values.GetValueOrDefault("confidence"), out var conf) ? conf : 1.0f;
+
+        // WT-277: same nullable rules as the STT path above — a missing/unparsable/sentinel value
+        // stores NULL instead of the old 1.0f default.
+        var confidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
+            values, TranscriptConsumerPollingPolicy.SttConfidenceField);
 
         if (string.IsNullOrWhiteSpace(translatedText))
         {
@@ -483,7 +492,7 @@ public class TranscriptRedisConsumerService : BackgroundService
                     TargetLanguage = targetLang,
                     TranslatedText = translatedText,
                     TranslatorModel = translatorModel,
-                    Confidence = (decimal)confidence,
+                    Confidence = confidence,
                     IsRetranslated = false,
                     Status = "done"
                 };

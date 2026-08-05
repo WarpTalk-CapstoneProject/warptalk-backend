@@ -97,17 +97,28 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
             TotalCount = totalCount
         };
 
-        response.Segments.AddRange(segments.Select(s => new TranscriptSegmentDto
+        response.Segments.AddRange(segments.Select(s =>
         {
-            Id = s.Id.ToString(),
-            SpeakerParticipantId = s.SpeakerParticipantId.ToString(),
-            SpeakerName = s.SpeakerName ?? "Unknown",
-            OriginalText = s.OriginalText ?? "",
-            OriginalLanguage = s.OriginalLanguage ?? "unknown",
-            Confidence = (double)(s.Confidence ?? 0),
-            StartTimeMs = s.StartTimeMs,
-            EndTimeMs = s.EndTimeMs,
-            SequenceOrder = s.SequenceOrder
+            var dto = new TranscriptSegmentDto
+            {
+                Id = s.Id.ToString(),
+                SpeakerParticipantId = s.SpeakerParticipantId.ToString(),
+                SpeakerName = s.SpeakerName ?? "Unknown",
+                OriginalText = s.OriginalText ?? "",
+                OriginalLanguage = s.OriginalLanguage ?? "unknown",
+                StartTimeMs = s.StartTimeMs,
+                EndTimeMs = s.EndTimeMs,
+                SequenceOrder = s.SequenceOrder
+            };
+
+            // WT-277: leave the optional field unset when the column is NULL. It used to coalesce
+            // to 0, which for an avg_logprob is a *perfect* score — the opposite of "unknown".
+            if (s.Confidence.HasValue)
+            {
+                dto.Confidence = (double)s.Confidence.Value;
+            }
+
+            return dto;
         }));
 
         return response;
@@ -154,17 +165,25 @@ public class TranscriptGrpcService : WarpTalk.Shared.Protos.TranscriptService.Tr
             .Select(l =>
             {
                 var content = contentById[l.TranslationContentId];
-                return new TranscriptTranslationDto
+                var dto = new TranscriptTranslationDto
                 {
                     Id = content.Id.ToString(),
                     SegmentId = l.SegmentId.ToString(),
                     TargetLanguage = l.TargetLanguage ?? "unknown",
                     TranslatedText = content.TranslatedText ?? "",
                     TranslatorModel = content.TranslatorModel ?? "",
-                    Confidence = (double)(content.Confidence ?? 1.0m),
                     IsRetranslated = content.IsRetranslated,
                     LatencyMs = content.LatencyMs ?? 0
                 };
+
+                // WT-277: leave unset when unknown. This used to default to 1.0 — a
+                // maximum-confidence score invented here for a value nobody measured.
+                if (content.Confidence.HasValue)
+                {
+                    dto.Confidence = (double)content.Confidence.Value;
+                }
+
+                return dto;
             }));
 
         return response;
