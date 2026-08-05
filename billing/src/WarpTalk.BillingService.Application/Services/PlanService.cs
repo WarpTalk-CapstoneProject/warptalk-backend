@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.BillingService.Application.DTOs;
+using WarpTalk.BillingService.Application.Entitlements;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Application.Helpers;
 using System.Text.RegularExpressions;
@@ -23,17 +24,60 @@ public class PlanService : IPlanService
     private readonly ILogger<PlanService> _logger;
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IUsageRateCardAdminService _pricingConfigService;
+    private readonly IEntitlementChangePublisher? _entitlementChangePublisher;
 
     public PlanService(
         IUnitOfWork unitOfWork,
         ILogger<PlanService> logger,
         IBillingMessagePublisher messagePublisher,
-        IUsageRateCardAdminService pricingConfigService)
+        IUsageRateCardAdminService pricingConfigService,
+        IEntitlementChangePublisher? entitlementChangePublisher = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _messagePublisher = messagePublisher;
         _pricingConfigService = pricingConfigService;
+        _entitlementChangePublisher = entitlementChangePublisher;
+    }
+
+    /// <summary>
+    /// WT-263: a plan edit moves layer 2 of the resolution order for EVERY workspace on that plan,
+    /// so each of them needs a fresh snapshot — this is the fan-out case the push architecture has
+    /// to handle, and the reason enforcement can read a local table at all.
+    ///
+    /// Fanned out one workspace at a time through the outbox rather than as a single broadcast
+    /// "plan X changed" event: a consumer receiving a plan-level event would have to know which of
+    /// its workspaces are on that plan and what the plan means, which is re-deriving entitlements in
+    /// the consumer — the exact thing this ticket removes.
+    /// </summary>
+    private async Task PublishEntitlementsForPlanAsync(Guid planId, CancellationToken ct)
+    {
+        if (_entitlementChangePublisher is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var affected = await _unitOfWork.SubscriptionRepository.FindAsync(
+                subscription => subscription.PlanId == planId && subscription.DeletedAt == null,
+                ct);
+
+            foreach (var workspaceId in affected.Select(subscription => subscription.WorkspaceId).Distinct())
+            {
+                await _entitlementChangePublisher.EnqueueAsync(
+                    workspaceId,
+                    EntitlementConstants.Reasons.PlanChanged,
+                    ct);
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+        catch (Exception exception)
+        {
+            // Never fails the plan edit itself; the admin's change is already committed.
+            _logger.LogError(exception, "Failed to enqueue entitlement changes for plan {PlanId}.", planId);
+        }
     }
 
     public async Task<Result<IEnumerable<PlanDto>>> GetActivePlansAsync(
@@ -130,6 +174,7 @@ public class PlanService : IPlanService
             plan.UpdateFromRequest(request);
             _unitOfWork.Plans.Update(plan);
             await _unitOfWork.SaveChangesAsync(cancellationToken);
+            await PublishEntitlementsForPlanAsync(plan.Id, cancellationToken);
 
             await BillingNotificationHelper.PublishPlanUpdateAsync(
                 _messagePublisher,

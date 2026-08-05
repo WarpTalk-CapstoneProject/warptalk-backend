@@ -17,9 +17,13 @@ public class RedisBillingMessagePublisher : IBillingMessagePublisher
 
     public async Task PublishAsync<T>(string topic, T message, CancellationToken ct = default)
     {
-        var db = _redis.GetDatabase();
         var json = JsonSerializer.Serialize(message);
+        await PublishRawAsync(topic, json, ct);
+    }
 
-        await db.PublishAsync(RedisChannel.Literal(topic), json);
+    public async Task PublishRawAsync(string topic, string payloadJson, CancellationToken ct = default)
+    {
+        var db = _redis.GetDatabase();
+        await db.PublishAsync(RedisChannel.Literal(topic), payloadJson);
     }
 }
