@@ -124,7 +124,12 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
 
         db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS translation_room;");
         db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS translation_room.supported_languages (code VARCHAR(15) PRIMARY KEY, name VARCHAR(100) NOT NULL, native_name VARCHAR(100), is_active BOOLEAN NOT NULL DEFAULT TRUE);");
-        db.Database.ExecuteSqlRaw("INSERT INTO translation_room.supported_languages (code, name, native_name) VALUES ('en', 'English', 'English'), ('vi', 'Vietnamese', 'Tiếng Việt'), ('fr', 'French', 'Français'), ('es', 'Spanish', 'Español') ON CONFLICT DO NOTHING;");
+        // Locale-tagged, matching 20260730141000_seed_supported_languages.sql and production.
+        // This harness used to seed bare codes ('en', 'vi'), which is the shape the service
+        // happens to look up — so every room-flow test passed against a catalog that looked
+        // nothing like the real one, and the production failure ("Source language is not
+        // supported.") was invisible here. Seed what production has, not what the code wants.
+        db.Database.ExecuteSqlRaw("INSERT INTO translation_room.supported_languages (code, name, native_name) VALUES ('en-US', 'English', 'English'), ('vi-VN', 'Vietnamese', 'Tiếng Việt'), ('ja-JP', 'Japanese', '日本語'), ('ko-KR', 'Korean', '한국어'), ('zh-CN', 'Chinese', '中文'), ('fr-FR', 'French', 'Français'), ('es-ES', 'Spanish', 'Español') ON CONFLICT DO NOTHING;");
     }
 
     public async Task DisposeAsync()
