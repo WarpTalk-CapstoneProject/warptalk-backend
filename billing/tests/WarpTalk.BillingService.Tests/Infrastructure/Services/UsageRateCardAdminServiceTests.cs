@@ -420,4 +420,171 @@ public class UsageRateCardAdminServiceTests
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.InternalServerError);
     }
+
+    // ---------------------------------------------------------------------
+    // DeactivateRateCardAsync — retiring a published rate
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task DeactivateRateCardAsync_EmptyId_IsRejectedBeforeOpeningATransaction()
+    {
+        var (service, repository, calls) = CreateService();
+
+        var result = await service.DeactivateRateCardAsync(Guid.Empty);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+        calls.Should().BeEmpty();
+        repository.Verify(r => r.BeginTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeactivateRateCardAsync_UnknownId_RollsBackAndReportsNotFound()
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+
+        repository
+            .Setup(r => r.DeactivateRateCardAsync(id, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("deactivate"))
+            .ReturnsAsync((UsageRateCardDto?)null);
+
+        var result = await service.DeactivateRateCardAsync(id);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        calls.Should().Equal("begin", "deactivate", "rollback");
+        repository.Verify(r => r.CommitTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeactivateRateCardAsync_KnownId_CommitsAndReturnsTheRetiredRow()
+    {
+        var (service, repository, calls) = CreateService();
+        var retired = InsertedRow(RegisteredRequest()) with
+        {
+            IsActive = false,
+            EffectiveTo = DateTime.UtcNow,
+        };
+
+        repository
+            .Setup(r => r.DeactivateRateCardAsync(retired.Id, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("deactivate"))
+            .ReturnsAsync(retired);
+
+        var result = await service.DeactivateRateCardAsync(retired.Id);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.IsActive.Should().BeFalse();
+
+        // Closing the row as well as clearing IsActive is what stops it coming back:
+        // GetActiveRateCardsAsync now requires both, and the next upsert supersedes every
+        // row still open for that identity.
+        result.Value.EffectiveTo.Should().NotBeNull();
+        calls.Should().Equal("begin", "deactivate", "commit");
+        repository.Verify(r => r.RollbackTransactionAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task DeactivateRateCardAsync_RepositoryThrows_RollsBackAndReportsInternalError()
+    {
+        var (service, repository, calls) = CreateService();
+        var id = Guid.NewGuid();
+
+        repository
+            .Setup(r => r.DeactivateRateCardAsync(id, It.IsAny<CancellationToken>()))
+            .Callback(() => calls.Add("deactivate"))
+            .ThrowsAsync(new InvalidOperationException("deadlock detected"));
+
+        var result = await service.DeactivateRateCardAsync(id);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.InternalServerError);
+        result.Error.Should().NotContain("deadlock detected");
+        calls.Should().Equal("begin", "deactivate", "rollback");
+    }
+
+    // ---------------------------------------------------------------------
+    // PreviewRateCardAsync — pricing a proposed rate without publishing it
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task PreviewRateCardAsync_WithoutOverrides_UsesTheStoredPricingConfig()
+    {
+        var (service, repository, calls) = CreateService();
+
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .Returns<string, decimal, CancellationToken>((key, _, _) => Task.FromResult(
+                key == "fx_rate_usd_vnd" ? 26_300m : 4m));
+
+        var result = await service.PreviewRateCardAsync(
+            new RateCardPreviewRequest(ProviderUnitCostUsd: 0.0001000000m, MarkupMultiplier: 2.5m));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.UnitPriceCredits.Should().Be(1.643750m);
+        result.Value.FxRateUsdVnd.Should().Be(26_300m);
+        result.Value.CreditValueVnd.Should().Be(4m);
+        result.Value.Formula.Should().NotBeNullOrWhiteSpace();
+
+        // A preview must never write, so it must never open a transaction either.
+        calls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewRateCardAsync_WithOverrides_DoesNotReadTheStoredConfig()
+    {
+        var (service, repository, _) = CreateService();
+
+        var result = await service.PreviewRateCardAsync(new RateCardPreviewRequest(
+            ProviderUnitCostUsd: 0.0001000000m,
+            MarkupMultiplier: 2.5m,
+            Quantity: 1m,
+            FxRateUsdVnd: 26_300m,
+            CreditValueVnd: 4m));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.UnitPriceCredits.Should().Be(1.643750m);
+
+        // Both economics values were supplied, so nothing needs loading — this is what lets
+        // an admin preview a proposed FX/credit-value change before saving it.
+        repository.Verify(
+            r => r.ReadPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task PreviewRateCardAsync_ImpossibleInputs_ReportValidationRatherThanServerError()
+    {
+        var (service, _, _) = CreateService();
+
+        var result = await service.PreviewRateCardAsync(new RateCardPreviewRequest(
+            ProviderUnitCostUsd: 0.01m,
+            MarkupMultiplier: 2.5m,
+            Quantity: 1m,
+            FxRateUsdVnd: 26_300m,
+            CreditValueVnd: 0m));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.ValidationError);
+    }
+
+    [Fact]
+    public async Task PreviewRateCardAsync_ConfigReadThrows_ReportsInternalError()
+    {
+        var (service, repository, _) = CreateService();
+
+        repository
+            .Setup(r => r.ReadPricingConfigValueAsync(
+                It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new TimeoutException("db down"));
+
+        var result = await service.PreviewRateCardAsync(
+            new RateCardPreviewRequest(0.0001m, 2.5m));
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.InternalServerError);
+    }
 }

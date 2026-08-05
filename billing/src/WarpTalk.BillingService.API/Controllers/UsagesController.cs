@@ -157,6 +157,31 @@ public class UsagesController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpPost("rate-card/{id:guid}/deactivate")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<UsageRateCardDto>> DeactivateUsageRateCard(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _rateCardAdminService.DeactivateRateCardAsync(id, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            var error = new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode);
+            return result.ErrorCode == ErrorCodes.NotFound ? NotFound(error) : BadRequest(error);
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpPost("rate-card/preview")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<RateCardPreviewDto>> PreviewUsageRateCard([FromBody] RateCardPreviewRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _rateCardAdminService.PreviewRateCardAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [HttpGet("pricing-config")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PricingConfigDto>> GetPricingConfig(CancellationToken cancellationToken)

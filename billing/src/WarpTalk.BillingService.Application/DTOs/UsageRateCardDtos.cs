@@ -29,6 +29,29 @@ public record UpsertUsageRateCardRequest(
     decimal? MarkupMultiplier,
     bool? IsActive = true);
 
+/// <summary>
+/// Prices a hypothetical rate change before it is published. FX rate and credit value
+/// fall back to the stored pricing config when omitted, so an admin can preview against
+/// live economics or against a proposed change to them.
+/// </summary>
+public record RateCardPreviewRequest(
+    decimal ProviderUnitCostUsd,
+    decimal MarkupMultiplier,
+    decimal Quantity = 1m,
+    decimal? FxRateUsdVnd = null,
+    decimal? CreditValueVnd = null);
+
+public record RateCardPreviewDto(
+    decimal UnitPriceCredits,
+    decimal CreditsCharged,
+    decimal CustomerPriceVnd,
+    decimal ProviderCostVnd,
+    decimal MarginVnd,
+    decimal MarginRatio,
+    decimal FxRateUsdVnd,
+    decimal CreditValueVnd,
+    string Formula);
+
 public record PricingConfigDto(
     decimal FxRateUsdVnd,
     decimal CreditValueVnd,
