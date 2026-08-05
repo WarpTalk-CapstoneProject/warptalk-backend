@@ -52,6 +52,29 @@ public class BillingEndpointSecurityContractTests
         AssertAdminOnly(typeof(InvoicesController), nameof(InvoicesController.GetGlobalInvoices));
     }
 
+    /// <summary>
+    /// WT-260: this action used [Authorize(Roles = ...)], which authorizes off JWT role claims.
+    /// A WarpTalk workspace role is per-workspace membership data resolved through
+    /// workspace-service and is never a claim in the token, so a workspace Owner could never
+    /// pass and the request 403'd before reaching any filter.
+    /// </summary>
+    [Fact]
+    public void WorkspaceInvoiceHistory_RequiresWorkspaceBillingRole_NotJwtRoleClaims()
+    {
+        AssertWorkspaceBillingRole(
+            typeof(InvoicesController),
+            nameof(InvoicesController.GetWorkspaceInvoices));
+
+        var action = GetAction(
+            typeof(InvoicesController),
+            nameof(InvoicesController.GetWorkspaceInvoices));
+        var authorize = action.GetCustomAttribute<AuthorizeAttribute>();
+
+        Assert.True(
+            authorize is null || string.IsNullOrEmpty(authorize.Roles),
+            "Workspace-scoped billing actions must not authorize off JWT role claims.");
+    }
+
     [Fact]
     public void PaymentsController_DoesNotExposeLegacyUnsignedWebhook()
     {
