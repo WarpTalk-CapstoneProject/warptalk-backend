@@ -291,13 +291,54 @@ public class VoiceProfileService : IVoiceProfileService
             profile.UpdatedBy = userId;
 
             _unitOfWork.VoiceProfileRepository.Update(profile);
-            await _unitOfWork.SaveChangesAsync(ct);
 
+            // The sample rows go in the SAME unit of work as the profile. Soft-deleting only
+            // the profile left every voice_samples row with deleted_at = NULL pointing at a
+            // file_url whose object had already been removed below — the row claimed the
+            // sample was live while the bucket said it was gone (WT-276).
+            var storageKeys = new List<string>();
             foreach (var sample in profile.VoiceSamples)
             {
+                sample.DeletedAt = now;
+                sample.DeletedBy = userId;
+                _unitOfWork.VoiceSampleRepository.Update(sample);
+
                 if (!string.IsNullOrEmpty(sample.FileUrl))
                 {
-                    await _storage.DeleteAsync(sample.FileUrl, ct);
+                    storageKeys.Add(sample.FileUrl);
+                }
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Ordering: commit the rows first, remove the objects after — the mirror of
+            // CreateProfileAsync, which writes the object first and deletes it again if the
+            // database write fails. Both orders leak in one direction, and we deliberately
+            // prefer the same direction the create path already prefers: an orphaned OBJECT
+            // (rows soft-deleted, bytes still in the bucket) over an orphaned ROW (bytes gone,
+            // row still claiming the sample is live). An orphaned object only costs storage and
+            // is invisible to readers; an orphaned row is read back and believed, which is
+            // precisely the defect being fixed here.
+            foreach (var storageKey in storageKeys)
+            {
+                try
+                {
+                    await _storage.DeleteAsync(storageKey, ct);
+                }
+                catch (Exception ex)
+                {
+                    // A partial storage failure is not a failed delete. The rows are already
+                    // committed as deleted, so the profile is gone as far as every reader is
+                    // concerned and a retry could only return NotFound. Log the leaked key,
+                    // keep deleting the remaining samples, and still report success — the
+                    // alternative is telling the caller the delete failed when the database
+                    // says otherwise.
+                    _logger.LogWarning(
+                        ex,
+                        "Voice sample object was left behind after its profile was deleted. UserId: {UserId}, ProfileId: {ProfileId}, StorageKey: {StorageKey}",
+                        userId,
+                        profileId,
+                        storageKey);
                 }
             }
 
