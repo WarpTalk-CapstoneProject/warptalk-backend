@@ -10,4 +10,9 @@ public class JoinMeetingResponse
     /// <summary>WT-04: the room's mute-on-entry setting — the frontend defaults the local
     /// mic to muted on first mount when this is true.</summary>
     public bool MuteOnEntry { get; set; } = false;
+
+    /// <summary>WT-282: the room's lock setting — the frontend renders the true state in the
+    /// host-controls menu on first open instead of assuming a default. The server already
+    /// enforces this on join (see JoinMeetingAsync); this only reports it back.</summary>
+    public bool Locked { get; set; } = false;
 }

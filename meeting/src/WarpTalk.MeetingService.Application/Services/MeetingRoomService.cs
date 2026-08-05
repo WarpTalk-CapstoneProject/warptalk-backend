@@ -261,7 +261,8 @@ public class MeetingRoomService : IMeetingRoomService
                             ProviderRoomName = meetingRoom.ProviderRoomName,
                             ParticipantIdentity = providerIdentity,
                             IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry
+                            MuteOnEntry = meetingRoom.MuteOnEntry,
+                            Locked = meetingRoom.IsLocked
                         });
                     }
                 }
@@ -305,7 +306,8 @@ public class MeetingRoomService : IMeetingRoomService
                             ProviderRoomName = meetingRoom.ProviderRoomName,
                             ParticipantIdentity = providerIdentity,
                             IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry
+                            MuteOnEntry = meetingRoom.MuteOnEntry,
+                            Locked = meetingRoom.IsLocked
                         });
                     }
 
@@ -352,7 +354,8 @@ public class MeetingRoomService : IMeetingRoomService
                 ProviderRoomName = meetingRoom.ProviderRoomName,
                 ParticipantIdentity = providerIdentity,
                 IsWaitingRoom = false,
-                MuteOnEntry = meetingRoom.MuteOnEntry
+                MuteOnEntry = meetingRoom.MuteOnEntry,
+                Locked = meetingRoom.IsLocked
             });
         } // end try (BeginTransactionAsync)
         catch (Exception ex)

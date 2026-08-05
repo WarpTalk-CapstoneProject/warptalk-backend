@@ -762,6 +762,80 @@ public class MeetingRoomServiceTests
             Times.Never);
     }
 
+    // WT-282: the join response must report the room's lock state so the in-room host-controls
+    // menu can render the true state on first open instead of assuming a default. The server
+    // already reads MeetingRoom.IsLocked to gate the join; these pin that it also reports it.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task JoinMeetingAsync_ReportsRoomLockState_ToHost(bool isLocked)
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    Status = "IN_PROGRESS",
+                    WorkspaceId = Guid.NewGuid().ToString()
+                }));
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS",
+            ActiveHostId = hostId,
+            IsLocked = isLocked
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingParticipant
+            {
+                Id = Guid.NewGuid(),
+                MeetingRoomId = meetingRoom.Id,
+                UserId = hostId,
+                ProviderIdentity = hostId.ToString(),
+                IsActive = true,
+                JoinedAt = DateTime.UtcNow
+            });
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingInvitation?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+
+        _tokenServiceMock
+            .Setup(service => service.GenerateToken(
+                translationRoomId.ToString(),
+                hostId.ToString(),
+                "Host",
+                true,
+                true))
+            .Returns(Result.Success("livekit-token"));
+
+        var result = await _sut.JoinMeetingAsync(translationRoomId, hostId, "Host");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsWaitingRoom);
+        Assert.Equal(isLocked, result.Value.Locked);
+    }
+
     private static bool HasProperty(object payload, string propertyName, string expectedValue)
     {
         // PublishGatewayCommandAsync builds a Dictionary<string, object?> (see
