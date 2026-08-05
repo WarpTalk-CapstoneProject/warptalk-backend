@@ -35,40 +35,65 @@ public class HostFallbackConsumerWorker : BackgroundService
         _logger = logger;
     }
 
+    private const string ParticipantOfflineChannel = "translationRoom:participant-offline";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var subscriber = _redis.GetSubscriber();
-        _logger.LogInformation("HostFallbackConsumerWorker started subscribing to 'translationRoom:participant-offline'.");
 
-        await subscriber.SubscribeAsync(RedisChannel.Literal("translationRoom:participant-offline"), async (channel, message) =>
+        // The app and infra roles deploy in parallel, so this worker can reach the subscribe
+        // call before Redis is accepting connections. An exception escaping ExecuteAsync trips
+        // the default BackgroundServiceExceptionBehavior.StopHost and takes the whole service
+        // down, which turns a transient Redis blip into a failed deploy. Retry here instead.
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var payload = message.ToString();
-                if (string.IsNullOrEmpty(payload)) return;
+                await subscriber.SubscribeAsync(
+                    RedisChannel.Literal(ParticipantOfflineChannel),
+                    async (channel, message) => await HandleParticipantOfflineAsync(message));
 
-                var parts = payload.Split(':');
-                if (parts.Length != 2 || !Guid.TryParse(parts[0], out var roomId) || !Guid.TryParse(parts[1], out var userId))
-                {
-                    _logger.LogWarning("HostFallbackConsumerWorker: invalid participant-offline payload: {Payload}", payload);
-                    return;
-                }
-
-                using var scope = _serviceProvider.CreateScope();
-                var meetingRoomService = scope.ServiceProvider.GetRequiredService<IMeetingRoomService>();
-
-                var result = await meetingRoomService.HandleHostOfflineAsync(roomId, userId);
-                if (!result.IsSuccess)
-                {
-                    _logger.LogWarning("HostFallbackConsumerWorker: HandleHostOfflineAsync failed for room {RoomId}, user {UserId}: {Error}", roomId, userId, result.Error);
-                }
+                _logger.LogInformation("HostFallbackConsumerWorker started subscribing to '{Channel}'.", ParticipantOfflineChannel);
+                break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                _logger.LogError(ex, "HostFallbackConsumerWorker: error processing participant-offline message");
+                _logger.LogError(ex, "HostFallbackConsumerWorker could not subscribe to '{Channel}'; retrying in {RetryDelay}.", ParticipantOfflineChannel, retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
             }
-        });
+        }
 
         await Task.Delay(Timeout.Infinite, stoppingToken);
+    }
+
+    private async Task HandleParticipantOfflineAsync(RedisValue message)
+    {
+        try
+        {
+            var payload = message.ToString();
+            if (string.IsNullOrEmpty(payload)) return;
+
+            var parts = payload.Split(':');
+            if (parts.Length != 2 || !Guid.TryParse(parts[0], out var roomId) || !Guid.TryParse(parts[1], out var userId))
+            {
+                _logger.LogWarning("HostFallbackConsumerWorker: invalid participant-offline payload: {Payload}", payload);
+                return;
+            }
+
+            using var scope = _serviceProvider.CreateScope();
+            var meetingRoomService = scope.ServiceProvider.GetRequiredService<IMeetingRoomService>();
+
+            var result = await meetingRoomService.HandleHostOfflineAsync(roomId, userId);
+            if (!result.IsSuccess)
+            {
+                _logger.LogWarning("HostFallbackConsumerWorker: HandleHostOfflineAsync failed for room {RoomId}, user {UserId}: {Error}", roomId, userId, result.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "HostFallbackConsumerWorker: error processing participant-offline message");
+        }
     }
 }
