@@ -39,8 +39,28 @@ public class TranslationRoomCapacityTests
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger = new();
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
+    /// <summary>
+    /// Ordered log of the calls these tests care about. WT-280 added a SECOND, unrelated seat count
+    /// after the join completes — the one that fills in the response's occupancy — so "the count was
+    /// never queried" is no longer the same statement as "the capacity gate did not run". The gate
+    /// runs before the join is persisted; the occupancy count runs after it, so SaveChangesAsync is
+    /// the boundary that separates them.
+    /// </summary>
+    private readonly List<string> _calls = new();
+
+    private const string CountCall = "count";
+    private const string SaveCall = "save";
+
+    private void TheCapacityGateDidNotRun() =>
+        _calls.TakeWhile(c => c != SaveCall).Should().NotContain(
+            CountCall,
+            "the capacity gate must not consult the seat count before deciding to admit the join");
+
     public TranslationRoomCapacityTests()
     {
+        _mockUow.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => _calls.Add(SaveCall))
+            .ReturnsAsync(1);
         _mockUow.Setup(u => u.TranslationRoomRepository).Returns(_mockRoomRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomParticipantRepository).Returns(_mockParticipantRepo.Object);
         _mockUow.Setup(u => u.TranslationRoomAudioRouteRepository).Returns(_mockAudioRouteRepo.Object);
@@ -90,6 +110,7 @@ public class TranslationRoomCapacityTests
     private void ArrangeSeatsTaken(TranslationRoom room, int seats) =>
         _mockParticipantRepo
             .Setup(p => p.CountSeatHoldingParticipantsAsync(room.Id, It.IsAny<CancellationToken>()))
+            .Callback(() => _calls.Add(CountCall))
             .ReturnsAsync(seats);
 
     private void ArrangeExistingParticipant(TranslationRoom room, Guid userId, string? status)
@@ -174,9 +195,7 @@ public class TranslationRoomCapacityTests
         var result = await JoinAs(returning);
 
         result.IsSuccess.Should().BeTrue();
-        _mockParticipantRepo.Verify(
-            p => p.CountSeatHoldingParticipantsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+        TheCapacityGateDidNotRun();
     }
 
     [Theory]
@@ -193,10 +212,8 @@ public class TranslationRoomCapacityTests
 
         result.IsSuccess.Should().BeTrue();
         // Consistent with how WorkspaceGrpcService treats MaxActiveRooms > 0: an unset cap is not
-        // a cap, so the count is not even queried.
-        _mockParticipantRepo.Verify(
-            p => p.CountSeatHoldingParticipantsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
-            Times.Never);
+        // a cap, so the gate does not even query the count.
+        TheCapacityGateDidNotRun();
     }
 
     /// <summary>A participant who dropped released their seat, so they re-acquire one on return and

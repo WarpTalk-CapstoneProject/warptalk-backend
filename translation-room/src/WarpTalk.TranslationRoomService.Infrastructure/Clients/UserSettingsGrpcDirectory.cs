@@ -1,3 +1,4 @@
+using Grpc.Core;
 using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
@@ -25,5 +26,26 @@ public sealed class UserSettingsGrpcDirectory : IUserSettingsDirectory
                 response.DefaultSpeakLanguage,
                 response.DefaultListenLanguage)
             : null;
+    }
+
+    public async Task<string?> GetDisplayNameAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetUserByIdAsync(
+                new GetUserRequest { Id = userId.ToString() },
+                cancellationToken: ct);
+
+            return string.IsNullOrWhiteSpace(response.FullName) ? null : response.FullName;
+        }
+        catch (RpcException)
+        {
+            // Unlike GetUserSettings, which answers with Found = false, GetUserById signals an
+            // unknown id by throwing NOT_FOUND (AuthService UserServiceGrpc.GetUserById). An
+            // unresolvable name is "unknown", not an error the caller should have to handle.
+            return null;
+        }
     }
 }

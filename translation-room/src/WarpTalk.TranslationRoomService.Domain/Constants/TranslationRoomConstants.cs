@@ -11,6 +11,14 @@ public static class TranslationRoomConstants
     };
 
 
+    /// <summary>
+    /// WT-281: what the auto-added host participant is called when the Auth directory cannot
+    /// resolve the host's real name. This used to be the unconditional value, which is why
+    /// production rosters showed a participant literally named "Host"; it is now only a degraded
+    /// fallback, never the normal case.
+    /// </summary>
+    public const string HostDisplayNameFallback = "Host";
+
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";

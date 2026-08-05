@@ -133,6 +133,35 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-281: the host's own name for the participant row seeded at room creation.
+    ///
+    /// Falls back to the role label when the directory cannot answer. That degraded value is the
+    /// old bug's literal string, and that is intentional: it is only reachable when Auth is
+    /// unreachable or does not know the user, and refusing to create the room over a cosmetic
+    /// label would be far worse than a roster entry that briefly reads "Host".
+    /// </summary>
+    private async Task<string> ResolveHostDisplayNameAsync(Guid hostId, CancellationToken ct)
+    {
+        try
+        {
+            var name = await _userSettingsDirectory.GetDisplayNameAsync(hostId, ct);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not resolve a display name for HostId: {HostId}; seeding the host participant with the role label.",
+                hostId);
+        }
+
+        return TranslationRoomConstants.HostDisplayNameFallback;
+    }
+
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -209,15 +238,38 @@ public class TranslationRoomService : ITranslationRoomService
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
+            // WT-281: the host row used to be seeded with the literal string "Host", which is
+            // exactly what production rendered in the roster. Resolved through the same Auth
+            // directory this method already uses for language defaults.
+            var hostDisplayName = await ResolveHostDisplayNameAsync(hostId, ct);
+
+            // WT-281: the host LISTENS in a language the room actually translates INTO. Both sides
+            // used to be seeded from sourceLang, so a Vietnamese -> English room showed its own
+            // host as "English -> English", which is not a translation at all.
+            //
+            // A multi-target room has to collapse to a single value on this one row. First target,
+            // deliberately:
+            //  - targetLangs is ordered exactly as the creator supplied it, so its first entry is
+            //    the language the room was primarily opened for.
+            //  - The host's stored DefaultListenLanguage is NOT consulted. It is a global
+            //    preference that need not be among this room's targets at all, so honouring it
+            //    could seed a language the room never produces — and it would silently contradict
+            //    the room the host had just explicitly configured.
+            //  - Null is not an option: ListenLanguage is NOT NULL on the participant row and the
+            //    audio-route pipeline keys off it.
+            // The host can still change this in-meeting through the participant language update;
+            // this is the seed, not a lock.
+            var hostListenLanguage = targetLangs[0];
+
             // WT-82: Auto-add the Host as a participant so they exist in the DB
             var hostParticipant = new TranslationRoomParticipant
             {
                 Id = Guid.CreateVersion7(),
                 TranslationRoomId = room.Id,
                 UserId = hostId,
-                DisplayName = "Host",
+                DisplayName = hostDisplayName,
                 SpeakLanguage = sourceLang,
-                ListenLanguage = sourceLang,
+                ListenLanguage = hostListenLanguage,
                 Role = "HOST",
                 Status = TranslationRoomParticipantStatuses.Connected,
                 ConnectionType = "WEBRTC",
@@ -265,8 +317,10 @@ public class TranslationRoomService : ITranslationRoomService
                 await Task.WhenAll(emailTasks);
             }
 
-            // 5. Return mapped response
-            return Result.Success(room.ToResponseDto());
+            // 5. Return mapped response. WT-280: seats are counted in the database, after the
+            // host row above was committed, so a freshly created room correctly reports 1.
+            return Result.Success(room.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -315,7 +369,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -343,7 +398,18 @@ public class TranslationRoomService : ITranslationRoomService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var rooms = roomEntities.Select(r => ToListItemDto(r, userId)).ToList();
+            // WT-280: occupancy is counted in the DATABASE, not by loading each room's roster.
+            // Eager-loading would work too, but it would have to be repeated on every path that
+            // renders a room and any path that forgot silently reports 0 — which is the bug. One
+            // grouped count over the page keeps the number impossible to get accidentally-empty,
+            // and transfers a scalar per room instead of every participant row.
+            var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
+                roomEntities.Select(r => r.Id).ToList(),
+                ct);
+
+            var rooms = roomEntities
+                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .ToList();
 
             return Result.Success(new TranslationRoomListResponse(rooms, total, page, pageSize));
         }
@@ -482,7 +548,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                translationRoom.ToResponseDto(),
+                translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)),
                 TranslationRoomParticipantMapper.ToDto(participant)
             ));
         }
@@ -533,7 +600,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
-                return Result.Success(translationRoom.ToResponseDto());
+                return Result.Success(translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -566,7 +634,8 @@ public class TranslationRoomService : ITranslationRoomService
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -701,7 +770,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -996,6 +1066,16 @@ public class TranslationRoomService : ITranslationRoomService
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
 
+            // WT-280: history is the one path that already has the full roster in memory, so the
+            // seat count comes from it rather than from a second database round trip.
+            // HoldsSeat(...) — the METHOD form — is correct here precisely because these rows are
+            // already materialised; it must never appear inside a query EF has to translate.
+            var occupancyByRoom = participantEntities
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
+
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
@@ -1006,7 +1086,7 @@ public class TranslationRoomService : ITranslationRoomService
                 .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
 
             var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
-                    ToListItemDto(room, userId),
+                    ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
                     participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
                     artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
                 ))
@@ -1218,7 +1298,14 @@ public class TranslationRoomService : ITranslationRoomService
             .Any(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)));
     }
 
-    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId)
+    /// <summary>
+    /// WT-280: <paramref name="seatsTaken"/> is supplied by the caller, which has counted CONNECTED
+    /// participants in the database. This used to read <c>room.TranslationRoomParticipants.Count</c>,
+    /// which was wrong twice over: it counted every row whatever its status (LEFT, KICKED, REJECTED,
+    /// still in the lobby), and — since no list query Includes that navigation — it silently returned
+    /// 0, which is how a room with a CONNECTED host rendered as "0/100".
+    /// </summary>
+    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId, int seatsTaken)
     {
         // Same reader the detail endpoints use — the list used to deserialize the snake_case
         // blob straight into the PascalCase response record (without even
@@ -1244,7 +1331,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.DurationSeconds,
             room.CreatedAt,
             settings,
-            room.TranslationRoomParticipants.Count,
+            seatsTaken,
             room.HostId == userId
         );
     }
