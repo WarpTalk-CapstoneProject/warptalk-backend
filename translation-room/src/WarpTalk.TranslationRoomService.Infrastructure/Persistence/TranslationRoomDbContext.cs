@@ -44,7 +44,11 @@ public partial class TranslationRoomDbContext : DbContext
             .HasPostgresEnum("consent_status", new[] { "GRANTED", "REVOKED", "EXPIRED" })
             .HasPostgresEnum("job_status", new[] { "QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED" })
             .HasPostgresEnum("notification_status", new[] { "PENDING", "SENT", "DELIVERED", "FAILED", "READ" })
-            .HasPostgresEnum("participant_status", new[] { "INVITED", "WAITING", "CONNECTED", "DISCONNECTED", "LEFT", "KICKED", "REJECTED" })
+            // WT-263: participant_status was dropped from the database by migration
+            // 014-15-06-2026-convert-translation-and-transcript-enums-to-varchar.sql, which converted
+            // translation_room_participants.status to VARCHAR(255). Nothing maps to the type any more
+            // (the entity property is string, and Program.cs builds the data source without MapEnum),
+            // so declaring it here only re-created a type the schema no longer has.
             .HasPostgresEnum("room_status", new[] { "SCHEDULED", "WAITING", "IN_PROGRESS", "PAUSED", "ENDED", "CANCELLED", "EXPIRED", "FAILED" })
             .HasPostgresEnum("ticket_status", new[] { "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED" })
             .HasPostgresExtension("uuid-ossp");

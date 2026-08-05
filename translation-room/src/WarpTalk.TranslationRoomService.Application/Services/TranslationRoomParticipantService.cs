@@ -149,10 +149,10 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant == null || participant.TranslationRoomId != translationRoomId)
                 return Result.Failure("Participant not found.", ErrorCodes.NotFound);
 
-            if (participant.Status != "WAITING")
+            if (participant.Status != TranslationRoomParticipantStatuses.Waiting)
                 return Result.Failure("Participant is not in the waiting room.", ErrorCodes.ValidationError);
 
-            participant.Status = "CONNECTED";
+            participant.Status = TranslationRoomParticipantStatuses.Connected;
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
@@ -185,7 +185,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             if (participant.UserId == room.HostId)
                 return Result.Failure(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
 
-            participant.Status = "KICKED";
+            participant.Status = TranslationRoomParticipantStatuses.Kicked;
             participant.UpdatedAt = DateTime.UtcNow;
 
             _participantRepository.Update(participant);
@@ -209,7 +209,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
                 return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
             var leftAt = DateTime.UtcNow;
-            participant.Status = "LEFT";
+            participant.Status = TranslationRoomParticipantStatuses.Left;
             participant.LeftAt = leftAt;
             participant.UpdatedAt = leftAt;
 

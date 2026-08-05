@@ -1,5 +1,6 @@
 using System;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 
@@ -17,9 +18,9 @@ public static class TranslationRoomParticipantMapper
         bool isHost)
     {
         var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
-        var initialStatus = (requiresApproval && !isHost) 
-            ? "WAITING" 
-            : "CONNECTED";
+        var initialStatus = (requiresApproval && !isHost)
+            ? TranslationRoomParticipantStatuses.Waiting
+            : TranslationRoomParticipantStatuses.Connected;
 
         return new TranslationRoomParticipant
         {
@@ -52,25 +53,25 @@ public static class TranslationRoomParticipantMapper
         // closed their live connection. Admission belongs to the participant's room
         // membership, not to each LiveKit connection, so a reconnect must not send them
         // through the waiting room again. INVITED still represents a first admission.
-        if (participant.Status == "DISCONNECTED" ||
-            participant.Status == "LEFT")
+        if (participant.Status == TranslationRoomParticipantStatuses.Disconnected ||
+            participant.Status == TranslationRoomParticipantStatuses.Left)
         {
-            participant.Status = "CONNECTED";
+            participant.Status = TranslationRoomParticipantStatuses.Connected;
             participant.LeftAt = null;
             participant.JoinedAt = DateTime.UtcNow;
         }
-        else if (participant.Status == "INVITED")
+        else if (participant.Status == TranslationRoomParticipantStatuses.Invited)
         {
-            participant.Status = (requiresApproval && !isHost) 
-                ? "WAITING" 
-                : "CONNECTED";
+            participant.Status = (requiresApproval && !isHost)
+                ? TranslationRoomParticipantStatuses.Waiting
+                : TranslationRoomParticipantStatuses.Connected;
         }
 
         // BR-004: Host check overrides approval
         if (isHost)
         {
             participant.Role = nameof(TranslationRoomParticipantRole.HOST);
-            participant.Status = "CONNECTED";
+            participant.Status = TranslationRoomParticipantStatuses.Connected;
         }
         
         participant.UpdatedAt = DateTime.UtcNow;

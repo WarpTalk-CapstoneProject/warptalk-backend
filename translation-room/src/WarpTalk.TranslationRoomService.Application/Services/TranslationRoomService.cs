@@ -219,7 +219,7 @@ public class TranslationRoomService : ITranslationRoomService
                 SpeakLanguage = sourceLang,
                 ListenLanguage = sourceLang,
                 Role = "HOST",
-                Status = "CONNECTED",
+                Status = TranslationRoomParticipantStatuses.Connected,
                 ConnectionType = "WEBRTC",
                 IsTranslationAudioEnabled = true,
                 IsUsingVoiceClone = false,
@@ -395,7 +395,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // BR-010: Block KICKED participants
-            if (participant != null && participant.Status == "KICKED")
+            if (participant != null && participant.Status == TranslationRoomParticipantStatuses.Kicked)
             {
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantKicked, ErrorCodes.Forbidden);
             }
@@ -687,13 +687,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }
@@ -733,13 +733,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }
@@ -786,13 +786,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }

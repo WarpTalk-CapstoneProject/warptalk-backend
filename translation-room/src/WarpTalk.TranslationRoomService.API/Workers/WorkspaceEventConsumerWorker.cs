@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -119,7 +120,7 @@ public class WorkspaceEventConsumerWorker : BackgroundService
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
         var activeParticipants = await unitOfWork.TranslationRoomParticipantRepository.FindAsync(
-            p => p.UserId == userId && p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString(), ct: ct);
+            p => p.UserId == userId && p.Status == TranslationRoomParticipantStatuses.Connected, ct: ct);
 
         if (activeParticipants == null || activeParticipants.Count == 0) return;
 
@@ -127,7 +128,7 @@ public class WorkspaceEventConsumerWorker : BackgroundService
 
         foreach (var p in activeParticipants)
         {
-            p.Status = TranslationRoomParticipantStatus.KICKED.ToString();
+            p.Status = TranslationRoomParticipantStatuses.Kicked;
             p.LeftAt = DateTime.UtcNow;
             unitOfWork.TranslationRoomParticipantRepository.Update(p);
 

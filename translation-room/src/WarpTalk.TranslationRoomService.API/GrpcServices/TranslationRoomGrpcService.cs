@@ -56,6 +56,10 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
 
         var response = new GetParticipantsByRoomIdResponse();
 
+        // WT-263: the roster's IsActive is the same question the WT-262 capacity cap asks, so it
+        // answers from the shared seat definition instead of its own status literal. Safe as a method
+        // call because FindAsync has already materialised the rows — this loop is LINQ-to-Objects,
+        // not an EF predicate (the cap uses SeatHolding.Contains, which is what translates to SQL).
         foreach (var p in participants)
         {
             response.Participants.Add(new Shared.Protos.Participant
@@ -64,7 +68,7 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
                 DisplayName = p.DisplayName ?? string.Empty,
                 Role = p.Role ?? string.Empty,
                 Language = p.SpeakLanguage ?? string.Empty,
-                IsActive = p.Status == "CONNECTED"
+                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status)
             });
         }
 
