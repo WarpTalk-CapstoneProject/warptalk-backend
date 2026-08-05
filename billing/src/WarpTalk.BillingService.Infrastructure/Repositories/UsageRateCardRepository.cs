@@ -68,6 +68,15 @@ public class UsageRateCardRepository : IUsageRateCardRepository
             row.EffectiveTo = supersededAt;
         }
 
+        // Flush the supersede before inserting. ux_usage_rate_card_active_lookup is
+        // a partial unique index over (identity) WHERE is_active AND effective_to IS
+        // NULL, so the old row must stop being active before the new one exists.
+        // Batching both into one SaveChangesAsync would leave that on EF's command
+        // ordering, which is an implementation detail, not a contract. Both
+        // statements run inside the caller's transaction, so this stays atomic.
+        if (current.Count > 0)
+            await _context.SaveChangesAsync(cancellationToken);
+
         var inserted = new UsageRateCard
         {
             ChargeType = request.ChargeType.Trim(),
