@@ -41,6 +41,9 @@ public class TokenService : ITokenService
     {
         try
         {
+            if (string.IsNullOrWhiteSpace(request.RefreshToken))
+                return Result.Failure<AuthResponse>("Refresh token is required.", ErrorCodes.ValidationError);
+
             var tokenHash = TokenHasher.Hash(request.RefreshToken);
             var storedToken = await _refreshTokenRepository.GetByTokenHashAsync(tokenHash, ct);
 

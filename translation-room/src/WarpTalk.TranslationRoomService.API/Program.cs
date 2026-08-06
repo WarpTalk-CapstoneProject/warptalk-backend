@@ -85,6 +85,7 @@ builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>()
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
+builder.Services.AddScoped<ITranslationRoomDirectoryService, TranslationRoomDirectoryService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();

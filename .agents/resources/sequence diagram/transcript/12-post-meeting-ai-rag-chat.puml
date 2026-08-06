@@ -1,0 +1,64 @@
+@startuml
+title WarpTalk - Post-Meeting AI RAG Chat
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Workspace Member" as Member
+boundary "MeetingArtifactsPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptsController" as Controller <<boundary>>
+participant ":TranscriptService" as Service <<service>>
+participant ":AiAssistantGrpcClient" as AiClient <<boundary>>
+end box
+
+database "Qdrant Vector DB" as VectorDb
+box "AI Assistant Service (ai_assistant_worker)" #LightSalmon
+participant ":AiAssistantGrpcService" as AiService <<boundary>>
+participant ":AiAssistantWorker" as AiWorker <<service>>
+end box
+
+Member -> Web : Type question about meeting & send
+activate Web
+Web -> Gateway : POST /api/v1/meetings/{id}/chat\n[with JWT, Question]
+activate Gateway
+Gateway -> Controller : Forward Chat request
+activate Controller
+Controller -> Service : ProcessChatAsync(id, question)
+activate Service
+
+Service -> AiClient : GetChatAnswerAsync(meetingId, question)
+activate AiClient
+AiClient -> AiService : gRPC: ChatQuery(meetingId, question)
+activate AiService
+AiService -> VectorDb : Vector similarity search on meeting chunks
+activate VectorDb
+VectorDb --> AiService : Context text chunks
+deactivate VectorDb
+AiService -> AiWorker : GenerateResponse(question, context)
+activate AiWorker
+AiWorker -> AiWorker : LLM inference
+AiWorker --> AiService : Answer string
+deactivate AiWorker
+AiService --> AiClient : gRPC response (Answer)
+deactivate AiService
+AiClient --> Service : Answer string
+deactivate AiClient
+
+Service --> Controller : ChatResponseDto
+deactivate Service
+Controller --> Gateway : 200 OK
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Member : Display AI response text
+deactivate Web
+@enduml

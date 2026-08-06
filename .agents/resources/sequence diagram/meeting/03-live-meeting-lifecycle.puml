@@ -1,0 +1,222 @@
+﻿@startuml
+title WarpTalk - Live Meeting Lifecycle
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Participant" as Actor
+boundary "RoomDetailsPage" as Web
+boundary "SetupRoomModal" as SetupModal
+boundary "WaitingRoomPage" as WaitingWeb
+boundary "MeetingRoomPage" as MeetingWeb
+control "API Gateway" as Gateway
+boundary ":TranslationRoomHub" as SignalR <<boundary>>
+
+box "Meeting Service" #PaleGreen
+participant ":Meetings\nController" as Controller <<boundary>>
+participant ":MeetingRoom\nService" as Service <<service>>
+participant ":Redis\nService" as Redis <<control>>
+participant ":TranslationRoom\nGrpcClient" as GrpcClient <<boundary>>
+participant ":MeetingRoom\nRepository" as RoomRepo <<control>>
+participant ":MeetingParticipant\nRepository" as PartRepo <<control>>
+participant ":LiveKitToken\nService" as TokenService <<service>>
+database "Meeting\nDB" as Db
+end box
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoom\nGrpcService" as GrpcService <<boundary>>
+participant ":TranslationRooms\nController" as TransController <<boundary>>
+participant ":TranslationRoom\nService" as TransService <<service>>
+participant ":TranslationRoomParticipant\nRepository" as TransPartRepo <<control>>
+database "Translation Room\nDB" as TransDb
+participant ":Redis\nService" as RedisState <<control>>
+end box
+
+participant "LiveKit Server" as LiveKit <<external system>>
+
+Actor -> Web : Click "Join Meeting" / enter URL
+activate Web
+Web -> SetupModal : Open Setup modal
+activate SetupModal
+deactivate Web
+
+SetupModal -> SetupModal : getUserMedia() Preview Camera & Mic
+Actor -> SetupModal : Select Camera, Mic & Languages, then click "Join Room"
+
+SetupModal -> Gateway : POST /api/v1/translation-rooms/join\n[with Code, DisplayName, Speak, Listen]
+activate Gateway
+Gateway -> TransController : JoinRoomByCode(request)
+activate TransController
+TransController -> TransService : JoinRoomByCodeAsync(request)
+activate TransService
+TransService -> TransPartRepo : AddOrUpdateParticipantAsync(participant)
+activate TransPartRepo
+TransPartRepo -> TransDb : INSERT INTO TranslationRoomParticipants\n    (Status = 'connected')
+activate TransDb
+TransDb --> TransPartRepo : Saved
+deactivate TransDb
+TransPartRepo --> TransService : Done
+deactivate TransPartRepo
+TransService --> TransController : Success
+deactivate TransService
+TransController --> Gateway : 200 OK
+deactivate TransController
+Gateway --> SetupModal : 200 OK
+deactivate Gateway
+
+SetupModal -> MeetingWeb : Redirect to MeetingRoomPage
+activate MeetingWeb
+deactivate SetupModal
+
+MeetingWeb -> Gateway : POST /api/v1/meetings/rooms/{roomId}/join\n[with JWT, DisplayName]
+activate Gateway
+Gateway -> Controller : JoinMeeting(translationRoomId, request)
+activate Controller
+Controller -> Service : JoinMeetingAsync(translationRoomId, userId, displayName)
+activate Service
+
+Service -> Redis : GetCacheAsync($"meeting:room:{translationRoomId}")
+activate Redis
+Redis --> Service : Cache Miss / Hit
+deactivate Redis
+
+alt Cache Miss
+    Service -> GrpcClient : GetRoomDetailsAsync(translationRoomId)
+    activate GrpcClient
+    GrpcClient -> GrpcService : gRPC: GetTranslationRoomById(...)
+    activate GrpcService
+    GrpcService --> GrpcClient : GetTranslationRoomResponse
+    deactivate GrpcService
+    GrpcClient --> Service : Result.Success(RoomDetails)
+    deactivate GrpcClient
+    Service -> Redis : SetCacheAsync(...)
+    activate Redis
+end
+
+alt Room expired or already finished
+    Service --> Controller : Result.Failure(RoomExpiredError)
+    deactivate Service
+    Controller --> Gateway : 410 Gone
+    deactivate Controller
+    Gateway --> Web : 410 Gone
+    deactivate Gateway
+    Web --> Actor : Display expired meeting message
+else Room is joinable
+Service -> Service : Check ScheduledStartTime + 2 hours expiration
+activate Service
+
+Service -> Service : BeginTransactionAsync()
+Service -> RoomRepo : FirstOrDefaultAsync(r => r.TranslationRoomId == roomId)
+activate RoomRepo
+RoomRepo -> Db : SELECT * FROM MeetingRooms ...
+activate Db
+Db --> RoomRepo : MeetingRoom Entity
+deactivate Db
+RoomRepo --> Service : MeetingRoom Entity
+deactivate RoomRepo
+
+    Service -> PartRepo : FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.UserId == userId)
+    activate PartRepo
+    PartRepo -> Db : SELECT * FROM MeetingParticipants WHERE RoomId = roomId AND UserId = userId
+    activate Db
+    Db --> PartRepo : null (First Join)
+    deactivate Db
+    PartRepo --> Service : null
+    deactivate PartRepo
+    
+    Service -> PartRepo : AddAsync(participant)
+    activate PartRepo
+    Service -> Service : SaveChangesAsync()
+
+    alt Room Status is SCHEDULED or WAITING (Lobby)
+        Service -> Service : CommitTransactionAsync()
+        Service --> Controller : Result.Success(JoinMeetingResponse [IsWaitingRoom = true])
+        deactivate Service
+        Controller --> Gateway : 200 OK (JoinMeetingResponse)
+        Gateway --> Web : 200 OK
+        Web -> WaitingWeb : Redirect to WaitingRoomPage
+        activate WaitingWeb
+        WaitingWeb --> Actor : Render lobby while waiting for host
+        deactivate WaitingWeb
+
+    else Room Status is IN_PROGRESS
+        Service -> TokenService : GenerateToken(roomName, identity, displayName)
+        activate TokenService
+        alt LiveKit token generation failed
+            TokenService --> Service : Result.Failure(TokenGenerationError)
+            deactivate TokenService
+            Service --> Controller : Failure
+            Controller --> Gateway : 503 Service Unavailable
+            Gateway --> Web : 503 Service Unavailable
+            Web --> Actor : Display media connection error
+        else Token generated
+            TokenService --> Service : Result.Success(Token)
+            Service -> Service : CommitTransactionAsync()
+            activate Service
+            Service -> Redis : PublishEventAsync\n            ("meeting.track_published", payload)
+            Service --> Controller : Result.Success\n            (JoinMeetingResponse [Token = JWT])
+            deactivate Service
+            Controller --> Gateway : 200 OK\n            (JoinMeetingResponse)
+            Gateway --> Web : 200 OK
+            Web -> MeetingWeb : Redirect to MeetingRoomPage
+            
+            MeetingWeb -> LiveKit : Connect WebRTC using LiveKit token
+            activate LiveKit
+            alt LiveKit connection failed
+                LiveKit --> MeetingWeb : Connection Failed
+                deactivate LiveKit
+                MeetingWeb --> Actor : Display reconnect option
+                deactivate MeetingWeb
+            else LiveKit connection established
+                LiveKit --> MeetingWeb : Connection Established
+                
+                == SIGNALR HUB CONNECTION & BROADCAST ==
+                
+                MeetingWeb -> Gateway : Connect to `/hubs/translation-room` [with JWT]
+                activate Gateway
+                Gateway -> SignalR : OnConnectedAsync()
+                activate SignalR
+                SignalR --> Gateway : Connected
+                deactivate SignalR
+                Gateway --> MeetingWeb : Connected
+                deactivate Gateway
+                
+                MeetingWeb -> Gateway : SignalR: JoinTranslationRoom\n                (roomId, name, speak, listen)
+                activate Gateway
+                Gateway -> SignalR : JoinTranslationRoom\n                (roomId, name, speak, listen)
+                activate SignalR
+                SignalR -> SignalR : Add ConnectionId to SignalR group\n                `translationRoom:{roomId}`
+                SignalR -> SignalR : Register with AI registry
+                SignalR -> RedisState : HashSetAsync\n                ($"translationRoom:{roomId}:languages", userId, listenLanguage)
+                activate RedisState
+                RedisState --> SignalR : Saved target language
+                deactivate RedisState
+                SignalR -> Gateway : Broadcast 'ParticipantJoined' to group
+                Gateway -> Gateway : Push message to other group members
+                Gateway --> SignalR : Done
+                deactivate Gateway
+                SignalR --> Gateway : Success
+                deactivate SignalR
+                Gateway --> MeetingWeb : Acknowledged
+                
+                MeetingWeb --> Actor : Render Live Meeting (Audio/Video active)
+            end
+        end
+    end
+end
+
+deactivate Redis
+deactivate PartRepo
+@enduml

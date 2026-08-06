@@ -46,6 +46,13 @@ public class TranslationRoomService : ITranslationRoomService
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
     /// <summary>
+    /// WT-322: the relay command TranslationRoomRedisSubscriberService turns into the
+    /// "TranslationRoomStarted" SignalR event. Named RoomStarted to sit beside the RoomEnded
+    /// command the same channel already carries.
+    /// </summary>
+    private const string RoomStartedCommand = "RoomStarted";
+
+    /// <summary>
     /// WT-187: the channel NotificationRedisSubscriberService relays to the
     /// "workspace:{workspaceId}" SignalR group, which the web client's
     /// RealtimeNotificationProvider joins via SubscribeWorkspace. Anything published here
@@ -133,6 +140,35 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// WT-281: the host's own name for the participant row seeded at room creation.
+    ///
+    /// Falls back to the role label when the directory cannot answer. That degraded value is the
+    /// old bug's literal string, and that is intentional: it is only reachable when Auth is
+    /// unreachable or does not know the user, and refusing to create the room over a cosmetic
+    /// label would be far worse than a roster entry that briefly reads "Host".
+    /// </summary>
+    private async Task<string> ResolveHostDisplayNameAsync(Guid hostId, CancellationToken ct)
+    {
+        try
+        {
+            var name = await _userSettingsDirectory.GetDisplayNameAsync(hostId, ct);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name;
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not resolve a display name for HostId: {HostId}; seeding the host participant with the role label.",
+                hostId);
+        }
+
+        return TranslationRoomConstants.HostDisplayNameFallback;
+    }
+
     public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
     {
         try
@@ -209,17 +245,40 @@ public class TranslationRoomService : ITranslationRoomService
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
+            // WT-281: the host row used to be seeded with the literal string "Host", which is
+            // exactly what production rendered in the roster. Resolved through the same Auth
+            // directory this method already uses for language defaults.
+            var hostDisplayName = await ResolveHostDisplayNameAsync(hostId, ct);
+
+            // WT-281: the host LISTENS in a language the room actually translates INTO. Both sides
+            // used to be seeded from sourceLang, so a Vietnamese -> English room showed its own
+            // host as "English -> English", which is not a translation at all.
+            //
+            // A multi-target room has to collapse to a single value on this one row. First target,
+            // deliberately:
+            //  - targetLangs is ordered exactly as the creator supplied it, so its first entry is
+            //    the language the room was primarily opened for.
+            //  - The host's stored DefaultListenLanguage is NOT consulted. It is a global
+            //    preference that need not be among this room's targets at all, so honouring it
+            //    could seed a language the room never produces — and it would silently contradict
+            //    the room the host had just explicitly configured.
+            //  - Null is not an option: ListenLanguage is NOT NULL on the participant row and the
+            //    audio-route pipeline keys off it.
+            // The host can still change this in-meeting through the participant language update;
+            // this is the seed, not a lock.
+            var hostListenLanguage = targetLangs[0];
+
             // WT-82: Auto-add the Host as a participant so they exist in the DB
             var hostParticipant = new TranslationRoomParticipant
             {
                 Id = Guid.CreateVersion7(),
                 TranslationRoomId = room.Id,
                 UserId = hostId,
-                DisplayName = "Host",
+                DisplayName = hostDisplayName,
                 SpeakLanguage = sourceLang,
-                ListenLanguage = sourceLang,
+                ListenLanguage = hostListenLanguage,
                 Role = "HOST",
-                Status = "CONNECTED",
+                Status = TranslationRoomParticipantStatuses.Connected,
                 ConnectionType = "WEBRTC",
                 IsTranslationAudioEnabled = true,
                 IsUsingVoiceClone = false,
@@ -265,8 +324,10 @@ public class TranslationRoomService : ITranslationRoomService
                 await Task.WhenAll(emailTasks);
             }
 
-            // 5. Return mapped response
-            return Result.Success(room.ToResponseDto());
+            // 5. Return mapped response. WT-280: seats are counted in the database, after the
+            // host row above was committed, so a freshly created room correctly reports 1.
+            return Result.Success(room.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -315,7 +376,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -343,7 +405,18 @@ public class TranslationRoomService : ITranslationRoomService
                 .Take(pageSize)
                 .ToListAsync(ct);
 
-            var rooms = roomEntities.Select(r => ToListItemDto(r, userId)).ToList();
+            // WT-280: occupancy is counted in the DATABASE, not by loading each room's roster.
+            // Eager-loading would work too, but it would have to be repeated on every path that
+            // renders a room and any path that forgot silently reports 0 — which is the bug. One
+            // grouped count over the page keeps the number impossible to get accidentally-empty,
+            // and transfers a scalar per room instead of every participant row.
+            var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
+                roomEntities.Select(r => r.Id).ToList(),
+                ct);
+
+            var rooms = roomEntities
+                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .ToList();
 
             return Result.Success(new TranslationRoomListResponse(rooms, total, page, pageSize));
         }
@@ -395,7 +468,7 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // BR-010: Block KICKED participants
-            if (participant != null && participant.Status == "KICKED")
+            if (participant != null && participant.Status == TranslationRoomParticipantStatuses.Kicked)
             {
                 return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorParticipantKicked, ErrorCodes.Forbidden);
             }
@@ -409,6 +482,35 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             var isHost = translationRoom.HostId == userId;
+
+            // WT-262: enforce the room's own capacity. MaxParticipants is stamped at creation from
+            // TranslationRoomTypePolicy but was never read by anything, so a VIRTUAL_APPOINTMENT
+            // capped at 2 accepted an unbounded roster.
+            //
+            // Three carve-outs, in order:
+            //  - MaxParticipants <= 0 means UNLIMITED, matching how the workspace active-room cap
+            //    treats "> 0" in WorkspaceGrpcService.ValidateMeetingCreation. A room that never
+            //    got a sane value stored must not become unjoinable.
+            //  - The host is never turned away from their own room. They are the one person who
+            //    cannot route around a full room, and locking them out strands every guest inside.
+            //  - Somebody already holding a seat is re-entering, not taking a new one, so a
+            //    reconnect or a repeated join from a CONNECTED participant is never counted twice.
+            //    A DISCONNECTED/LEFT participant released their seat and does re-acquire one here.
+            if (translationRoom.MaxParticipants > 0 &&
+                !isHost &&
+                !TranslationRoomParticipantStatuses.HoldsSeat(participant?.Status))
+            {
+                var seatsTaken = await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct);
+                if (seatsTaken >= translationRoom.MaxParticipants)
+                {
+                    // Conflict, not Forbidden or InvalidState: the caller is permitted and the room
+                    // is in a perfectly valid state — the request just collides with how many people
+                    // are in it right now, and it succeeds unchanged once a seat frees up.
+                    return Result.Failure<JoinTranslationRoomResponse>(
+                        string.Format(TranslationRoomConstants.ErrorRoomAtCapacity, translationRoom.MaxParticipants),
+                        ErrorCodes.Conflict);
+                }
+            }
 
             if (participant == null)
             {
@@ -453,7 +555,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
-                translationRoom.ToResponseDto(),
+                translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)),
                 TranslationRoomParticipantMapper.ToDto(participant)
             ));
         }
@@ -504,7 +607,8 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
-                return Result.Success(translationRoom.ToResponseDto());
+                return Result.Success(translationRoom.ToResponseDto(
+                    await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -534,15 +638,103 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
+            // WT-322: tell everyone already in the room that translation is now live. Published
+            // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
+            // the event must not be able to observe the room still WAITING. Failure to notify must
+            // not fail the start — the room is IN_PROGRESS and persisted by this point.
+            await PublishRoomStartedAsync(translationRoom, ct);
+
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while starting the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-322: broadcast "TranslationRoomStarted" to everyone already sitting in the room.
+    ///
+    /// The web client has always listened for this event (persistent-meeting-session.tsx) and
+    /// nothing ever sent it. A participant who joined BEFORE the host pressed Start therefore kept
+    /// <c>warptalkStarted === false</c> until some unrelated refetch happened to notice the status
+    /// change — and that flag unsubscribes every interpreter audio track and drops every transcript
+    /// and translation segment. FilteredRoomAudio still lets the raw microphones through, so it is
+    /// not silence: it is a participant hearing the untranslated original with no interpreter dub
+    /// and no captions, while the host sees translation running normally.
+    ///
+    /// Published on the same Gateway relay channel every other room event uses (see
+    /// <see cref="GatewayCommandsChannel"/>): the SignalR hub lives in the Gateway process, so this
+    /// service cannot reach connected clients directly. TranslationRoomRedisSubscriberService
+    /// forwards <c>State</c> to the "translationRoom:{roomId}" group untouched — the same
+    /// pre-serialized-camelCase-payload arrangement PollCreated/QuestionAsked/BreakoutsStarted use.
+    ///
+    /// The payload is the client's TranslationRoomStateDto. <c>participants</c> is REQUIRED, not
+    /// decorative: the client's store does <c>participants: state.participants</c>, so omitting it
+    /// would blank the roster of everyone in the room. It carries the CONNECTED participants —
+    /// the same definition of "in the room" the roster and the seat count already use — each
+    /// shaped exactly like the hub's own ParticipantJoined payload.
+    ///
+    /// Never throws: an unnotified client is stale, but the room is already IN_PROGRESS and
+    /// persisted, so failing the host's Start here would be strictly worse.
+    /// </summary>
+    private async Task PublishRoomStartedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var participants = await _participantRepository.GetByRoomIdAsync(room.Id, ct);
+            var connected = (participants ?? Enumerable.Empty<TranslationRoomParticipant>())
+                .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
+                // Exactly the six fields TranslationRoomHub's ParticipantJoined already sends, in
+                // the same order. Deliberately NOT role or status: merge-participants.ts keeps
+                // identity and role with the REST roster precisely because the live payload has
+                // never carried them, and a live row that suddenly did would start winning
+                // where the API row is missing.
+                .Select(p => new
+                {
+                    userId = p.UserId?.ToString() ?? string.Empty,
+                    displayName = p.DisplayName,
+                    speakLanguage = p.SpeakLanguage,
+                    listenLanguage = p.ListenLanguage,
+                    isMuted = false,
+                    joinedAt = (p.JoinedAt ?? p.CreatedAt).ToUniversalTime()
+                })
+                .ToList();
+
+            // camelCase deliberately: the Gateway forwards this element to clients as-is, and the
+            // web client reads it as TranslationRoomStateDto.
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = RoomStartedCommand,
+                RoomId = room.Id.ToString(),
+                State = new
+                {
+                    translationRoomId = room.Id.ToString(),
+                    translationRoomCode = room.TranslationRoomCode,
+                    status = room.Status,
+                    participants = connected
+                }
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish {Command} for RoomId: {RoomId}. The room is started; participants already in it will not hear audio or see captions until their own room query refetches.",
+                RoomStartedCommand,
+                room.Id);
         }
     }
 
@@ -658,13 +850,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }
@@ -672,7 +864,19 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(translationRoom.ToResponseDto());
+            // WT-314: a cancelled room must reach the AI pipeline as a terminal room status,
+            // exactly like an ended one. MeetingRoomService summons livekit_ingress_worker's
+            // "AIBot_{room}" on every JoinMeetingAsync, and that bot's only exit is an
+            // AUDIO_ROUTES_UPDATED carrying a terminal status. Cancel is reachable only from
+            // SCHEDULED/WAITING — states that by definition have no audio routes yet — so
+            // nothing else on this path would ever publish, and the bot stayed connected
+            // billing LiveKit connection minutes. Published after SaveChangesAsync so the
+            // status on the wire is the persisted CANCELLED, and best-effort: the room is
+            // already cancelled by this point and must not be failed by a notification fault.
+            await PublishTerminalLifecycleAsync(translationRoomId, "cancelling", ct);
+
+            return Result.Success(translationRoom.ToResponseDto(
+                await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
@@ -704,25 +908,59 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-314: same door as Cancel above. Expiry is driven by IdleRoomMonitoringWorker
+            // on rooms nobody ever started, which is precisely the population that has no
+            // audio routes — so without this publish the ingress bot for an expired room was
+            // never told to leave.
+            await PublishTerminalLifecycleAsync(translationRoomId, "expiring", ct);
+
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error expiring translation room. RoomId: {RoomId}", translationRoomId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Announce a terminal room lifecycle to the AI pipeline (WT-314).
+    ///
+    /// AudioRouteEventProcessor turns this into an AUDIO_ROUTES_UPDATED carrying the room's
+    /// now-persisted status, which is the only signal that releases livekit_ingress_worker's
+    /// per-room bot — and therefore the only thing that stops LiveKit connection minutes
+    /// accruing. Best-effort by design: the room has already been persisted in its terminal
+    /// state, so a Redis or processor fault must not turn a successful cancel/expire into a
+    /// failure for the caller. The worker's own idle sweep is the backstop if this is lost.
+    /// </summary>
+    private async Task PublishTerminalLifecycleAsync(Guid translationRoomId, string operation, CancellationToken ct)
+    {
+        try
+        {
+            await _audioRouteEventProcessor.ProcessEventAsync(
+                translationRoomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish session_ends while {Operation} room {RoomId}. The room is persisted; the ingress bot will be released by its idle sweep instead.",
+                operation,
+                translationRoomId);
         }
     }
 
@@ -757,13 +995,13 @@ public class TranslationRoomService : ITranslationRoomService
             if (participants != null)
             {
                 var participantsToUpdate = participants
-                    .Where(p => p.Status == TranslationRoomParticipantStatus.CONNECTED.ToString() ||
-                                p.Status == TranslationRoomParticipantStatus.WAITING.ToString())
+                    .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected ||
+                                p.Status == TranslationRoomParticipantStatuses.Waiting)
                     .ToList();
 
                 foreach (var participant in participantsToUpdate)
                 {
-                    participant.Status = TranslationRoomParticipantStatus.DISCONNECTED.ToString();
+                    participant.Status = TranslationRoomParticipantStatuses.Disconnected;
                     participant.UpdatedAt = DateTime.UtcNow;
                     _participantRepository.Update(participant);
                 }
@@ -967,6 +1205,16 @@ public class TranslationRoomService : ITranslationRoomService
                 .GroupBy(p => p.TranslationRoomId)
                 .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
 
+            // WT-280: history is the one path that already has the full roster in memory, so the
+            // seat count comes from it rather than from a second database round trip.
+            // HoldsSeat(...) — the METHOD form — is correct here precisely because these rows are
+            // already materialised; it must never appear inside a query EF has to translate.
+            var occupancyByRoom = participantEntities
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
+
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
@@ -977,7 +1225,7 @@ public class TranslationRoomService : ITranslationRoomService
                 .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
 
             var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
-                    ToListItemDto(room, userId),
+                    ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
                     participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
                     artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
                 ))
@@ -1189,7 +1437,14 @@ public class TranslationRoomService : ITranslationRoomService
             .Any(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)));
     }
 
-    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId)
+    /// <summary>
+    /// WT-280: <paramref name="seatsTaken"/> is supplied by the caller, which has counted CONNECTED
+    /// participants in the database. This used to read <c>room.TranslationRoomParticipants.Count</c>,
+    /// which was wrong twice over: it counted every row whatever its status (LEFT, KICKED, REJECTED,
+    /// still in the lobby), and — since no list query Includes that navigation — it silently returned
+    /// 0, which is how a room with a CONNECTED host rendered as "0/100".
+    /// </summary>
+    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId, int seatsTaken)
     {
         // Same reader the detail endpoints use — the list used to deserialize the snake_case
         // blob straight into the PascalCase response record (without even
@@ -1215,7 +1470,7 @@ public class TranslationRoomService : ITranslationRoomService
             room.DurationSeconds,
             room.CreatedAt,
             settings,
-            room.TranslationRoomParticipants.Count,
+            seatsTaken,
             room.HostId == userId
         );
     }

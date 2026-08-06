@@ -1,0 +1,78 @@
+@startuml
+title WarpTalk - Configure Workspace Security Policy & AI Guardrails
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+actor "Workspace Owner" as Owner
+boundary "WorkspaceSettingsPage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspacesController" as WorkspacesController <<boundary>>
+participant ":WorkspaceService" as WorkspaceService <<service>>
+participant ":WorkspaceRepository" as WorkspaceRepository <<control>>
+participant ":OutboxWorkspaceEventPublisher" as OutboxPublisher <<control>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+Owner -> Web : Select security settings (Enable DLP PII Scanner, Auto-approve Domain Join, Max File Size)
+activate Web
+Web -> Gateway : PUT /api/v1/workspaces/{workspaceId}/settings
+activate Gateway
+Gateway -> WorkspacesController : UpdateSettings(workspaceId, updateDto)
+activate WorkspacesController
+
+WorkspacesController -> WorkspaceService : UpdateSettingsAsync(workspaceId, updateDto, executingUserId)
+activate WorkspaceService
+
+WorkspaceService -> WorkspaceRepository : GetMemberRoleAsync(workspaceId, executingUserId)
+activate WorkspaceRepository
+WorkspaceRepository -> WorkspaceDb : SELECT role FROM workspace.members WHERE workspace_id = @wId AND user_id = @uId
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceRepository : Role = OWNER
+deactivate WorkspaceDb
+WorkspaceRepository --> WorkspaceService : Role = OWNER
+deactivate WorkspaceRepository
+
+WorkspaceService -> WorkspaceRepository : UpdateSettingsAsync(workspaceId, settingsEntity)
+activate WorkspaceRepository
+WorkspaceRepository -> WorkspaceDb : UPDATE workspace.workspace_settings SET enable_dlp_scan = @dlp, auto_approve_domain = @auto, max_upload_size = @max WHERE workspace_id = @wId
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceRepository : success
+deactivate WorkspaceDb
+WorkspaceRepository --> WorkspaceService : success
+deactivate WorkspaceRepository
+
+WorkspaceService -> OutboxPublisher : PublishWorkspaceSettingsUpdatedAsync(workspaceId, settingsDto)
+activate OutboxPublisher
+OutboxPublisher -> WorkspaceDb : INSERT INTO workspace.outbox_messages (event_type, payload, status) VALUES (...)
+activate WorkspaceDb
+WorkspaceDb --> OutboxPublisher : success
+deactivate WorkspaceDb
+OutboxPublisher --> WorkspaceService : success
+deactivate OutboxPublisher
+
+WorkspaceService --> WorkspacesController : Result.Success(updatedSettingsDto)
+deactivate WorkspaceService
+
+WorkspacesController --> Gateway : 200 OK (Updated Settings)
+deactivate WorkspacesController
+
+Gateway --> Web : 200 OK (Updated Settings)
+deactivate Gateway
+
+Web --> Owner : Display success toast "Workspace security policies & AI guardrails updated successfully"
+deactivate Web
+
+@enduml

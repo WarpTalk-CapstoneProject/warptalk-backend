@@ -1,0 +1,128 @@
+@startuml
+title WarpTalk - Workspace Glossary and Terminology Setup
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 200
+
+actor "Workspace Admin" as Admin
+boundary "TerminologyPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #Lavender
+participant ":GlossariesController" as GlossariesController <<boundary>>
+participant ":GlossaryService" as GlossaryService <<service>>
+participant ":GlossaryTermRepository" as TermRepo <<control>>
+participant ":GlossaryRepository" as GlossaryRepo <<control>>
+database "Transcript Database" as TranscriptDb
+participant ":GlossaryEventPublisher" as EventPublisher <<control>>
+end box
+
+queue "Redis Glossary Stream" as GlossaryStream
+
+== STEP 1: CREATE WORKSPACE GLOSSARY ==
+
+Admin -> Web : Enter glossary name & description, click "Create Glossary"
+activate Web
+
+Web -> Gateway : POST /api/v1/glossaries\n[CreateGlossaryDto + JWT]
+activate Gateway
+
+Gateway -> GlossariesController : Forward CreateGlossary request
+activate GlossariesController
+
+GlossariesController -> GlossaryService : CreateGlossaryAsync(request)
+activate GlossaryService
+
+GlossaryService -> GlossaryRepo : AddAsync(new Glossary)
+activate GlossaryRepo
+GlossaryRepo -> TranscriptDb : INSERT INTO Glossaries (WorkspaceId, Name, ...)
+activate TranscriptDb
+TranscriptDb --> GlossaryRepo : Saved
+deactivate TranscriptDb
+GlossaryRepo --> GlossaryService : Glossary created
+deactivate GlossaryRepo
+
+GlossaryService -> GlossaryRepo : SaveChangesAsync()
+activate GlossaryRepo
+GlossaryRepo -> TranscriptDb : COMMIT
+activate TranscriptDb
+TranscriptDb --> GlossaryRepo : Committed
+deactivate TranscriptDb
+GlossaryRepo --> GlossaryService : Saved
+deactivate GlossaryRepo
+
+GlossaryService --> GlossariesController : Result.Success()
+deactivate GlossaryService
+GlossariesController --> Gateway : 201 Created
+deactivate GlossariesController
+Gateway --> Web : 201 Created
+deactivate Gateway
+Web --> Admin : Show new glossary container
+deactivate Web
+
+== STEP 2: ADD CUSTOM TERMINOLOGY KEY-VALUE TERM ==
+
+Admin -> Web : Add term (Key="WarpTalk", Value="Nền tảng dịch thuật real-time")
+activate Web
+
+Web -> Gateway : POST /api/v1/glossaries/{glossaryId}/terms\n[CreateGlossaryTermDto + JWT]
+activate Gateway
+
+Gateway -> GlossariesController : Forward AddTerm request
+activate GlossariesController
+
+GlossariesController -> GlossaryService : AddTermAsync(glossaryId, request)
+activate GlossaryService
+
+GlossaryService -> GlossaryRepo : GetByIdAsync(glossaryId)
+activate GlossaryRepo
+GlossaryRepo -> TranscriptDb : SELECT * FROM Glossaries WHERE Id = glossaryId
+activate TranscriptDb
+TranscriptDb --> GlossaryRepo : Glossary entity
+deactivate TranscriptDb
+GlossaryRepo --> GlossaryService : Glossary entity
+deactivate GlossaryRepo
+
+GlossaryService -> TermRepo : AddAsync(new GlossaryTerm)
+activate TermRepo
+TermRepo -> TranscriptDb : INSERT INTO GlossaryTerms (GlossaryId, Term, Translation, ...)
+activate TranscriptDb
+TranscriptDb --> TermRepo : Saved
+deactivate TranscriptDb
+TermRepo --> GlossaryService : Term added
+deactivate TermRepo
+
+GlossaryService -> TermRepo : SaveChangesAsync()
+activate TermRepo
+TermRepo -> TranscriptDb : COMMIT
+activate TranscriptDb
+TranscriptDb --> TermRepo : Committed
+deactivate TranscriptDb
+TermRepo --> GlossaryService : Saved
+deactivate TermRepo
+
+GlossaryService ->> EventPublisher : PublishGlossaryUpdatedAsync(workspaceId, glossaryId)
+EventPublisher ->> GlossaryStream : XADD glossary:updated [workspaceId]
+
+GlossaryService --> GlossariesController : Result.Success()
+deactivate GlossaryService
+GlossariesController --> Gateway : 201 Created
+deactivate GlossariesController
+Gateway --> Web : 201 Created
+deactivate Gateway
+Web --> Admin : Display updated term in terminology table
+deactivate Web
+
+@enduml

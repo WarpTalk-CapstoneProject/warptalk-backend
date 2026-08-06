@@ -1,0 +1,140 @@
+﻿@startuml
+title WarpTalk - Fractional Billing for AI Speech Translation
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+box "STT Worker Service (stt_worker)" #LightGreen
+participant ":STTWorker" as STTWorker <<boundary>>
+end box
+control "Redis Stream" as Redis
+
+box "Meeting Service" #PaleGreen
+participant ":FractionalBillingWorker" as Worker <<boundary>>
+participant ":ConcurrentDictionary" as Cache <<control>>
+participant ":BillingServiceClient" as BillingClient <<boundary>>
+end box
+
+box "Billing Service" #LightCyan
+participant ":BillingServiceGrpc" as BillingGrpc <<boundary>>
+participant ":BillingService" as BillingService <<service>>
+participant ":SubscriptionRepository" as SubRepo <<control>>
+participant ":CreditTransactionRepository" as TxRepo <<control>>
+database "Billing DB" as Db
+end box
+
+== PHASE 1: DURATION ACCUMULATION ==
+
+STTWorker -> Redis : Publish STT result\n[stt:results]\n(workspace_id, start_ms, end_ms, ...)
+activate Redis
+deactivate Redis
+
+loop Every 1 second
+  Worker -> Redis : StreamReadGroupAsync("stt:results", group, consumer, count: 50)
+  activate Redis
+  activate Worker
+  Redis --> Worker : Stream entries
+  deactivate Redis
+  
+  loop For each entry
+    Worker -> Worker : Calculate durationSeconds =\n(endMs - startMs) / 1000.0
+    
+    Worker -> Cache : AddOrUpdate(workspaceId, durationSeconds)
+    activate Cache
+    Cache --> Worker : Updated total duration
+    deactivate Cache
+    
+    Worker -> Redis : StreamAcknowledgeAsync("stt:results", group, entry.Id)
+    activate Redis
+    Redis --> Worker : Done
+    deactivate Redis
+  end
+  deactivate Worker
+end
+
+== PHASE 2: PERIODIC FLUSH & CREDIT DEDUCTION ==
+
+loop Every 10 seconds (Flush loop)
+  Worker -> Cache : Iterate workspaces with accumulated duration >= 1.0 second
+  activate Cache
+  activate Worker
+  
+  Worker -> Worker : Calculate secondsToBill = floor(accumulated)
+  
+  Worker -> Cache : TryUpdate(workspaceId, remainder = accumulated - secondsToBill)
+  Cache --> Worker : True (Updated)
+  deactivate Cache
+  
+  Worker -> BillingClient : ConsumeCreditsAsync(ConsumeCreditsRequest)\n[WorkspaceId, Amount = secondsToBill,\nReferenceType = "AI_SPEECH_TRANSLATION", ReferenceId = "stt-stream"]
+  activate BillingClient
+  
+  BillingClient -> BillingGrpc : gRPC: ConsumeCredits(ConsumeCreditsRequest)
+  activate BillingGrpc
+  
+  BillingGrpc -> BillingService : ConsumeCreditsAsync(workspaceId, amount, referenceType, referenceId)
+  activate BillingService
+  
+  BillingService -> SubRepo : FirstOrDefaultAsync(s => s.WorkspaceId == workspaceId && s.IsActive)
+  activate SubRepo
+  SubRepo -> Db : SELECT * FROM subscriptions\nWHERE workspace_id = workspaceId AND is_active = true
+  activate Db
+  Db --> SubRepo : Active Subscription
+  deactivate Db
+  SubRepo --> BillingService : Active Subscription
+  deactivate SubRepo
+  
+  alt Subscription not found OR Insufficient credits
+    BillingService --> BillingGrpc : Error: SUBSCRIPTION_NOT_FOUND / INSUFFICIENT_CREDITS
+    deactivate BillingService
+    BillingGrpc --> BillingClient : gRPC Error response
+    deactivate BillingGrpc
+    BillingClient --> Worker : Throws Exception
+    deactivate BillingClient
+    
+    Worker -> Cache : AddOrUpdate(workspaceId, secondsToBill) (Revert deduction)
+    activate Cache
+    Cache --> Worker : Done
+    deactivate Cache
+  else Sufficient credits
+    BillingService -> BillingService : Deduct credits:\ncurrent_credits -= secondsToBill\ncredits_used_this_cycle += secondsToBill
+    activate BillingService
+    
+    BillingService -> SubRepo : Update(subscription)
+    activate SubRepo
+    SubRepo --> BillingService : Done
+    deactivate SubRepo
+    
+    BillingService -> TxRepo : AddAsync(creditTx)\n[with amount = -secondsToBill, type = Consume]
+    activate TxRepo
+    TxRepo --> BillingService : Done
+    deactivate TxRepo
+    
+    BillingService -> SubRepo : SaveChangesAsync()
+    activate SubRepo
+    SubRepo -> Db : UPDATE subscriptions ...\nINSERT INTO credit_transactions ...
+    activate Db
+    Db --> SubRepo : Saved
+    deactivate Db
+    SubRepo --> BillingService : Saved
+    deactivate SubRepo
+    
+    BillingService --> BillingGrpc : Success: WorkspaceCreditsDto
+    deactivate BillingService
+    BillingGrpc --> BillingClient : gRPC Response (Success)
+    BillingClient --> Worker : Success (WorkspaceCreditsDto)
+  end
+  
+  deactivate Worker
+end
+
+@enduml

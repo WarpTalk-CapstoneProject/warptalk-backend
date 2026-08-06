@@ -65,6 +65,18 @@ public partial class Subscription
 
     public int? InvoiceTermsDaysOverride { get; set; }
 
+    /// <summary>
+    /// WT-263: contract-negotiated entitlement overrides, as a jsonb object keyed by entitlement key
+    /// (<c>{"max_languages": 5, "voice_clone": true}</c>). Layer 3 of the resolution order.
+    ///
+    /// The typed <c>*_override</c> columns above it carry COMMERCIAL terms — credits, overage cap,
+    /// invoice days. None of them is a capability, which is why the entitlement layer needed its own
+    /// storage rather than reusing one of them. Unlike the workspace layer, a contract override may
+    /// loosen as well as tighten: the contract is the agreement, so it outranks the catalog row in
+    /// both directions.
+    /// </summary>
+    public string? EntitlementOverrides { get; set; }
+
     public string? BillingContactEmail { get; set; }
 
     public int OverageCreditsThisCycle { get; set; }

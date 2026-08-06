@@ -261,7 +261,9 @@ public class MeetingRoomService : IMeetingRoomService
                             ProviderRoomName = meetingRoom.ProviderRoomName,
                             ParticipantIdentity = providerIdentity,
                             IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry
+                            MuteOnEntry = meetingRoom.MuteOnEntry,
+                            Locked = meetingRoom.IsLocked,
+                            Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
                         });
                     }
                 }
@@ -305,7 +307,9 @@ public class MeetingRoomService : IMeetingRoomService
                             ProviderRoomName = meetingRoom.ProviderRoomName,
                             ParticipantIdentity = providerIdentity,
                             IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry
+                            MuteOnEntry = meetingRoom.MuteOnEntry,
+                            Locked = meetingRoom.IsLocked,
+                            Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
                         });
                     }
 
@@ -352,7 +356,9 @@ public class MeetingRoomService : IMeetingRoomService
                 ProviderRoomName = meetingRoom.ProviderRoomName,
                 ParticipantIdentity = providerIdentity,
                 IsWaitingRoom = false,
-                MuteOnEntry = meetingRoom.MuteOnEntry
+                MuteOnEntry = meetingRoom.MuteOnEntry,
+                Locked = meetingRoom.IsLocked,
+                Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
             });
         } // end try (BeginTransactionAsync)
         catch (Exception ex)

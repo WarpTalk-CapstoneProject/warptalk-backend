@@ -10,7 +10,7 @@ using WarpTalk.AssistantService.Application.Services;
 using WarpTalk.AssistantService.Domain.Interfaces;
 using WarpTalk.AssistantService.Infrastructure.Persistence;
 using WarpTalk.AssistantService.Infrastructure.Repositories;
-using WarpTalk.AssistantService.Infrastructure.Services;
+using WarpTalk.AssistantService.Infrastructure.Messaging;
 using WarpTalk.Shared.Extensions;
 
 Log.Logger = new LoggerConfiguration()

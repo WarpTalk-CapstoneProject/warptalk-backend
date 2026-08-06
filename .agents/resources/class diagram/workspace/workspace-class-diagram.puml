@@ -1,0 +1,324 @@
+@startuml
+title 3.2 Workspace Module Class Diagram
+
+top to bottom direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 85
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam classBackgroundColor White
+skinparam classBorderColor Black
+skinparam ArrowColor Black
+
+package "API Layer" as ApiLayer {
+  class WorkspacesController <<boundary>> {
+    +CreateWorkspace(request)
+    +UpdateWorkspaceSettings(id, request)
+    +TransferOwnership(id, request)
+  }
+
+  class WorkspaceMembersController <<boundary>> {
+    +UpdateMemberRole(id, memberId, request)
+    +RemoveMember(id, memberId)
+    +LeaveWorkspace(id)
+  }
+
+  class WorkspaceInvitationsController <<boundary>> {
+    +InviteMember(workspaceId, request)
+    +AcceptInvitation(request)
+    +ApproveJoinRequest(workspaceId, invitationId)
+  }
+
+  class WorkspaceDocumentsController <<boundary>> {
+    +UploadDocument(workspaceId, request)
+    +DownloadDocument(workspaceId, documentId)
+    +AddAccessPolicy(workspaceId, documentId, request)
+  }
+
+  class WorkspaceVerifiedDomainsController <<boundary>> {
+    +CreateDomain(workspaceId, request)
+    +VerifyDomain(workspaceId, domainId)
+  }
+
+  class AdminWorkspacesController <<boundary>> {
+    +SuspendWorkspace(id)
+    +GetWorkspaceDirectory(query)
+  }
+
+  class AdminAuditLogController <<boundary>> {
+    +GetAuditLogs(query)
+  }
+
+  class WorkspaceGrpcService <<boundary>> {
+    +HasActiveMembership(request)
+    +GetActiveWorkspacesCount(request)
+  }
+
+  class WorkspaceInvitationGrpcService <<boundary>> {
+    +VerifyInvitationToken(request)
+    +AcceptInvitation(request)
+  }
+
+  WorkspacesController -[hidden]right- WorkspaceMembersController
+  WorkspaceMembersController -[hidden]right- WorkspaceInvitationsController
+  WorkspaceInvitationsController -[hidden]right- WorkspaceDocumentsController
+  WorkspaceDocumentsController -[hidden]right- WorkspaceVerifiedDomainsController
+  WorkspaceVerifiedDomainsController -[hidden]right- AdminWorkspacesController
+  AdminWorkspacesController -[hidden]right- AdminAuditLogController
+  AdminAuditLogController -[hidden]right- WorkspaceGrpcService
+  WorkspaceGrpcService -[hidden]right- WorkspaceInvitationGrpcService
+}
+
+package "Application Layer" as ApplicationLayer {
+  class WorkspaceService <<control>> {
+    +CreateWorkspaceAsync(request, ownerId)
+    +TransferOwnershipAsync(request)
+    +UpdateWorkspaceSettingsAsync(id, settings, userId)
+  }
+
+  class WorkspaceMemberService <<control>> {
+    +RemoveMemberAsync(request)
+    +LeaveWorkspaceAsync(workspaceId, userId)
+    +ActivateMember(userId)
+  }
+
+  class WorkspaceInvitationService <<control>> {
+    +InviteMemberAsync(workspaceId, request, inviterId)
+    +AcceptInvitationAsync(request, userId, email)
+    +ApproveJoinRequestAsync(workspaceId, invitationId, adminId)
+  }
+
+  class WorkspaceDocumentService <<control>> {
+    +UploadDocumentAsync(workspaceId, file, actorId)
+    +AddAccessPolicyAsync(workspaceId, documentId, request, actorId)
+    +GetDocumentDownloadStreamAsync(workspaceId, documentId, actorId)
+  }
+
+  class VerifiedDomainService <<control>> {
+    +CreateDomainAsync(workspaceId, request, actorId)
+    +VerifyDomainAsync(workspaceId, domainId, actorId)
+  }
+
+  class AdminWorkspaceService <<control>> {
+    +SuspendWorkspaceAsync(id)
+    +GetWorkspaceDirectoryAsync(query)
+  }
+
+  class AdminAuditLogService <<control>> {
+    +GetAuditLogsAsync(query)
+    +RecordAdminActionAsync(action)
+  }
+
+  WorkspaceService -[hidden]right- WorkspaceMemberService
+  WorkspaceMemberService -[hidden]right- WorkspaceInvitationService
+  WorkspaceInvitationService -[hidden]right- WorkspaceDocumentService
+  WorkspaceDocumentService -[hidden]right- VerifiedDomainService
+  VerifiedDomainService -[hidden]right- AdminWorkspaceService
+  AdminWorkspaceService -[hidden]right- AdminAuditLogService
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class UnitOfWork <<control>> {
+    +SaveChangesAsync()
+    +Repository<T>()
+  }
+
+  class WorkspaceRepository <<control>> {
+    +GetByIdAsync(id)
+    +GetBySlugAsync(slug)
+    +Update(workspace)
+  }
+
+  class WorkspaceMemberRepository <<control>> {
+    +GetActiveMembershipAsync(userId)
+    +GetByWorkspaceAndUserAsync(workspaceId, userId)
+  }
+
+  class WorkspaceInvitationRepository <<control>> {
+    +GetPendingByEmailAsync(workspaceId, email)
+    +GetByTokenHashAsync(tokenHash)
+  }
+
+  class WorkspaceDocumentRepository <<control>> {
+    +GetByIdAsync(id)
+    +AddAsync(document)
+    +Update(document)
+  }
+
+  class WorkspaceDocumentStorage <<control>> {
+    +SaveDocumentContentAsync(document, stream)
+    +GetDecryptedStreamAsync(document)
+    +DeleteDocumentContentAsync(document)
+  }
+
+  class DocumentSecurityScanner <<control>> {
+    +ScanAsync(document)
+  }
+
+  class RedisEmbeddingIndexPublisher <<control>> {
+    +PublishEmbeddingIndexRequestAsync(documentId, workspaceId, text)
+  }
+
+  class AuthIdentityGrpcClient <<control>> {
+    +GetUserByIdAsync(userId)
+    +GetRoleNameByIdAsync(roleId)
+  }
+
+  class TranslationRoomGrpcClient <<control>> {
+    +GetRoomAsync(roomId)
+  }
+
+  UnitOfWork -[hidden]right- WorkspaceRepository
+  WorkspaceRepository -[hidden]right- WorkspaceMemberRepository
+  WorkspaceMemberRepository -[hidden]right- WorkspaceInvitationRepository
+  WorkspaceInvitationRepository -[hidden]right- WorkspaceDocumentRepository
+  WorkspaceDocumentRepository -[hidden]right- WorkspaceDocumentStorage
+  WorkspaceDocumentStorage -[hidden]right- DocumentSecurityScanner
+  DocumentSecurityScanner -[hidden]right- RedisEmbeddingIndexPublisher
+  RedisEmbeddingIndexPublisher -[hidden]right- AuthIdentityGrpcClient
+  AuthIdentityGrpcClient -[hidden]right- TranslationRoomGrpcClient
+
+  UnitOfWork o-- WorkspaceRepository
+  UnitOfWork o-- WorkspaceMemberRepository
+  UnitOfWork o-- WorkspaceInvitationRepository
+  UnitOfWork o-- WorkspaceDocumentRepository
+}
+
+package "Domain Layer" as DomainLayer {
+  class Workspace <<entity>> {
+    -Id: Guid
+    -Name: String
+    -Slug: String
+    -Status: WorkspaceStatus
+    -Settings: Json
+  }
+
+  class WorkspaceMember <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -UserId: Guid
+    -RoleId: Guid
+    -MembershipType: MembershipType
+  }
+
+  class WorkspaceInvitation <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -Email: String
+    -RoleId: Guid
+    -TokenHash: String
+    -Status: InvitationStatus
+  }
+
+  class WorkspaceDocument <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -UploadedBy: Guid
+    -StorageKey: String
+    -IngestionStatus: WorkspaceDocumentIngestionStatus
+  }
+
+  class WorkspaceDocumentAccessPolicy <<entity>> {
+    -Id: Guid
+    -DocumentId: Guid
+    -SubjectType: String
+    -Permission: String
+    -Effect: String
+  }
+
+  class WorkspaceVerifiedDomain <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -Domain: String
+    -Status: VerifiedDomainStatus
+  }
+
+  class WorkspaceAdminAction <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -Action: String
+    -ActorUserId: Guid
+  }
+
+  Workspace "1" *-- "0..*" WorkspaceMember : contains members
+  Workspace "1" *-- "0..*" WorkspaceInvitation : issues invitations
+  Workspace "1" *-- "0..*" WorkspaceDocument : owns documents
+  WorkspaceDocument "1" *-- "0..*" WorkspaceDocumentAccessPolicy : controls access
+  Workspace "1" *-- "0..*" WorkspaceVerifiedDomain : verifies domains
+  Workspace "1" *-- "0..*" WorkspaceAdminAction : records audit
+}
+
+package "External Systems" as ExternalSystems {
+  class AuthServiceGrpcServer <<external system>> {
+    +ResolveUser(userId)
+  }
+
+  class TranslationRoomServiceGrpcServer <<external system>> {
+    +GetRoom(roomId)
+  }
+
+  class ObjectStorageProvider <<external system>> {
+    +StoreEncryptedObject(key)
+  }
+
+  class RedisEventStream <<external system>> {
+    +PublishWorkspaceEvent(event)
+  }
+
+  class QdrantVectorDb <<external system>> {
+    +IndexEmbedding(documentChunk)
+  }
+
+  AuthServiceGrpcServer -[hidden]right- TranslationRoomServiceGrpcServer
+  TranslationRoomServiceGrpcServer -[hidden]right- ObjectStorageProvider
+  ObjectStorageProvider -[hidden]right- RedisEventStream
+  RedisEventStream -[hidden]right- QdrantVectorDb
+}
+
+WorkspacesController --> WorkspaceService
+WorkspaceMembersController --> WorkspaceMemberService
+WorkspaceInvitationsController --> WorkspaceInvitationService
+WorkspaceDocumentsController --> WorkspaceDocumentService
+WorkspaceVerifiedDomainsController --> VerifiedDomainService
+AdminWorkspacesController --> AdminWorkspaceService
+AdminAuditLogController --> AdminAuditLogService
+WorkspaceGrpcService --> WorkspaceMemberService
+WorkspaceInvitationGrpcService --> WorkspaceInvitationService
+
+WorkspaceDocumentService ..> WorkspaceDocumentStorage
+WorkspaceDocumentService ..> RedisEmbeddingIndexPublisher
+WorkspaceService ..> AuthIdentityGrpcClient
+WorkspaceInvitationService ..> AuthIdentityGrpcClient
+WorkspaceDocumentService ..> TranslationRoomGrpcClient
+
+WorkspaceRepository ..> Workspace : persists
+WorkspaceMemberRepository ..> WorkspaceMember : persists
+WorkspaceInvitationRepository ..> WorkspaceInvitation : persists
+WorkspaceDocumentRepository ..> WorkspaceDocument : persists
+WorkspaceDocumentRepository ..> WorkspaceDocumentAccessPolicy : persists
+
+WorkspaceDocumentStorage ..> ObjectStorageProvider : stores files
+RedisEmbeddingIndexPublisher ..> RedisEventStream : publishes events
+RedisEmbeddingIndexPublisher ..> QdrantVectorDb : feeds embeddings
+AuthIdentityGrpcClient ..> AuthServiceGrpcServer : resolves identity
+TranslationRoomGrpcClient ..> TranslationRoomServiceGrpcServer : reads rooms
+
+ApiLayer -[hidden]down- ApplicationLayer
+ApplicationLayer -[hidden]down- InfrastructureLayer
+InfrastructureLayer -[hidden]down- DomainLayer
+InfrastructureLayer -[hidden]right- ExternalSystems
+
+ApiLayer -down..> ApplicationLayer : delegates requests
+ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
+InfrastructureLayer -down..> DomainLayer : persists entities
+InfrastructureLayer -right..> ExternalSystems : integrates APIs
+@enduml

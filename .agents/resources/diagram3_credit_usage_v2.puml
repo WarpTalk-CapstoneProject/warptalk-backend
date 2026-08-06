@@ -1,0 +1,196 @@
+@startuml Diagram3_Credit_Usage_V2
+skinparam classAttributeIconSize 0
+skinparam classFontStyle bold
+skinparam classHeaderBackgroundColor #DDEEFF
+skinparam interfaceBackgroundColor #DDF0DD
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam ArrowColor #444444
+skinparam ClassBorderColor #888888
+skinparam defaultFontName Arial
+skinparam defaultFontSize 10
+' skinparam linetype ortho
+
+skinparam class {
+    BackgroundColor<<boundary>> #FFFDE7
+    BackgroundColor<<control>> #E8F5E9
+    BackgroundColor<<consumer>> #E3F2FD
+    BackgroundColor<<worker>> #E8F5E9
+    BackgroundColor<<external>> #ECEFF1
+    BackgroundColor<<database>> #FFF3E0
+}
+
+title WarpTalk - Credit & Resource Usage Management Class Diagram
+
+package "API Layer" {
+  class CreditsController <<control>> {
+    - _creditService : ICreditService
+    --
+    +GetWorkspaceCredits(workspaceId: Guid) : Task<IActionResult>
+    +ConsumeCredits(workspaceId: Guid, request: CreditRequest) : Task<IActionResult>
+    +TopUpCredits(workspaceId: Guid, request: CreditRequest) : Task<IActionResult>
+  }
+
+  class UsagesController <<control>> {
+    - _usageService : IUsageService
+    --
+    +RecordUsage(workspaceId: Guid, request: UsageRequest) : Task<IActionResult>
+    +GetBillingReport(workspaceId: Guid) : Task<IActionResult>
+  }
+}
+
+package "Application Layer" {
+  interface ICreditService <<control>> {
+    +GetWorkspaceCreditsAsync(workspaceId: Guid) : Task<Result<CreditDto>>
+    +ConsumeCreditsAsync(workspaceId: Guid, req: CreditRequest) : Task<Result<CreditDto>>
+    +TopUpCreditsAsync(workspaceId: Guid, req: CreditRequest) : Task<Result<CreditDto>>
+  }
+
+  class CreditService <<control>> {
+    - _unitOfWork : IUnitOfWork
+    - _redisStore : IRedisBillingStore
+    --
+    +GetWorkspaceCreditsAsync(workspaceId: Guid) : Task<Result<CreditDto>>
+    +ConsumeCreditsAsync(workspaceId: Guid, req: CreditRequest) : Task<Result<CreditDto>>
+    +TopUpCreditsAsync(workspaceId: Guid, req: CreditRequest) : Task<Result<CreditDto>>
+  }
+
+  interface IUsageService <<control>> {
+    +CalculateCreditCost(audioSeconds: int, tokenCount: int, plan: Plan) : int
+    +RecordUsageAsync(request: UsageRequest) : Task<Result<CreditDto>>
+    +GetBillingReportAsync(workspaceId: Guid) : Task<Result<UsageDto>>
+  }
+
+  class UsageService <<control>> {
+    - _unitOfWork : IUnitOfWork
+    --
+    +CalculateCreditCost(audioSeconds: int, tokenCount: int, plan: Plan) : int
+    +RecordUsageAsync(request: UsageRequest) : Task<Result<CreditDto>>
+    +GetBillingReportAsync(workspaceId: Guid) : Task<Result<UsageDto>>
+  }
+}
+
+package "DTO Layer" {
+  class CreditDto <<entity>> {
+    +WorkspaceId : Guid
+    +Balance : int
+    +TransactionId : Guid?
+    +Amount : int?
+    +BalanceAfter : int?
+  }
+
+  class CreditRequest <<entity>> {
+    +Amount : int
+    +Reason : string?
+    +PaymentMethod : string?
+  }
+
+  class UsageDto <<entity>> {
+    +WorkspaceId : Guid
+    +TotalCreditsUsed : int
+  }
+
+  class UsageRequest <<entity>> {
+    +WorkspaceId : Guid
+    +SegmentId : Guid?
+    +AudioSeconds : int
+    +TokensUsed : int
+  }
+}
+
+package "Domain Layer" {
+  enum CreditTransactionType {
+    Purchase
+    Consumption
+    Refund
+    Adjustment
+    Expiry
+    TopUp
+  }
+
+  class CreditTransaction <<entity>> {
+    +Id : Guid
+    +SubscriptionId : Guid
+    +UserId : Guid
+    +Amount : int
+    +Type : string
+    +Description : string?
+    +ReferenceId : Guid?
+    +ReferenceType : string?
+    +BalanceAfter : int
+    +CreatedAt : DateTime
+  }
+
+  class UsageRecord <<entity>> {
+    +Id : Guid
+    +SubscriptionId : Guid
+    +UserId : Guid
+    +WorkspaceId : Guid
+    +SegmentId : Guid?
+    +TranslationRoomId : Guid?
+    +UsageType : string
+    +Unit : string
+    +Quantity : decimal
+    +CreditsConsumed : int
+    +DurationSeconds : int?
+    +Details : string?
+    +RecordedAt : DateTime
+  }
+}
+
+package "Infrastructure Layer" {
+  interface "IGenericRepository<T>" as IGenericRepository <<boundary>> {
+    +GetByIdAsync(id: Guid) : Task<T?>
+    +FirstOrDefaultAsync(predicate: Expression<Func<T, bool>>) : Task<T?>
+    +AddAsync(entity: T) : Task
+    +Update(entity: T) : void
+    +Remove(entity: T) : void
+  }
+
+  interface IUnitOfWork <<boundary>> {
+    +CreditTransactionRepository : IGenericRepository<CreditTransaction>
+    +UsageRecordRepository : IGenericRepository<UsageRecord>
+    --
+    +Repository<T>() : IGenericRepository<T>
+    +SaveChangesAsync() : Task<int>
+  }
+
+  interface IRedisBillingStore <<boundary>> {
+    +SetSessionActiveAsync(sessionId: Guid, ttl: TimeSpan) : Task
+    +IsSessionActiveAsync(sessionId: Guid) : Task<bool>
+  }
+}
+
+' ─── Relationships ───────────────────────────────────────────
+
+' Controllers to Services
+CreditsController "1" -down-> "1" ICreditService : <<use>>
+UsagesController "1" -down-> "1" IUsageService : <<use>>
+
+' Controllers to DTOs
+CreditsController ..> CreditRequest : <<use>>
+CreditsController ..> CreditDto : <<use>>
+UsagesController ..> UsageRequest : <<use>>
+UsagesController ..> UsageDto : <<use>>
+
+CreditService .up.|> ICreditService
+UsageService .up.|> IUsageService
+
+CreditService "1" -down-> "1" IUnitOfWork : <<use>>
+CreditService "1" -down-> "1" IRedisBillingStore : <<use>>
+
+UsageService "1" -down-> "1" IUnitOfWork : <<use>>
+
+' Infrastructure Layer
+IUnitOfWork "1" -down-> "1" IGenericRepository : "CreditTransactionRepository"
+IUnitOfWork "1" -down-> "1" IGenericRepository : "UsageRecordRepository"
+
+IGenericRepository ..> CreditTransaction : <<use>>
+IGenericRepository ..> UsageRecord : <<use>>
+
+' Entity to Enum Relationships
+CreditTransaction --> CreditTransactionType : "uses"
+
+UsageRecord "0..*" -up-> "1" CreditTransaction : "deducts credits via"
+
+@enduml

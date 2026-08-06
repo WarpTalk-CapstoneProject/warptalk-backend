@@ -1,0 +1,128 @@
+@startuml
+title WarpTalk - Host Schedules a Meeting
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+hide footbox
+
+actor "Host" as Host
+boundary "CreateRoomPage" as Web
+control "API Gateway" as Gateway
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoomsController" as Controller <<boundary>>
+participant ":TranslationRoomService" as Service <<service>>
+participant ":TranslationRoomRepository" as RoomRepo <<control>>
+participant ":TranslationRoomParticipantRepository" as PartRepo <<control>>
+participant ":TranslationRoomInvitationRepository" as InviteRepo <<control>>
+database "Translation Room DB" as Db
+participant ":EmailService" as EmailService <<service>>
+end box
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceGrpcService" as WorkspaceGrpc <<boundary>>
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as AuthGrpc <<boundary>>
+end box
+
+participant "Mailbox Server" as Mailbox <<external system>>
+
+== SCHEDULE / CREATE MEETING ==
+
+Host -> Web : Open "Create Room" form & enter title, schedule, languages, optional invites
+activate Web
+
+Web -> Gateway : POST /api/v1/translation-rooms\n[CreateTranslationRoomRequest + JWT]
+activate Gateway
+Gateway -> Controller : CreateTranslationRoom(request)
+activate Controller
+Controller -> Service : CreateTranslationRoomAsync(request, hostId)
+activate Service
+
+opt languages missing in request
+  Service -> AuthGrpc : GetDefaultsAsync(hostId)
+  activate AuthGrpc
+  AuthGrpc --> Service : DefaultSpeakLanguage & DefaultListenLanguage
+  deactivate AuthGrpc
+end
+
+Service -> WorkspaceGrpc : ValidateMeetingCreation(workspaceId, hostId)
+activate WorkspaceGrpc
+WorkspaceGrpc --> Service : Permission Allowed (CanCreateMeetings = true)
+deactivate WorkspaceGrpc
+
+Service -> RoomRepo : AddAsync(room)
+activate RoomRepo
+RoomRepo -> Db : INSERT translation room
+activate Db
+Db --> RoomRepo : Saved
+deactivate Db
+RoomRepo --> Service : Staged
+deactivate RoomRepo
+
+Service -> PartRepo : AddAsync(host participant)
+activate PartRepo
+PartRepo -> Db : INSERT host participant
+activate Db
+Db --> PartRepo : Saved
+deactivate Db
+PartRepo --> Service : Staged
+deactivate PartRepo
+
+Service -> Db : SaveChangesAsync()
+activate Db
+Db --> Service : Committed
+deactivate Db
+
+alt scheduledAt provided
+  Service -> Service : Set status = "SCHEDULED"
+else instant room
+  Service -> Service : Set status = "WAITING"
+end
+
+opt invited emails present
+  loop for each invited email
+    Service -> InviteRepo : AddAsync(invitation)
+    activate InviteRepo
+    InviteRepo -> Db : INSERT invitation\nstatus = "PENDING"
+    activate Db
+    Db --> InviteRepo : Saved
+    deactivate Db
+    InviteRepo --> Service : Staged
+    deactivate InviteRepo
+
+    Service -> EmailService : SendMeetingInvitationAsync(...)\nmeeting link, title, time
+    activate EmailService
+    EmailService -> Mailbox : Send invitation email
+    activate Mailbox
+    Mailbox --> EmailService : Accepted
+    deactivate Mailbox
+    EmailService --> Service : Sent
+    deactivate EmailService
+  end
+end
+
+Service --> Controller : Result.Success(RoomDto)
+deactivate Service
+Controller --> Gateway : 201 Created (RoomDto)
+deactivate Controller
+Gateway --> Web : 201 Created
+deactivate Gateway
+Web --> Host : Display room code & shareable link
+deactivate Web
+
+@enduml

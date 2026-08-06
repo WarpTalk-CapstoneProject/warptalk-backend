@@ -18,7 +18,11 @@ public record TranscriptSegmentDto(
     string OriginalLanguage,
     string? TranslatedText,
     string? TargetLanguage,
-    float Confidence,
+    // WT-277: nullable. `null` means the STT worker reported no confidence for this segment (no
+    // logprobs on the event, or an unparsable field) — it used to be sent as 1.0f, so the client
+    // could not tell "unknown" from "maximally confident". Clients must render null as unknown,
+    // not as a score.
+    float? Confidence,
     int StartTimeMs,
     int EndTimeMs);
 
@@ -94,6 +98,16 @@ public record AiSuggestionDto(
     string Language,
     DateTime CreatedAt);
 
+/// <summary>
+/// A translated caption chunk pushed as "TranslationTextReceived".
+/// </summary>
+/// <remarks>
+/// WT-278: this record deliberately carries NO confidence field. warptalk-ai's translator emits no
+/// quality score of its own; the only number available is the source STT segment's avg_logprob,
+/// which measures the audio, not the translation. Adding it here would put a number that does not
+/// describe the translation onto a translation payload — exactly the defect WT-278 removed. If a
+/// real translation quality signal is ever built, give it its own explicitly named field.
+/// </remarks>
 public record TranslationTextDto(
     string SegmentId,
     Guid SpeakerId,

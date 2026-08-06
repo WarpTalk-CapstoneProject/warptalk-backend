@@ -1,0 +1,164 @@
+@startuml
+title WarpTalk - Transfer Workspace Ownership
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 300
+
+actor "Workspace Owner" as Owner
+boundary "AdvancedSettingsPage" as AdvancedWeb
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceMembersController" as WorkspaceMembersController <<boundary>>
+participant ":WorkspaceMemberService" as WorkspaceMemberService <<service>>
+participant ":WorkspaceRepository" as WorkspaceRepository <<control>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
+participant ":UserService\nGrpcClient" as UserServiceGrpcClient <<boundary>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as UserServiceGrpc <<boundary>>
+participant ":ProfileService" as ProfileService <<service>>
+participant ":UserRepository" as UserRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+== PHASE 1: INITIATE & COMPLETE OWNERSHIP TRANSFER ==
+
+Owner -> AdvancedWeb : Click "Transfer Ownership" button
+activate AdvancedWeb
+AdvancedWeb --> Owner : Display "Transfer Workspace Ownership" Dialog
+deactivate AdvancedWeb
+
+Owner -> AdvancedWeb : Select new Owner and click "Confirm Transfer"
+activate AdvancedWeb
+
+AdvancedWeb -> Gateway : POST /api/v1/workspaces/{workspaceId}/members/transfer-ownership\n[with NewOwnerId]
+activate Gateway
+
+Gateway -> WorkspaceMembersController : Forward Transfer Request (workspaceId, NewOwnerId)
+activate WorkspaceMembersController
+
+WorkspaceMembersController -> WorkspaceMemberService : TransferOwnershipAsync(workspaceId, newOwnerId, ownerId)
+activate WorkspaceMemberService
+
+WorkspaceMemberService -> WorkspaceRepository : GetByIdAsync(workspaceId)
+activate WorkspaceRepository
+WorkspaceRepository -> WorkspaceDb : SELECT * FROM Workspaces WHERE Id = workspaceId
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceRepository : Workspace details
+deactivate WorkspaceDb
+WorkspaceRepository --> WorkspaceMemberService : Workspace details
+deactivate WorkspaceRepository
+
+WorkspaceMemberService -> WorkspaceMemberRepository : FirstOrDefaultAsync(NewOwnerMember)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = newOwnerId AND RemovedAt IS NULL
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceMemberRepository : New owner member details
+deactivate WorkspaceDb
+WorkspaceMemberRepository --> WorkspaceMemberService : New owner member details
+deactivate WorkspaceMemberRepository
+
+WorkspaceMemberService -> WorkspaceMemberRepository : FirstOrDefaultAsync(CurrentOwnerMember)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = ownerId AND RemovedAt IS NULL
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceMemberRepository : Current owner member details
+deactivate WorkspaceDb
+WorkspaceMemberRepository --> WorkspaceMemberService : Current owner member details
+deactivate WorkspaceMemberRepository
+
+WorkspaceMemberService -> UserServiceGrpcClient : GetRoleIdByNameAsync("Owner")
+activate UserServiceGrpcClient
+UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleIdByNameAsync("Owner")
+activate UserServiceGrpc
+UserServiceGrpc -> ProfileService : GetRoleIdByNameAsync("Owner")
+activate ProfileService
+ProfileService -> UserRepository : GetRoleIdByNameAsync("Owner")
+activate UserRepository
+UserRepository -> AuthDb : SELECT Id FROM Roles WHERE Name = 'Owner'
+activate AuthDb
+AuthDb --> UserRepository : Owner RoleId
+deactivate AuthDb
+UserRepository --> ProfileService : Owner RoleId
+deactivate UserRepository
+ProfileService --> UserServiceGrpc : Owner RoleId
+deactivate ProfileService
+UserServiceGrpc --> UserServiceGrpcClient : Owner RoleId
+deactivate UserServiceGrpc
+UserServiceGrpcClient --> WorkspaceMemberService : Owner RoleId
+deactivate UserServiceGrpcClient
+
+WorkspaceMemberService -> UserServiceGrpcClient : GetRoleIdByNameAsync("Admin")
+activate UserServiceGrpcClient
+UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleIdByNameAsync("Admin")
+activate UserServiceGrpc
+UserServiceGrpc -> ProfileService : GetRoleIdByNameAsync("Admin")
+activate ProfileService
+ProfileService -> UserRepository : GetRoleIdByNameAsync("Admin")
+activate UserRepository
+UserRepository -> AuthDb : SELECT Id FROM Roles WHERE Name = 'Admin'
+activate AuthDb
+AuthDb --> UserRepository : Admin RoleId
+deactivate AuthDb
+UserRepository --> ProfileService : Admin RoleId
+deactivate UserRepository
+ProfileService --> UserServiceGrpc : Admin RoleId
+deactivate ProfileService
+UserServiceGrpc --> UserServiceGrpcClient : Admin RoleId
+deactivate UserServiceGrpc
+UserServiceGrpcClient --> WorkspaceMemberService : Admin RoleId
+deactivate UserServiceGrpcClient
+
+WorkspaceMemberService -> WorkspaceRepository : Update(workspace)
+activate WorkspaceRepository
+WorkspaceRepository --> WorkspaceMemberService : Done
+deactivate WorkspaceRepository
+
+WorkspaceMemberService -> WorkspaceMemberRepository : Update(currentOwnerMember)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository --> WorkspaceMemberService : Done
+deactivate WorkspaceMemberRepository
+
+WorkspaceMemberService -> WorkspaceMemberRepository : Update(newOwnerMember)
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository --> WorkspaceMemberService : Done
+deactivate WorkspaceMemberRepository
+
+WorkspaceMemberService -> WorkspaceMemberRepository : SaveChangesAsync()
+activate WorkspaceMemberRepository
+WorkspaceMemberRepository -> WorkspaceDb : Save Changes (Update workspace OwnerId & member RoleIds)
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceMemberRepository : Saved Successfully
+deactivate WorkspaceDb
+WorkspaceMemberRepository --> WorkspaceMemberService : Saved
+deactivate WorkspaceMemberRepository
+
+WorkspaceMemberService --> WorkspaceMembersController : Success
+deactivate WorkspaceMemberService
+
+WorkspaceMembersController --> Gateway : 204 NoContent
+deactivate WorkspaceMembersController
+
+Gateway --> AdvancedWeb : 204 NoContent
+deactivate Gateway
+
+AdvancedWeb --> Owner : Display toast "Workspace ownership transferred successfully."
+deactivate AdvancedWeb
+AdvancedWeb --> Owner : Redirect to Workspace selection page (/workspace)
+
+@enduml

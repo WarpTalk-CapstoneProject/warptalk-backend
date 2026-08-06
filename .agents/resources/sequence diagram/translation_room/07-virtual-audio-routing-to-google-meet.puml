@@ -1,0 +1,91 @@
+﻿@startuml
+title WarpTalk - Virtual Audio Routing to Google Meet
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 130
+
+actor "Participant\n(Speaker / Listener)" as Member
+participant "Physical Microphone" as PhysMic <<external system>>
+
+box "WarpTalk Desktop Client App" #AliceBlue
+boundary "PopupWidget" as PopupWidget
+participant ":WebAudioEngine" as WebAudio <<boundary>>
+participant ":VirtualAudioDriver\nAdapter" as VirtualDriver <<boundary>>
+end box
+
+box "AI Workers Pipeline" #LightGreen
+participant ":AIWorkersPipeline\n(STT -> Translate -> TTS)" as AIPipeline <<service>>
+end box
+
+participant ":OSVirtualMicrophone" as VirtMic <<boundary>>
+participant ":OSVirtualSpeaker" as VirtSpeaker <<boundary>>
+participant "Physical Headphones" as PhysHeadphones <<external system>>
+boundary "GoogleMeetPage" as GoogleMeetPage <<external system>>
+
+== PHASE 1: OUTGOING TRANSLATION (MEMBER SPEAKS -> GOOGLE MEET HEARS TRANSLATION) ==
+
+Member -> PhysMic : Speak in native language into physical microphone
+activate PhysMic
+PhysMic -> PopupWidget : Capture raw PCM audio stream
+activate PopupWidget
+deactivate PhysMic
+
+PopupWidget -> AIPipeline : Stream audio chunks (See Flow 05 for STT, Translation & TTS Workers)
+activate AIPipeline
+AIPipeline --> PopupWidget : Return synthesized cloned voice audio
+deactivate AIPipeline
+
+PopupWidget -> WebAudio : Queue synthesized cloned audio buffer
+activate WebAudio
+WebAudio -> VirtualDriver : Redirect output buffer to Virtual Driver
+activate VirtualDriver
+VirtualDriver -> VirtMic : Write raw PCM stream into Virtual Microphone
+activate VirtMic
+VirtMic --> VirtualDriver : Acknowledged
+deactivate VirtMic
+VirtualDriver --> WebAudio : Stream redirected
+deactivate VirtualDriver
+WebAudio --> PopupWidget : Done
+deactivate WebAudio
+deactivate PopupWidget
+
+GoogleMeetPage -> VirtMic : Fetch input stream from OS Virtual Mic
+activate VirtMic
+VirtMic --> GoogleMeetPage : Transmit cloned translated voice to Google Meet attendees
+deactivate VirtMic
+
+== PHASE 2: INCOMING TRANSLATION (GOOGLE MEET SPEAKS -> MEMBER LISTENS TRANSLATION) ==
+
+GoogleMeetPage -> VirtSpeaker : Output external participant speech stream
+activate VirtSpeaker
+
+VirtSpeaker -> PopupWidget : Capture meeting audio stream from Virtual Speaker
+activate PopupWidget
+deactivate VirtSpeaker
+
+PopupWidget -> AIPipeline : Stream audio chunks (See Flow 05 for STT, Translation & TTS Workers)
+activate AIPipeline
+AIPipeline --> PopupWidget : Return translated voice audio & subtitles
+deactivate AIPipeline
+
+PopupWidget -> PhysHeadphones : Play translated audio directly into Physical Headphones
+activate PhysHeadphones
+PhysHeadphones --> PopupWidget : Audio playing
+deactivate PhysHeadphones
+
+PopupWidget --> Member : Display real-time subtitles & play translated audio in headphones
+deactivate PopupWidget
+
+@enduml

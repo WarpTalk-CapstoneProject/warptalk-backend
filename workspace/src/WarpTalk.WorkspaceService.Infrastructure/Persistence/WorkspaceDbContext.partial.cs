@@ -8,8 +8,28 @@ public partial class WorkspaceDbContext
 {
     public virtual DbSet<WorkspaceAdminAction> WorkspaceAdminActions { get; set; } = null!;
 
+    /// <summary>WT-263: the replicated entitlement snapshot (migration 050).</summary>
+    public virtual DbSet<WorkspaceEntitlementSnapshot> WorkspaceEntitlementSnapshots { get; set; } = null!;
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<WorkspaceEntitlementSnapshot>(entity =>
+        {
+            entity.HasKey(e => e.WorkspaceId).HasName("workspace_entitlement_snapshots_pkey");
+            entity.ToTable("workspace_entitlement_snapshots", "workspace");
+
+            entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
+            entity.Property(e => e.EntitlementsJson)
+                .HasColumnType("jsonb")
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnName("entitlements");
+            entity.Property(e => e.PlanSlug).HasMaxLength(80).HasColumnName("plan_slug");
+            entity.Property(e => e.HasActiveSubscription).HasColumnName("has_active_subscription");
+            entity.Property(e => e.ResolvedAt).HasColumnName("resolved_at");
+            entity.Property(e => e.LastEventId).HasColumnName("last_event_id");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("now()").HasColumnName("updated_at");
+        });
+
         // The `settings` column is stored as jsonb in PostgreSQL.
         // EF Core maps it to string (scaffolded); serialization/deserialization is
         // handled manually in WorkspaceRepository.GetSettingsAsync / UpdateSettingsAsync.

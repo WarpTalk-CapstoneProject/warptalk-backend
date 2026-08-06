@@ -1,0 +1,59 @@
+@startuml
+title WarpTalk - Edit Transcript Segment
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+actor "Host" as Host
+boundary "MeetingArtifactsPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptsController" as Controller <<boundary>>
+participant ":TranscriptService" as Service <<service>>
+participant ":TranscriptRepository" as Repository <<control>>
+database "Transcript Database" as Db
+end box
+
+Host -> Web : Click on text, edit & save
+activate Web
+Web -> Gateway : PUT /api/v1/transcripts/{meetingId}/segments/{segmentId}\n[with JWT, newText]
+activate Gateway
+Gateway -> Controller : Forward Edit Request
+activate Controller
+Controller -> Service : UpdateSegmentTextAsync(segmentId, newText)
+activate Service
+Service -> Repository : GetSegmentById(segmentId)
+activate Repository
+Repository -> Db : SELECT * WHERE Id = segmentId
+activate Db
+Db --> Repository : Segment Entity
+deactivate Db
+Repository --> Service : Segment Entity
+deactivate Repository
+
+Service -> Service : Update text & mark 'manually_edited = true'
+Service -> Repository : Update(segment)
+activate Repository
+Repository -> Db : UPDATE TranscriptSegments SET Text = ...
+activate Db
+Db --> Repository : Saved
+deactivate Db
+Repository --> Service : Done
+deactivate Repository
+
+Service --> Controller : UpdatedDto
+deactivate Service
+Controller --> Gateway : 200 OK
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Host : Display edited text segment with badge
+deactivate Web
+@enduml

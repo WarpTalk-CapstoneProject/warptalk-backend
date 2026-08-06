@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
@@ -60,12 +61,17 @@ public class IdleRoomMonitoringWorker : BackgroundService
             var participants = await participantRepo.FindAsync(p => p.TranslationRoomId == room.Id, "", ct);
             var participantList = participants.ToList();
 
-            // JOINED is the persisted state used after the REST join succeeds; CONNECTED
-            // is only set when the realtime presence path happens to update the row.
-            // A participant actively publishing in LiveKit can therefore remain JOINED.
-            // Treat both states as present so the idle worker cannot end a live room.
+            // WT-263: "present in the room" now has ONE definition, shared with the WT-262
+            // capacity check — TranslationRoomParticipantStatuses.SeatHolding (CONNECTED only).
+            //
+            // This used to read `Status == "CONNECTED" || Status == "JOINED"`, justified by a
+            // comment claiming JOINED was the state persisted after a REST join. That was not true:
+            // every write path stores CONNECTED (TranslationRoomParticipantMapper and
+            // TranslationRoomService both do), and no code in the repository has ever written
+            // "JOINED". The disjunct was dead, and two different answers to "who is in this room"
+            // is precisely how a capacity cap and an idle reaper drift apart.
             var hasConnectedParticipants = participantList.Any(
-                p => p.Status == "CONNECTED" || p.Status == "JOINED");
+                p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status));
 
             if (!hasConnectedParticipants)
             {

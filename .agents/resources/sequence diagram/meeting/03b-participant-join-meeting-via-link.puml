@@ -1,0 +1,167 @@
+@startuml
+title WarpTalk - Participant Join Meeting via Link
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Participant\n(Workspace Member)" as Part
+boundary "JoinMeetingPage" as Web
+boundary "MeetingRoomPage" as MeetingWeb
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+boundary ":TranslationRoomHub" as Hub <<boundary>>
+end box
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRooms\nController" as Controller <<boundary>>
+participant ":TranslationRoom\nService" as Service <<service>>
+participant ":TranslationRoom\nRepository" as RoomRepo <<control>>
+participant ":TranslationRoomParticipant\nRepository" as PartRepo <<control>>
+database "Translation Room\nDB" as Db
+participant ":Redis\nService" as Redis <<control>>
+end box
+
+box "Meeting Service" #PaleGreen
+participant ":Meetings\nController" as MeetController <<boundary>>
+participant ":MeetingRoom\nService" as MeetService <<service>>
+participant ":LiveKitToken\nService" as TokenService <<service>>
+end box
+
+participant "LiveKit Server" as LiveKit <<external system>>
+
+== PREFLIGHT CODE VALIDATION ==
+
+Part -> Web : Access meeting link `/join?code=CODE`
+activate Web
+Web -> Gateway : GET /api/v1/translation-rooms/preflight/{roomCode}
+activate Gateway
+Gateway -> Controller : GetPreflightDetails(code)
+activate Controller
+Controller -> Service : GetPreflightDetailsAsync(code)
+activate Service
+
+Service -> RoomRepo : GetByCodeAsync(code)
+activate RoomRepo
+RoomRepo -> Db : SELECT * FROM TranslationRooms WHERE Code = code
+activate Db
+Db --> RoomRepo : Room record
+deactivate Db
+RoomRepo --> Service : Room record
+deactivate RoomRepo
+
+Service --> Controller : Room preflight details (WorkspaceId, etc.)
+deactivate Service
+Controller --> Gateway : 200 OK (Preflight response)
+deactivate Controller
+Gateway --> Web : 200 OK (Preflight response)
+deactivate Gateway
+
+Web --> Part : Render Device Preview & Join Form
+deactivate Web
+    
+    == DEVICES SETUP & STATUS UPDATE ==
+    
+    Part -> Web : Select camera/mic & languages, then click "Join"
+    activate Web
+    Web -> Gateway : POST /api/v1/translation-rooms/join\n    [with Code, DisplayName, SpeakLanguage, ListenLanguage]
+    activate Gateway
+    Gateway -> Controller : JoinRoomByCode(request)
+    activate Controller
+    Controller -> Service : JoinRoomByCodeAsync(request)
+    activate Service
+    
+    Service -> PartRepo : AddOrUpdateParticipantAsync(participant)
+    activate PartRepo
+    PartRepo -> Db : INSERT INTO TranslationRoomParticipants\n(Status = 'connected')
+    activate Db
+    Db --> PartRepo : Saved
+    deactivate Db
+    PartRepo --> Service : Done
+    deactivate PartRepo
+    
+    Service --> Controller : Success (Room ID, Participant ID)
+    deactivate Service
+    Controller --> Gateway : 200 OK (Join success details)
+    deactivate Controller
+    Gateway --> Web : 200 OK
+    deactivate Gateway
+    
+    Web -> MeetingWeb : Redirect to `/{workspaceSlug}/room/{roomId}`
+    activate MeetingWeb
+    deactivate Web
+    
+    == MEETING SERVICE MEDIA CONNECTION ==
+    
+    MeetingWeb -> Gateway : POST /api/v1/meetings/rooms/{roomId}/join\n[with JWT, DisplayName]
+    activate Gateway
+    Gateway -> MeetController : JoinMeeting(roomId, request)
+    activate MeetController
+    MeetController -> MeetService : JoinMeetingAsync(roomId, userId, displayName)
+    activate MeetService
+    
+    MeetService -> TokenService : GenerateToken(roomName, identity, displayName)
+    activate TokenService
+    TokenService --> MeetService : Result.Success(Token)
+    deactivate TokenService
+    
+    MeetService --> MeetController : Success (LiveKit Token)
+    deactivate MeetService
+    MeetController --> Gateway : 200 OK (LiveKit Token)
+    deactivate MeetController
+    Gateway --> MeetingWeb : 200 OK (LiveKit Token)
+    deactivate Gateway
+    
+    MeetingWeb -> LiveKit : Connect WebRTC using LiveKit token
+    activate LiveKit
+    alt LiveKit connection failed
+        LiveKit --> MeetingWeb : Connection Failed
+        deactivate LiveKit
+        MeetingWeb --> Part : Display reconnect option
+        deactivate MeetingWeb
+    else LiveKit connection established
+        LiveKit --> MeetingWeb : Connection Established
+        
+        == SIGNALR HUB CONNECTION & BROADCAST ==
+        
+        MeetingWeb -> Gateway : Connect to `/hubs/translation-room` [with JWT]
+        activate Gateway
+        Gateway -> Hub : OnConnectedAsync()
+        activate Hub
+        Hub --> Gateway : Connected
+        deactivate Hub
+        Gateway --> MeetingWeb : Connected
+        deactivate Gateway
+        
+        MeetingWeb -> Gateway : SignalR: JoinTranslationRoom(roomId, name, speak, listen)
+        activate Gateway
+        Gateway -> Hub : JoinTranslationRoom(roomId, name, speak, listen)
+        activate Hub
+        Hub -> Hub : Add client to SignalR group `translationRoom:{roomId}`
+        Hub -> Hub : Register with AI registry
+        Hub -> Redis : HashSetAsync($"translationRoom:{roomId}:languages", userId, listenLanguage)
+        activate Redis
+        Redis --> Hub : Saved target language
+        deactivate Redis
+        Hub -> Gateway : Broadcast 'ParticipantJoined' to group
+        Gateway -> Gateway : Push message to other group members
+        Gateway --> Hub : Broadcast Sent
+        deactivate Gateway
+        Hub --> Gateway : Success
+        deactivate Hub
+        Gateway --> MeetingWeb : Acknowledged
+        
+        MeetingWeb --> Part : Render Live Meeting (Audio/Video active, WarpTalk active)
+    end
+@enduml

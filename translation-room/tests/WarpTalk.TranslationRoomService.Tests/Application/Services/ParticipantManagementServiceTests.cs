@@ -48,6 +48,10 @@ public class ParticipantManagementServiceTests
         );
     }
 
+    // The requester here is a stranger: not the host, holds no participant row, and — via the
+    // constructor's default IsOwnerOrAdminAsync => false — has no workspace privilege either. WT-313
+    // widened this endpoint to workspace Owner/Admin, so this case is what stops that widening from
+    // becoming "any authenticated user", the failure mode WT-65 already shipped once.
     [Fact]
     public async Task GetParticipantsAsync_ShouldReturnForbidden_WhenRequesterIsNotInRoom()
     {
@@ -55,7 +59,7 @@ public class ParticipantManagementServiceTests
         var hostId = Guid.NewGuid();
         var requesterId = Guid.NewGuid();
 
-        var room = new TranslationRoom { Id = roomId, HostId = hostId };
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, WorkspaceId = Guid.NewGuid() };
 
         _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(room);
@@ -67,6 +71,137 @@ public class ParticipantManagementServiceTests
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+    }
+
+    // WT-313 — viewing the participant list is "room host OR any participant OR workspace
+    // Owner/Admin". WT-188 widened admission but left this read behind, so a workspace Owner was
+    // 403'd by the waiting page's participant poll and never reached the Approve button.
+
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldReturnParticipants_WhenRequesterIsWorkspaceOwnerOrAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var workspaceOwnerId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = workspaceId };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        // Not the host, and holds no participant row of their own — the WT-313 reporter's exact state.
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, workspaceOwnerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        _participantRepositoryMock.Setup(repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant>
+            {
+                new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Waiting Guest", Status = "WAITING", Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow }
+            });
+        _workspaceMemberDirectoryMock
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, workspaceOwnerId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), workspaceOwnerId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(1);
+    }
+
+    // Admin and Owner are one decision to this service: IWorkspaceMemberDirectory collapses both into
+    // IsOwnerOrAdminAsync. This asserts the Admin half of that contract is actually reachable here,
+    // so a future narrowing of the directory to Owner-only cannot pass unnoticed.
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldReturnParticipants_WhenRequesterIsWorkspaceAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var workspaceAdminId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = workspaceId };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, workspaceAdminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        _participantRepositoryMock.Setup(repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant>
+            {
+                new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Waiting Guest", Status = "WAITING", Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(), JoinedAt = DateTime.UtcNow }
+            });
+        _workspaceMemberDirectoryMock
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, workspaceAdminId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), workspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(1);
+    }
+
+    // The case that keeps the widening honest. A plain workspace Member belongs to the workspace but
+    // has no business reading the roster of a room they were never invited to and never joined —
+    // "is a member of the workspace" must not be mistaken for "may view this room".
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldReturnForbidden_WhenRequesterIsPlainWorkspaceMember()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var plainMemberId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = workspaceId };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, plainMemberId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        // A workspace Member is not an Owner/Admin: the directory says false for them.
+        _workspaceMemberDirectoryMock
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, plainMemberId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), plainMemberId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        // The roster must not even be read for a caller who cannot see it.
+        _participantRepositoryMock.Verify(
+            repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // WT-65's clause, re-pinned: participation is enough regardless of Status, and it must not depend
+    // on WorkspaceService — the waiting page polls this every 3 seconds for everyone in the lobby.
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldReturnParticipants_WhenRequesterIsWaitingParticipant()
+    {
+        var roomId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+        var requesterRow = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            UserId = requesterId,
+            DisplayName = "Waiting Guest",
+            Status = "WAITING",
+            Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
+            JoinedAt = DateTime.UtcNow
+        };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, requesterId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(requesterRow);
+        _participantRepositoryMock.Setup(repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant> { requesterRow });
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), requesterId);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(1);
+        _workspaceMemberDirectoryMock.Verify(
+            d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     [Fact]

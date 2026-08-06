@@ -1,0 +1,115 @@
+@startuml
+title WarpTalk - Post-Meeting Transcript Translation
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 200
+
+actor "Participant" as User
+boundary "MeetingArtifactsPage" as Web
+control "API Gateway" as Gateway
+
+box "Transcript Service" #Lavender
+participant ":TranscriptTranslationsController" as Controller <<boundary>>
+participant ":TranscriptTranslationService" as Service <<service>>
+participant ":TranscriptRepository" as TranscriptRepo <<control>>
+participant ":TranscriptSegmentRepository" as SegmentRepo <<control>>
+database "Transcript Database" as TranscriptDb
+end box
+
+box "Translation Worker Service (translation_worker)" #LightYellow
+participant ":TranslationWorker" as TransWorker <<boundary>>
+participant ":OpenAITranslator" as Translator <<service>>
+end box
+
+participant "Qdrant Vector DB" as QdrantDb <<external system>>
+
+== REQUEST POST-MEETING TRANSCRIPT TRANSLATION ==
+
+User -> Web : Select target language (e.g., "Japanese") & click "Translate Transcript"
+activate Web
+
+Web -> Gateway : POST /api/v1/transcripttranslations\n[TranslateTranscriptRequest(meetingId, targetLanguage) + JWT]
+activate Gateway
+
+Gateway -> Controller : TranslateTranscript(request)
+activate Controller
+
+Controller -> Service : TranslateTranscriptAsync(request, userId)
+activate Service
+
+Service -> TranscriptRepo : GetByMeetingIdAsync(meetingId)
+activate TranscriptRepo
+TranscriptRepo -> TranscriptDb : SELECT * FROM Transcripts WHERE MeetingId = meetingId
+activate TranscriptDb
+TranscriptDb --> TranscriptRepo : Transcript entity
+deactivate TranscriptDb
+TranscriptRepo --> Service : Transcript entity
+deactivate TranscriptRepo
+
+Service -> SegmentRepo : GetSegmentsByTranscriptIdAsync(transcriptId)
+activate SegmentRepo
+SegmentRepo -> TranscriptDb : SELECT * FROM TranscriptSegments WHERE TranscriptId = transcriptId
+activate TranscriptDb
+TranscriptDb --> SegmentRepo : List of original TranscriptSegments
+deactivate TranscriptDb
+SegmentRepo --> Service : List of TranscriptSegments
+deactivate SegmentRepo
+
+loop for each untranslated segment batch
+  Service -> TransWorker : TranslateBatch(segments, sourceLang, targetLang)
+  activate TransWorker
+  
+  TransWorker -> QdrantDb : Search glossary terms for workspace RAG
+  activate QdrantDb
+  QdrantDb --> TransWorker : Glossary term matches
+  deactivate QdrantDb
+  
+  TransWorker -> Translator : translate(text, sourceLang, targetLang, glossaryTerms)
+  activate Translator
+  Translator --> TransWorker : Translated segment text
+  deactivate Translator
+  
+  TransWorker --> Service : Batch translation results
+  deactivate TransWorker
+end
+
+Service -> SegmentRepo : AddTranslationsAsync(translatedSegments)
+activate SegmentRepo
+SegmentRepo -> TranscriptDb : INSERT INTO TranscriptTranslations (...)
+activate TranscriptDb
+TranscriptDb --> SegmentRepo : Saved
+deactivate TranscriptDb
+SegmentRepo --> Service : Done
+deactivate SegmentRepo
+
+Service -> SegmentRepo : SaveChangesAsync()
+activate SegmentRepo
+SegmentRepo -> TranscriptDb : COMMIT
+activate TranscriptDb
+TranscriptDb --> SegmentRepo : Committed
+deactivate TranscriptDb
+SegmentRepo --> Service : Saved
+deactivate SegmentRepo
+
+Service --> Controller : Result.Success(TranslatedTranscriptDto)
+deactivate Service
+Controller --> Gateway : 200 OK (TranslatedTranscriptDto)
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> User : Display translated transcript alongside original audio/text
+deactivate Web
+
+@enduml

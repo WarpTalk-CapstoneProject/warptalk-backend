@@ -1,0 +1,171 @@
+@startuml
+title WarpTalk - Update Workspace Member Role
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Workspace Owner/Admin" as Admin
+boundary "WorkspaceMembersPage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceMembersController" as WorkspaceMembersController <<boundary>>
+participant ":WorkspaceMemberService" as WorkspaceMemberService <<service>>
+participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
+participant ":UserService\nGrpcClient" as UserServiceGrpcClient <<boundary>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+box "Auth Service" #LightPink
+participant ":UserServiceGrpc" as UserServiceGrpc <<boundary>>
+participant ":ProfileService" as ProfileService <<service>>
+participant ":RoleRepository" as RoleRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+Admin -> Web : Change member role (Select Target Member & Role)
+activate Web
+Admin -> Web : Click "Save Changes"
+
+Web -> Gateway : PUT /api/v1/workspaces/{workspaceId}/members/{userId}/role\n[with Admin Token]
+activate Gateway
+
+Gateway -> Gateway : Authenticate Token & extract Admin ID
+alt Token invalid
+    Gateway --> Web : 401 Unauthorized
+    deactivate Gateway
+else Token valid
+    Gateway -> WorkspaceMembersController : Forward Role Change Request (workspaceId, userId, TargetRole)
+    activate WorkspaceMembersController
+    
+    WorkspaceMembersController -> WorkspaceMemberService : UpdateMemberRoleAsync(workspaceId, userId, targetRoleName, adminId)
+    activate WorkspaceMemberService
+
+
+    WorkspaceMemberService -> WorkspaceMemberRepository : GetMemberAsync(workspaceId, adminId)
+    activate WorkspaceMemberRepository
+    WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = adminId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceMemberRepository : Executor member info
+    deactivate WorkspaceDb
+    WorkspaceMemberRepository --> WorkspaceMemberService : Executor member info
+    deactivate WorkspaceMemberRepository
+
+    WorkspaceMemberService -> WorkspaceMemberRepository : GetMemberAsync(workspaceId, userId)
+    activate WorkspaceMemberRepository
+    WorkspaceMemberRepository -> WorkspaceDb : SELECT * FROM WorkspaceMembers WHERE WorkspaceId = workspaceId AND UserId = userId
+    activate WorkspaceDb
+    WorkspaceDb --> WorkspaceMemberRepository : Target member info
+    deactivate WorkspaceDb
+    WorkspaceMemberRepository --> WorkspaceMemberService : Target member info
+    deactivate WorkspaceMemberRepository
+
+    WorkspaceMemberService -> UserServiceGrpcClient : GetRoleById(executorRoleId)
+    activate UserServiceGrpcClient
+    UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleById(executorRoleId)
+    activate UserServiceGrpc
+    UserServiceGrpc -> ProfileService : GetRoleByIdAsync(executorRoleId)
+    activate ProfileService
+    ProfileService -> RoleRepository : GetByIdAsync(executorRoleId)
+    activate RoleRepository
+    RoleRepository -> AuthDb : SELECT * FROM Roles WHERE Id = executorRoleId
+    activate AuthDb
+    AuthDb --> RoleRepository : Executor Role
+    deactivate AuthDb
+    RoleRepository --> ProfileService : Role details
+    deactivate RoleRepository
+    ProfileService --> UserServiceGrpc : Role details
+    deactivate ProfileService
+    UserServiceGrpc --> UserServiceGrpcClient : Role details
+    deactivate UserServiceGrpc
+    UserServiceGrpcClient --> WorkspaceMemberService : Executor role name (e.g. Owner/Admin)
+    deactivate UserServiceGrpcClient
+
+    WorkspaceMemberService -> UserServiceGrpcClient : GetRoleById(targetRoleId)
+    activate UserServiceGrpcClient
+    UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleById(targetRoleId)
+    activate UserServiceGrpc
+    UserServiceGrpc -> ProfileService : GetRoleByIdAsync(targetRoleId)
+    activate ProfileService
+    ProfileService -> RoleRepository : GetByIdAsync(targetRoleId)
+    activate RoleRepository
+    RoleRepository -> AuthDb : SELECT * FROM Roles WHERE Id = targetRoleId
+    activate AuthDb
+    AuthDb --> RoleRepository : Target Role
+    deactivate AuthDb
+    RoleRepository --> ProfileService : Role details
+    deactivate RoleRepository
+    ProfileService --> UserServiceGrpc : Role details
+    deactivate ProfileService
+    UserServiceGrpc --> UserServiceGrpcClient : Role details
+    deactivate UserServiceGrpc
+    UserServiceGrpcClient --> WorkspaceMemberService : Target role name
+    deactivate UserServiceGrpcClient
+
+    WorkspaceMemberService -> WorkspaceMemberService : Validate transition rules & constraints\n- Executor must be Owner/Admin\n- Admins cannot demote other Admins or promote others to Admin\n- Cannot demote/change role of the last Owner\n- Target role must be Admin or Member
+    
+    alt Validation fails (Rules/Constraints violated)
+        WorkspaceMemberService --> WorkspaceMembersController : Failure (ValidationFailed)
+        deactivate WorkspaceMemberService
+        WorkspaceMembersController --> Gateway : 400 BadRequest / 403 Forbidden
+        deactivate WorkspaceMembersController
+        Gateway --> Web : Error Response
+    else Validation passes
+        WorkspaceMemberService -> UserServiceGrpcClient : GetRoleByName(targetRoleName)
+        activate UserServiceGrpcClient
+        UserServiceGrpcClient -> UserServiceGrpc : gRPC: GetRoleByName(targetRoleName)
+        activate UserServiceGrpc
+        UserServiceGrpc -> ProfileService : GetRoleByNameAsync(targetRoleName)
+        activate ProfileService
+        ProfileService -> RoleRepository : FirstOrDefaultAsync(r => r.Name == targetRoleName)
+        activate RoleRepository
+        RoleRepository -> AuthDb : SELECT * FROM Roles WHERE Name = targetRoleName
+        activate AuthDb
+        AuthDb --> RoleRepository : Role record
+        deactivate AuthDb
+        RoleRepository --> ProfileService : Role details
+        deactivate RoleRepository
+        ProfileService --> UserServiceGrpc : Role details
+        deactivate ProfileService
+        UserServiceGrpc --> UserServiceGrpcClient : Role ID
+        deactivate UserServiceGrpc
+        UserServiceGrpcClient --> WorkspaceMemberService : Role ID
+        deactivate UserServiceGrpcClient
+
+        WorkspaceMemberService -> WorkspaceMemberRepository : UpdateMemberRole(userId, newRoleId)
+        activate WorkspaceMemberRepository
+        WorkspaceMemberRepository --> WorkspaceMemberService : Done
+        deactivate WorkspaceMemberRepository
+        
+        WorkspaceMemberService -> WorkspaceMemberRepository : SaveChangesAsync()
+        activate WorkspaceMemberRepository
+        WorkspaceMemberRepository -> WorkspaceDb : Save changes in Database
+        activate WorkspaceDb
+        WorkspaceDb --> WorkspaceMemberRepository : Saved Successfully
+        deactivate WorkspaceDb
+        WorkspaceMemberRepository --> WorkspaceMemberService : Save Successful
+        deactivate WorkspaceMemberRepository
+
+        WorkspaceMemberService --> WorkspaceMembersController : Success (Result.Ok)
+        
+        WorkspaceMembersController --> Gateway : 204 NoContent
+        
+        Gateway --> Web : 204 NoContent
+        
+        Web --> Admin : Show success notification & updated member list
+        deactivate Web
+    end
+end
+@enduml

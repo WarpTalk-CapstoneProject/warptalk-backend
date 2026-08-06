@@ -1,0 +1,166 @@
+@startuml
+title WarpTalk - AI Assistant Chat & RAG Retrieval
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 130
+
+actor "Workspace Member" as Actor
+boundary "WarpBotChatUI" as Web
+control "API Gateway" as Gateway
+queue "Redis Event Bus" as Redis
+database "Vector Database" as VectorDb
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceChatController" as Controller <<boundary>>
+participant ":WorkspaceChatService" as Service <<service>>
+participant ":WorkspaceDocumentRepository" as DocRepo <<control>>
+database "Workspace DB" as Db
+end box
+
+box "AI Assistant Service (ai_assistant_worker)" #LightSalmon
+participant ":AiAssistantWorker" as AiWorker <<boundary>>
+participant ":TranscriptServiceClient" as TranscriptClient <<boundary>>
+participant ":MeetingAssistant" as Assistant <<service>>
+end box
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptServiceGrpc" as TranscriptGrpc <<boundary>>
+participant ":TranscriptService" as TranscriptService <<service>>
+database "Transcript DB" as TranscriptDb
+end box
+
+participant "OpenAI API" as OpenAI <<external system>>
+
+== PHASE 1:\nMEMBER SELECTS CONTEXT & SENDS PROMPT ==
+
+Actor -> Web : Type "@" to trigger autocomplete dropdown
+activate Web
+Web -> Gateway : GET /api/v1/workspaces/{workspaceId}/mentions?query=...
+activate Gateway
+Gateway -> Controller : GetMentionSuggestions(workspaceId, query, userId)
+activate Controller
+Controller -> Service : GetAccessibleSuggestionsAsync(workspaceId, userId, query)
+activate Service
+Service -> Db : Filter accessible meetings (active/past) & documents
+activate Db
+Db --> Service : Filtered suggestions list
+deactivate Db
+Service --> Controller : Suggestions list
+deactivate Service
+Controller --> Gateway : 200 OK (List of accessible contexts)
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+Web --> Actor : Display filtered autocomplete dropdown (Only authorized meetings & docs)
+deactivate Web
+
+Actor -> Web : Select a context (e.g. @Meeting-X) & type question
+activate Web
+Web -> Gateway : POST /api/v1/workspaces/{workspaceId}/chat\n[Payload: Question, selectedContext: {type, id}]
+activate Gateway
+Gateway -> Controller : SendQuery(workspaceId, request)
+activate Controller
+Controller -> Service : SendQueryAsync(workspaceId, userId, request)
+activate Service
+
+Service -> Redis : PublishEventAsync("workspace.chat.assistant_requested", payload)
+activate Redis
+Redis --> Service : Acknowledged
+deactivate Redis
+
+Service --> Controller : Success (Request Accepted)
+deactivate Service
+Controller --> Gateway : 202 Accepted
+deactivate Controller
+Gateway --> Web : 202 Accepted
+deactivate Gateway
+deactivate Web
+
+== PHASE 2:\nCONTEXT RETRIEVAL & LLM GENERATION ==
+
+AiWorker -> Redis : Subscribe & consume "workspace.chat.assistant_requested"
+activate Redis
+activate AiWorker
+Redis --> AiWorker : Event payload (workspaceId, query, selectedContext, requestId)
+deactivate Redis
+
+alt selectedContext.type == 'document'
+    AiWorker -> VectorDb : Vector similarity search on document chunks (using documentId)
+    activate VectorDb
+    VectorDb --> AiWorker : Relevant document text chunks
+    deactivate VectorDb
+
+else selectedContext.type == 'meeting'
+    AiWorker -> Redis : Check if meeting:{roomId}:context_snapshot exists
+    activate Redis
+    
+    alt Meeting is IN_PROGRESS (snapshot exists in Redis cache)
+        Redis --> AiWorker : Retrieve active transcript snapshot
+        deactivate Redis
+        
+    else Meeting is COMPLETED (snapshot expired/not in Redis)
+        Redis --> AiWorker : Key not found
+        
+        AiWorker -> TranscriptClient : GetTranscriptSegments(meetingId)
+        activate TranscriptClient
+        TranscriptClient -> TranscriptGrpc : gRPC: GetTranscriptSegments(meetingId)
+        activate TranscriptGrpc
+        TranscriptGrpc -> TranscriptService : GetSegmentsAsync(meetingId)
+        activate TranscriptService
+        TranscriptService -> TranscriptDb : SELECT * FROM transcript_segments ...
+        activate TranscriptDb
+        TranscriptDb --> TranscriptService : Segments list
+        deactivate TranscriptDb
+        TranscriptService --> TranscriptGrpc : Segments list
+        deactivate TranscriptService
+        TranscriptGrpc --> TranscriptClient : gRPC response
+        deactivate TranscriptGrpc
+        TranscriptClient --> AiWorker : Historical transcript segments text
+        deactivate TranscriptClient
+    end
+
+else No Context Selected (Default Workspace Context)
+    AiWorker -> VectorDb : Vector similarity search on workspace document chunks (RAG)
+    activate VectorDb
+    VectorDb --> AiWorker : Relevant workspace context text chunks
+    deactivate VectorDb
+end
+
+AiWorker -> Assistant : generate_response(query, context)
+activate Assistant
+Assistant -> OpenAI : POST /v1/chat/completions (Generate Answer)
+activate OpenAI
+OpenAI --> Assistant : Answer text
+deactivate OpenAI
+Assistant --> AiWorker : Answer text
+deactivate Assistant
+
+AiWorker -> Redis : PublishEventAsync("workspace.chat.response_ready", payload)
+activate Redis
+Redis --> AiWorker : Acknowledged
+deactivate Redis
+deactivate AiWorker
+
+== PHASE 3:\nBOT RESPONSE BROADCAST ==
+
+Redis -> Gateway : Push "workspace.chat.response_ready" event\n(requestId, answerText)
+activate Gateway
+Gateway -> Web : SignalR: ReceiveWorkspaceChatResult(requestId, answerText)
+activate Web
+Web -> Actor : Render WarpBot's response bubble
+
+deactivate Web
+deactivate Gateway
+@enduml

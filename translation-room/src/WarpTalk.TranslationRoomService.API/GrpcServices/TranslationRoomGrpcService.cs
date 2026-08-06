@@ -3,24 +3,20 @@ using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
-using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.GrpcServices;
 
 public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.TranslationRoomServiceBase
 {
     private readonly ITranslationRoomService _translationRoomService;
-    private readonly ITranslationRoomRepository _translationRoomRepository;
-    private readonly ITranslationRoomParticipantRepository _participantRepository;
+    private readonly ITranslationRoomDirectoryService _directoryService;
 
     public TranslationRoomGrpcService(
         ITranslationRoomService translationRoomService,
-        ITranslationRoomRepository translationRoomRepository,
-        ITranslationRoomParticipantRepository participantRepository)
+        ITranslationRoomDirectoryService directoryService)
     {
         _translationRoomService = translationRoomService;
-        _translationRoomRepository = translationRoomRepository;
-        _participantRepository = participantRepository;
+        _directoryService = directoryService;
     }
 
     public override async Task<GetTranslationRoomResponse> GetTranslationRoomById(GetTranslationRoomRequest request, ServerCallContext context)
@@ -52,19 +48,27 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         if (!Guid.TryParse(request.RoomId, out var parsedRoomId))
             throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
 
-        var participants = await _participantRepository.FindAsync(p => p.TranslationRoomId == parsedRoomId, "", context.CancellationToken);
+        var result = await _directoryService.GetParticipantsAsync(parsedRoomId, context.CancellationToken);
+        if (!result.IsSuccess)
+            throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
 
         var response = new GetParticipantsByRoomIdResponse();
 
-        foreach (var p in participants)
+        // WT-263: the roster's IsActive is the same question the WT-262 capacity cap asks, so it
+        // answers from the shared seat definition instead of its own status literal. Safe as a method
+        // call because the directory service has already materialised the rows — this loop is
+        // LINQ-to-Objects, not an EF predicate (the cap uses SeatHolding.Contains, which is what
+        // translates to SQL). The null-coalescing the boundary used to apply now lives in the
+        // projection that builds the summary, so these strings arrive non-null.
+        foreach (var p in result.Value!)
         {
             response.Participants.Add(new Shared.Protos.Participant
             {
                 Id = p.UserId?.ToString() ?? string.Empty,
-                DisplayName = p.DisplayName ?? string.Empty,
-                Role = p.Role ?? string.Empty,
-                Language = p.SpeakLanguage ?? string.Empty,
-                IsActive = p.Status == "CONNECTED"
+                DisplayName = p.DisplayName,
+                Role = p.Role,
+                Language = p.SpeakLanguage,
+                IsActive = TranslationRoomParticipantStatuses.HoldsSeat(p.Status)
             });
         }
 
@@ -78,9 +82,10 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         if (!Guid.TryParse(request.WorkspaceId, out var workspaceId))
             throw GrpcErrors.InvalidId("Workspace");
 
-        var count = await _translationRoomRepository.CountActiveByWorkspaceAsync(
+        var result = await _directoryService.CountActiveRoomsByWorkspaceAsync(
             workspaceId,
             context.CancellationToken);
-        return new GetActiveRoomCountByWorkspaceResponse { Count = count };
+
+        return new GetActiveRoomCountByWorkspaceResponse { Count = result.Value };
     }
 }

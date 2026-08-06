@@ -28,6 +28,7 @@ public class VoiceProfileServiceTests
 
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IVoiceProfileRepository _profiles = Substitute.For<IVoiceProfileRepository>();
+    private readonly IVoiceSampleRepository _samples = Substitute.For<IVoiceSampleRepository>();
     private readonly IVoiceSampleStorage _storage = Substitute.For<IVoiceSampleStorage>();
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
     private readonly VoiceProfileService _service;
@@ -35,6 +36,7 @@ public class VoiceProfileServiceTests
     public VoiceProfileServiceTests()
     {
         _unitOfWork.VoiceProfileRepository.Returns(_profiles);
+        _unitOfWork.VoiceSampleRepository.Returns(_samples);
         _profiles.GetByUserIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(Array.Empty<VoiceProfile>());
         StubCatalog(
@@ -224,5 +226,104 @@ public class VoiceProfileServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Contains("sample", result.Error!, StringComparison.OrdinalIgnoreCase);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    private VoiceProfile ProfileWithSamples(Guid userId, params string[] fileUrls)
+    {
+        var profile = new VoiceProfile
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            DisplayName = "My voice",
+            Language = Vi,
+            Status = "active",
+            IsActive = true,
+            VoiceSamples = fileUrls.Select(url => new VoiceSample
+            {
+                Id = Guid.NewGuid(),
+                SampleType = "reference",
+                FileUrl = url,
+                Language = Vi,
+                ContainsRawAudio = true,
+            }).ToList(),
+        };
+        foreach (var sample in profile.VoiceSamples)
+        {
+            sample.VoiceProfileId = profile.Id;
+        }
+
+        _profiles.GetByIdForUserAsync(profile.Id, userId, Arg.Any<CancellationToken>()).Returns(profile);
+        return profile;
+    }
+
+    [Fact]
+    public async Task DeleteProfileAsync_ShouldSoftDeleteTheSampleRows_NotJustTheProfile()
+    {
+        // WT-276: the storage objects were deleted while every voice_samples row kept
+        // deleted_at = NULL, so the row still claimed a sample the bucket no longer had.
+        var userId = Guid.NewGuid();
+        var profile = ProfileWithSamples(userId, "sample-a.wav", "sample-b.wav");
+
+        var result = await _service.DeleteProfileAsync(userId, profile.Id);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(profile.DeletedAt);
+        Assert.All(profile.VoiceSamples, sample =>
+        {
+            Assert.NotNull(sample.DeletedAt);
+            Assert.Equal(userId, sample.DeletedBy);
+        });
+
+        // One save, so the sample rows land in the same unit of work as the profile.
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _storage.Received(1).DeleteAsync("sample-a.wav", Arg.Any<CancellationToken>());
+        await _storage.Received(1).DeleteAsync("sample-b.wav", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteProfileAsync_ShouldCommitTheRows_BeforeRemovingTheObjects()
+    {
+        // Pins the ordering: an orphaned object is the failure we accept, an orphaned row
+        // is the one we do not. Deleting the objects first would reopen WT-276 whenever the
+        // save failed.
+        var userId = Guid.NewGuid();
+        var profile = ProfileWithSamples(userId, "sample-a.wav");
+
+        await _service.DeleteProfileAsync(userId, profile.Id);
+
+        Received.InOrder(() =>
+        {
+            _unitOfWork.SaveChangesAsync(Arg.Any<CancellationToken>());
+            _storage.DeleteAsync("sample-a.wav", Arg.Any<CancellationToken>());
+        });
+    }
+
+    [Fact]
+    public async Task DeleteProfileAsync_ShouldSucceedAndKeepGoing_WhenOneObjectDeleteThrows()
+    {
+        // The rows are already committed as deleted, so a retry would only return NotFound.
+        // A failed object delete leaks bytes; it must not report the profile as still there
+        // or abandon the remaining samples.
+        var userId = Guid.NewGuid();
+        var profile = ProfileWithSamples(userId, "sample-a.wav", "sample-b.wav");
+        _storage.DeleteAsync("sample-a.wav", Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("bucket unreachable")));
+
+        var result = await _service.DeleteProfileAsync(userId, profile.Id);
+
+        Assert.True(result.IsSuccess);
+        Assert.All(profile.VoiceSamples, sample => Assert.NotNull(sample.DeletedAt));
+        await _storage.Received(1).DeleteAsync("sample-b.wav", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteProfileAsync_ShouldNotSave_WhenTheProfileIsNotTheCallers()
+    {
+        var result = await _service.DeleteProfileAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+        await _storage.DidNotReceive().DeleteAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 }

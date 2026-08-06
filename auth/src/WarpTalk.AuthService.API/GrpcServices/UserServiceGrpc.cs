@@ -1,17 +1,18 @@
 using Grpc.Core;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Protos;
-using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.AuthService.Application.DTOs;
+using WarpTalk.AuthService.Application.Interfaces;
 
 namespace WarpTalk.AuthService.API.GrpcServices;
 
 public class UserServiceGrpc : UserService.UserServiceBase
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly IUserDirectoryService _userDirectory;
 
-    public UserServiceGrpc(IUnitOfWork unitOfWork)
+    public UserServiceGrpc(IUserDirectoryService userDirectory)
     {
-        _unitOfWork = unitOfWork;
+        _userDirectory = userDirectory;
     }
 
     public override async Task<GetUserResponse> GetUserById(GetUserRequest request, ServerCallContext context)
@@ -19,18 +20,11 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (!Guid.TryParse(request.Id, out var parsedId))
             throw GrpcErrors.InvalidId("User");
 
-        var user = await _unitOfWork.UserRepository.GetByIdAsync(parsedId);
-        if (user is null)
+        var result = await _userDirectory.GetUserByIdAsync(parsedId, CancellationTokenOf(context));
+        if (!result.IsSuccess)
             throw GrpcErrors.NotFound("User", request.Id);
 
-        return new GetUserResponse
-        {
-            Id = user.Id.ToString(),
-            Email = user.Email,
-            FullName = user.FullName,
-            AvatarUrl = user.AvatarUrl ?? "",
-            PreferredLanguage = user.PreferredLanguage ?? "en"
-        };
+        return ToUserResponse(result.Value!);
     }
 
     public override async Task<GetUserResponse> GetUserByEmail(GetUserByEmailRequest request, ServerCallContext context)
@@ -38,18 +32,11 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (string.IsNullOrWhiteSpace(request.Email))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Email is required."));
 
-        var user = await _unitOfWork.UserRepository.FirstOrDefaultAsync(u => u.Email == request.Email);
-        if (user is null)
+        var result = await _userDirectory.GetUserByEmailAsync(request.Email, CancellationTokenOf(context));
+        if (!result.IsSuccess)
             throw GrpcErrors.NotFound("User", request.Email);
 
-        return new GetUserResponse
-        {
-            Id = user.Id.ToString(),
-            Email = user.Email,
-            FullName = user.FullName,
-            AvatarUrl = user.AvatarUrl ?? "",
-            PreferredLanguage = user.PreferredLanguage ?? "en"
-        };
+        return ToUserResponse(result.Value!);
     }
 
     public override async Task<GetUserSettingsResponse> GetUserSettings(
@@ -59,18 +46,15 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (!Guid.TryParse(request.Id, out var parsedId))
             throw GrpcErrors.InvalidId("User");
 
-        var settings = await _unitOfWork.UserSettingRepository.GetByUserIdAsync(
-            parsedId,
-            context?.CancellationToken ?? CancellationToken.None);
-
-        if (settings is null)
+        var result = await _userDirectory.GetLanguageDefaultsAsync(parsedId, CancellationTokenOf(context));
+        if (!result.IsSuccess || result.Value is null)
             return new GetUserSettingsResponse { Found = false };
 
         return new GetUserSettingsResponse
         {
             Found = true,
-            DefaultSpeakLanguage = settings.DefaultSpeakLanguage ?? "vi-VN",
-            DefaultListenLanguage = settings.DefaultListenLanguage ?? "en-US"
+            DefaultSpeakLanguage = result.Value.DefaultSpeakLanguage,
+            DefaultListenLanguage = result.Value.DefaultListenLanguage
         };
     }
 
@@ -79,16 +63,11 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (string.IsNullOrWhiteSpace(request.Name))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Role name is required."));
 
-        var role = await _unitOfWork.RoleRepository.FirstOrDefaultAsync(r => r.Name == request.Name);
-        if (role is null)
+        var result = await _userDirectory.GetRoleByNameAsync(request.Name, CancellationTokenOf(context));
+        if (!result.IsSuccess)
             throw GrpcErrors.NotFound("Role", request.Name);
 
-        return new GetRoleResponse
-        {
-            Id = role.Id.ToString(),
-            Name = role.Name,
-            Description = role.Description ?? ""
-        };
+        return ToRoleResponse(result.Value!);
     }
 
     public override async Task<GetRoleResponse> GetRoleById(GetRoleByIdRequest request, ServerCallContext context)
@@ -96,15 +75,31 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (!Guid.TryParse(request.Id, out var parsedId))
             throw GrpcErrors.InvalidId("Role");
 
-        var role = await _unitOfWork.RoleRepository.GetByIdAsync(parsedId);
-        if (role is null)
+        var result = await _userDirectory.GetRoleByIdAsync(parsedId, CancellationTokenOf(context));
+        if (!result.IsSuccess)
             throw GrpcErrors.NotFound("Role", request.Id);
 
-        return new GetRoleResponse
-        {
-            Id = role.Id.ToString(),
-            Name = role.Name,
-            Description = role.Description ?? ""
-        };
+        return ToRoleResponse(result.Value!);
     }
+
+    // GetUserSettings already tolerated a null context because the unit test passes one.
+    // Applied uniformly so every method behaves the same way under test.
+    private static CancellationToken CancellationTokenOf(ServerCallContext context) =>
+        context?.CancellationToken ?? CancellationToken.None;
+
+    private static GetUserResponse ToUserResponse(UserIdentityDto user) => new()
+    {
+        Id = user.Id.ToString(),
+        Email = user.Email,
+        FullName = user.FullName,
+        AvatarUrl = user.AvatarUrl ?? "",
+        PreferredLanguage = user.PreferredLanguage ?? "en"
+    };
+
+    private static GetRoleResponse ToRoleResponse(RoleDto role) => new()
+    {
+        Id = role.Id.ToString(),
+        Name = role.Name,
+        Description = role.Description ?? ""
+    };
 }

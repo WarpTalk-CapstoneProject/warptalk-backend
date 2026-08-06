@@ -1,0 +1,207 @@
+@startuml
+title WarpTalk - Leave & End Meeting Flow
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Participant/Host" as Actor
+boundary "MeetingRoom\nPage" as MeetingWeb
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+boundary ":TranslationRoomHub" as SignalR <<boundary>>
+end box
+
+box "Meeting Service" #PaleGreen
+participant ":Meetings\nController" as Controller <<boundary>>
+participant ":MeetingRoom\nService" as Service <<service>>
+participant ":MeetingRoom\nRepository" as RoomRepo <<control>>
+database "Meeting\nDB" as Db
+end box
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRooms\nController" as TransRoomsController <<boundary>>
+participant ":TranslationRoom\nService" as TransRoomsService <<service>>
+participant ":TranslationRoom\nRepository" as TransRoomRepo <<control>>
+participant ":TranslationRoomParticipant\nRepository" as TransPartRepo <<control>>
+participant ":AudioRouteEvent\nProcessor" as AudioEventProc <<service>>
+participant ":AudioRouteCache\nService" as CacheService <<service>>
+database "Translation Room\nDB" as TransDb
+participant ":Redis\nService" as Redis <<control>>
+end box
+
+participant "LiveKit Server" as LiveKit <<external system>>
+
+== PHASE 2: LEAVE / END LIVE MEETING ==
+
+alt Participant Leaves (Leave Meeting)
+    Actor -> MeetingWeb : Click "Leave Meeting"
+    activate MeetingWeb
+    MeetingWeb -> Gateway : POST /api/v1/translation-rooms/{roomId}/participants/me/leave
+    activate Gateway
+    Gateway -> TransRoomsController : LeaveRoom(roomId)
+    activate TransRoomsController
+    TransRoomsController -> TransRoomsService : LeaveRoomAsync(roomId, userId)
+    activate TransRoomsService
+    TransRoomsService -> TransPartRepo : GetByRoomAndUserAsync(roomId, userId)
+    activate TransPartRepo
+    TransPartRepo -> TransDb : UPDATE TranslationRoomParticipants SET Status = 'LEFT'
+    activate TransDb
+    TransDb --> TransPartRepo : Saved
+    deactivate TransDb
+    TransPartRepo --> TransRoomsService : Done
+    deactivate TransPartRepo
+    TransRoomsService --> TransRoomsController : Success
+    deactivate TransRoomsService
+    TransRoomsController --> Gateway : 200 OK
+    deactivate TransRoomsController
+    Gateway --> MeetingWeb : 200 OK
+    deactivate Gateway
+    
+    MeetingWeb -> LiveKit : Disconnect WebRTC connection
+    activate LiveKit
+    LiveKit --> MeetingWeb : Disconnected
+    deactivate LiveKit
+    MeetingWeb --> Actor : Redirect to dashboard
+    deactivate MeetingWeb
+
+else Host Ends Meeting (End Meeting for All)
+    Actor -> MeetingWeb : Click "End Meeting for All"
+    activate MeetingWeb
+    
+    == 1. END MEETING SERVICE ROOM ==
+    MeetingWeb -> Gateway : POST /api/v1/meetings/rooms/{translationRoomId}/end
+    activate Gateway
+    Gateway -> Controller : EndMeeting(translationRoomId)
+    activate Controller
+    Controller -> Service : EndMeetingAsync(translationRoomId, hostUserId)
+    activate Service
+    
+    Service -> RoomRepo : FirstOrDefaultAsync(r => r.TranslationRoomId == roomId)
+    activate RoomRepo
+    RoomRepo -> Db : SELECT * FROM MeetingRooms WHERE TranslationRoomId = roomId
+    activate Db
+    Db --> RoomRepo : MeetingRoom Entity
+    deactivate Db
+    RoomRepo --> Service : MeetingRoom Entity
+    deactivate RoomRepo
+    
+    Service -> RoomRepo : Update status = 'FINISHED', EndedAt = UtcNow
+    activate RoomRepo
+    Service -> RoomRepo : SaveChangesAsync()
+    RoomRepo -> Db : UPDATE MeetingRooms SET Status='FINISHED', EndedAt=UtcNow...
+    activate Db
+    Db --> RoomRepo : Saved
+    deactivate Db
+    RoomRepo --> Service : Done
+    deactivate RoomRepo
+    
+    Service -> Redis : PublishEventAsync("meeting.end_room", roomName)
+    activate Redis
+    Redis --> Service : Done
+    deactivate Redis
+    
+    Service -> Redis : PublishEventAsync("meeting.billing.stop", stopBillingPayload)
+    activate Redis
+    Redis --> Service : Done
+    deactivate Redis
+    
+    Service --> Controller : Result.Success(true)
+    deactivate Service
+    Controller --> Gateway : 200 OK
+    deactivate Controller
+    Gateway --> MeetingWeb : 200 OK
+    deactivate Gateway
+    
+    == 2. END TRANSLATION ROOM SESSION & UPDATE STATUS ==
+    MeetingWeb -> Gateway : POST /api/v1/translation-rooms/{translationRoomId}/end
+    activate Gateway
+    Gateway -> TransRoomsController : EndTranslationRoom(translationRoomId)
+    activate TransRoomsController
+    TransRoomsController -> TransRoomsService : EndTranslationRoomAsync(translationRoomId, hostUserId)
+    activate TransRoomsService
+    
+    TransRoomsService -> TransRoomRepo : GetByIdAsync(translationRoomId)
+    activate TransRoomRepo
+    TransRoomRepo -> TransDb : SELECT * FROM TranslationRooms WHERE Id = translationRoomId
+    activate TransDb
+    TransDb --> TransRoomRepo : Room Entity
+    deactivate TransDb
+    TransRoomRepo --> TransRoomsService : Room Entity
+    deactivate TransRoomRepo
+    
+    TransRoomsService -> TransRoomsService : Set Status = "ENDED", EndedAt = UtcNow, Calculate Duration
+    TransRoomsService -> TransRoomRepo : Update(room)
+    activate TransRoomRepo
+    
+    TransRoomsService -> TransPartRepo : GetByRoomIdAsync(translationRoomId)
+    activate TransPartRepo
+    TransPartRepo -> TransDb : SELECT * FROM TranslationRoomParticipants WHERE RoomId = translationRoomId
+    activate TransDb
+    TransDb --> TransPartRepo : Active participants list
+    deactivate TransDb
+    TransPartRepo --> TransRoomsService : Active participants list
+    deactivate TransPartRepo
+    
+    loop For each CONNECTED or WAITING participant
+        TransRoomsService -> TransPartRepo : Update Status = 'DISCONNECTED'
+        activate TransPartRepo
+    end
+    TransRoomsService -> TransRoomRepo : SaveChangesAsync()
+    TransRoomRepo -> TransDb : UPDATE TranslationRooms, UPDATE TranslationRoomParticipants
+    activate TransDb
+    TransDb --> TransRoomRepo : Saved
+    deactivate TransDb
+    TransRoomRepo --> TransRoomsService : Done
+    deactivate TransRoomRepo
+    
+    TransRoomsService -> AudioEventProc : ProcessEventAsync(translationRoomId, null, "session_ends", "{}")
+    activate AudioEventProc
+    AudioEventProc -> AudioEventProc : Clear routes cache and clean up audio routes
+    AudioEventProc --> TransRoomsService : Done
+    deactivate AudioEventProc
+    
+    TransRoomsService -> CacheService : PublishRoutesUpdateAsync(translationRoomId) (status: 'ENDED')
+    activate CacheService
+    CacheService -> Redis : PublishAsync(eventsChannel, 'AUDIO_ROUTES_UPDATED')
+    activate Redis
+    Redis --> CacheService : Published
+    deactivate Redis
+    CacheService --> TransRoomsService : Done
+    deactivate CacheService
+    
+    TransRoomsService --> TransRoomsController : Success
+    deactivate TransRoomsService
+    TransRoomsController --> Gateway : 200 OK
+    deactivate TransRoomsController
+    Gateway --> MeetingWeb : 200 OK
+    deactivate Gateway
+    
+    == BACKGROUND ROOM TEARDOWN ==
+    
+    Redis -->> LiveKit : Consume 'meeting.end_room' event & call DeleteRoom API
+    activate LiveKit
+    LiveKit --> Redis : Room Terminated
+    deactivate LiveKit
+    
+    MeetingWeb -> Gateway : Disconnect all SignalR connections
+    activate Gateway
+    Gateway --> MeetingWeb : SignalR Disconnected
+    deactivate Gateway
+    
+    MeetingWeb --> Actor : Redirect to meeting summary / feedback page
+    deactivate MeetingWeb
+end
+deactivate TransPartRepo
+@enduml

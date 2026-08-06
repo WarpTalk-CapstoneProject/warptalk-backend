@@ -1,0 +1,103 @@
+@startuml
+title WarpTalk - Guest Registration Flow
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+
+actor "Guest User" as Actor
+boundary "RegisterPage" as Web
+control "API Gateway" as Gateway
+
+box "Auth Service" #LightPink
+participant ":AuthController" as AuthController <<boundary>>
+participant ":AuthService" as AuthService <<service>>
+participant ":UserRepository" as UserRepository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+Actor -> Web : Access Landing Page & click "Get Started"
+activate Web
+Web --> Actor : Show Registration Form
+deactivate Web
+
+Actor -> Web : Enter Email, Password, Full Name
+activate Web
+Web -> Web : Validate email format & password strength (Zod)
+
+alt client validation fails
+    Web --> Actor : Show validation error
+    deactivate Web
+else client validation passes
+    Web -> Gateway : POST /api/v1/auth/register [with Email, Password, FullName]
+    activate Gateway
+    Gateway -> AuthController : Forward Register Request
+    activate AuthController
+    
+    AuthController -> AuthService : RegisterAsync(request)
+    activate AuthService
+    
+    AuthService -> UserRepository : FirstOrDefaultAsync(u => u.Email == request.Email)
+    activate UserRepository
+    UserRepository -> AuthDb : SELECT * FROM Users WHERE Email = email
+    activate AuthDb
+    AuthDb --> UserRepository : User / null
+    deactivate AuthDb
+    UserRepository --> AuthService : User / null
+    deactivate UserRepository
+    
+    alt Email already exists
+        AuthService --> AuthController : Failure (EmailAlreadyExists)
+        deactivate AuthService
+        AuthController --> Gateway : 400 BadRequest ("Email already registered")
+        deactivate AuthController
+        Gateway --> Web : 400 BadRequest
+        deactivate Gateway
+        Web --> Actor : Display "Email already exists" error
+    else Email available
+        AuthService -> AuthService : Hash password using BCrypt with Salt
+        activate AuthService
+        
+        AuthService -> UserRepository : AddAsync(new User with IsActive=true, EmailVerified=false)
+        activate UserRepository
+        UserRepository --> AuthService : Done
+        deactivate UserRepository
+        
+        AuthService -> AuthService : Generate Email Verification Token
+        
+        AuthService -> UserRepository : SaveChangesAsync()
+        activate UserRepository
+        UserRepository -> AuthDb : Save new User & verification token
+        activate AuthDb
+        AuthDb --> UserRepository : Saved
+        deactivate AuthDb
+        UserRepository --> AuthService : Save successful
+        deactivate UserRepository
+        
+        AuthService --> AuthController : Success (AuthResponse DTO)
+        deactivate AuthService
+        
+        AuthController --> Gateway : 200 OK (AuthResponse DTO)
+        
+        Gateway --> Web : 200 OK
+        
+        Web -> Web : Redirect to Workspace Onboarding screen
+        activate Web
+        Web --> Actor : Display Workspace Onboarding options
+        deactivate Web
+    end
+end
+
+@enduml

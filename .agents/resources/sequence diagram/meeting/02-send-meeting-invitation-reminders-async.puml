@@ -1,0 +1,62 @@
+﻿@startuml
+title WarpTalk - Send Meeting Invitation Reminders (Async)
+
+autonumber
+<style>
+sequenceDiagram {
+  participant { Margin 10 }
+  box { Margin 10 }
+}
+</style>
+skinparam maxMessageSize 150
+
+participant ":CronTimer" as Timer
+
+box "Translation Room Service" #LightYellow
+participant ":TranslationRoomReminderWorker" as Worker <<boundary>>
+participant ":TranslationRoomRepository" as RoomRepo <<control>>
+participant ":TranslationRoomParticipantRepository" as PartRepo <<control>>
+database "Translation Room DB" as Db
+participant ":EmailService" as EmailService <<service>>
+end box
+
+participant "Mailbox Server" as Mailbox <<external system>>
+
+Timer -> Worker : Trigger (every 1 minute)
+activate Worker
+
+
+Worker -> RoomRepo : FindAsync(r => r.Status == 'SCHEDULED' && r.ScheduledAt <= now+15min)
+activate RoomRepo
+RoomRepo -> Db : SELECT * FROM TranslationRooms WHERE Status = 'SCHEDULED' AND ScheduledAt BETWEEN ...
+activate Db
+Db --> RoomRepo : List of upcoming rooms
+deactivate Db
+RoomRepo --> Worker : List of upcoming rooms
+deactivate RoomRepo
+
+loop For each upcoming room
+    Worker -> PartRepo : FindAsync(p => p.TranslationRoomId == room.Id)
+    activate PartRepo
+    PartRepo -> Db : SELECT * FROM TranslationRoomParticipants WHERE TranslationRoomId = ...
+    activate Db
+    Db --> PartRepo : List of participants
+    deactivate Db
+    PartRepo --> Worker : List of participants
+    deactivate PartRepo
+
+    loop For each participant
+        Worker -> EmailService : SendMeetingReminderAsync(email, displayName, meetingLink, title, time)
+        activate EmailService
+        EmailService -> Mailbox : Send meeting reminder email message
+        activate Mailbox
+        Mailbox --> EmailService : Acknowledged
+        deactivate Mailbox
+        EmailService --> Worker : Done
+        deactivate EmailService
+    end
+end
+
+Worker --> Timer : Sleep for 1 minute
+deactivate Worker
+@enduml

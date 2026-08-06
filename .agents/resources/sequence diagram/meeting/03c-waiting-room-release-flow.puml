@@ -1,0 +1,87 @@
+@startuml
+title WarpTalk - Waiting Room Release Flow
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Participant" as Actor
+boundary "WaitingRoom\nPage" as WaitingWeb
+boundary "MeetingRoom\nPage" as MeetingWeb
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+boundary ":MeetingHub" as Hub <<boundary>>
+end box
+
+box "Meeting Service" #PaleGreen
+participant ":Meetings\nController" as Controller <<boundary>>
+participant ":MeetingRoom\nService" as Service <<service>>
+participant ":MeetingRoom\nRepository" as RoomRepo <<control>>
+participant ":LiveKitToken\nService" as TokenService <<service>>
+database "Meeting\nDB" as Db
+participant ":Redis\nService" as Redis <<control>>
+end box
+
+participant "LiveKit Server" as LiveKit <<external system>>
+
+== BACKGROUND WAITING ROOM RELEASE ==
+
+
+Redis -->> Hub : Consume "meeting.room_opened" event (published when Host starts room)
+activate Hub
+Hub -> WaitingWeb : SignalR Broadcast: room_started
+activate WaitingWeb
+deactivate Hub
+
+WaitingWeb -> MeetingWeb : Redirect to MeetingRoomPage & trigger join
+activate MeetingWeb
+deactivate WaitingWeb
+
+MeetingWeb -> Gateway : POST /api/v1/meetings/rooms/{translationRoomId}/join\n[with JWT, DisplayName]
+activate Gateway
+Gateway -> Controller : JoinMeeting(translationRoomId, request)
+activate Controller
+Controller -> Service : JoinMeetingAsync(translationRoomId, userId, displayName)
+activate Service
+
+Service -> RoomRepo : FirstOrDefaultAsync(r => r.TranslationRoomId == roomId)
+activate RoomRepo
+RoomRepo -> Db : SELECT * FROM MeetingRooms WHERE TranslationRoomId = roomId
+activate Db
+Db --> RoomRepo : MeetingRoom Entity (ActiveHostId != null)
+deactivate Db
+RoomRepo --> Service : MeetingRoom Entity
+deactivate RoomRepo
+
+Service -> TokenService : GenerateToken(roomName, identity, displayName)
+activate TokenService
+TokenService --> Service : Result.Success(LiveKitToken)
+deactivate TokenService
+
+Service --> Controller : Result.Success(JoinMeetingResponse [IsWaitingRoom = false, Token = LiveKitToken])
+deactivate Service
+Controller --> Gateway : 200 OK (JoinMeetingResponse)
+deactivate Controller
+Gateway --> MeetingWeb : 200 OK (JoinMeetingResponse)
+deactivate Gateway
+
+MeetingWeb -> LiveKit : Connect WebRTC using LiveKit token
+activate LiveKit
+LiveKit --> MeetingWeb : Connection Established
+deactivate LiveKit
+
+MeetingWeb --> Actor : Render Live Meeting (Audio/Video active)
+deactivate MeetingWeb
+
+@enduml

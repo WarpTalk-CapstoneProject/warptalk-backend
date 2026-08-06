@@ -40,7 +40,9 @@ public record TranscriptTranslationDto(
     string TargetLanguage,
     string TranslatedText,
     string TranslatorModel,
-    decimal? Confidence,
+    // WT-278: the source segment's STT confidence, not a translation quality score. NULL when the
+    // source segment carried none.
+    decimal? SourceSttConfidence,
     bool IsRetranslated,
     int? LatencyMs
 );

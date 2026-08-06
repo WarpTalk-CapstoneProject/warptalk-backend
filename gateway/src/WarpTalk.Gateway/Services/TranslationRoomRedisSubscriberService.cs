@@ -55,6 +55,22 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomEnded", payload.RoomId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomEnded to room {RoomId}", payload.RoomId);
                 }
+                // WT-322: the mirror image of RoomEnded above. TranslationRoomService publishes
+                // this from StartTranslationRoomAsync — the host starts the room over REST, so no
+                // hub method runs and nothing else emitted "TranslationRoomStarted", the event the
+                // meeting page has always listened for. Without this relay a participant already in
+                // the room never learned translation went live, and the client flag that gates it
+                // unsubscribes every interpreter track and drops every transcript segment, leaving
+                // them on the untranslated raw microphones with no captions, indefinitely, while
+                // the host saw translation running normally.
+                // State is a pre-serialized (camelCase) TranslationRoomStateDto forwarded as-is,
+                // the same arrangement PollCreated/QuestionAsked/BreakoutsStarted use below.
+                else if (payload.Command == "RoomStarted" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomStarted", payload.State, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomStarted to room {RoomId}", payload.RoomId);
+                }
                 else if (payload.Command == "Kick" && !string.IsNullOrEmpty(payload.UserId))
                 {
                     // Assuming ConnectionManager tracks users and we can broadcast to the user's specific connection.
@@ -170,6 +186,10 @@ public class TranslationRoomCommandMessage
 
     // WT-08
     public string? NewHostUserId { get; set; }
+
+    // WT-322 — the room's TranslationRoomStateDto, already serialized camelCase by
+    // TranslationRoomService.PublishRoomStartedAsync and forwarded to clients untouched.
+    public JsonElement? State { get; set; }
 
     // Polls + Q&A — Poll/Question/FinalResult are already-serialized (camelCase) JSON
     // element payloads produced by PollsService/QuestionsService; Tally is an

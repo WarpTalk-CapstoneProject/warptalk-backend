@@ -1,0 +1,112 @@
+@startuml
+title WarpTalk - Leave Workspace
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 180
+
+actor "Workspace Member" as Member
+boundary "Workspace Members Page" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":WorkspaceMembersController" as Controller <<boundary>>
+participant ":WorkspaceMemberService" as Service <<service>>
+participant ":WorkspaceMemberRepository" as MemberRepo <<control>>
+participant ":WorkspaceRepository" as WorkspaceRepo <<control>>
+participant ":WorkspaceEventPublisher" as EventPublisher <<control>>
+database "Workspace Database" as Db
+end box
+
+Member -> Web : Click "Leave Workspace" and confirm
+activate Web
+Web -> Gateway : DELETE /api/v1/workspaces/{workspaceId}/members/{userId}\n[self userId]
+activate Gateway
+Gateway -> Gateway : Authenticate JWT and extract current user id
+Gateway -> Controller : Forward remove request
+activate Controller
+Controller -> Service : RemoveMemberAsync(workspaceId, userId, currentUserId)
+activate Service
+
+Service -> WorkspaceRepo : GetByIdAsync(workspaceId)
+activate WorkspaceRepo
+WorkspaceRepo -> Db : SELECT workspace by id
+activate Db
+Db --> WorkspaceRepo : workspace / null
+deactivate Db
+deactivate WorkspaceRepo
+
+alt workspace not found
+  Service --> Controller : failure
+  deactivate Service
+  Controller --> Gateway : 404 Not Found
+  deactivate Controller
+  Gateway --> Web : 404 Not Found
+  deactivate Gateway
+else workspace found
+  Service -> MemberRepo : FirstOrDefaultAsync(self membership)
+  activate MemberRepo
+  MemberRepo -> Db : SELECT self membership where RemovedAt is null
+  activate Db
+  Db --> MemberRepo : current membership / null
+  deactivate Db
+  MemberRepo --> Service : current membership / null
+  deactivate MemberRepo
+
+  alt self membership not found
+    Service --> Controller : failure
+    deactivate Service
+    Controller --> Gateway : 403 Forbidden
+    deactivate Controller
+    Gateway --> Web : 403 Forbidden
+    deactivate Gateway
+    Web --> Member : Show error message
+    deactivate Web
+  else current member found
+    Service -> Service : If owner, require another active owner
+    activate Service
+    alt last owner would leave
+      Service --> Controller : validation failure
+      deactivate Service
+      Controller --> Gateway : 400 Bad Request
+      deactivate Controller
+      Gateway --> Web : 400 Bad Request
+      deactivate Gateway
+      Web --> Member : Display "Cannot leave as last owner"
+      deactivate Web
+    else can leave
+      Service -> MemberRepo : Update RemovedAt/RemovedBy/Status
+      activate MemberRepo
+      MemberRepo -> Db : UPDATE workspace_members
+      activate Db
+      Service ->> EventPublisher : PublishMemberRemovedAsync(workspaceId, currentUserId, currentUserId)
+      Service -> MemberRepo : SaveChangesAsync()
+      MemberRepo -> Db : COMMIT
+      Db --> MemberRepo : saved
+      deactivate Db
+      MemberRepo --> Service : done
+      deactivate MemberRepo
+      Service --> Controller : success
+      deactivate Service
+      Controller --> Gateway : 204 NoContent
+      deactivate Controller
+      Gateway --> Web : 204 NoContent
+      deactivate Gateway
+      Web --> Member : Remove member from current view
+      deactivate Web
+    end
+  end
+end
+
+@enduml

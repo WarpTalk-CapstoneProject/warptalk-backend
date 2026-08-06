@@ -1,0 +1,98 @@
+@startuml
+title WarpTalk - Meeting Chat Message Broadcast & File Attachment
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+actor "Meeting Participant" as Participant
+boundary "MeetingRoomPage" as Web
+control "API Gateway / SignalR Hub" as Gateway
+
+box "Meeting Service" #PaleGreen
+participant ":MeetingChatController" as ChatController <<boundary>>
+participant ":MeetingChatService" as ChatService <<service>>
+participant ":S3MeetingChatFileStorage" as ChatStorage <<control>>
+participant ":MeetingRepository" as MeetingRepository <<control>>
+database "Meeting Database" as MeetingDb
+end box
+
+queue "Redis State Store" as Redis
+
+Participant -> Web : Enter chat message / attach file (or `@warpbot` query) & click Send
+activate Web
+
+alt Message contains File Attachment
+  Web -> Gateway : POST /api/v1/meetings/{meetingId}/chat/attachment (FormData file)
+  activate Gateway
+  Gateway -> ChatController : UploadAttachment(meetingId, file)
+  activate ChatController
+
+  ChatController -> ChatService : UploadAttachmentAsync(meetingId, fileStream, fileName, contentType)
+  activate ChatService
+
+  ChatService -> ChatStorage : SaveAsync(storageKey, fileStream)
+  activate ChatStorage
+  ChatStorage -> ChatStorage : Write stream to S3 bucket (warptalk-meeting-chat)
+  ChatStorage --> ChatService : fileStorageUrl
+  deactivate ChatStorage
+
+  ChatService --> ChatController : Result.Success(fileStorageUrl)
+  deactivate ChatService
+
+  ChatController --> Gateway : 200 OK (fileStorageUrl)
+  deactivate ChatController
+  Gateway --> Web : 200 OK (fileStorageUrl)
+  deactivate Gateway
+end
+
+Web -> Gateway : SendChatMessage(meetingId, messageContent, attachmentUrl)
+activate Gateway
+
+Gateway -> ChatController : ProcessMessage(meetingId, messageContent, attachmentUrl, senderUserId)
+activate ChatController
+
+ChatController -> ChatService : SendMessageAsync(meetingId, senderUserId, messageContent, attachmentUrl)
+activate ChatService
+
+ChatService -> MeetingRepository : SaveChatMessageAsync(messageEntity)
+activate MeetingRepository
+MeetingRepository -> MeetingDb : INSERT INTO meeting.meeting_chat_messages (id, meeting_id, sender_user_id, content, attachment_url) VALUES (...)
+activate MeetingDb
+MeetingDb --> MeetingRepository : success
+deactivate MeetingDb
+MeetingRepository --> ChatService : savedMessageEntity
+deactivate MeetingRepository
+
+ChatService -> Redis : PublishAsync("meeting.chat.message_sent", messagePayload)
+activate Redis
+Redis --> ChatService : success
+deactivate Redis
+
+ChatService --> ChatController : Result.Success(messageDto)
+deactivate ChatService
+
+ChatController --> Gateway : 200 OK (messageDto)
+deactivate ChatController
+
+Gateway -> Redis : Subscribe & receive "meeting.chat.message_sent"
+activate Redis
+Redis --> Gateway : messagePayload
+deactivate Redis
+
+Gateway -> Web : Broadcast "ReceiveMeetingChatMessage" to all connected meeting participants
+deactivate Gateway
+
+Web --> Participant : Render new chat bubble in meeting chat sidebar
+deactivate Web
+
+@enduml
