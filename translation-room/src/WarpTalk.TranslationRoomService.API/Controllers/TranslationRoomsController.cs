@@ -226,7 +226,7 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.GetTranslationRoomArtifactsAsync(id, userId.Value, ct);
+        var result = await _translationRoomService.GetTranslationRoomArtifactsAsync(id, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -264,7 +264,7 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.GetFeedbackStateAsync(id, userId.Value, ct);
+        var result = await _translationRoomService.GetFeedbackStateAsync(id, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
@@ -284,7 +284,7 @@ public class TranslationRoomsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.SubmitFeedbackAsync(id, userId.Value, request, ct);
+        var result = await _translationRoomService.SubmitFeedbackAsync(id, userId.Value, request, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));

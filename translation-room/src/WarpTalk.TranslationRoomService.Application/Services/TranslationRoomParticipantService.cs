@@ -8,6 +8,7 @@ using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Authorization;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -35,7 +36,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
         _logger = logger;
     }
 
-    public async Task<Result<List<TranslationRoomParticipantDto>>> GetParticipantsAsync(Guid translationRoomId, GetParticipantsRequest request, Guid requestedByUserId, CancellationToken ct = default)
+    public async Task<Result<List<TranslationRoomParticipantDto>>> GetParticipantsAsync(Guid translationRoomId, GetParticipantsRequest request, Guid requestedByUserId, string? requestedByEmail = null, CancellationToken ct = default)
     {
         try
         {
@@ -58,10 +59,25 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             // 403'd on its 3s participant poll, so the Approve button WT-188 unlocked was never
             // reached. The check the two share now lives in HasRoomHostAuthorityAsync so they cannot
             // drift apart a third time; the WT-65 participant clause is this read's own widening and
-            // stays here. Ordered so an existing participant short-circuits before the gRPC call —
-            // the poll loop must not hit WorkspaceService every 3 seconds.
+            // stays here.
+            //
+            // WT-304 adds the fourth clause: a workspace Member invited to this room BY EMAIL who has
+            // not yet joined holds no participant row and is not an Owner/Admin, so every clause above
+            // says no — permanently. The room detail page still loaded (GET {id} authorizes nothing at
+            // all), so the lobby's 3s poll 403'd forever and rendered "Waiting room unavailable". The
+            // clause is the invitation, NOT a role: a plain Member with no invitation must still be
+            // refused, which GetParticipantsAsync_ShouldReturnForbidden_WhenRequesterIsPlainWorkspaceMember
+            // pins.
+            //
+            // Order is load-bearing, cheapest-and-commonest first:
+            //   1. requester != null  — already in hand, no I/O. The poll's normal case.
+            //   2. host / Owner-Admin — host is in memory; Owner/Admin costs a gRPC hop.
+            //   3. invitation         — a DB round-trip, and only for a caller the first two refused.
+            // Appending WT-304 last also means the WT-313 paths reach their verdict through exactly
+            // the code they did before, and a caller with no email claim never touches the database.
             if (requester == null
-                && !await HasRoomHostAuthorityAsync(room, requestedByUserId, ct))
+                && !await HasRoomHostAuthorityAsync(room, requestedByUserId, ct)
+                && !await HasValidRoomInvitationAsync(translationRoomId, requestedByEmail, ct))
             {
                 return Result.Failure<List<TranslationRoomParticipantDto>>(TranslationRoomConstants.ErrorUnauthorizedViewParticipants, ErrorCodes.Forbidden);
             }
@@ -296,5 +312,26 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             return true;
 
         return await _workspaceMemberDirectory.IsOwnerOrAdminAsync(room.WorkspaceId, requestedByUserId, ct);
+    }
+
+    /// <summary>
+    /// WT-304 — "was this caller invited to this room, and does that invitation still stand".
+    ///
+    /// The rule itself (which invitation states confer read access, and how the email is normalized)
+    /// belongs to <see cref="RoomReadAccess"/>, shared with the rooms list and the artifacts/feedback
+    /// guard, so the clause cannot drift away from them a fourth time. Only the lookup is local:
+    /// this caller already knows the host and participant answers and must not pay to re-ask the
+    /// database for them on a 3-second poll.
+    ///
+    /// A caller with no email claim returns false without touching the database.
+    /// </summary>
+    private async Task<bool> HasValidRoomInvitationAsync(Guid translationRoomId, string? requestedByEmail, CancellationToken ct)
+    {
+        var email = RoomReadAccess.NormalizeEmail(requestedByEmail);
+        if (email is null)
+            return false;
+
+        return await _unitOfWork.TranslationRoomInvitationRepository
+            .AnyAsync(RoomReadAccess.GrantsReadOfRoom(translationRoomId, email), ct);
     }
 }
