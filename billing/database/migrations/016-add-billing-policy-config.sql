@@ -19,10 +19,6 @@ VALUES
     ('minimum_price_per_credit_vnd', 2.60),
     ('minimum_contract_price_vnd', 15000),
     ('minimum_contract_price_usd', 0.50),
-    ('sales_usage_weight', 0.45),
-    ('sales_members_weight', 0.15),
-    ('sales_languages_weight', 0.15),
-    ('sales_ai_services_weight', 0.25),
     ('default_overage_cap_ratio', 0.15),
     ('default_invoice_terms_days', 15),
     ('default_invoice_grace_hours', 360)
