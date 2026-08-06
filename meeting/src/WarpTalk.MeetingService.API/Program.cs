@@ -5,6 +5,7 @@ using WarpTalk.MeetingService.Application.Interfaces;
 using WarpTalk.MeetingService.Application.Services;
 using WarpTalk.MeetingService.Domain.Interfaces;
 using WarpTalk.MeetingService.Infrastructure.Data;
+using WarpTalk.MeetingService.Infrastructure.Extensions;
 using WarpTalk.MeetingService.Infrastructure.Repositories;
 using WarpTalk.MeetingService.Infrastructure.Services;
 using WarpTalk.Shared.Extensions;
@@ -133,7 +134,11 @@ builder.Services.AddScoped<IMeetingChatAssistantRequestRepository, MeetingChatAs
 builder.Services.AddScoped<IMeetingChatModerationEventRepository, MeetingChatModerationEventRepository>();
 builder.Services.AddScoped<IMeetingChatNotifier, WarpTalk.MeetingService.API.Services.MeetingChatNotifier>();
 builder.Services.AddScoped<IMeetingChatService, MeetingChatService>();
-builder.Services.AddScoped<IMeetingChatFileStorage, WarpTalk.MeetingService.Infrastructure.Storage.LocalMeetingChatFileStorage>();
+// WT-330: chat file storage must be selected from Storage:* configuration, not hard-wired.
+// AddMeetingChatFileStorage registers the S3/MinIO adapter when Storage:Provider is
+// S3-compatible and fails fast outside Development otherwise, so production can never
+// fall back to local-disk writes that the non-root container cannot perform.
+builder.Services.AddMeetingChatFileStorage(builder.Configuration, builder.Environment);
 builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 
 // History service
