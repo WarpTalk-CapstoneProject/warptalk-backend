@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- WT-326: lets the test project drive ReminderNotificationWorker's sweep directly instead
+         of asserting on its source text. Same mechanism BillingService.API already uses. -->
+    <InternalsVisibleTo Include="WarpTalk.TranslationRoomService.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
     <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="12.1.1" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.76.0" />
