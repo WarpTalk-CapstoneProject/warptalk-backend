@@ -741,6 +741,121 @@ public class TranslationRoomServiceTests
 
         result.IsSuccess.Should().BeTrue();
         _mockRoomRepo.Verify(r => r.Update(It.IsAny<TranslationRoom>()), Times.Never);
+        // Already terminal, so nothing changed and there is nothing new to announce.
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), default),
+            Times.Never);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // WT-314 — every terminal room transition must reach the AI pipeline.
+    //
+    // livekit_ingress_worker's "AIBot_{room}" is summoned by MeetingRoomService on every
+    // JoinMeetingAsync and released only by an AUDIO_ROUTES_UPDATED carrying a terminal room
+    // status, which AudioRouteEventProcessor emits from session_ends. Cancel and Expire never
+    // called the processor at all, and both are reachable only from SCHEDULED/WAITING — the
+    // states that have no audio routes — so nothing else would have published either. The bot
+    // stayed connected, billing LiveKit connection minutes, and kept LiveKit's own
+    // empty_timeout from ever collecting the room.
+    // ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task CancelTranslationRoomAsync_PublishesSessionEnds_SoTheIngressBotIsReleased()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "WAITING",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.CancelTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("CANCELLED");
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ExpireTranslationRoomAsync_PublishesSessionEnds_SoTheIngressBotIsReleased()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "WAITING",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.ExpireTranslationRoomAsync(roomId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("EXPIRED");
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task CancelTranslationRoomAsync_StillSucceeds_WhenTheLifecyclePublishFails()
+    {
+        // The room is already persisted as CANCELLED by this point. A dead Redis must not turn
+        // a completed cancel into an error for the caller — the ingress worker's own idle sweep
+        // is the backstop for the bot.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "SCHEDULED",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+
+        var result = await _service.CancelTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("CANCELLED");
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ExpireTranslationRoomAsync_StillSucceeds_WhenTheLifecyclePublishFails()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            Status = "SCHEDULED",
+            Settings = "{\"requires_approval\":true}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", default))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+
+        var result = await _service.ExpireTranslationRoomAsync(roomId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("EXPIRED");
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

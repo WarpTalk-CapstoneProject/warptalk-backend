@@ -169,8 +169,19 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
             // cross-language audio routes (for example, a host-only room). Otherwise ingress
             // cannot distinguish a published meeting microphone from translation being active
             // and starts transcribing before the host presses Start.
+            //
+            // WT-314: session_ends belongs here for the symmetric reason, and its absence was
+            // the leak. Routes only exist once someone pressed Start Translation
+            // (GenerateRoutesAsync runs in StartTranslationRoomAsync), so a meeting nobody
+            // ever started has zero routes — routesToUpdate is empty, no AUDIO_ROUTES_UPDATED
+            // was published, and livekit_ingress_worker was never told the room was over. Its
+            // "AIBot_{room}" participant, which MeetingRoomService summons on every
+            // JoinMeetingAsync, then stayed connected indefinitely and kept billing LiveKit
+            // connection minutes. Worse, the bot being present is what stops LiveKit's own
+            // empty_timeout from ever collecting the room.
             var isLifecycleEvent =
                 originalEventType == AudioRoutingEventType.session_starts ||
+                originalEventType == AudioRoutingEventType.session_ends ||
                 originalEventType == AudioRoutingEventType.room_pause ||
                 originalEventType == AudioRoutingEventType.room_resume;
             if (routesToUpdate.Any() || isLifecycleEvent)
