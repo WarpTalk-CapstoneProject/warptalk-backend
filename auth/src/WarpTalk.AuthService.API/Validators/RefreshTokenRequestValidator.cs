@@ -1,6 +1,5 @@
 using FluentValidation;
 using WarpTalk.AuthService.Application.DTOs;
-using WarpTalk.Shared;
 
 namespace WarpTalk.AuthService.API.Validators;
 
@@ -8,7 +7,7 @@ public class RefreshTokenRequestValidator : AbstractValidator<RefreshTokenReques
 {
     public RefreshTokenRequestValidator()
     {
-        RuleFor(x => x.RefreshToken)
-            .NotEmpty().WithMessage(ApiMessageConstants.ValidationMessages.RefreshTokenRequired);
+        // The refresh token normally arrives through the HttpOnly cookie. The controller
+        // rejects the request only when both the cookie and legacy request body are empty.
     }
 }

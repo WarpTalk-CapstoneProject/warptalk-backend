@@ -6,6 +6,7 @@ using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.AuthService.API.Common;
 
 namespace WarpTalk.AuthService.API.Controllers;
 
@@ -33,7 +34,9 @@ public class GoogleAuthController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
-        return Ok(result.Value);
+        var auth = result.Value!;
+        AuthSessionCookies.Write(Request, Response, auth);
+        return Ok(AuthSessionCookies.ToResponse(auth));
     }
 
     [Authorize]
