@@ -26,10 +26,12 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
         _logger = logger;
     }
 
+    private const string CommandsChannel = "warptalk:translation-room:commands";
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var subscriber = _redis.GetSubscriber();
-        await subscriber.SubscribeAsync(RedisChannel.Literal("warptalk:translation-room:commands"), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -168,7 +170,43 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
             }
         });
 
-        _logger.LogInformation("TranslationRoomRedisSubscriberService started listening to 'warptalk:translation-room:commands'.");
+    }
+
+    /// <summary>
+    /// Subscribes with bounded backoff instead of letting the exception escape.
+    ///
+    /// An exception out of <see cref="ExecuteAsync"/> in a BackgroundService trips the default
+    /// BackgroundServiceExceptionBehavior.StopHost, which for the Gateway means the whole
+    /// application dies — YARP, every hub, every health endpoint — because Redis was a second
+    /// late accepting connections during a parallel app/infra deploy. Same shape as
+    /// HostFallbackConsumerWorker / ParticipantOfflineConsumerWorker / EntitlementsChangedConsumer.
+    /// </summary>
+    private async Task SubscribeWithRetryAsync(
+        ISubscriber subscriber,
+        CancellationToken stoppingToken,
+        Action<RedisChannel, RedisValue> handler)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await subscriber.SubscribeAsync(RedisChannel.Literal(CommandsChannel), handler);
+                _logger.LogInformation("TranslationRoomRedisSubscriberService started listening to '{Channel}'.", CommandsChannel);
+                return;
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogError(
+                    ex,
+                    "TranslationRoomRedisSubscriberService could not subscribe to '{Channel}'; retrying in {RetryDelay}. "
+                    + "Room commands (kick, lock, end, polls, breakouts) are not reaching clients until it succeeds.",
+                    CommandsChannel,
+                    retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
     }
 }
 
