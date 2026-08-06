@@ -418,6 +418,144 @@ public class TranslationRoomServiceTests
         _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
+    // WT-322 — a participant already in the room never learned translation went live, because
+    // starting over REST never reached the SignalR hub in the Gateway process. The client flag
+    // that gate lives behind unsubscribes every interpreter track and drops every transcript
+    // segment. The raw microphones still come through, so they hear the untranslated original
+    // with no interpreter dub and no captions, while the host sees translation running.
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockRedisStateRepository.Verify(
+            r => r.PublishAsync(
+                "warptalk:translation-room:commands",
+                It.Is<string>(payload =>
+                    payload.Contains("\"Command\":\"RoomStarted\"")
+                    && payload.Contains(roomId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
+    {
+        // The web client types this payload as TranslationRoomStateDto and feeds it straight into
+        // its store, which does `participants: state.participants` — so an absent participants
+        // array would blank the roster of everyone in the room. Only CONNECTED participants count
+        // as "in the room", the same definition the roster and the seat count already use.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var connectedUserId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(p => p.GetByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant>
+            {
+                new()
+                {
+                    Id = Guid.NewGuid(),
+                    TranslationRoomId = roomId,
+                    UserId = connectedUserId,
+                    DisplayName = "Already in the room",
+                    Role = "participant",
+                    SpeakLanguage = "vi",
+                    ListenLanguage = "en",
+                    Status = TranslationRoomParticipantStatuses.Connected,
+                    ConnectionType = "WEB",
+                    JoinedAt = DateTime.UtcNow,
+                    CreatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = Guid.NewGuid(),
+                    TranslationRoomId = roomId,
+                    UserId = Guid.NewGuid(),
+                    DisplayName = "Still in the lobby",
+                    Role = "participant",
+                    SpeakLanguage = "en",
+                    ListenLanguage = "vi",
+                    Status = TranslationRoomParticipantStatuses.Waiting,
+                    ConnectionType = "WEB",
+                    CreatedAt = DateTime.UtcNow
+                }
+            });
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+
+        var published = _mockRedisStateRepository.Invocations
+            .Where(i => i.Method.Name == nameof(IRedisStateRepository.PublishAsync))
+            .Select(i => (string)i.Arguments[1])
+            .Single(p => p.Contains("\"Command\":\"RoomStarted\""));
+
+        using var document = System.Text.Json.JsonDocument.Parse(published);
+        var state = document.RootElement.GetProperty("State");
+        state.GetProperty("translationRoomId").GetString().Should().Be(roomId.ToString());
+        state.GetProperty("translationRoomCode").GetString().Should().Be("ABC-DEF-GHI");
+        state.GetProperty("status").GetString().Should().Be("IN_PROGRESS");
+
+        var participants = state.GetProperty("participants");
+        participants.GetArrayLength().Should().Be(1);
+        participants[0].GetProperty("userId").GetString().Should().Be(connectedUserId.ToString());
+        participants[0].GetProperty("displayName").GetString().Should().Be("Already in the room");
+        participants[0].GetProperty("speakLanguage").GetString().Should().Be("vi");
+        participants[0].GetProperty("listenLanguage").GetString().Should().Be("en");
+
+        // Same six fields as the hub's ParticipantJoined, no more: merge-participants.ts keeps
+        // role and identity with the REST roster because the live payload has never carried them.
+        participants[0].EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
+            "userId", "displayName", "speakLanguage", "listenLanguage", "isMuted", "joinedAt");
+    }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_StillStartsTheRoom_WhenTheRelayPublishFails()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockRedisStateRepository
+            .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("redis is down"));
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        room.Status.Should().Be("IN_PROGRESS");
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default),
+            Times.Once);
+    }
+
+    private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()
+    {
+        Id = roomId,
+        WorkspaceId = Guid.NewGuid(),
+        HostId = hostId,
+        Title = "Test room",
+        TranslationRoomCode = "ABC-DEF-GHI",
+        Status = "WAITING",
+        TranslationRoomType = "INSTANT",
+        MaxParticipants = 10,
+        SourceLanguage = "vi",
+        TargetLanguages = "[\"en\"]",
+        CreatedAt = DateTime.UtcNow,
+        Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
+    };
+
     [Fact]
     public async Task EndTranslationRoomAsync_SetsEndedAtWithoutPersistingDurationAndFiresEvent()
     {
