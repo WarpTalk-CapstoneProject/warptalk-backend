@@ -76,7 +76,11 @@ public static class TranslationRoomMapper
             room.DurationSeconds,
             room.CreatedAt,
             settings,
-            participantCount
+            participantCount,
+            // WT-327: no artifacts on this path; named so the series id below cannot be
+            // mistaken for the artifact list.
+            Artifacts: null,
+            SeriesId: room.SeriesId
         );
     }
 
@@ -108,6 +112,55 @@ public static class TranslationRoomMapper
             Settings = System.Text.Json.JsonSerializer.Serialize(ResolveSettings(roomType, request.Settings)),
             ScheduledAt = request.ScheduledAt,
             IsActive = true
+        };
+    }
+
+    /// <summary>
+    /// The host's own participant row for a freshly created room (WT-82 / WT-281).
+    ///
+    /// WT-327 lifted this out of TranslationRoomService because a recurring series materialises
+    /// rooms on a second code path, and two hand-written copies of these rules would drift. The
+    /// rules, unchanged:
+    ///  - DisplayName is the host's resolved name, falling back to the role label only when the
+    ///    Auth directory cannot answer (WT-281 — the fallback is not the normal case).
+    ///  - The host SPEAKS the room's source language and LISTENS in <c>targetLanguages[0]</c>.
+    ///    Seeding both from the source produced "English -> English" rooms, which is not a
+    ///    translation at all. First target, deliberately: it is the language the room was
+    ///    primarily opened for, the host's global DefaultListenLanguage need not be among this
+    ///    room's targets, and null is not an option because listen_language is NOT NULL and the
+    ///    audio-route pipeline keys off it. It is a seed, not a lock.
+    ///  - CONNECTED, because that is the one status that holds a seat
+    ///    (TranslationRoomParticipantStatuses.SeatHolding) and every write path in the service
+    ///    stores it.
+    /// </summary>
+    public static TranslationRoomParticipant BuildHostParticipant(
+        Guid roomId,
+        Guid hostId,
+        string hostDisplayName,
+        string sourceLanguage,
+        IReadOnlyList<string> targetLanguages)
+    {
+        if (targetLanguages is null || targetLanguages.Count == 0)
+            throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
+
+        var now = DateTime.UtcNow;
+
+        return new TranslationRoomParticipant
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            UserId = hostId,
+            DisplayName = hostDisplayName,
+            SpeakLanguage = sourceLanguage,
+            ListenLanguage = targetLanguages[0],
+            Role = "HOST",
+            Status = TranslationRoomParticipantStatuses.Connected,
+            ConnectionType = "WEBRTC",
+            IsTranslationAudioEnabled = true,
+            IsUsingVoiceClone = false,
+            JoinedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
         };
     }
 
@@ -159,7 +212,8 @@ public static class TranslationRoomMapper
             room.CreatedAt,
             settings,
             participantCount,
-            artifacts
+            artifacts,
+            room.SeriesId
         );
     }
 }

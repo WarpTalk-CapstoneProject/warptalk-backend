@@ -169,7 +169,12 @@ public class TranslationRoomService : ITranslationRoomService
         return TranslationRoomConstants.HostDisplayNameFallback;
     }
 
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
+    /// <inheritdoc />
+    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
+        CreateTranslationRoomRequest request,
+        Guid hostId,
+        CancellationToken ct = default,
+        SeriesOccurrenceContext? occurrence = null)
     {
         try
         {
@@ -242,6 +247,13 @@ public class TranslationRoomService : ITranslationRoomService
             // 3. Create entity
             var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);
 
+            // WT-327: an occurrence of a recurring series is an ORDINARY room that additionally
+            // knows which series and which local day it belongs to. The (series_id,
+            // series_occurrence_local_date) unique index is what makes the materialisation
+            // sweep idempotent, so both are stamped before the insert, never afterwards.
+            room.SeriesId = occurrence?.SeriesId;
+            room.SeriesOccurrenceLocalDate = occurrence?.LocalDate;
+
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
@@ -250,42 +262,12 @@ public class TranslationRoomService : ITranslationRoomService
             // directory this method already uses for language defaults.
             var hostDisplayName = await ResolveHostDisplayNameAsync(hostId, ct);
 
-            // WT-281: the host LISTENS in a language the room actually translates INTO. Both sides
-            // used to be seeded from sourceLang, so a Vietnamese -> English room showed its own
-            // host as "English -> English", which is not a translation at all.
-            //
-            // A multi-target room has to collapse to a single value on this one row. First target,
-            // deliberately:
-            //  - targetLangs is ordered exactly as the creator supplied it, so its first entry is
-            //    the language the room was primarily opened for.
-            //  - The host's stored DefaultListenLanguage is NOT consulted. It is a global
-            //    preference that need not be among this room's targets at all, so honouring it
-            //    could seed a language the room never produces — and it would silently contradict
-            //    the room the host had just explicitly configured.
-            //  - Null is not an option: ListenLanguage is NOT NULL on the participant row and the
-            //    audio-route pipeline keys off it.
-            // The host can still change this in-meeting through the participant language update;
-            // this is the seed, not a lock.
-            var hostListenLanguage = targetLangs[0];
-
-            // WT-82: Auto-add the Host as a participant so they exist in the DB
-            var hostParticipant = new TranslationRoomParticipant
-            {
-                Id = Guid.CreateVersion7(),
-                TranslationRoomId = room.Id,
-                UserId = hostId,
-                DisplayName = hostDisplayName,
-                SpeakLanguage = sourceLang,
-                ListenLanguage = hostListenLanguage,
-                Role = "HOST",
-                Status = TranslationRoomParticipantStatuses.Connected,
-                ConnectionType = "WEBRTC",
-                IsTranslationAudioEnabled = true,
-                IsUsingVoiceClone = false,
-                JoinedAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
+            // WT-82 / WT-281: auto-add the host as a participant so they exist in the DB, with
+            // the right speak/listen pair. WT-327 moved the rules themselves into
+            // TranslationRoomMapper.BuildHostParticipant so the recurring-series materialiser
+            // seeds its occurrences identically instead of from a second hand-written copy.
+            var hostParticipant = TranslationRoomMapper.BuildHostParticipant(
+                room.Id, hostId, hostDisplayName, sourceLang, targetLangs);
             await _participantRepository.AddAsync(hostParticipant, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
@@ -294,6 +276,13 @@ public class TranslationRoomService : ITranslationRoomService
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
+                // WT-327: every occurrence of a recurring series gets invitation ROWS — without
+                // them an invitee would not see days 2..N in their meeting list at all, because
+                // GetTranslationRoomsAsync resolves an invitee's visibility through exactly this
+                // table. Only the occurrence created at series-creation time sends the EMAIL:
+                // thirty identical "you're invited" messages for one daily booking is spam.
+                var sendInvitationEmails = occurrence is null || occurrence.SendInvitationEmails;
+
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
@@ -311,7 +300,10 @@ public class TranslationRoomService : ITranslationRoomService
                     }, ct);
 
                     // 2. Send the email
-                    emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                    if (sendInvitationEmails)
+                    {
+                        emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                    }
                 }
 
                 // Save the newly added invitations
@@ -1471,7 +1463,8 @@ public class TranslationRoomService : ITranslationRoomService
             room.CreatedAt,
             settings,
             seatsTaken,
-            room.HostId == userId
+            room.HostId == userId,
+            room.SeriesId
         );
     }
 
