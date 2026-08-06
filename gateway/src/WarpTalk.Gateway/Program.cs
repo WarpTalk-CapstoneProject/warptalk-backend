@@ -9,6 +9,7 @@ using System.Net;
 using System.Text;
 using System.Threading.RateLimiting;
 using WarpTalk.Shared.Extensions;
+using WarpTalk.Gateway.Configuration;
 using WarpTalk.Gateway.Constants;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Presence;
@@ -126,32 +127,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     }
 });
 
-builder.Services.AddRateLimiter(options =>
-{
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? httpContext.Request.Headers.Host.ToString(),
-            factory: partition => new FixedWindowRateLimiterOptions
-            {
-                AutoReplenishment = true,
-                PermitLimit = 100,
-                Window = TimeSpan.FromMinutes(1)
-            }));
-
-    // Specific policy for login
-    options.AddFixedWindowLimiter("LoginPolicy", opt =>
-    {
-        opt.PermitLimit = 5;
-        opt.Window = TimeSpan.FromMinutes(1);
-    });
-
-    // Specific policy for inbox
-    options.AddFixedWindowLimiter("InboxPolicy", opt =>
-    {
-        opt.PermitLimit = 30;
-        opt.Window = TimeSpan.FromMinutes(1);
-    });
-});
+// Limits come from the RateLimits configuration section (docker-compose passes RateLimits__*).
+// They must never be written as literals here again — see GatewayRateLimiterExtensions.
+builder.Services.AddWarpTalkGatewayRateLimiting(builder.Configuration);
 
 // 4. Configure YARP Reverse Proxy
 builder.Services.AddTransient<Yarp.ReverseProxy.Transforms.Builder.ITransformProvider, InternalContextTransformProvider>();

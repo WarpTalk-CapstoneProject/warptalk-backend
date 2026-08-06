@@ -34,7 +34,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         var subscriber = _redis.GetSubscriber();
 
         // 1. Listen for personal user notifications (e.g. invites, system alerts)
-        await subscriber.SubscribeAsync(RedisChannel.Literal(RealtimeConstants.RedisChannels.NotificationsNew), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, RealtimeConstants.RedisChannels.NotificationsNew, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -62,7 +62,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         });
 
         // 2. Listen for workspace & meeting real-time status events
-        await subscriber.SubscribeAsync(RedisChannel.Literal(RealtimeConstants.RedisChannels.MeetingsEvents), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, RealtimeConstants.RedisChannels.MeetingsEvents, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -104,7 +104,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         });
 
         // 3. Listen for meeting.started event from Workspace/Meeting microservices
-        await subscriber.SubscribeAsync(RedisChannel.Literal(RealtimeConstants.RedisChannels.MeetingStarted), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, RealtimeConstants.RedisChannels.MeetingStarted, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -136,7 +136,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         });
 
         // 4. Listen for workspace-level events (MemberRoleUpdated, MemberRemoved, Presence, AI Summary Progress)
-        await subscriber.SubscribeAsync(RedisChannel.Literal(RealtimeConstants.RedisChannels.WorkspaceEvents), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, RealtimeConstants.RedisChannels.WorkspaceEvents, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -181,7 +181,7 @@ public class NotificationRedisSubscriberService : BackgroundService
         });
 
         // 5. Listen for document life-cycle & status events
-        await subscriber.SubscribeAsync(RedisChannel.Literal(RealtimeConstants.RedisChannels.DocumentsEvents), async (channel, message) =>
+        await SubscribeWithRetryAsync(subscriber, RealtimeConstants.RedisChannels.DocumentsEvents, stoppingToken, async (channel, message) =>
         {
             try
             {
@@ -222,5 +222,48 @@ public class NotificationRedisSubscriberService : BackgroundService
         });
 
         _logger.LogInformation("NotificationRedisSubscriberService started listening to notifications, meeting events, workspace events, and document events.");
+    }
+
+    /// <summary>
+    /// Subscribes with bounded backoff instead of letting the exception escape.
+    ///
+    /// An exception out of <see cref="ExecuteAsync"/> in a BackgroundService trips the default
+    /// BackgroundServiceExceptionBehavior.StopHost, which for the Gateway means the whole
+    /// application dies — YARP, every hub, every health endpoint — because Redis was a second
+    /// late accepting connections. The app and infra roles deploy in parallel, so that race is
+    /// routine. Same shape as HostFallbackConsumerWorker / ParticipantOfflineConsumerWorker /
+    /// EntitlementsChangedConsumer, which each took this outage before being guarded.
+    ///
+    /// Retried per channel rather than around the whole set: re-running a batch after a partial
+    /// failure would re-register the handlers that already succeeded and double-deliver every
+    /// message on those channels.
+    /// </summary>
+    private async Task SubscribeWithRetryAsync(
+        ISubscriber subscriber,
+        string channel,
+        CancellationToken stoppingToken,
+        Action<RedisChannel, RedisValue> handler)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await subscriber.SubscribeAsync(RedisChannel.Literal(channel), handler);
+                _logger.LogInformation("NotificationRedisSubscriberService subscribed to '{Channel}'.", channel);
+                return;
+            }
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            {
+                _logger.LogError(
+                    ex,
+                    "NotificationRedisSubscriberService could not subscribe to '{Channel}'; retrying in {RetryDelay}. "
+                    + "Realtime delivery on this channel is down until it succeeds.",
+                    channel,
+                    retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
     }
 }
