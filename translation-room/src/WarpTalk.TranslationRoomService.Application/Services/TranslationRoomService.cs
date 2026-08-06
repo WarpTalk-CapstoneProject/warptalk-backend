@@ -46,6 +46,13 @@ public class TranslationRoomService : ITranslationRoomService
     private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
 
     /// <summary>
+    /// WT-322: the relay command TranslationRoomRedisSubscriberService turns into the
+    /// "TranslationRoomStarted" SignalR event. Named RoomStarted to sit beside the RoomEnded
+    /// command the same channel already carries.
+    /// </summary>
+    private const string RoomStartedCommand = "RoomStarted";
+
+    /// <summary>
     /// WT-187: the channel NotificationRedisSubscriberService relays to the
     /// "workspace:{workspaceId}" SignalR group, which the web client's
     /// RealtimeNotificationProvider joins via SubscribeWorkspace. Anything published here
@@ -631,6 +638,12 @@ public class TranslationRoomService : ITranslationRoomService
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
+            // WT-322: tell everyone already in the room that translation is now live. Published
+            // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
+            // the event must not be able to observe the room still WAITING. Failure to notify must
+            // not fail the start — the room is IN_PROGRESS and persisted by this point.
+            await PublishRoomStartedAsync(translationRoom, ct);
+
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
@@ -641,6 +654,87 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while starting the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-322: broadcast "TranslationRoomStarted" to everyone already sitting in the room.
+    ///
+    /// The web client has always listened for this event (persistent-meeting-session.tsx) and
+    /// nothing ever sent it. A participant who joined BEFORE the host pressed Start therefore kept
+    /// <c>warptalkStarted === false</c> until some unrelated refetch happened to notice the status
+    /// change — and that flag unsubscribes every interpreter audio track and drops every transcript
+    /// and translation segment. FilteredRoomAudio still lets the raw microphones through, so it is
+    /// not silence: it is a participant hearing the untranslated original with no interpreter dub
+    /// and no captions, while the host sees translation running normally.
+    ///
+    /// Published on the same Gateway relay channel every other room event uses (see
+    /// <see cref="GatewayCommandsChannel"/>): the SignalR hub lives in the Gateway process, so this
+    /// service cannot reach connected clients directly. TranslationRoomRedisSubscriberService
+    /// forwards <c>State</c> to the "translationRoom:{roomId}" group untouched — the same
+    /// pre-serialized-camelCase-payload arrangement PollCreated/QuestionAsked/BreakoutsStarted use.
+    ///
+    /// The payload is the client's TranslationRoomStateDto. <c>participants</c> is REQUIRED, not
+    /// decorative: the client's store does <c>participants: state.participants</c>, so omitting it
+    /// would blank the roster of everyone in the room. It carries the CONNECTED participants —
+    /// the same definition of "in the room" the roster and the seat count already use — each
+    /// shaped exactly like the hub's own ParticipantJoined payload.
+    ///
+    /// Never throws: an unnotified client is stale, but the room is already IN_PROGRESS and
+    /// persisted, so failing the host's Start here would be strictly worse.
+    /// </summary>
+    private async Task PublishRoomStartedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var participants = await _participantRepository.GetByRoomIdAsync(room.Id, ct);
+            var connected = (participants ?? Enumerable.Empty<TranslationRoomParticipant>())
+                .Where(p => p.Status == TranslationRoomParticipantStatuses.Connected)
+                // Exactly the six fields TranslationRoomHub's ParticipantJoined already sends, in
+                // the same order. Deliberately NOT role or status: merge-participants.ts keeps
+                // identity and role with the REST roster precisely because the live payload has
+                // never carried them, and a live row that suddenly did would start winning
+                // where the API row is missing.
+                .Select(p => new
+                {
+                    userId = p.UserId?.ToString() ?? string.Empty,
+                    displayName = p.DisplayName,
+                    speakLanguage = p.SpeakLanguage,
+                    listenLanguage = p.ListenLanguage,
+                    isMuted = false,
+                    joinedAt = (p.JoinedAt ?? p.CreatedAt).ToUniversalTime()
+                })
+                .ToList();
+
+            // camelCase deliberately: the Gateway forwards this element to clients as-is, and the
+            // web client reads it as TranslationRoomStateDto.
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = RoomStartedCommand,
+                RoomId = room.Id.ToString(),
+                State = new
+                {
+                    translationRoomId = room.Id.ToString(),
+                    translationRoomCode = room.TranslationRoomCode,
+                    status = room.Status,
+                    participants = connected
+                }
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish {Command} for RoomId: {RoomId}. The room is started; participants already in it will not hear audio or see captions until their own room query refetches.",
+                RoomStartedCommand,
+                room.Id);
         }
     }
 
