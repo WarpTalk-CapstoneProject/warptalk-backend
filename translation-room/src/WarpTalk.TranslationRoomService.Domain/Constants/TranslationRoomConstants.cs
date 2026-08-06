@@ -47,6 +47,19 @@ public static class TranslationRoomConstants
 
     // Participant Errors
     public const string ErrorOnlyHostCanManageAudio = "Only the host can manage participant audio.";
+
+    /// <summary>
+    /// WT-313. Listing participants is a READ, so it must not borrow
+    /// <see cref="ErrorUnauthorizedUpdateRoom"/> ("Only host can update room settings") — that message
+    /// sent the WT-313 reporter hunting through the room-settings code for a bug that was in the
+    /// waiting-room list. Keep this wording in sync with <see cref="ErrorUnauthorizedAdmitParticipant"/>
+    /// and with the predicate they share.
+    /// </summary>
+    public const string ErrorUnauthorizedViewParticipants = "Unauthorized. Only the room host, a participant of this room, or a workspace owner/admin can view the participant list.";
+
+    /// <summary>WT-188. Admission is "room host OR workspace Owner/Admin", never host-only.</summary>
+    public const string ErrorUnauthorizedAdmitParticipant = "Only the host or a workspace owner/admin can admit participants.";
+
     public const string ErrorParticipantNotFound = "Participant not found.";
     public const string ErrorUnexpectedUpdateParticipantAudio = "An unexpected error occurred while updating participant audio.";
     public const string ErrorOnlyHostCanKick = "Only the host can kick participants.";
