@@ -14,6 +14,7 @@ using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.LanguagePolicy;
 using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Authorization;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
@@ -1240,11 +1241,11 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
         {
-            if (!await CanAccessRoomAsync(translationRoomId, userId, ct))
+            if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<List<TranslationRoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
@@ -1263,12 +1264,12 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
         {
             var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-            if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, ct))
+            if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<TranslationRoomFeedbackStateDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             if (room.Status != "ENDED")
@@ -1286,12 +1287,12 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<TranslationRoomFeedbackDto>> SubmitFeedbackAsync(Guid translationRoomId, Guid userId, SubmitTranslationRoomFeedbackRequest request, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomFeedbackDto>> SubmitFeedbackAsync(Guid translationRoomId, Guid userId, SubmitTranslationRoomFeedbackRequest request, string? userEmail = null, CancellationToken ct = default)
     {
         try
         {
             var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
-            if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, ct))
+            if (room == null || !await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<TranslationRoomFeedbackDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             if (room.Status != "ENDED")
@@ -1383,14 +1384,18 @@ public class TranslationRoomService : ITranslationRoomService
         _translationRoomSessionRepository.Update(activeSession);
     }
 
+    /// <summary>
+    /// WT-304: the clauses now come from <see cref="RoomReadAccess.IsReadableBy"/>, shared with
+    /// <see cref="CanAccessRoomAsync"/>. This site is also the one that gained a restriction:
+    /// it used to accept an invitation row in ANY state, so a DECLINED invitation still listed the
+    /// room. No code writes DECLINED today, so nothing observable changes — but the list and the
+    /// artifacts/feedback guard now agree by construction instead of by coincidence.
+    /// </summary>
     private IQueryable<TranslationRoom> BuildAccessibleRoomsQuery(Guid userId, string? userEmail)
     {
-        var query = _unitOfWork.TranslationRoomRepository.Query();
-        if (!string.IsNullOrEmpty(userEmail))
-        {
-            return query.Where(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId) || r.TranslationRoomInvitations.Any(i => i.Email == userEmail));
-        }
-        return query.Where(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId));
+        return _unitOfWork.TranslationRoomRepository
+            .Query()
+            .Where(RoomReadAccess.IsReadableBy(userId, userEmail));
     }
 
     private static IQueryable<TranslationRoom> ApplyRoomFilters(IQueryable<TranslationRoom> query, GetTranslationRoomsRequest request)
@@ -1429,12 +1434,25 @@ public class TranslationRoomService : ITranslationRoomService
         return query;
     }
 
-    private Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, CancellationToken ct)
+    /// <summary>
+    /// WT-304/WT-330(e): this guard was missing the invitation clause that
+    /// <see cref="BuildAccessibleRoomsQuery"/> has always had, so a user who could see a room in
+    /// their list — because they were invited by email — was refused its artifacts, and (silently,
+    /// unreported) its feedback too. Both now resolve through
+    /// <see cref="RoomReadAccess.IsReadableBy"/>, the same expression the list uses.
+    ///
+    /// Still synchronous underneath: the caller-supplied <paramref name="ct"/> was never honoured
+    /// here and switching to AnyAsync would require an EF async query provider, which the unit
+    /// tests' in-memory IQueryable does not implement. Left alone deliberately — widening the read
+    /// boundary and changing its execution model in the same commit is how this predicate got
+    /// three different spellings in the first place.
+    /// </summary>
+    private Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken ct)
     {
         return Task.FromResult(_unitOfWork.TranslationRoomRepository
             .Query()
             .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive)
-            .Any(r => r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)));
+            .Any(RoomReadAccess.IsReadableBy(userId, userEmail)));
     }
 
     /// <summary>

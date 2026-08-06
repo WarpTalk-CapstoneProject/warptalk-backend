@@ -30,7 +30,7 @@ public class TranslationRoomParticipantsController : ControllerBase
         if (userId == null)
             return Unauthorized();
 
-        var result = await _participantService.GetParticipantsAsync(id, request, userId.Value, ct);
+        var result = await _participantService.GetParticipantsAsync(id, request, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound)

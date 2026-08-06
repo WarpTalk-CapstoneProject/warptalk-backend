@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -21,6 +22,7 @@ public class ParticipantManagementServiceTests
     private readonly Mock<ITranslationRoomRepository> _roomRepositoryMock;
     private readonly Mock<ITranslationRoomParticipantRepository> _participantRepositoryMock;
     private readonly Mock<IUnitOfWork> _unitOfWorkMock;
+    private readonly Mock<ITranslationRoomInvitationRepository> _invitationRepositoryMock;
     private readonly Mock<IWorkspaceMemberDirectory> _workspaceMemberDirectoryMock;
     private readonly Mock<ILogger<TranslationRoomParticipantService>> _loggerMock;
     private readonly TranslationRoomParticipantService _sut;
@@ -30,11 +32,21 @@ public class ParticipantManagementServiceTests
         _roomRepositoryMock = new Mock<ITranslationRoomRepository>();
         _participantRepositoryMock = new Mock<ITranslationRoomParticipantRepository>();
         _unitOfWorkMock = new Mock<IUnitOfWork>();
+        _invitationRepositoryMock = new Mock<ITranslationRoomInvitationRepository>();
         _workspaceMemberDirectoryMock = new Mock<IWorkspaceMemberDirectory>();
         _loggerMock = new Mock<ILogger<TranslationRoomParticipantService>>();
 
         _unitOfWorkMock.Setup(uow => uow.TranslationRoomRepository).Returns(_roomRepositoryMock.Object);
         _unitOfWorkMock.Setup(uow => uow.TranslationRoomParticipantRepository).Returns(_participantRepositoryMock.Object);
+        _unitOfWorkMock.Setup(uow => uow.TranslationRoomInvitationRepository).Returns(_invitationRepositoryMock.Object);
+
+        // WT-304 default: nobody is invited, so pre-existing cases keep the exact verdict they had
+        // before the invitation clause was added.
+        _invitationRepositoryMock
+            .Setup(repo => repo.AnyAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
 
         // Default: caller has no workspace-level privilege, so host identity alone decides.
         _workspaceMemberDirectoryMock
@@ -201,6 +213,173 @@ public class ParticipantManagementServiceTests
         result.Value.Should().HaveCount(1);
         _workspaceMemberDirectoryMock.Verify(
             d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // WT-304 — invited by email, not yet joined.
+    //
+    // These drive the real RoomReadAccess predicate rather than a canned bool: the invitation
+    // repository mock compiles whatever expression the service hands it and runs it over an
+    // in-memory invitation list, so a change to the allow-list or the email matching shows up here.
+    // ---------------------------------------------------------------------------------------------
+
+    private void GivenInvitations(params TranslationRoomInvitation[] invitations)
+    {
+        _invitationRepositoryMock
+            .Setup(repo => repo.AnyAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>> predicate, CancellationToken _) =>
+                invitations.Any(predicate.Compile()));
+    }
+
+    // The WT-304 bug itself: a workspace Member invited by email holds no participant row and is not
+    // an Owner/Admin, so before this fix the lobby's 3s poll 403'd forever.
+    [Theory]
+    [InlineData("PENDING")]
+    [InlineData("ACCEPTED")]
+    public async Task GetParticipantsAsync_ShouldReturnParticipants_WhenRequesterWasInvitedByEmail(string invitationStatus)
+    {
+        var roomId = Guid.NewGuid();
+        var inviteeId = Guid.NewGuid();
+        const string inviteeEmail = "invitee@warptalk.vn";
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, inviteeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        _participantRepositoryMock.Setup(repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant>
+            {
+                new TranslationRoomParticipant { Id = Guid.NewGuid(), TranslationRoomId = roomId, DisplayName = "Host", Status = "CONNECTED", Role = TranslationRoomParticipantRole.HOST.ToString(), JoinedAt = DateTime.UtcNow }
+            });
+        GivenInvitations(new TranslationRoomInvitation { Id = Guid.NewGuid(), TranslationRoomId = roomId, Email = inviteeEmail, Status = invitationStatus });
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), inviteeId, inviteeEmail);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(1);
+    }
+
+    // A withdrawn invitation is not an invitation. Nothing writes DECLINED today, which is exactly
+    // why this needs pinning: the allow-list is what makes the not-yet-existing revoked states safe.
+    [Theory]
+    [InlineData("DECLINED")]
+    [InlineData("REVOKED")]
+    [InlineData("EXPIRED")]
+    public async Task GetParticipantsAsync_ShouldReturnForbidden_WhenInvitationNoLongerStands(string invitationStatus)
+    {
+        var roomId = Guid.NewGuid();
+        var inviteeId = Guid.NewGuid();
+        const string inviteeEmail = "invitee@warptalk.vn";
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, inviteeId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        GivenInvitations(new TranslationRoomInvitation { Id = Guid.NewGuid(), TranslationRoomId = roomId, Email = inviteeEmail, Status = invitationStatus });
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), inviteeId, inviteeEmail);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+    }
+
+    // The pinned plain-Member 403 from the other direction: now that the caller's email reaches the
+    // service, "has an email claim" must not become a way in. Only an invitation is.
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldReturnForbidden_WhenPlainMemberHasEmailButNoInvitation()
+    {
+        var roomId = Guid.NewGuid();
+        var plainMemberId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, plainMemberId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        // Somebody else was invited; this caller was not.
+        GivenInvitations(new TranslationRoomInvitation { Id = Guid.NewGuid(), TranslationRoomId = roomId, Email = "someone.else@warptalk.vn", Status = "PENDING" });
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), plainMemberId, "plain.member@warptalk.vn");
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        _participantRepositoryMock.Verify(
+            repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // The ordering requirement, asserted rather than commented: the common poll case — an existing
+    // participant — must reach its answer without the invitation round-trip or the gRPC hop.
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldNotQueryInvitations_WhenRequesterIsAlreadyAParticipant()
+    {
+        var roomId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+        var requesterRow = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            UserId = requesterId,
+            DisplayName = "Waiting Guest",
+            Status = "WAITING",
+            Role = TranslationRoomParticipantRole.PARTICIPANT.ToString(),
+            JoinedAt = DateTime.UtcNow
+        };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, requesterId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(requesterRow);
+        _participantRepositoryMock.Setup(repo => repo.FindAsync(It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomParticipant> { requesterRow });
+        GivenInvitations();
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), requesterId, "waiting.guest@warptalk.vn");
+
+        result.IsSuccess.Should().BeTrue();
+        _invitationRepositoryMock.Verify(
+            repo => repo.AnyAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+        _workspaceMemberDirectoryMock.Verify(
+            d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // A caller with no email claim must not reach the database at all for the invitation clause.
+    [Fact]
+    public async Task GetParticipantsAsync_ShouldNotQueryInvitations_WhenCallerHasNoEmailClaim()
+    {
+        var roomId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), WorkspaceId = Guid.NewGuid() };
+
+        _roomRepositoryMock.Setup(repo => repo.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(room);
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, requesterId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        GivenInvitations();
+
+        var result = await _sut.GetParticipantsAsync(roomId, new GetParticipantsRequest(), requesterId, null);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
+        _invitationRepositoryMock.Verify(
+            repo => repo.AnyAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
