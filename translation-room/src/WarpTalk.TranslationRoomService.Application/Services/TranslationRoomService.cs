@@ -770,6 +770,17 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // WT-314: a cancelled room must reach the AI pipeline as a terminal room status,
+            // exactly like an ended one. MeetingRoomService summons livekit_ingress_worker's
+            // "AIBot_{room}" on every JoinMeetingAsync, and that bot's only exit is an
+            // AUDIO_ROUTES_UPDATED carrying a terminal status. Cancel is reachable only from
+            // SCHEDULED/WAITING — states that by definition have no audio routes yet — so
+            // nothing else on this path would ever publish, and the bot stayed connected
+            // billing LiveKit connection minutes. Published after SaveChangesAsync so the
+            // status on the wire is the persisted CANCELLED, and best-effort: the room is
+            // already cancelled by this point and must not be failed by a notification fault.
+            await PublishTerminalLifecycleAsync(translationRoomId, "cancelling", ct);
+
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
@@ -816,12 +827,46 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-314: same door as Cancel above. Expiry is driven by IdleRoomMonitoringWorker
+            // on rooms nobody ever started, which is precisely the population that has no
+            // audio routes — so without this publish the ingress bot for an expired room was
+            // never told to leave.
+            await PublishTerminalLifecycleAsync(translationRoomId, "expiring", ct);
+
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error expiring translation room. RoomId: {RoomId}", translationRoomId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Announce a terminal room lifecycle to the AI pipeline (WT-314).
+    ///
+    /// AudioRouteEventProcessor turns this into an AUDIO_ROUTES_UPDATED carrying the room's
+    /// now-persisted status, which is the only signal that releases livekit_ingress_worker's
+    /// per-room bot — and therefore the only thing that stops LiveKit connection minutes
+    /// accruing. Best-effort by design: the room has already been persisted in its terminal
+    /// state, so a Redis or processor fault must not turn a successful cancel/expire into a
+    /// failure for the caller. The worker's own idle sweep is the backstop if this is lost.
+    /// </summary>
+    private async Task PublishTerminalLifecycleAsync(Guid translationRoomId, string operation, CancellationToken ct)
+    {
+        try
+        {
+            await _audioRouteEventProcessor.ProcessEventAsync(
+                translationRoomId, null, AudioRoutingEventType.session_ends.ToString(), "{}", ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish session_ends while {Operation} room {RoomId}. The room is persisted; the ingress bot will be released by its idle sweep instead.",
+                operation,
+                translationRoomId);
         }
     }
 
