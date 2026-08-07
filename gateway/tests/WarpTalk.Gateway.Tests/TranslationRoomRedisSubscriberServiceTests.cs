@@ -158,6 +158,59 @@ public class TranslationRoomRedisSubscriberServiceTests
     }
 
     /// <summary>
+    /// The waiting-room counterpart. Approve in the People panel is a REST call, so
+    /// TranslationRoomHub.AdmitWaitingParticipant never runs and nothing else emitted
+    /// "ParticipantAdmitted" — the admitted guest's client had no way to learn it had been let in
+    /// (its participant poll is disabled in the lobby, its room query has no refetch interval) and
+    /// sat on the waiting spinner until the guest pressed Refresh Status.
+    /// </summary>
+    [Fact]
+    public async Task ParticipantAdmitted_BroadcastsToTheRoomGroupWithTheAdmittedUserId()
+    {
+        var roomId = Guid.NewGuid();
+        var admittedUserId = Guid.NewGuid();
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantAdmitted",
+                RoomId = roomId.ToString(),
+                UserId = admittedUserId.ToString()
+            })));
+
+        await WaitForGroupAsync($"translationRoom:{roomId}");
+
+        var sent = _proxy.Invocations
+            .Where(i => i.Method.Name == nameof(IClientProxy.SendCoreAsync)
+                        && (string)i.Arguments[0] == "ParticipantAdmitted")
+            .Select(i => (object[])i.Arguments[1])
+            .Single();
+
+        // The client compares this against its own user id to decide whether to re-join, so a
+        // broadcast that dropped or reshaped it would either release nobody or release everybody.
+        Assert.Equal(admittedUserId.ToString(), Assert.Single(sent));
+    }
+
+    [Fact]
+    public async Task ParticipantAdmitted_WithoutAUserId_BroadcastsNothing()
+    {
+        var handler = await SubscribeAsync();
+
+        await handler(
+            RedisChannel.Literal(Channel),
+            new RedisValue(JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantAdmitted",
+                RoomId = Guid.NewGuid().ToString(),
+                UserId = ""
+            })));
+
+        _clients.Verify(c => c.Group(It.IsAny<string>()), Times.Never);
+    }
+
+    /// <summary>
     /// The exact envelope TranslationRoomService.PublishRoomStartedAsync writes to the relay
     /// channel: PascalCase command fields, and a camelCase <c>State</c> the client reads as
     /// TranslationRoomStateDto.

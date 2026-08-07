@@ -73,6 +73,27 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomStarted", payload.State, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomStarted to room {RoomId}", payload.RoomId);
                 }
+                // The waiting-room counterpart of RoomStarted/RoomEnded above.
+                // TranslationRoomParticipantService publishes this from AdmitParticipantAsync —
+                // the host approves over REST, so TranslationRoomHub.AdmitWaitingParticipant never
+                // runs and nothing else emitted "ParticipantAdmitted". Without this relay the
+                // admitted guest kept staring at "Waiting for Host": their participant poll is
+                // disabled while they are in the lobby and their room query does not refetch on an
+                // interval, so nothing on their side ever learned they had been let in.
+                //
+                // Broadcast to the whole room group, exactly like Kick below — every waiting client
+                // is already in the group (JoinTranslationRoom runs regardless of waiting state),
+                // and the one whose userId matches re-runs its join. Sending it to the group rather
+                // than a single connection also means it survives the guest having reconnected on a
+                // new connection id since they joined.
+                else if (payload.Command == "ParticipantAdmitted"
+                    && !string.IsNullOrEmpty(payload.RoomId)
+                    && !string.IsNullOrEmpty(payload.UserId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("ParticipantAdmitted", payload.UserId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantAdmitted to room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
+                }
                 else if (payload.Command == "Kick" && !string.IsNullOrEmpty(payload.UserId))
                 {
                     // Assuming ConnectionManager tracks users and we can broadcast to the user's specific connection.

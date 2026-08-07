@@ -47,7 +47,7 @@ public sealed class AiResultConsumerStopHostTests
         var service = BuildService(logger);
 
         await service.StartAsync(CancellationToken.None);
-        await WaitForErrorLogAsync(logger);
+        await WaitForErrorLogAsync(logger, HasNotReachingClientsMessage);
         await service.StopAsync(CancellationToken.None);
 
         var logged = logger.Invocations
@@ -57,6 +57,13 @@ public sealed class AiResultConsumerStopHostTests
 
         Assert.Contains(logged, message => message.Contains("NOT reaching clients", StringComparison.Ordinal));
     }
+
+    /// <summary>The exact condition the test below asserts, so the wait and the assertion agree.</summary>
+    private static bool HasNotReachingClientsMessage(Mock<ILogger<AiResultConsumerService>> logger) =>
+        logger.Invocations
+            .Where(invocation => invocation.Arguments.Count > 2)
+            .Any(invocation => (invocation.Arguments[2]?.ToString() ?? string.Empty)
+                .Contains("NOT reaching clients", StringComparison.Ordinal));
 
     private static AiResultConsumerService BuildService(Mock<ILogger<AiResultConsumerService>> logger)
     {
@@ -110,11 +117,22 @@ public sealed class AiResultConsumerStopHostTests
     /// <summary>
     /// The failure is observed on the background task, so it can land just after StartAsync
     /// returns. Poll rather than sleep a fixed interval.
+    ///
+    /// <paramref name="until"/> exists because the loop used to stop at <c>Invocations.Count == 0</c>
+    /// — the FIRST log of any kind. The consumer logs one error per stream, so the caller that then
+    /// asserted on a particular message was reading a list the service was still writing, and only
+    /// passed because it usually won the race. Under the extra parallel load of a larger suite it
+    /// stopped winning. Waiting for the condition the test actually asserts makes it deterministic;
+    /// the default keeps the "any error at all" behaviour for the caller that only needs that.
     /// </summary>
-    private static async Task WaitForErrorLogAsync<T>(Mock<ILogger<T>> logger)
+    private static async Task WaitForErrorLogAsync<T>(
+        Mock<ILogger<T>> logger,
+        Func<Mock<ILogger<T>>, bool>? until = null)
     {
+        until ??= static l => l.Invocations.Count > 0;
+
         var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (DateTime.UtcNow < deadline && logger.Invocations.Count == 0)
+        while (DateTime.UtcNow < deadline && !until(logger))
         {
             await Task.Delay(10);
         }

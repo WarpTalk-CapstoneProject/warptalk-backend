@@ -4,6 +4,7 @@ using Moq;
 using StackExchange.Redis;
 using System;
 using System.Security.Claims;
+using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Gateway.Hubs;
 using WarpTalk.Gateway.Presence;
@@ -38,6 +39,7 @@ public class TranslationRoomHubTests
             streamService,
             translationRoomRegistry,
             redisMock.Object,
+            AlwaysHost(),
             new NullLogger<TranslationRoomHub>()
         );
 
@@ -387,6 +389,7 @@ public class TranslationRoomHubTests
             new RedisStreamService(redisMock.Object, new NullLogger<RedisStreamService>(), configMock.Object),
             new ActiveTranslationRoomRegistry(),
             redisMock.Object,
+            AlwaysHost(),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
@@ -410,7 +413,13 @@ public class TranslationRoomHubTests
             Times.Once);
     }
 
-    private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub()
+    /// <param name="hostAuthority">
+    /// Defaults to "yes, you are the host". Every pre-existing test in this file exercises a
+    /// non-host-only method (join, language, hand, reaction), so the permissive default keeps their
+    /// verdicts exactly as they were; the host-authorization tests pass their own.
+    /// </param>
+    private static (TranslationRoomHub Hub, Mock<IDatabase> DbMock, Mock<IHubCallerClients> ClientsMock, Mock<IClientProxy> ClientProxyMock, Mock<IGroupManager> GroupsMock, Mock<IClientProxy> GroupClientProxyMock) CreateHub(
+        IRoomHostAuthority? hostAuthority = null)
     {
         var connectionManagerMock = new Mock<IConnectionManager>();
         var redisMock = new Mock<IConnectionMultiplexer>();
@@ -431,6 +440,7 @@ public class TranslationRoomHubTests
             streamService,
             translationRoomRegistry,
             redisMock.Object,
+            hostAuthority ?? AlwaysHost(),
             new NullLogger<TranslationRoomHub>());
 
         var clientsMock = new Mock<IHubCallerClients>();
@@ -446,6 +456,123 @@ public class TranslationRoomHubTests
         hub.Groups = groupsMock.Object;
 
         return (hub, dbMock, clientsMock, clientProxyMock, groupsMock, groupClientProxyMock);
+    }
+
+    // ── Host authorization ────────────────────────────────────────────────────────
+    //
+    // MuteAll, SpotlightParticipant and AdmitWaitingParticipant used to carry a documented KNOWN
+    // GAP: they trusted the caller's JWT identity and verified nothing server-side, so any
+    // authenticated participant could force-mute the whole room (the host included) or hijack
+    // everyone's stage by invoking the method from the browser console. These pin both halves —
+    // a non-host is refused AND no broadcast escapes, and a legitimate host still succeeds.
+
+    [Theory]
+    [InlineData("MuteAll")]
+    [InlineData("SpotlightParticipant")]
+    [InlineData("AdmitWaitingParticipant")]
+    public async Task HostOnlyMethods_ShouldThrowAndBroadcastNothing_WhenCallerIsNotHost(string method)
+    {
+        var (hub, _, _, othersProxyMock, _, groupProxyMock) = CreateHub(NeverHost());
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-impostor");
+
+        await Assert.ThrowsAsync<HubException>(() => InvokeHostOnly(hub, method, roomId));
+
+        // The refusal is only worth anything if it happens BEFORE the send. A check that threw
+        // after Clients.Group(...).SendAsync would still have muted the room.
+        othersProxyMock.Verify(
+            p => p.SendCoreAsync(It.IsAny<string>(), It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        groupProxyMock.Verify(
+            p => p.SendCoreAsync(It.IsAny<string>(), It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task MuteAll_ShouldBroadcastForceMuted_WhenCallerIsHost()
+    {
+        var (hub, _, _, othersProxyMock, _, _) = CreateHub(AlwaysHost());
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-host");
+
+        await hub.MuteAll(roomId);
+
+        othersProxyMock.Verify(
+            p => p.SendCoreAsync("ForceMuted", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task SpotlightParticipant_ShouldBroadcastSpotlightChanged_WhenCallerIsHost()
+    {
+        var (hub, _, _, _, _, groupProxyMock) = CreateHub(AlwaysHost());
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-host");
+
+        await hub.SpotlightParticipant(roomId, Guid.NewGuid(), true);
+
+        groupProxyMock.Verify(
+            p => p.SendCoreAsync("SpotlightChanged", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task AdmitWaitingParticipant_ShouldBroadcastParticipantAdmitted_WhenCallerIsHost()
+    {
+        var (hub, _, _, _, _, groupProxyMock) = CreateHub(AlwaysHost());
+        var roomId = Guid.NewGuid();
+        hub.Context = CreateContext(Guid.NewGuid().ToString(), "conn-host");
+
+        await hub.AdmitWaitingParticipant(roomId, Guid.NewGuid().ToString());
+
+        groupProxyMock.Verify(
+            p => p.SendCoreAsync("ParticipantAdmitted", It.IsAny<object[]>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    // The caller's own id is what gets checked — not the room id, and not anything in the payload.
+    [Fact]
+    public async Task HostOnlyMethods_ShouldAuthorizeTheCallersOwnIdentity()
+    {
+        var callerId = Guid.NewGuid().ToString();
+        var roomId = Guid.NewGuid();
+        var authorityMock = new Mock<IRoomHostAuthority>();
+        authorityMock
+            .Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var (hub, _, _, _, _, _) = CreateHub(authorityMock.Object);
+        hub.Context = CreateContext(callerId, "conn-host");
+
+        await hub.MuteAll(roomId);
+
+        authorityMock.Verify(
+            a => a.HasHostAuthorityAsync(roomId, callerId, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    private static Task InvokeHostOnly(TranslationRoomHub hub, string method, Guid roomId) => method switch
+    {
+        "MuteAll" => hub.MuteAll(roomId),
+        "SpotlightParticipant" => hub.SpotlightParticipant(roomId, Guid.NewGuid(), true),
+        "AdmitWaitingParticipant" => hub.AdmitWaitingParticipant(roomId, Guid.NewGuid().ToString()),
+        _ => throw new ArgumentOutOfRangeException(nameof(method), method, null),
+    };
+
+    private static IRoomHostAuthority AlwaysHost()
+    {
+        var mock = new Mock<IRoomHostAuthority>();
+        mock.Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        return mock.Object;
+    }
+
+    private static IRoomHostAuthority NeverHost()
+    {
+        var mock = new Mock<IRoomHostAuthority>();
+        mock.Setup(a => a.HasHostAuthorityAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+        return mock.Object;
     }
 
     private static HubCallerContext CreateContext(string userId, string connectionId)
