@@ -19,8 +19,14 @@ namespace WarpTalk.Gateway.Tests;
 /// </summary>
 public sealed class GatewayJwtSecretGuardTests
 {
-    private const string PlaceholderSecret = "CHANGE_ME_super_secret_key_for_local_dev_only_32chars";
-    private const string RealSecret = "a-real-gateway-signing-key-of-at-least-32-characters";
+    // Deliberately low-entropy and self-describing. An earlier revision used realistic-looking
+    // key strings here and the pipeline's "Secret scan for introduced commits" step rejected the
+    // whole PR — correctly, because a scanner cannot tell a convincing fake from the real thing.
+    // The guard under test only inspects length and the CHANGE_ME / placeholder markers, so
+    // padding with a repeated character satisfies it while staying obviously non-secret.
+    private const string LengthPadding = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string PlaceholderSecret = "CHANGE_ME-test-fixture-" + LengthPadding;
+    private const string RealSecret = "gateway-test-fixture-key-" + LengthPadding;
 
     [Theory]
     [InlineData(PlaceholderSecret)]
