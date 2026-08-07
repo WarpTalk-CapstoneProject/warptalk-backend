@@ -64,6 +64,30 @@ public class VerifiedDomainService : IVerifiedDomainService
             if (EmailAddress.IsPublicDomainName(domain))
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
 
+            // 3a. The caller may only claim the domain of their own account email.
+            //
+            // This is the same rule CreateWorkspaceAsync applies, enforced on the
+            // post-creation surface. Without it the create-time rule is cosmetic: an
+            // attacker founds a workspace on their own domain and then adds
+            // victimcorp.com here. Rows written by this method are exactly what
+            // WorkspaceHelper.DetermineMembershipTypeAsync reads to hand out the
+            // Internal membership tier.
+            //
+            // The old comment on step 6 ("non-public = enterprise-owned") is the
+            // defect: non-public does not mean owned by the caller. WT-157 left the
+            // real verification method (DNS TXT / token / email challenge) undecided
+            // and unimplemented, so account-email ownership is the strongest proof
+            // available without new schema. Consequence: a company with several
+            // domains cannot register them all from one Owner account. That is a
+            // deliberate trade-off — refusing a legitimate second domain is
+            // recoverable, handing victimcorp.com to a stranger is not.
+            var caller = await _authIdentity.GetUserByIdAsync(userId, ct);
+            if (caller == null || !EmailAddress.TryParse(caller.Email, out var callerEmail) || callerEmail == null)
+                return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
+
+            if (!string.Equals(domain, callerEmail.Domain, StringComparison.OrdinalIgnoreCase))
+                return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, ErrorCodes.Forbidden);
+
             // 4. Domain must not already be claimed by another workspace
             var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, domain, ct);
             if (owningWorkspaceId.HasValue && owningWorkspaceId.Value != workspaceId)

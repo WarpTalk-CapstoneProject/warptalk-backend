@@ -239,8 +239,12 @@ public class WorkspaceServiceTests
     public async Task CreateWorkspaceAsync_ShouldSucceed_WithoutVerifiedDomain_WhenNoDomainProvided()
     {
         // Arrange
+        // NOTE: this test used to sign in as owner@gmail.com and assert success, which
+        // pinned the public-domain hole in place rather than any intended behaviour.
+        // A corporate account opting out of verified-domain classification is the real
+        // case it was meant to cover, and that still works.
         var userId = Guid.NewGuid();
-        var user = new User { Id = userId, Email = "owner@gmail.com" };
+        var user = new User { Id = userId, Email = "owner@corp-example.com" };
         var request = new CreateWorkspaceRequest("Personal Team", "https://cdn.com/logo.png"); // No verified domains, RequireVerifiedDomainForInternal = null
 
         StubUser(userId, user);
@@ -270,10 +274,15 @@ public class WorkspaceServiceTests
         // Arrange
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@deepmind.com" };
+        // NOTE: this test used to claim BOTH "deepmind.com" and "google.com" from a
+        // @deepmind.com account and assert both were written. That is the domain-claim
+        // hole, asserted as a feature. The legitimate half — a workspace claiming its
+        // own domain — is what it now covers; the refusal is pinned separately in
+        // CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn.
         var request = new CreateWorkspaceRequest(
             "DeepMind Labs",
             "https://cdn.com/logo.png",
-            VerifiedDomains: new List<string> { "deepmind.com", "google.com" },
+            VerifiedDomains: new List<string> { "deepmind.com" },
             RequireVerifiedDomainForInternal: true
         );
 
@@ -288,15 +297,13 @@ public class WorkspaceServiceTests
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
 
-        // Verify we saved the workspace with both verified domains
+        // Verify we saved the workspace with its own verified domain
         await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
             w.Settings.Contains("\"RequireVerifiedDomainForInternal\":true") &&
-            w.Settings.Contains("deepmind.com") &&
-            w.Settings.Contains("google.com")), Arg.Any<CancellationToken>());
+            w.Settings.Contains("deepmind.com")), Arg.Any<CancellationToken>());
 
-        // Verify WorkspaceVerifiedDomain records were added for both domains
+        // Verify the WorkspaceVerifiedDomain record was added for the caller's own domain
         await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "deepmind.com"), Arg.Any<CancellationToken>());
-        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "google.com"), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -320,9 +327,210 @@ public class WorkspaceServiceTests
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
         // Assert
+        // The caller-eligibility gate now fires first, so the refusal names the account
+        // rather than the claimed domain. Both refusals are still refusals.
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+    }
+
+    // ── Hole 1: the public-email-domain block must not be switchable from the body ──
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateWorkspaceAsync_ShouldFail_ForPublicEmailDomain_WhateverRequireVerifiedDomainForInternalSays(bool? requireVerified)
+    {
+        // The bypass this pins: POST /workspaces {"requireVerifiedDomainForInternal": false}
+        // from a gmail.com account used to create a workspace, because BOTH the
+        // public-domain check and the already-Internal-elsewhere check sat inside
+        // `if (requireVerified)` and requireVerified came from the request body.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "attacker@gmail.com" };
+        var request = new CreateWorkspaceRequest("Free Workspace", null, RequireVerifiedDomainForInternal: requireVerified);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenAlreadyInternalElsewhere_EvenWithRequireVerifiedDomainOff()
+    {
+        // The other half of Hole 1: the one-Enterprise-home-per-user rule was also
+        // behind `if (requireVerified)`.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "employee@enterprise.com" };
+        var request = new CreateWorkspaceRequest("Second Home", null, RequireVerifiedDomainForInternal: false);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var otherEnterpriseWorkspace = new Workspace
+        {
+            Id = Guid.NewGuid(),
+            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"RequireVerifiedDomainForInternal\":true}"
+        };
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Is("Workspace"),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new WorkspaceMember { UserId = userId, Workspace = otherEnterpriseWorkspace, MembershipType = "Internal" }
+            });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, result.Error);
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldSucceed_ForCorporateDomain_WithRequireVerifiedDomainOff()
+    {
+        // The legitimate caller must still get through: a corporate account that opts
+        // out of verified-domain classification is not what either gate is aimed at.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "founder@corp-example.com" };
+        var request = new CreateWorkspaceRequest("Corp Team", null, RequireVerifiedDomainForInternal: false);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Corp Team", result.Value!.Name);
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w => w.OwnerId == userId), Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    // ── Hole 2: a workspace may only claim a domain the caller's own email is on ──
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn()
+    {
+        // attacker.com claiming victimcorp.com would auto-classify every victimcorp.com
+        // joiner as Internal — the trusted membership tier of a company the caller has
+        // nothing to do with.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "attacker@attacker.com" };
+        var request = new CreateWorkspaceRequest(
+            "Totally Legit Corp",
+            null,
+            VerifiedDomains: new List<string> { "victimcorp.com" },
+            RequireVerifiedDomainForInternal: true);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, result.Error);
+        await _workspaceVerifiedDomainRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenClaimingAnUnownedDomainAlongsideItsOwn()
+    {
+        // The smuggling variant: one real domain to look legitimate, one stolen.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "attacker@attacker.com" };
+        var request = new CreateWorkspaceRequest(
+            "Mixed Claims",
+            null,
+            VerifiedDomains: new List<string> { "attacker.com", "victimcorp.com" },
+            RequireVerifiedDomainForInternal: true);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, result.Error);
+        await _workspaceVerifiedDomainRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldFail_WhenClaimingUnownedDomain_EvenWithRequireVerifiedDomainOff()
+    {
+        // With requireVerified off no workspace_verified_domains row is written, but the
+        // list is still persisted into the settings JSON, so the claim is still
+        // validated. This also pins that the ownership rule is not itself gated on the
+        // request-body flag.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "attacker@attacker.com" };
+        var request = new CreateWorkspaceRequest(
+            "Quiet Claim",
+            null,
+            VerifiedDomains: new List<string> { "victimcorp.com" },
+            RequireVerifiedDomainForInternal: false);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, result.Error);
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldSucceed_WhenClaimingItsOwnDomain_IgnoringCaseAndWhitespace()
+    {
+        // The legitimate caller: a workspace claiming the domain it actually belongs to.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "founder@Corp-Example.com" };
+        var request = new CreateWorkspaceRequest(
+            "Corp Example",
+            null,
+            VerifiedDomains: new List<string> { "  CORP-EXAMPLE.COM  " },
+            RequireVerifiedDomainForInternal: true);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "corp-example.com" && vd.Status == "verified"),
+            Arg.Any<CancellationToken>());
     }
 
     #endregion
