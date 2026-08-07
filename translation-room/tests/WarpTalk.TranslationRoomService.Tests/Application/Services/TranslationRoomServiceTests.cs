@@ -348,7 +348,6 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         room.StartedAt.Should().NotBeNull();
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]
@@ -415,25 +414,19 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
-    // WT-322 — a participant already in the room never learned translation went live, because
-    // starting over REST never reached the SignalR hub in the Gateway process. The client flag
-    // that gate lives behind unsubscribes every interpreter track and drops every transcript
-    // segment. The raw microphones still come through, so they hear the untranslated original
-    // with no interpreter dub and no captions, while the host sees translation running.
-
     [Fact]
-    public async Task StartTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
+    public async Task ResumeTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         _mockRedisStateRepository.Verify(
@@ -443,19 +436,19 @@ public class TranslationRoomServiceTests
                     payload.Contains("\"Command\":\"RoomStarted\"")
                     && payload.Contains(roomId.ToString()))),
             Times.Once);
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", default),
+            Times.Once);
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
+    public async Task ResumeTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
     {
-        // The web client types this payload as TranslationRoomStateDto and feeds it straight into
-        // its store, which does `participants: state.participants` — so an absent participants
-        // array would blank the roster of everyone in the room. Only CONNECTED participants count
-        // as "in the room", the same definition the roster and the seat count already use.
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var connectedUserId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
         _mockParticipantRepo
@@ -491,7 +484,7 @@ public class TranslationRoomServiceTests
                 }
             });
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
 
@@ -513,30 +506,29 @@ public class TranslationRoomServiceTests
         participants[0].GetProperty("speakLanguage").GetString().Should().Be("vi");
         participants[0].GetProperty("listenLanguage").GetString().Should().Be("en");
 
-        // Same six fields as the hub's ParticipantJoined, no more: merge-participants.ts keeps
-        // role and identity with the REST roster because the live payload has never carried them.
         participants[0].EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
             "userId", "displayName", "speakLanguage", "listenLanguage", "isMuted", "joinedAt");
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_StillStartsTheRoom_WhenTheRelayPublishFails()
+    public async Task ResumeTranslationRoomAsync_StillStartsTranslation_WhenTheRelayPublishFails()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
         _mockRedisStateRepository
             .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
             .ThrowsAsync(new InvalidOperationException("redis is down"));
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         _mockAudioRouteEventProcessor.Verify(
-            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default),
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", default),
             Times.Once);
     }
 

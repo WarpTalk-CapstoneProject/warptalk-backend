@@ -624,21 +624,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
 
-            // Each Start/Resume opens a new numbered translation session — the transcript
-            // labels segments by which session they fall in ("Translation 1", "Translation 2"...).
-            await StartNewTranslationSessionAsync(translationRoom, ct);
-
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
-
-            // WT-322: tell everyone already in the room that translation is now live. Published
-            // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
-            // the event must not be able to observe the room still WAITING. Failure to notify must
-            // not fail the start — the room is IN_PROGRESS and persisted by this point.
-            await PublishRoomStartedAsync(translationRoom, ct);
-
-            // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
@@ -792,7 +779,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != "PAUSED")
+            if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
             translationRoom.Status = "IN_PROGRESS";
@@ -804,6 +791,7 @@ public class TranslationRoomService : ITranslationRoomService
             await StartNewTranslationSessionAsync(translationRoom, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishRoomStartedAsync(translationRoom, ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);
