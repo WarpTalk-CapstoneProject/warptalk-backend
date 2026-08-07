@@ -587,6 +587,13 @@ public class TranslationRoomService : ITranslationRoomService
                         "Could not add audio routes for participant {ParticipantId} joining in-progress room {RoomId}: {Error}",
                         participant.Id, translationRoom.Id, routeResult.Error);
                 }
+                else
+                {
+                    // S8: the routes just created are PENDING, and PENDING is what the client
+                    // renders as "Waiting". The room is already running, so they are ready the
+                    // moment they exist. Idempotent for every route already broadcasting.
+                    await PublishRouteReadinessAsync(translationRoom.Id, ct);
+                }
             }
 
             // BR-008: Return comprehensive context
@@ -601,6 +608,36 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// S8 — drive this room's audio routes out of PENDING and into BROADCASTING.
+    ///
+    /// GenerateRoutesAsync creates every route at PENDING, and the ONLY transition out of
+    /// PENDING is <c>config_ready</c> — an event no code in this repository has ever emitted.
+    /// session_starts is only accepted from READY, so it was rejected on every route, and
+    /// telemetry_state_updated is rejected outright because PENDING is not a streaming state.
+    /// A route therefore sat at PENDING for the entire meeting no matter what happened, and
+    /// PENDING is what the client renders as "Waiting" — the status frozen on the projector.
+    ///
+    /// The missing piece was the producer, not the state table: routes ARE configured at the
+    /// moment GenerateRoutesAsync returns, so that is when config_ready is true. Emitting it
+    /// here keeps the modelled lifecycle (PENDING -> READY -> BROADCASTING) intact rather than
+    /// rewriting the transition table around a step nothing performs.
+    ///
+    /// Both events are idempotent: a route already BROADCASTING rejects config_ready and
+    /// session_starts as invalid transitions, ProcessTransition returns false, and nothing is
+    /// written. That is what makes this safe to call again on a late join or a restart.
+    ///
+    /// This is also what makes the status correct in a room where NOBODY SPEAKS. It is driven
+    /// by the room's own lifecycle, so it needs no telemetry payload, no timer, and no
+    /// heartbeat — a few seconds of silence at the start of a demo can no longer leave the
+    /// status stuck.
+    /// </summary>
+    private async Task PublishRouteReadinessAsync(Guid translationRoomId, CancellationToken ct)
+    {
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.config_ready.ToString(), "{}", ct);
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
     }
 
     public async Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -653,6 +690,10 @@ public class TranslationRoomService : ITranslationRoomService
                 if (!restartRouteResult.IsSuccess)
                     _logger.LogWarning("Could not reconcile audio routes for already-running room {RoomId}: {Error}", translationRoomId, restartRouteResult.Error);
 
+                // S8: and drive any route still sitting at PENDING into BROADCASTING. Idempotent
+                // for routes that are already streaming.
+                await PublishRouteReadinessAsync(translationRoomId, ct);
+
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
@@ -693,7 +734,7 @@ public class TranslationRoomService : ITranslationRoomService
             await PublishRoomStartedAsync(translationRoom, ct);
 
             // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
+            await PublishRouteReadinessAsync(translationRoomId, ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));

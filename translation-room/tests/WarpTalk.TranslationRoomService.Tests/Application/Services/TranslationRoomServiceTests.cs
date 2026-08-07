@@ -1164,4 +1164,65 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
     }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_EmitsConfigReadyBeforeSessionStarts()
+    {
+        // S8. GenerateRoutesAsync creates every route at PENDING, and the ONLY transition out of
+        // PENDING is config_ready — which nothing in this repository ever emitted. session_starts
+        // is only accepted from READY, so it was rejected on every freshly generated route and
+        // the route sat at PENDING (rendered as "Waiting") for the whole meeting, spoken in or
+        // not. Start is the point at which routes really are configured, so it is the producer.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "WAITING",
+            TranslationRoomType = "INSTANT",
+            SourceLanguage = "en",
+            TargetLanguages = "[\"vi\"]",
+            Settings = "{\"requires_approval\":false}"
+        });
+        _mockAudioRouteRepo.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomAudioRoute>());
+
+        var emitted = new List<string>();
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(roomId, null, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        emitted.Should().Equal(
+            AudioRoutingEventType.config_ready.ToString(),
+            AudioRoutingEventType.session_starts.ToString());
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoomAsync_MarksTheNewRoutesReady_WhenTheRoomIsAlreadyRunning()
+    {
+        // A late joiner's routes are created PENDING in a room that is already broadcasting, so
+        // they need the same readiness pair or they render as "Waiting" for that participant.
+        var room = ArrangeJoinableRoom("IN_PROGRESS", "xyz-defg-hij");
+        var userId = Guid.NewGuid();
+        _mockParticipantRepo.Setup(p => p.GetByRoomAndUserAsync(room.Id, userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+
+        var emitted = new List<string>();
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(room.Id, null, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
+            .ReturnsAsync(Result.Success());
+
+        await _service.JoinTranslationRoomAsync(
+            new JoinTranslationRoomRequest(room.TranslationRoomCode, "Late Joiner", "vi", "vi"), userId);
+
+        emitted.Should().Equal(
+            AudioRoutingEventType.config_ready.ToString(),
+            AudioRoutingEventType.session_starts.ToString());
+    }
 }
