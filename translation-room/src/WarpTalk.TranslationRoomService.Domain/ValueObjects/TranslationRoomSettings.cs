@@ -1,5 +1,5 @@
 using System.Text.Json.Serialization;
-using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.Domain.ValueObjects;
 
@@ -8,8 +8,15 @@ public class TranslationRoomSettings
     [JsonPropertyName("requires_approval")]
     public bool RequiresApproval { get; set; } = true;
 
+    /// <summary>
+    /// Who besides the host may reach the room's artifacts. Values come from
+    /// <see cref="WarpTalk.TranslationRoomService.Domain.Constants.ArtifactAccessLevels"/> and are
+    /// validated on the way in by the create and settings-update paths — this stayed a bare string
+    /// with no shared vocabulary long enough for the guard reading it to compare against spellings
+    /// no writer ever produced.
+    /// </summary>
     [JsonPropertyName("artifact_access")]
-    public string ArtifactAccess { get; set; } = "HOST_ONLY";
+    public string ArtifactAccess { get; set; } = ArtifactAccessLevels.HostOnly;
 
     // The three below are seeded from the meeting type at creation (see
     // TranslationRoomTypePolicy). They live here rather than in a column because this is

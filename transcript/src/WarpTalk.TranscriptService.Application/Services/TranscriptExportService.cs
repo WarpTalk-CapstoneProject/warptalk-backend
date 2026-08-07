@@ -5,26 +5,23 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Grpc.Core;
+using WarpTalk.TranscriptService.Application.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Interfaces;
-using GetParticipantsByRoomIdRequest = WarpTalk.Shared.Protos.GetParticipantsByRoomIdRequest;
-using GetTranslationRoomRequest = WarpTalk.Shared.Protos.GetTranslationRoomRequest;
-using TranslationRoomServiceClient = WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient;
 
 namespace WarpTalk.TranscriptService.Application.Services;
 
 public class TranscriptExportService : ITranscriptExportService
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly TranslationRoomServiceClient _roomClient;
+    private readonly ITranscriptReadAccess _readAccess;
 
-    public TranscriptExportService(IUnitOfWork unitOfWork, TranslationRoomServiceClient roomClient)
+    public TranscriptExportService(IUnitOfWork unitOfWork, ITranscriptReadAccess readAccess)
     {
         _unitOfWork = unitOfWork;
-        _roomClient = roomClient;
+        _readAccess = readAccess;
     }
 
     public async Task<TranscriptExportDto> CreateExportAsync(Guid transcriptId, CreateTranscriptExportRequest request, Guid userId)
@@ -201,26 +198,6 @@ public class TranscriptExportService : ITranscriptExportService
         return field;
     }
 
-    private async Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId)
-    {
-        try
-        {
-            var room = await _roomClient.GetTranslationRoomByIdAsync(
-                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() });
-
-            if (Guid.TryParse(room.HostId, out var hostId) && hostId == userId)
-                return true;
-
-            var participants = await _roomClient.GetParticipantsByRoomIdAsync(
-                new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() });
-
-            return participants.Participants.Any(p =>
-                Guid.TryParse(p.Id, out var participantUserId) &&
-                participantUserId == userId);
-        }
-        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
-        {
-            return false;
-        }
-    }
+    private Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId)
+        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId);
 }

@@ -136,6 +136,36 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
         }
     }
 
+    /// <summary>
+    /// Releases the consent hold on an artifact — today, in practice, a recording
+    /// (<c>RecordingCompletedEventProcessor</c> is the one writer that sets
+    /// <c>ConsentRequired = true</c>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// HOST ONLY. This used to authorize with <see cref="ArtifactAccessHelper"/> — the very same
+    /// predicate the download check at <see cref="GetArtifactDownloadAsync"/> uses — which made the
+    /// consent gate self-serve: a participant refused a recording download could POST here, get a
+    /// 204, and then download it. Consent granted by the person who benefits from it is not
+    /// consent. The approver must be someone other than the requester, and the host is the only
+    /// authority this row knows about.
+    /// </para>
+    /// <para>
+    /// KNOWN AND DELIBERATELY UNCHANGED: consent is still recorded GLOBALLY. There is one boolean
+    /// on the shared artifact row and no per-user grant table, so one host approval unlocks the
+    /// recording for every participant at once — nobody can be granted or refused individually, and
+    /// the release cannot be walked back per person. Making consent per-user needs a new grant
+    /// table, and this release cycle is deliberately migration-free, so that is left for its own
+    /// ticket. What changes here is only WHO may pull the lever, not how many people it opens the
+    /// door for.
+    /// </para>
+    /// <para>
+    /// Workspace Owners/Admins are not admitted, on purpose. The download path they would be
+    /// approving does not admit them either (it is host, or participant-by-policy), so letting them
+    /// approve a release they cannot themselves read would be a third spelling of "who runs this
+    /// room" — the drift <c>RoomReadAccess</c> exists to stop.
+    /// </para>
+    /// </remarks>
     public async Task<Result> ApproveArtifactConsentAsync(Guid artifactId, Guid userId, CancellationToken ct = default)
     {
         try
@@ -144,7 +174,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
-            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
+            if (artifact.TranslationRoom.HostId != userId)
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;
