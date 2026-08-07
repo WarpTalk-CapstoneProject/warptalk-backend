@@ -20,13 +20,16 @@ public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
     private readonly ITranslationRoomArtifactService _artifactService;
+    private readonly ITranslationRoomSeriesService _seriesService;
 
     public TranslationRoomsController(
         ITranslationRoomService translationRoomService,
-        ITranslationRoomArtifactService artifactService)
+        ITranslationRoomArtifactService artifactService,
+        ITranslationRoomSeriesService seriesService)
     {
         _translationRoomService = translationRoomService;
         _artifactService = artifactService;
+        _seriesService = seriesService;
     }
 
     [HttpGet]
@@ -56,6 +59,29 @@ public class TranslationRoomsController : ControllerBase
         if (!User.IsEmailVerified())
         {
             return StatusCode(403, new ApiErrorResponse("Email not verified", ErrorCodes.AccountPending));
+        }
+
+        // WT-327: a request carrying a recurrence rule is a BOOKING, not a meeting. It goes to
+        // the series service, which materialises the occurrences inside the current horizon and
+        // hands back the first one — so the client's happy path is unchanged: it still gets a
+        // room with an id and a code to show and share.
+        if (request.Recurrence is not null)
+        {
+            var seriesResult = await _seriesService.CreateSeriesAsync(request, hostId.Value, HttpContext.RequestAborted);
+            if (!seriesResult.IsSuccess)
+            {
+                return seriesResult.ErrorCode switch
+                {
+                    ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                    ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                    _ => BadRequest(new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                };
+            }
+
+            return CreatedAtAction(
+                nameof(CreateTranslationRoom),
+                new { id = seriesResult.Value!.FirstOccurrence.Id },
+                seriesResult.Value);
         }
 
         var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value);

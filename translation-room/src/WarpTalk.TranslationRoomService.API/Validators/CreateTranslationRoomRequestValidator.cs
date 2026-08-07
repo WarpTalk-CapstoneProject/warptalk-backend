@@ -42,5 +42,31 @@ public class CreateTranslationRoomRequestValidator : AbstractValidator<CreateTra
             .Must(scheduledAt => scheduledAt.HasValue && scheduledAt.Value > DateTime.UtcNow)
             .When(x => x.ScheduledAt.HasValue)
             .WithMessage(TranslationRoomConstants.ValidationScheduledTimeMustBeFuture);
+
+        // WT-327: a recurrence rule owns every occurrence's time, so a one-off ScheduledAt on
+        // the same request would have to be silently discarded — and a silently discarded field
+        // on this exact dialog is the bug this feature exists to remove. Refuse instead.
+        RuleFor(x => x.Recurrence)
+            .Must((request, _) => !request.ScheduledAt.HasValue)
+            .When(x => x.Recurrence is not null)
+            .WithMessage(RecurrenceMessages.ScheduledAtWithRecurrence);
+
+        // Shape only. The full rule — supported type, resolvable zone, terminating end date —
+        // is RecurrencePlanner's, because it needs the clock and produces the defaults; a
+        // second copy here would be a second thing to keep in step.
+        RuleFor(x => x.Recurrence!.Type)
+            .Must(type => RecurrenceTypes.Normalize(type) != null)
+            .When(x => x.Recurrence is not null)
+            .WithMessage(RecurrenceMessages.TypeUnrecognised);
+
+        RuleFor(x => x.Recurrence!.StartTimeLocal)
+            .NotEmpty()
+            .When(x => x.Recurrence is not null)
+            .WithMessage(RecurrenceMessages.TimeMalformed);
+
+        RuleFor(x => x.Recurrence!.TimeZone)
+            .NotEmpty()
+            .When(x => x.Recurrence is not null)
+            .WithMessage(RecurrenceMessages.TimeZoneUnknown);
     }
 }
