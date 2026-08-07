@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.Mappers;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
@@ -21,6 +23,24 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     {
         _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TranslationRoomDto>> GetRoomAsync(
+        Guid translationRoomId,
+        CancellationToken ct = default)
+    {
+        var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+
+        if (room == null)
+            return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // Byte-for-byte the body ITranslationRoomService.GetTranslationRoomAsync had before WT-334
+        // added its guard, so the mesh sees no behaviour change at all — including the seat count,
+        // which GetTranslationRoomById does not read today but which keeps the two DTOs identical
+        // rather than subtly divergent.
+        return Result.Success(room.ToResponseDto(
+            await _participantRepository.CountSeatHoldingParticipantsAsync(room.Id, ct)));
     }
 
     public async Task<Result<IReadOnlyList<TranslationRoomParticipantSummaryDto>>> GetParticipantsAsync(

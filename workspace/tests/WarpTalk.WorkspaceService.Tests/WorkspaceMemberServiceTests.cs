@@ -99,6 +99,30 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(WorkspaceMemberStatus.Active.ToStorageValue(), invited.Status);
     }
 
+    /// <summary>
+    /// The column has DEFAULT true in Postgres, but nothing in this process ever saw that default:
+    /// EF treated true as the property's sentinel, the mappers left the property at the CLR default
+    /// false, and EF therefore wrote false explicitly on every INSERT. The result was a workspace
+    /// Owner refused meeting creation in the workspace they had just created, and the same for
+    /// everyone who joined by accepting an invitation.
+    ///
+    /// This asserts the value in the ENTITY the mappers hand to EF, which is the only place the
+    /// answer is now decided — a test that asserted the column default would have passed throughout
+    /// the entire lifetime of the bug.
+    /// </summary>
+    [Fact]
+    public void CreateMemberMappers_ShouldGrantMeetingCreation()
+    {
+        var workspaceId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+
+        var owner = WorkspaceMemberMapper.CreateOwnerMember(workspaceId, Guid.NewGuid(), roleId);
+        var invited = WorkspaceMemberMapper.CreateInvitationMember(workspaceId, Guid.NewGuid(), roleId, "Internal");
+
+        Assert.True(owner.CanCreateMeetings);
+        Assert.True(invited.CanCreateMeetings);
+    }
+
     private void StubRoleName(Guid roleId, string roleName)
     {
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())

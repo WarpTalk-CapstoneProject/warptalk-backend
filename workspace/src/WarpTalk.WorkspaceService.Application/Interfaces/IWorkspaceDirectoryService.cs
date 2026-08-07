@@ -17,6 +17,11 @@ public interface IWorkspaceDirectoryService
     /// <summary>
     /// Returns the member's details, or a success with a null value when the user is
     /// not a member — non-membership is a normal answer, not a failure.
+    ///
+    /// <see cref="WorkspaceMemberDetailsDto.IsActive"/> is the MEMBER's status and says nothing
+    /// about the workspace's own lifecycle: a suspended workspace still reports its members as
+    /// active. Anything that must stop when an admin suspends a tenant asks
+    /// <see cref="GetPreflightAsync"/> instead.
     /// </summary>
     Task<Result<WorkspaceMemberDetailsDto?>> GetMemberDetailsAsync(
         Guid workspaceId,
@@ -37,6 +42,12 @@ public interface IWorkspaceDirectoryService
         Guid workspaceId,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// The workspace's tenant-lifecycle answer, plus the naming and domain facts a join screen
+    /// needs. <c>userEmail</c> is optional: pass null or empty and the verified-domain lookup is
+    /// skipped entirely, which is how TranslationRoomService uses this as a cheap
+    /// "is this tenant still live?" check on the room join and start paths.
+    /// </summary>
     Task<Result<WorkspacePreflightDto>> GetPreflightAsync(
         Guid workspaceId,
         string? userEmail,

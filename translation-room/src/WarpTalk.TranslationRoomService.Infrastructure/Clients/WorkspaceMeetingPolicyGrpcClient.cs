@@ -10,6 +10,9 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
     private const string UnavailableMessage =
         "Could not verify your permission to create meetings. Please try again in a moment.";
 
+    private const string SuspendedMessage =
+        "This workspace is suspended. Contact your administrator to restore it.";
+
     private readonly WorkspaceService.WorkspaceServiceClient _client;
     private readonly ILogger<WorkspaceMeetingPolicyGrpcClient> _logger;
 
@@ -55,5 +58,37 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         return response.IsAllowed
             ? Result.Success()
             : Result.Failure(response.ErrorMessage, ErrorCodes.Forbidden);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> EnsureWorkspaceCanHostMeetingsAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        GetWorkspacePreflightResponse response;
+        try
+        {
+            // UserEmail deliberately left empty: it only drives the verified-domain lookup on the
+            // workspace side, which this caller has no use for and should not pay for on a path
+            // that runs on every join.
+            response = await _client.GetWorkspacePreflightDetailsAsync(
+                new GetWorkspacePreflightRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            // Fails OPEN, unlike ValidateMeetingCreationAsync above — see the interface docs. Join
+            // and start carried no WorkspaceService dependency before this check existed, and a
+            // WorkspaceService outage must not become "no meeting in the product can be entered".
+            _logger.LogWarning(
+                ex,
+                "Workspace lifecycle check failed; allowing the request through. WorkspaceId: {WorkspaceId}",
+                workspaceId);
+            return Result.Success();
+        }
+
+        return response.IsActive
+            ? Result.Success()
+            : Result.Failure(SuspendedMessage, ErrorCodes.Forbidden);
     }
 }

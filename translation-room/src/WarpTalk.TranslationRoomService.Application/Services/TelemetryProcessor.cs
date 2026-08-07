@@ -67,8 +67,23 @@ public class TelemetryProcessor : ITelemetryProcessor
             if (stateEntries.TryGetValue("warmup_count", out var warmupStr) && int.TryParse(warmupStr, out var warmupVal)) warmupCount = warmupVal;
             if (stateEntries.TryGetValue("last_timestamp", out var lastTsStr) && long.TryParse(lastTsStr, out var lastTsVal)) lastTimestamp = lastTsVal;
 
-            // 3. Warm-up sequence to prevent cold-start latency false alerts
-            if (warmupCount < warmupThreshold)
+            // 3. Warm-up sequence to prevent cold-start latency false alerts.
+            //
+            // S8. This used to `return` here, which suppressed far more than it was meant to.
+            // The gate exists to stop the first few cold-start samples raising a DEGRADED alarm
+            // — but returning early also skipped step 7, so no effective status was resolved and
+            // nothing was written to Postgres at all for the first `warmupThreshold` payloads.
+            // Combined with warmupCount only advancing when a worker actually publishes
+            // telemetry — i.e. only when somebody speaks — a few seconds of silence at the start
+            // of a meeting left the status frozen wherever it was, which is the "Waiting" the
+            // owner keeps hitting on the projector.
+            //
+            // It now skips only what it is for: the EMA maths and the degraded/recovery
+            // hysteresis. The degraded flags keep the values already in Redis (all false on a
+            // cold room, because no EMA has been computed yet), so the status resolved below is
+            // the healthy baseline — reported immediately instead of three utterances late.
+            bool isWarmingUp = warmupCount < warmupThreshold;
+            if (isWarmingUp)
             {
                 warmupCount++;
                 _logger.LogInformation("Room {RoomId} Telemetry warmup count: {Count}/{WarmupThreshold}. Latency: {LatencyMs}ms (Worker: {Worker})",
@@ -80,101 +95,113 @@ public class TelemetryProcessor : ITelemetryProcessor
                     { "last_timestamp", payload.Timestamp.ToString() }
                 };
                 await _redisStateRepo.HashSetAsync(hashKey, warmupUpdates);
-                return;
             }
 
-            // 4. Calculate Adaptive Alpha (Smoothing Factor)
-            double alpha = 0.3; // Default
-            if (lastTimestamp > 0)
+            // 4-6. EMA maths and degraded/recovery hysteresis — the part warm-up genuinely has
+            // to suppress, so that a cold-start sample cannot raise a false DEGRADED alarm.
+            if (!isWarmingUp)
             {
-                double deltaSec = (payload.Timestamp - lastTimestamp) / 1000.0;
-                if (deltaSec > 0)
+                // 4. Calculate Adaptive Alpha (Smoothing Factor)
+                double alpha = 0.3; // Default
+                if (lastTimestamp > 0)
                 {
-                    if (deltaSec < 1.0)
+                    double deltaSec = (payload.Timestamp - lastTimestamp) / 1000.0;
+                    if (deltaSec > 0)
                     {
-                        alpha = 0.1 + (0.2 * deltaSec); // Filter bursts
-                    }
-                    else if (deltaSec > 3.0)
-                    {
-                        alpha = Math.Min(0.6, 0.3 + (0.1 * (deltaSec - 3.0))); // Recover after silences
+                        if (deltaSec < 1.0)
+                        {
+                            alpha = 0.1 + (0.2 * deltaSec); // Filter bursts
+                        }
+                        else if (deltaSec > 3.0)
+                        {
+                            alpha = Math.Min(0.6, 0.3 + (0.1 * (deltaSec - 3.0))); // Recover after silences
+                        }
                     }
                 }
-            }
 
-            // 5. Evaluate EMA and Hysteresis rules independently per pipeline stage
-            var updates = new Dictionary<string, string>
+                // 5. Evaluate EMA and Hysteresis rules independently per pipeline stage
+                var updates = new Dictionary<string, string>
             {
                 { "last_timestamp", payload.Timestamp.ToString() }
             };
 
-            if (payload.WorkerType.Equals("stt", StringComparison.OrdinalIgnoreCase))
-            {
-                double newSttEma = oldSttEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldSttEma * (1 - alpha));
-                updates["stt_ema"] = newSttEma.ToString(CultureInfo.InvariantCulture);
-
-                _logger.LogDebug("STT Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newSttEma, alpha, payload.RoomId);
-
-                if (!isSttDegraded && newSttEma > sttDegraded)
+                if (payload.WorkerType.Equals("stt", StringComparison.OrdinalIgnoreCase))
                 {
-                    isSttDegraded = true;
-                    updates["is_stt_degraded"] = "True";
-                    _logger.LogWarning("STT Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newSttEma, sttDegraded);
+                    double newSttEma = oldSttEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldSttEma * (1 - alpha));
+                    updates["stt_ema"] = newSttEma.ToString(CultureInfo.InvariantCulture);
+
+                    _logger.LogDebug("STT Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newSttEma, alpha, payload.RoomId);
+
+                    if (!isSttDegraded && newSttEma > sttDegraded)
+                    {
+                        isSttDegraded = true;
+                        updates["is_stt_degraded"] = "True";
+                        _logger.LogWarning("STT Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newSttEma, sttDegraded);
+                    }
+                    else if (isSttDegraded && newSttEma < sttRecovery)
+                    {
+                        isSttDegraded = false;
+                        updates["is_stt_degraded"] = "False";
+                        _logger.LogInformation("STT Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newSttEma, sttRecovery);
+                    }
                 }
-                else if (isSttDegraded && newSttEma < sttRecovery)
+                else if (payload.WorkerType.Equals("translation", StringComparison.OrdinalIgnoreCase))
                 {
-                    isSttDegraded = false;
-                    updates["is_stt_degraded"] = "False";
-                    _logger.LogInformation("STT Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newSttEma, sttRecovery);
+                    double newTranslationEma = oldTranslationEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTranslationEma * (1 - alpha));
+                    updates["translation_ema"] = newTranslationEma.ToString(CultureInfo.InvariantCulture);
+
+                    _logger.LogDebug("Translation Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTranslationEma, alpha, payload.RoomId);
+
+                    if (!isTranslationDegraded && newTranslationEma > translationDegraded)
+                    {
+                        isTranslationDegraded = true;
+                        updates["is_translation_degraded"] = "True";
+                        _logger.LogWarning("Translation Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationDegraded);
+                    }
+                    else if (isTranslationDegraded && newTranslationEma < translationRecovery)
+                    {
+                        isTranslationDegraded = false;
+                        updates["is_translation_degraded"] = "False";
+                        _logger.LogInformation("Translation Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationRecovery);
+                    }
                 }
+                else if (payload.WorkerType.Equals("tts", StringComparison.OrdinalIgnoreCase))
+                {
+                    double newTtsEma = oldTtsEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTtsEma * (1 - alpha));
+                    updates["tts_ema"] = newTtsEma.ToString(CultureInfo.InvariantCulture);
+
+                    _logger.LogDebug("TTS Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTtsEma, alpha, payload.RoomId);
+
+                    if (!isTtsDegraded && newTtsEma > ttsDegraded)
+                    {
+                        isTtsDegraded = true;
+                        updates["is_tts_degraded"] = "True";
+                        _logger.LogWarning("TTS Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsDegraded);
+                    }
+                    else if (isTtsDegraded && newTtsEma < ttsRecovery)
+                    {
+                        isTtsDegraded = false;
+                        updates["is_tts_degraded"] = "False";
+                        _logger.LogInformation("TTS Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsRecovery);
+                    }
+                }
+
+                // 6. Save updated telemetry metrics back to Redis Hash
+                await _redisStateRepo.HashSetAsync(hashKey, updates);
             }
-            else if (payload.WorkerType.Equals("translation", StringComparison.OrdinalIgnoreCase))
-            {
-                double newTranslationEma = oldTranslationEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTranslationEma * (1 - alpha));
-                updates["translation_ema"] = newTranslationEma.ToString(CultureInfo.InvariantCulture);
 
-                _logger.LogDebug("Translation Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTranslationEma, alpha, payload.RoomId);
-
-                if (!isTranslationDegraded && newTranslationEma > translationDegraded)
-                {
-                    isTranslationDegraded = true;
-                    updates["is_translation_degraded"] = "True";
-                    _logger.LogWarning("Translation Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationDegraded);
-                }
-                else if (isTranslationDegraded && newTranslationEma < translationRecovery)
-                {
-                    isTranslationDegraded = false;
-                    updates["is_translation_degraded"] = "False";
-                    _logger.LogInformation("Translation Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTranslationEma, translationRecovery);
-                }
-            }
-            else if (payload.WorkerType.Equals("tts", StringComparison.OrdinalIgnoreCase))
-            {
-                double newTtsEma = oldTtsEma == 0 ? payload.LatencyMs : (payload.LatencyMs * alpha) + (oldTtsEma * (1 - alpha));
-                updates["tts_ema"] = newTtsEma.ToString(CultureInfo.InvariantCulture);
-
-                _logger.LogDebug("TTS Ema calculated: {NewEma}ms (alpha: {Alpha}) for Room {RoomId}", newTtsEma, alpha, payload.RoomId);
-
-                if (!isTtsDegraded && newTtsEma > ttsDegraded)
-                {
-                    isTtsDegraded = true;
-                    updates["is_tts_degraded"] = "True";
-                    _logger.LogWarning("TTS Ema {Ema} exceeds threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsDegraded);
-                }
-                else if (isTtsDegraded && newTtsEma < ttsRecovery)
-                {
-                    isTtsDegraded = false;
-                    updates["is_tts_degraded"] = "False";
-                    _logger.LogInformation("TTS Ema {Ema} recovered below threshold {Threshold}. Status updated in Redis.", newTtsEma, ttsRecovery);
-                }
-            }
-
-            // 6. Save updated telemetry metrics back to Redis Hash
-            await _redisStateRepo.HashSetAsync(hashKey, updates);
-
-            // Set 24 hour TTL on telemetry key for automated lifecycle cleanup
+            // Set 24 hour TTL on telemetry key for automated lifecycle cleanup. Outside the
+            // warm-up guard: the warm-up branch above writes to this hash too, and it used to
+            // leave the key TTL-less until warm-up finished — which for a room where nobody
+            // spoke three times was forever.
             await _redisStateRepo.KeyExpireAsync(hashKey, TimeSpan.FromHours(24));
 
-            // 7. Resolve Effective Canonical Status using Priority Resolver
+            // 7. Resolve Effective Canonical Status using Priority Resolver.
+            //
+            // S8: reached on EVERY payload now, including warm-up ones. During warm-up the
+            // degraded flags are whatever Redis already held (all false on a cold room), so this
+            // resolves the healthy baseline and writes it through to Postgres immediately rather
+            // than three utterances later.
             string voiceCloneStatus = await _redisStateRepo.HashGetAsync(hashKey, "voice_clone_status") ?? "NORMAL";
             string deliveryMode = await _redisStateRepo.HashGetAsync(hashKey, "delivery_mode") ?? "NORMAL";
 

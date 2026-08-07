@@ -21,17 +21,20 @@ namespace WarpTalk.WorkspaceService.Tests;
 public class WorkspaceGrpcServiceTests
 {
     private readonly IWorkspaceDirectoryService _workspaceDirectory;
+    private readonly IWorkspaceCoMembershipService _coMembership;
     private readonly WorkspaceGrpcService _service;
     private readonly ServerCallContext _context;
 
     public WorkspaceGrpcServiceTests()
     {
         // WT-263: no IBillingSubscriptionClient here at all — and after WT-239 no unit of work
-        // either. The boundary takes the directory service and nothing else; the entitlement
-        // snapshot cases that used to be arranged here now live in WorkspaceDirectoryServiceTests
-        // against the layer that reads it.
+        // either. The boundary takes the directory service and, since WT-335, the co-membership
+        // service that answers whether two users share a tenant; the entitlement snapshot cases
+        // that used to be arranged here now live in WorkspaceDirectoryServiceTests against the
+        // layer that reads it.
         _workspaceDirectory = Substitute.For<IWorkspaceDirectoryService>();
-        _service = new WorkspaceGrpcService(_workspaceDirectory);
+        _coMembership = Substitute.For<IWorkspaceCoMembershipService>();
+        _service = new WorkspaceGrpcService(_workspaceDirectory, _coMembership);
         _context = new TestServerCallContext(CancellationToken.None);
     }
 

@@ -8,14 +8,14 @@ namespace WarpTalk.TranslationRoomService.API.GrpcServices;
 
 public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.TranslationRoomServiceBase
 {
-    private readonly ITranslationRoomService _translationRoomService;
+    // WT-334: ITranslationRoomService is gone from this class. Every RPC here now resolves through
+    // the directory service, so the mesh boundary is visible in the constructor: this service
+    // depends only on the interface whose contract is "no user to check against". Nothing here can
+    // reach a method that was supposed to authorize someone and silently didn't.
     private readonly ITranslationRoomDirectoryService _directoryService;
 
-    public TranslationRoomGrpcService(
-        ITranslationRoomService translationRoomService,
-        ITranslationRoomDirectoryService directoryService)
+    public TranslationRoomGrpcService(ITranslationRoomDirectoryService directoryService)
     {
-        _translationRoomService = translationRoomService;
         _directoryService = directoryService;
     }
 
@@ -24,7 +24,12 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         if (!Guid.TryParse(request.Id, out var parsedId))
             throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
 
-        var result = await _translationRoomService.GetTranslationRoomAsync(parsedId, context.CancellationToken);
+        // WT-334: was _translationRoomService.GetTranslationRoomAsync, which now requires a user to
+        // authorize against. This call has none — it is the mesh, not a person — so it moved to the
+        // directory service, the interface that already exists for exactly that ("a server-to-server
+        // caller has no such user to check against"). Same query, same DTO; the only thing that
+        // changed is that the unchecked read is no longer reachable from the HTTP controller.
+        var result = await _directoryService.GetRoomAsync(parsedId, context.CancellationToken);
 
         if (!result.IsSuccess)
             throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.Id);

@@ -67,12 +67,39 @@ public static class GatewayRateLimiterExtensions
                 return RateLimitPartition.GetNoLimiter<string>(HealthProbePrefix);
             }
 
+            // A signed-in caller is partitioned by WHO THEY ARE, not by where they are sitting.
+            //
+            // IP was the only partition, and the partition key is what decides who shares a budget.
+            // Everyone behind one NAT — an office, a lecture theatre, a defence room with the
+            // presenter's laptop, the projector machine and three examiners on the same wifi — was
+            // ONE partition. A single WarpTalk navigation is roughly ten gateway requests
+            // (/workspaces, its settings, members, documents, two room lists, notifications,
+            // assistant skills, presence, plus the SignalR negotiate), so the whole room shared
+            // about thirty page views a minute, and the first person to exhaust it broke the app
+            // for everybody else on that address. The natural recovery — reloading — spends ten
+            // more permits and makes it worse.
+            //
+            // Per user, that room is five independent budgets instead of one shared one, and
+            // UserPermitLimit alone (180/min ≈ 18 navigations a minute, sustained) is more headroom
+            // per person than the shared IP limit could ever give them. Anonymous traffic still
+            // partitions by IP on IpPermitLimit, which is where an IP budget belongs: it is the
+            // only identity an unauthenticated flood has.
+            //
+            // Requires UseRateLimiter to run after UseAuthentication — see Program.cs, where the
+            // ordering is pinned with a comment. Before authentication, HttpContext.User is empty
+            // and every request would silently fall back to the anonymous IP partition.
+            var userKey = RequestRateLimitPartitionKeys.User(httpContext);
+            var isAuthenticated = httpContext.User.Identity?.IsAuthenticated == true
+                && !userKey.StartsWith(RequestRateLimitPartitionKeys.AnonymousPrefix, StringComparison.Ordinal);
+
             return RateLimitPartition.GetFixedWindowLimiter(
-                partitionKey: RequestRateLimitPartitionKeys.Ip(httpContext),
+                partitionKey: isAuthenticated
+                    ? $"user:{userKey}"
+                    : $"ip:{RequestRateLimitPartitionKeys.Ip(httpContext)}",
                 factory: _ => new FixedWindowRateLimiterOptions
                 {
                     AutoReplenishment = true,
-                    PermitLimit = limits.IpPermitLimit,
+                    PermitLimit = isAuthenticated ? limits.UserPermitLimit : limits.IpPermitLimit,
                     Window = window
                 });
         });
@@ -114,12 +141,13 @@ public static class GatewayRateLimiterExtensions
         options.OnRejected = async (context, cancellationToken) =>
         {
             var retryAfterSeconds = (int)Math.Ceiling(ResolveRetryAfter(context.Lease, window).TotalSeconds);
-
-            // The rejecting limiter's own partition key is not exposed on OnRejectedContext, so
-            // this logs the client IP rather than claiming to be the partition. For the global
-            // limiter they are the same value; for the named policies it is still the field you
-            // want when reading these lines.
-            var clientIp = RequestRateLimitPartitionKeys.Ip(context.HttpContext);
+            // An earlier revision logged the client IP here, on the grounds that the rejecting
+            // limiter's own partition key is not exposed on OnRejectedContext. That stopped being
+            // the honest field once the global limiter began keying signed-in callers by user id:
+            // several people behind one venue NAT share an IP and no longer share a budget, so an
+            // IP in this line would point at the wrong thing exactly when it matters. ResolvePartitionKey
+            // reproduces the same choice the limiter made.
+            var partitionKey = ResolvePartitionKey(context.HttpContext);
 
             // Rejections used to be completely silent — no status override, no header, no log —
             // so throttling was indistinguishable from a dead gateway. One line naming the
@@ -128,11 +156,11 @@ public static class GatewayRateLimiterExtensions
                 .GetRequiredService<ILoggerFactory>()
                 .CreateLogger(RejectionLogCategory)
                 .LogWarning(
-                    "Rate limit rejected {Method} {Path} from client {ClientIp}. "
+                    "Rate limit rejected {Method} {Path} for partition {PartitionKey}. "
                     + "Responding {StatusCode} with Retry-After {RetryAfterSeconds}s.",
                     context.HttpContext.Request.Method,
                     context.HttpContext.Request.Path.Value,
-                    clientIp,
+                    partitionKey,
                     StatusCodes.Status429TooManyRequests,
                     retryAfterSeconds);
 
@@ -159,6 +187,21 @@ public static class GatewayRateLimiterExtensions
                 contentType: "application/problem+json",
                 cancellationToken);
         };
+    }
+
+    /// <summary>
+    /// The same key the global limiter partitioned on, so a rejection log names the budget that was
+    /// actually exhausted. Logging the IP for a user-partitioned rejection would send whoever reads
+    /// it looking at the wrong thing.
+    /// </summary>
+    private static string ResolvePartitionKey(HttpContext context)
+    {
+        var userKey = RequestRateLimitPartitionKeys.User(context);
+
+        return context.User.Identity?.IsAuthenticated == true
+            && !userKey.StartsWith(RequestRateLimitPartitionKeys.AnonymousPrefix, StringComparison.Ordinal)
+            ? $"user:{userKey}"
+            : $"ip:{RequestRateLimitPartitionKeys.Ip(context)}";
     }
 
     public static bool IsHealthProbe(PathString path) =>

@@ -229,6 +229,9 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 // because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
 // WorkspaceService — the same two clauses the REST paths enforce.
 builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
+// singleton would also be the wrong lifetime for something that must never cache its answer.
+builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
 
 var app = builder.Build();
 
@@ -248,9 +251,15 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseAuthentication();
+
+// AFTER UseAuthentication, and this ordering is load-bearing. The global limiter partitions a
+// signed-in caller by user id so that everyone behind one NAT — an office, a venue, a defence
+// room — does not share a single budget. HttpContext.User is not populated until authentication
+// has run, so a limiter placed above it would find no identity and silently partition every
+// request by IP again, which is the exact failure it is there to prevent.
 app.UseRateLimiter();
 
-app.UseAuthentication();
 app.UseAuthorization();
 
 // Map YARP
