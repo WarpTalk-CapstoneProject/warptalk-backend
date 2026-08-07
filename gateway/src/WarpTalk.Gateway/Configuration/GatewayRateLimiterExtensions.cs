@@ -77,22 +77,49 @@ public static class GatewayRateLimiterExtensions
                 });
         });
 
-        options.AddFixedWindowLimiter(LoginPolicyName, opt =>
-        {
-            opt.PermitLimit = limits.LoginPermitLimit;
-            opt.Window = window;
-        });
+        // AddFixedWindowLimiter(policyName, ...) registers an UN-partitioned limiter: one bucket
+        // for the entire platform, not one per caller. Both of these policies were registered
+        // that way, which inverted what they were for. LoginPolicy defaults to 5 permits per
+        // minute, so a single client sending six login attempts a minute 429'd login for every
+        // user of the product — a denial of service that costs the attacker nothing, and a live
+        // risk during a demo. It also meant per-attacker brute-force throttling was not per
+        // attacker: everyone's attempts drained the same shared bucket.
+        //
+        // Partitioned by IP, which is the only caller identity available on the login route:
+        // the request is by definition unauthenticated, so there is no user or workspace claim
+        // to key on. (RequestRateLimitPartitionKeys.Workspace falls back to the X-Workspace-Id
+        // request header, which a caller sets freely — never partition a limiter on that.)
+        options.AddPolicy(LoginPolicyName, httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: RequestRateLimitPartitionKeys.Ip(httpContext),
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    AutoReplenishment = true,
+                    PermitLimit = limits.LoginPermitLimit,
+                    Window = window
+                }));
 
-        options.AddFixedWindowLimiter(InboxPolicyName, opt =>
-        {
-            opt.PermitLimit = limits.InboxPermitLimit;
-            opt.Window = window;
-        });
+        // The inbox route is authenticated, so the caller's own identity is the honest key here;
+        // it falls back to "anonymous:<ip>" when no subject claim is present.
+        options.AddPolicy(InboxPolicyName, httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: RequestRateLimitPartitionKeys.User(httpContext),
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    AutoReplenishment = true,
+                    PermitLimit = limits.InboxPermitLimit,
+                    Window = window
+                }));
 
         options.OnRejected = async (context, cancellationToken) =>
         {
             var retryAfterSeconds = (int)Math.Ceiling(ResolveRetryAfter(context.Lease, window).TotalSeconds);
-            var partitionKey = RequestRateLimitPartitionKeys.Ip(context.HttpContext);
+
+            // The rejecting limiter's own partition key is not exposed on OnRejectedContext, so
+            // this logs the client IP rather than claiming to be the partition. For the global
+            // limiter they are the same value; for the named policies it is still the field you
+            // want when reading these lines.
+            var clientIp = RequestRateLimitPartitionKeys.Ip(context.HttpContext);
 
             // Rejections used to be completely silent — no status override, no header, no log —
             // so throttling was indistinguishable from a dead gateway. One line naming the
@@ -101,11 +128,11 @@ public static class GatewayRateLimiterExtensions
                 .GetRequiredService<ILoggerFactory>()
                 .CreateLogger(RejectionLogCategory)
                 .LogWarning(
-                    "Rate limit rejected {Method} {Path} for partition {PartitionKey}. "
+                    "Rate limit rejected {Method} {Path} from client {ClientIp}. "
                     + "Responding {StatusCode} with Retry-After {RetryAfterSeconds}s.",
                     context.HttpContext.Request.Method,
                     context.HttpContext.Request.Path.Value,
-                    partitionKey,
+                    clientIp,
                     StatusCodes.Status429TooManyRequests,
                     retryAfterSeconds);
 
