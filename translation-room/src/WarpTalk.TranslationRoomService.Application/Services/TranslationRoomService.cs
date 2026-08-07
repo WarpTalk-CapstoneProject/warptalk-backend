@@ -216,6 +216,20 @@ public class TranslationRoomService : ITranslationRoomService
                     return Result.Failure<TranslationRoomDto>(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
             }
 
+            // Same gate as the settings-update path: an unrecognised artifact-access level must
+            // never reach the database, where it is indistinguishable from HOST_ONLY and quietly
+            // denies every participant the host meant to admit.
+            if (request.Settings?.ArtifactAccess is { } requestedArtifactAccess
+                && !ArtifactAccessLevels.IsValid(requestedArtifactAccess))
+            {
+                return Result.Failure<TranslationRoomDto>(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        requestedArtifactAccess,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
+
             // WT-249: the workspace owns who may open a room — a member whose host permission was
             // revoked must be stopped here. Runs after language resolution so the workspace also
             // gets to veto the languages actually being used, not the ones merely requested.
@@ -1058,6 +1072,23 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
 
+            // ArtifactAccess is a free-form string in a jsonb blob, and for its whole life nothing
+            // checked what went into it. That is how the guard came to compare against values no
+            // writer produced without anyone noticing: an unrecognised level is indistinguishable
+            // from HOST_ONLY at read time, so the policy silently denied everyone and looked
+            // enforced. Reject it here, at the only door it can come through, so the stored value
+            // is always one the guard can actually act on.
+            if (request.Settings?.ArtifactAccess is { } requestedArtifactAccess
+                && !ArtifactAccessLevels.IsValid(requestedArtifactAccess))
+            {
+                return Result.Failure(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        requestedArtifactAccess,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
+
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
 
@@ -1213,9 +1244,33 @@ public class TranslationRoomService : ITranslationRoomService
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
                 .ToListAsync(ct);
+
+            // Artifact BODIES are decided per room by the room's own ArtifactAccess policy, not by
+            // the room-read gate that got this caller onto the page. History is reachable by every
+            // participant and by anyone holding an unaccepted invitation, so a HOST_ONLY room used
+            // to hand all of them its AI summary here while the download endpoint refused it.
+            // Participation is read from the roster already materialised above rather than from the
+            // (unloaded) navigation on each room entity.
+            var roomsById = roomEntities.ToDictionary(r => r.Id);
+            var participantUserIdsByRoom = participantEntities
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+
             var artifactsByRoom = artifactEntities
                 .GroupBy(a => a.TranslationRoomId)
-                .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
+                .ToDictionary(
+                    g => g.Key,
+                    g =>
+                    {
+                        var room = roomsById[g.Key];
+                        var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
+                            room.HostId,
+                            room.Settings,
+                            participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
+                            userId);
+
+                        return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
+                    });
 
             var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
                     ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
@@ -1240,12 +1295,22 @@ public class TranslationRoomService : ITranslationRoomService
             if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<List<TranslationRoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
+            // Room-read got the caller this far — that is what entitles them to know which
+            // artifacts exist. Whether they may also read an artifact's inline body is the
+            // stricter, policy-driven question the download endpoint asks, so ask it with the
+            // same predicate rather than letting the list be the looser of the two.
+            var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+                r => r.Id == translationRoomId,
+                "TranslationRoomParticipants",
+                ct);
+            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId);
+
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => a.TranslationRoomId == translationRoomId && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
                 .ToListAsync(ct);
-            var artifacts = artifactEntities.Select(ToArtifactDto).ToList();
+            var artifacts = artifactEntities.Select(a => ToArtifactDto(a, includeContent)).ToList();
 
             return Result.Success(artifacts);
         }
@@ -1486,7 +1551,23 @@ public class TranslationRoomService : ITranslationRoomService
         );
     }
 
-    private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)
+    /// <summary>
+    /// The artifact list projection.
+    /// </summary>
+    /// <param name="includeContent">
+    /// Whether the caller is entitled to the artifact's inline BODY, as opposed to the fact that it
+    /// exists. These two lists — the room's artifacts and the per-room artifacts inside room history
+    /// — are guarded only by <c>CanAccessRoomAsync</c>, which is room-READ: it admits every
+    /// participant, and (via <c>RoomReadAccess</c>) anyone holding an unaccepted email invitation.
+    /// <c>Content</c> is where the AI meeting summary lives — overview, decisions, action items —
+    /// so shipping it unconditionally handed the entire summary to exactly the people a
+    /// <c>HOST_ONLY</c> room is meant to withhold it from. The download endpoint refused them, which
+    /// is precisely why the policy looked like it was working. Metadata still goes to everyone who
+    /// may see the room: they should know a summary exists and may ask the host for it.
+    /// The caller decides entitlement with <see cref="ArtifactAccessHelper"/> — the same predicate
+    /// the download endpoint uses, so the two cannot drift apart again.
+    /// </param>
+    private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact, bool includeContent)
     {
         // WT-13: previously this ignored artifact.ArtifactType entirely and derived `type`
         // only from FileFormat, so every artifact (summary, recording, transcript alike)
@@ -1514,7 +1595,7 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.RetentionUntil,
             artifact.Status,
             artifact.CreatedAt,
-            artifact.Content
+            includeContent ? artifact.Content : null
         );
     }
 

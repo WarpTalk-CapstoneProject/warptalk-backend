@@ -49,6 +49,13 @@ builder.Services.AddWarpTalkServiceHealthChecks<TranscriptDbContext>(
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddScoped(typeof(IGenericRepository<>), typeof(GenericRepository<>));
 
+// --- Authorization ---
+// One transcript read predicate, shared by the query, correction and export services. They used
+// to carry three private copies of it, which is how the query copy came to be commented out
+// without anyone noticing the other two still enforced it.
+builder.Services.AddScoped<WarpTalk.TranscriptService.Application.Authorization.ITranscriptReadAccess,
+    WarpTalk.TranscriptService.Application.Authorization.TranscriptReadAccess>();
+
 // --- Application Services ---
 builder.Services.AddScoped<ITranscriptCorrectionService, TranscriptCorrectionService>();
 builder.Services.AddScoped<IGlossaryService, GlossaryService>();

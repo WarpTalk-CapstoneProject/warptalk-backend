@@ -178,7 +178,7 @@ public static class TranslationRoomMapper
         return new TranslationRoomSettings
         {
             RequiresApproval = requested?.RequiresApproval ?? defaults.RequiresApproval,
-            ArtifactAccess = requested?.ArtifactAccess ?? "HOST_ONLY",
+            ArtifactAccess = requested?.ArtifactAccess ?? ArtifactAccessLevels.HostOnly,
             MuteOnEntry = requested?.MuteOnEntry ?? defaults.MuteOnEntry,
             AutoRecord = requested?.AutoRecord ?? defaults.AutoRecord,
             BreakoutsEnabled = requested?.BreakoutsEnabled ?? defaults.BreakoutsEnabled,

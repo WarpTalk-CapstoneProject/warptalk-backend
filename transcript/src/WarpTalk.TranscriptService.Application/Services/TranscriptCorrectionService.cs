@@ -7,32 +7,43 @@ using Microsoft.Extensions.Logging;
 using Grpc.Core;
 using StackExchange.Redis;
 using WarpTalk.Shared;
+using WarpTalk.TranscriptService.Application.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Application.Mappers;
 using WarpTalk.TranscriptService.Domain.Entities;
 using WarpTalk.TranscriptService.Domain.Enums;
 using WarpTalk.TranscriptService.Domain.Interfaces;
-using GetParticipantsByRoomIdRequest = WarpTalk.Shared.Protos.GetParticipantsByRoomIdRequest;
-using TranslationRoomServiceClient = WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient;
 using GetTranslationRoomRequest = WarpTalk.Shared.Protos.GetTranslationRoomRequest;
+using TranslationRoomServiceClient = WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient;
 
 namespace WarpTalk.TranscriptService.Application.Services;
 
 public class TranscriptCorrectionService : ITranscriptCorrectionService
 {
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ITranscriptReadAccess _readAccess;
+
+    /// <summary>
+    /// Still here, and deliberately so: <see cref="FinalizeTranscriptAsync"/> asks a different
+    /// question from the read predicate — "are you the host", a write authority — and it has to
+    /// tell an absent room (NOT_FOUND) apart from a non-host caller (UNAUTHORIZED). Folding that
+    /// into <see cref="ITranscriptReadAccess"/>, which collapses a missing room to a plain
+    /// "false", would silently turn one of those responses into the other.
+    /// </summary>
     private readonly TranslationRoomServiceClient _roomClient;
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<TranscriptCorrectionService> _logger;
 
     public TranscriptCorrectionService(
         IUnitOfWork unitOfWork,
+        ITranscriptReadAccess readAccess,
         TranslationRoomServiceClient roomClient,
         IConnectionMultiplexer redis,
         ILogger<TranscriptCorrectionService> logger)
     {
         _unitOfWork = unitOfWork;
+        _readAccess = readAccess;
         _roomClient = roomClient;
         _redis = redis;
         _logger = logger;
@@ -187,29 +198,6 @@ public class TranscriptCorrectionService : ITranscriptCorrectionService
         }
     }
 
-    private async Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var room = await _roomClient.GetTranslationRoomByIdAsync(
-                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
-                cancellationToken: cancellationToken);
-
-            if (Guid.TryParse(room.HostId, out var hostId) && hostId == userId)
-                return true;
-
-            var participants = await _roomClient.GetParticipantsByRoomIdAsync(
-                new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() },
-                cancellationToken: cancellationToken);
-
-            return participants.Participants.Any(p =>
-                Guid.TryParse(p.Id, out var participantUserId) &&
-                participantUserId == userId);
-        }
-        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
-        {
-            return false;
-        }
-    }
-
+    private Task<bool> CanAccessTranscriptAsync(Transcript transcript, Guid userId, CancellationToken cancellationToken)
+        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, cancellationToken);
 }
