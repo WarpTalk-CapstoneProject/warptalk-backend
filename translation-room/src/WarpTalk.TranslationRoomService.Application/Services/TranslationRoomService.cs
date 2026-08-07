@@ -34,6 +34,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
+    private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
@@ -79,6 +80,7 @@ public class TranslationRoomService : ITranslationRoomService
         ITranslationRoomAudioRouteService audioRouteService,
         IUserSettingsDirectory userSettingsDirectory,
         IWorkspaceMeetingPolicy workspaceMeetingPolicy,
+        IWorkspaceMemberDirectory workspaceMemberDirectory,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
@@ -90,6 +92,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
         _workspaceMeetingPolicy = workspaceMeetingPolicy;
+        _workspaceMemberDirectory = workspaceMemberDirectory;
         _emailService = emailService;
         _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
@@ -399,7 +402,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
-            var query = BuildAccessibleRoomsQuery(userId, userEmail)
+            var query = (await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct))
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
@@ -1208,7 +1211,9 @@ public class TranslationRoomService : ITranslationRoomService
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
             var historyRequest = request with { Status = request.Status ?? $"{"ENDED"},{"CANCELLED"}" };
-            var query = ApplyRoomFilters(BuildAccessibleRoomsQuery(userId, userEmail), historyRequest)
+            var query = ApplyRoomFilters(
+                    await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct),
+                    historyRequest)
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var total = await query.CountAsync(ct);
@@ -1453,6 +1458,47 @@ public class TranslationRoomService : ITranslationRoomService
         return _unitOfWork.TranslationRoomRepository
             .Query()
             .Where(RoomReadAccess.IsReadableBy(userId, userEmail));
+    }
+
+    /// <summary>
+    /// The rooms a caller may SEE LISTED for one workspace.
+    ///
+    /// <see cref="BuildAccessibleRoomsQuery"/> knows three ways in — host, prior participant,
+    /// invited by email — and workspace membership is not one of them, because it is not a fact the
+    /// translation-room database holds. The effect was that a colleague added to the workspace saw
+    /// "No active meetings found." and a dashboard tile reading 0 for a workspace that had rooms in
+    /// it, while the same account could open any of those rooms by direct URL and join: the list was
+    /// stricter than the thing it was a list of, and since the Join control only exists on the room
+    /// detail page, an empty list left them no route into any meeting at all.
+    ///
+    /// So membership is asked of WorkspaceService, once per request, and only when the request names
+    /// a workspace. A member sees that workspace's rooms; everyone else keeps exactly the previous
+    /// answer, as does every caller when WorkspaceService cannot be reached.
+    ///
+    /// HOW FAR THIS WIDENS. To every non-deleted room of that workspace, deliberately: a room has no
+    /// private/unlisted/visibility attribute to respect — <c>TranslationRoomTypes</c> selects
+    /// behaviour (approval, recording, capacity), not audience — and entry is already governed
+    /// per-room by <c>RequiresApproval</c>, which is unaffected here. Listing a room is not
+    /// admission to it, and artifact bodies stay behind their own per-room ArtifactAccess policy.
+    /// If a private room type is ever introduced, its exclusion belongs in this method.
+    /// </summary>
+    private async Task<IQueryable<TranslationRoom>> BuildListableRoomsQueryAsync(
+        Guid userId,
+        string? userEmail,
+        Guid? workspaceId,
+        CancellationToken ct)
+    {
+        if (workspaceId.HasValue
+            && workspaceId.Value != Guid.Empty
+            && await _workspaceMemberDirectory.IsActiveMemberAsync(workspaceId.Value, userId, ct))
+        {
+            var scopedWorkspaceId = workspaceId.Value;
+            return _unitOfWork.TranslationRoomRepository
+                .Query()
+                .Where(r => r.WorkspaceId == scopedWorkspaceId);
+        }
+
+        return BuildAccessibleRoomsQuery(userId, userEmail);
     }
 
     private static IQueryable<TranslationRoom> ApplyRoomFilters(IQueryable<TranslationRoom> query, GetTranslationRoomsRequest request)

@@ -25,6 +25,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
@@ -42,6 +43,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        _mockWorkspaceMemberDirectory = new Mock<IWorkspaceMemberDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -76,6 +78,7 @@ public class TranslationRoomServiceTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);

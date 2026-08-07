@@ -74,6 +74,7 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             new Mock<ITranslationRoomAudioRouteService>().Object,
             new Mock<IUserSettingsDirectory>().Object,
             new Mock<IWorkspaceMeetingPolicy>().Object,
+            new Mock<IWorkspaceMemberDirectory>().Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
                 WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object);

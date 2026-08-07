@@ -18,4 +18,23 @@ public interface IWorkspaceMemberDirectory
         Guid workspaceId,
         Guid userId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// True when <paramref name="userId"/> is an active member of <paramref name="workspaceId"/> in
+    /// any role, Owner/Admin included.
+    ///
+    /// The rooms LIST needs this and <see cref="IsOwnerOrAdminAsync"/> cannot answer it: a room's
+    /// readability by a plain workspace member is not a host-adjacent privilege, it is the ordinary
+    /// case. The list used to know only host / prior participant / personally-invited email, none of
+    /// which a colleague who was simply added to the workspace satisfies, so every room in the
+    /// workspace was absent from their list while the room itself opened for them by direct URL.
+    ///
+    /// Same contract as <see cref="IsOwnerOrAdminAsync"/>: implementations must never throw. An
+    /// unreachable WorkspaceService returns false, which narrows the list back to the pre-existing
+    /// host/participant/invitation answer rather than failing the request.
+    /// </summary>
+    Task<bool> IsActiveMemberAsync(
+        Guid workspaceId,
+        Guid userId,
+        CancellationToken ct = default);
 }
