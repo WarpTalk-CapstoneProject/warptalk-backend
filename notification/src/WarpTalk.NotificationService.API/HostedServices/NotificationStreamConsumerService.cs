@@ -39,18 +39,8 @@ public class NotificationStreamConsumerService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var db = _redis.GetDatabase();
-        try
-        {
-            await db.StreamCreateConsumerGroupAsync(
-                StreamName,
-                ConsumerGroupName,
-                "0-0",
-                createStream: true);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP", StringComparison.Ordinal))
-        {
-            // The group is shared by all replicas and is expected to exist after the first start.
-        }
+        if (!await EnsureConsumerGroupAsync(db, stoppingToken))
+            return;
 
         _logger.LogInformation(
             "Admin notification delivery worker started as {ConsumerName}.",
@@ -100,6 +90,64 @@ public class NotificationStreamConsumerService : BackgroundService
                 await Task.Delay(5_000, stoppingToken);
             }
         }
+    }
+
+    /// <summary>
+    /// GUARDED: only BUSYGROUP used to be caught here, so an unreachable Redis threw XGROUP
+    /// out of <see cref="ExecuteAsync"/> and tripped BackgroundServiceExceptionBehavior.StopHost,
+    /// killing NotificationService rather than just this worker. Retries with bounded backoff so
+    /// delivery resumes on its own once Redis returns.
+    /// </summary>
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await db.StreamCreateConsumerGroupAsync(
+                    StreamName,
+                    ConsumerGroupName,
+                    "0-0",
+                    createStream: true);
+                return true;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP", StringComparison.Ordinal))
+            {
+                // The group is shared by all replicas and is expected to exist after the first start.
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "Admin notification delivery worker could not create consumer group {Group} on {Stream} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Admin notifications are NOT being "
+                    + "delivered until it succeeds.",
+                    ConsumerGroupName, StreamName, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
     }
 
     private async Task HandleMessageAsync(

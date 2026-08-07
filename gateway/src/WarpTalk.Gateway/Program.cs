@@ -152,6 +152,9 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
     {
         options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk");
+        // Same reason as the multiplexer below: a backplane that cannot reach Redis must
+        // degrade this instance to single-node SignalR, not stop the gateway from booting.
+        options.Configuration.AbortOnConnectFail = false;
     });
 }
 
@@ -169,8 +172,15 @@ if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
     redisStreamConnectionString = "localhost:6379";
 }
 
+// abortConnect=false is load-bearing, not tuning. Without it StackExchange.Redis throws
+// out of this factory while the service provider is being built, i.e. before any
+// BackgroundService exists to guard, and the process dies. The gateway's primary job is
+// proxying HTTP and terminating SignalR; the whole API surface must keep answering when
+// realtime is temporarily down. The multiplexer returned here is disconnected and
+// reconnects on its own, and /health/ready reports the degradation (see
+// AddWarpTalkRedisReadiness below) so nothing pretends to be healthy.
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-    ConnectionMultiplexer.Connect(redisStreamConnectionString));
+    ConnectionMultiplexer.Connect(redisStreamConnectionString + ",abortConnect=false"));
 
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();

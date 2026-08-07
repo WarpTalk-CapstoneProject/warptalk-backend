@@ -28,46 +28,95 @@ public class TranslationRoomEventConsumerService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
+        var streamName = "translationRoom:system_events";
+        var groupName = "translationRoom_backend_consumer";
+
+        // GUARDED: group creation used to sit under a catch that logged Critical and rethrew,
+        // so an unreachable Redis tripped BackgroundServiceExceptionBehavior.StopHost and took
+        // TranslationRoomService down instead of just this consumer. Retries with bounded
+        // backoff so consumption resumes on its own once Redis returns.
+        if (!await EnsureConsumerGroupAsync(streamName, groupName, stoppingToken))
+            return;
+
+        var consumerName = $"backend-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
+        _logger.LogInformation("Starting Redis stream consumer with name: {ConsumerName}", consumerName);
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            var streamName = "translationRoom:system_events";
-            var groupName = "translationRoom_backend_consumer";
-
-            await _redisStreamRepository.EnsureConsumerGroupExistsAsync(streamName, groupName);
-
-            var consumerName = $"backend-{Environment.MachineName}-{Guid.NewGuid().ToString("N")[..8]}";
-            _logger.LogInformation("Starting Redis stream consumer with name: {ConsumerName}", consumerName);
-
-            while (!stoppingToken.IsCancellationRequested)
+            try
             {
-                try
-                {
-                    var messages = await _redisStreamRepository.ReadGroupAsync(
-                        streamName,
-                        groupName,
-                        consumerName,
-                        ">",
-                        count: 10);
+                var messages = await _redisStreamRepository.ReadGroupAsync(
+                    streamName,
+                    groupName,
+                    consumerName,
+                    ">",
+                    count: 10);
 
-                    foreach (var message in messages)
-                    {
-                        await ProcessMessageWithRetryAsync(message, stoppingToken);
-                        await _redisStreamRepository.AcknowledgeAsync(streamName, groupName, message.Id);
-                    }
-                }
-                catch (Exception ex)
+                foreach (var message in messages)
                 {
-                    _logger.LogError(ex, "Error occurred while consuming Redis stream {StreamName}", streamName);
+                    await ProcessMessageWithRetryAsync(message, stoppingToken);
+                    await _redisStreamRepository.AcknowledgeAsync(streamName, groupName, message.Id);
                 }
 
                 await Task.Delay(100, stoppingToken); // Small delay to avoid CPU spinning
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Graceful shutdown. Previously the Task.Delay below sat outside this try, so a
+                // normal stop surfaced as "background service crashed!" at Critical.
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error occurred while consuming Redis stream {StreamName}", streamName);
+            }
         }
-        catch (Exception ex)
+    }
+
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(
+        string streamName,
+        string groupName,
+        CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
         {
-            _logger.LogCritical(ex, "TranslationRoomEventConsumerService background service crashed!");
-            throw;
+            try
+            {
+                await _redisStreamRepository.EnsureConsumerGroupExistsAsync(streamName, groupName);
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "TranslationRoomEventConsumerService could not create consumer group {Group} on {Stream} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Room system events are NOT being "
+                    + "processed until it succeeds.",
+                    groupName, streamName, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
         }
+
+        return false;
     }
 
     private async Task ProcessMessageWithRetryAsync(RedisStreamMessage message, CancellationToken ct)

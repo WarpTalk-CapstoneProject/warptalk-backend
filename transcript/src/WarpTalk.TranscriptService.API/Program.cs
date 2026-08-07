@@ -59,8 +59,11 @@ builder.Services.AddScoped<ITranscriptExportService, TranscriptExportService>();
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
+// abortConnect=false: transcript read/search/export are Postgres-backed and stay useful
+// while the Redis ingest path is down. The consumers below retry their consumer groups with
+// bounded backoff and pick up again once Redis returns, without a restart.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-    ConnectionMultiplexer.Connect(redisConnectionString));
+    ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.TranscriptRedisConsumerService>();
 builder.Services.AddHostedService<WarpTalk.TranscriptService.Infrastructure.Redis.GlossaryStartedEventConsumer>();
