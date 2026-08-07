@@ -374,13 +374,36 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default)
+    /// <summary>
+    /// WT-334: this read had NO authorization. The controller's class-level <c>[Authorize]</c> was
+    /// the entire check, and this method took no user at all — so any authenticated user could read
+    /// any room in any workspace: title, description, room code, schedule, settings, host.
+    ///
+    /// The guard is <see cref="CanAccessRoomAsync"/>, i.e. WT-304's
+    /// <c>RoomReadAccess.IsReadableBy</c> — the same host-OR-participant-OR-invited-by-email
+    /// predicate the rooms list, the artifacts guard and the session read already use. This endpoint
+    /// was left out of PR #116 as too wide a blast radius for that change; it is the fourth consumer
+    /// now rather than a fifth spelling.
+    ///
+    /// The refusal is NotFound, not Forbidden, and reuses the not-found message verbatim: a 403
+    /// would confirm that a room with this id exists, which is exactly what a cross-tenant prober
+    /// wants and is a leak in its own right. The two branches below are deliberately
+    /// indistinguishable to the caller.
+    /// </summary>
+    public async Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
     {
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
 
             if (translationRoom == null)
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             return Result.Success(translationRoom.ToResponseDto(
