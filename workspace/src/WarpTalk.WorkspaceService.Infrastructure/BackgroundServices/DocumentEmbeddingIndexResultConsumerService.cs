@@ -40,17 +40,12 @@ public class DocumentEmbeddingIndexResultConsumerService : BackgroundService
         _logger.LogInformation("DocumentEmbeddingIndexResultConsumerService started.");
         var db = _redis.GetDatabase();
 
-        try
-        {
-            await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", createStream: true);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP", StringComparison.OrdinalIgnoreCase))
-        {
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to initialize Redis Stream consumer group for {StreamKey}.", StreamKey);
-        }
+        // This catch-all already stopped StopHost, but it swallowed once and never retried: after
+        // a Redis outage at startup the group was never created, so every StreamReadGroupAsync
+        // below failed NOGROUP forever and the service ran deaf while looking alive. Retry with
+        // bounded backoff instead, so it recovers on its own once Redis returns.
+        if (!await EnsureConsumerGroupAsync(db, stoppingToken))
+            return;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -86,5 +81,51 @@ public class DocumentEmbeddingIndexResultConsumerService : BackgroundService
                 await Task.Delay(5000, stoppingToken);
             }
         }
+    }
+
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", createStream: true);
+                return true;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "Failed to initialize Redis Stream consumer group {Group} for {StreamKey} (attempt {Attempt}); "
+                    + "retrying in {RetryDelay}. Document embedding results are NOT being processed until it succeeds.",
+                    ConsumerGroup, StreamKey, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
     }
 }

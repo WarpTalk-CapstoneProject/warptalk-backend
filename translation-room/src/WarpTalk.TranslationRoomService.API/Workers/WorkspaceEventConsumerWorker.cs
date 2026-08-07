@@ -42,7 +42,9 @@ public class WorkspaceEventConsumerWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await _redisStreamRepository.EnsureConsumerGroupExistsAsync(StreamName, GroupName);
+        if (!await EnsureConsumerGroupAsync(stoppingToken))
+            return;
+
         _logger.LogInformation("WorkspaceEventConsumerWorker started consuming from stream '{StreamName}'.", StreamName);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -79,6 +81,56 @@ public class WorkspaceEventConsumerWorker : BackgroundService
                 await Task.Delay(5000, stoppingToken);
             }
         }
+    }
+
+    /// <summary>
+    /// GUARDED: this was a bare call outside every try, and IRedisStreamRepository only swallows
+    /// BUSYGROUP — so an unreachable Redis threw XGROUP out of <see cref="ExecuteAsync"/> and
+    /// tripped BackgroundServiceExceptionBehavior.StopHost, killing TranslationRoomService rather
+    /// than just this worker. Retries with bounded backoff so consumption resumes on its own once
+    /// Redis returns.
+    /// </summary>
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await _redisStreamRepository.EnsureConsumerGroupExistsAsync(StreamName, GroupName);
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "WorkspaceEventConsumerWorker could not create consumer group {Group} on {Stream} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Workspace deletions and member "
+                    + "removals are NOT reaching translation rooms until it succeeds.",
+                    GroupName, StreamName, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
     }
 
     private async Task HandleWorkspaceDeleted(RedisStreamMessage message, CancellationToken ct)

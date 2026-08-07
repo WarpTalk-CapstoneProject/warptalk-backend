@@ -131,8 +131,13 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
+// abortConnect=false: room CRUD and the gRPC surface are Postgres-backed; Redis is the event
+// bus. Safe here specifically because the two Redis-backed *gates* fail CLOSED rather than
+// open — SubscriptionQuotaInterceptor and RateLimitingFilter let the RedisConnectionException
+// surface, so the guarded call is rejected rather than silently allowed. If either is ever
+// changed to catch-and-allow, this line becomes a quota bypass and must be revisited.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-    ConnectionMultiplexer.Connect(redisConnectionString));
+    ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
 // Hosted Services
 builder.Services.AddHostedService<TranslationRoomEventConsumerService>();
