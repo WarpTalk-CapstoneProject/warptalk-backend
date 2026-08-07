@@ -1,0 +1,25 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+' Screen Nodes & Modals
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "Workspace Documents Page" as DocumentsPage
+rectangle "Document View & Chunks Page" as DocumentViewPage
+rectangle "Upload Document Modal" as UploadDocumentModal
+
+' Workspace Documents Management Flow
+WorkspaceHome --> DocumentsPage : Click "Workspace Documents"
+DocumentsPage --> UploadDocumentModal : Click "Upload Document"
+UploadDocumentModal --> DocumentsPage : Upload PDF / DOCX (RAG Ingestion Queued)
+DocumentsPage --> DocumentViewPage : Click "Select Document"
+DocumentViewPage --> DocumentsPage : Click "Back to Documents List"
+
+@enduml

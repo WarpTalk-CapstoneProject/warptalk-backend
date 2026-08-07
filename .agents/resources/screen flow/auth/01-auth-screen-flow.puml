@@ -1,0 +1,44 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+' Pages
+rectangle "Landing Page" as LandingPage
+rectangle "Login Page" as LoginPage
+rectangle "Register Page" as RegisterPage
+rectangle "Forgot Password Page" as ForgotPasswordPage
+rectangle "Reset Password Page" as ResetPasswordPage
+rectangle "Verify Email Page" as VerifyEmailPage
+rectangle "Accept Invitation Page" as AcceptInvitationPage
+rectangle "Workspace Selection Page" as WorkspaceSelectionPage
+
+' Authentication Flow
+LandingPage --> LoginPage : Click "Login"
+LandingPage --> RegisterPage : Click "Sign Up"
+
+LoginPage --> RegisterPage : Click "Create an account"
+RegisterPage --> LoginPage : Click "Already have an account"
+
+LoginPage --> ForgotPasswordPage : Click "Forgot Password?"
+ForgotPasswordPage --> LoginPage : Click "Back to Login"
+ForgotPasswordPage --> ResetPasswordPage : Click "Send Reset Link" (check email)
+ResetPasswordPage --> LoginPage : Click "Reset Password" (success)
+
+RegisterPage --> VerifyEmailPage : Click "Sign Up" (requires verification)
+VerifyEmailPage --> LoginPage : Click "Verify Email" (token valid)
+
+' Login Success Redirection
+LoginPage --> WorkspaceSelectionPage : Click "Submit" (with valid credentials)
+
+' Invite Acceptance Flow
+AcceptInvitationPage --> LoginPage : Token valid (unauthenticated)
+LoginPage --> WorkspaceSelectionPage : Login success (auto join workspace)
+
+@enduml

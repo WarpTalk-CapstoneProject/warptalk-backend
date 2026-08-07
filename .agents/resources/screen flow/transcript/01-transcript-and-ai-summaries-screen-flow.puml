@@ -1,0 +1,26 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+' Pages
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "Workspace Transcript Page" as WorkspaceTranscriptPage
+rectangle "Meeting History Page" as MeetingHistoryPage
+rectangle "AI Summaries Page" as AISummariesPage
+
+' Navigation Flow
+WorkspaceHome --> WorkspaceTranscriptPage : Click "Transcripts"
+WorkspaceHome --> MeetingHistoryPage : Click "Meeting History"
+WorkspaceHome --> AISummariesPage : Click "AI Summaries"
+
+MeetingHistoryPage --> WorkspaceTranscriptPage : Click "View Full Transcript"
+WorkspaceTranscriptPage --> AISummariesPage : Click "View AI Summary"
+
+@enduml

@@ -1,0 +1,57 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+' Screen Nodes & Modals
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "Rooms List Page" as RoomsListPage
+rectangle "Create Room Modal" as CreateRoomModal
+rectangle "Preflight Check & Device Setup" as PreflightPage
+rectangle "Waiting Room Lobby" as WaitingRoomPage
+rectangle "Active Meeting Room Page" as MeetingRoomPage
+rectangle "Device & Language Settings Modal" as DeviceSettingsModal
+rectangle "In-Meeting Translated Chat Panel" as MeetingChatPanel
+rectangle "Live Transcript Feed Panel" as LiveTranscriptPanel
+rectangle "WarpBot In-Meeting AI Suggestion Panel" as WarpBotMeetingPanel
+rectangle "Meeting Artifacts & Transcripts" as MeetingArtifactsPage
+
+' Room Creation & Setup Flow
+WorkspaceHome --> RoomsListPage : Click "Rooms Menu"
+RoomsListPage --> CreateRoomModal : Click "Create / Schedule Room"
+CreateRoomModal --> PreflightPage : Click "Create Room" (room created)
+
+' Preflight & Device Configuration Flow
+RoomsListPage --> PreflightPage : Click "Join Room"
+PreflightPage --> PreflightPage : Configure Camera / Mic / Target Language
+
+' Room Entry Flow
+PreflightPage --> WaitingRoomPage : Click "Join" (guest requires host approval)
+WaitingRoomPage --> MeetingRoomPage : Host approves entry
+PreflightPage --> MeetingRoomPage : Click "Join Instant Meeting" (host / direct entry)
+
+' Active Meeting In-Room Interactions & Panels
+MeetingRoomPage --> DeviceSettingsModal : Click "Audio / Video / Language Settings"
+DeviceSettingsModal --> MeetingRoomPage : Click "Save Preferences"
+
+MeetingRoomPage --> MeetingChatPanel : Click "Toggle Translated Chat Drawer"
+MeetingChatPanel --> MeetingRoomPage : Click "Send Message" / "Close Chat"
+
+MeetingRoomPage --> LiveTranscriptPanel : Click "Toggle Live Subtitles / Transcript"
+LiveTranscriptPanel --> MeetingRoomPage : View real-time STT & translation
+
+' WarpBot In-Meeting Real-Time Context Suggestion Flow
+MeetingRoomPage --> WarpBotMeetingPanel : Click "Open WarpBot AI Assistant" / Live Context Trigger
+WarpBotMeetingPanel --> MeetingRoomPage : View Real-Time Context Suggestions / Ask WarpBot
+
+' Meeting Exit & Artifact View Flow
+MeetingRoomPage --> MeetingArtifactsPage : Click "Leave / End Meeting" (view summary & artifacts)
+MeetingArtifactsPage --> WorkspaceHome : Click "Back to Workspace Home Page"
+
+@enduml
