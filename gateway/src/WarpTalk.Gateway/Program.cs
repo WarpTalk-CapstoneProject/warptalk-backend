@@ -229,6 +229,12 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
+// Server-side host check for TranslationRoomHub's host-only methods (MuteAll,
+// SpotlightParticipant, AdmitWaitingParticipant). Registered after both gRPC clients above
+// because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
+// WorkspaceService — the same two clauses the REST paths enforce.
+builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
