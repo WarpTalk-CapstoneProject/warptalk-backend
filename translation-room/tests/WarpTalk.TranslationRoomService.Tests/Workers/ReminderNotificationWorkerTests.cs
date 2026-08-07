@@ -26,6 +26,8 @@ namespace WarpTalk.TranslationRoomService.Tests.Workers;
 ///   A2 — one failing recipient left reminder_Nmin_sent_at null, so the next poll re-sent to
 ///        every recipient, once a minute, for the rest of the window.
 ///
+/// It also covers the T-30min window WT-326 adds on top of those two.
+///
 /// The sweep is driven directly through CheckAndSendRemindersAsync (internal, see
 /// InternalsVisibleTo in the API project) so the repository predicate is exercised for real
 /// rather than restated.
@@ -93,6 +95,99 @@ public sealed class ReminderNotificationWorkerTests
         harness.Notifications.Attempts.Should().BeEmpty();
         room.Reminder10MinSentAt.Should().BeNull();
         room.Reminder1MinSentAt.Should().BeNull();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Part B — the T-30min window
+    // ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Sweep_SendsTheThirtyMinuteReminder()
+    {
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(25), alreadyRemindedAtThirty: false);
+        var harness = new Harness(room);
+
+        await harness.PollAsync();
+
+        harness.Notifications.SentTo.Should().BeEquivalentTo(new[] { HostId.ToString() });
+        room.Reminder30MinSentAt.Should().NotBeNull();
+        room.Reminder10MinSentAt.Should().BeNull("T-10min is still 15 minutes away");
+        room.Reminder1MinSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Sweep_SendsTheThirtyMinuteReminderForAWaitingRoomToo()
+    {
+        var room = Room(status: "WAITING", startsIn: TimeSpan.FromMinutes(25), alreadyRemindedAtThirty: false);
+        var harness = new Harness(room);
+
+        await harness.PollAsync();
+
+        room.Reminder30MinSentAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Sweep_DoesNotSendTheThirtyMinuteReminderBeforeItsWindowOpens()
+    {
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(45), alreadyRemindedAtThirty: false);
+        var harness = new Harness(room);
+
+        await harness.PollAsync();
+
+        harness.Notifications.Attempts.Should().BeEmpty();
+        room.Reminder30MinSentAt.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Sweep_FiresEachWindowExactlyOnceAcrossTheWholeRunUp()
+    {
+        // A worker that polls through all three windows must notify three times, not more, and
+        // must land the right stamp each time.
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(25), alreadyRemindedAtThirty: false);
+        var harness = new Harness(room);
+
+        await harness.PollAsync();
+        room.Reminder30MinSentAt.Should().NotBeNull();
+
+        // Still inside T-30min: a second poll before the next window opens sends nothing.
+        harness.Notifications.Reset();
+        await harness.PollAsync();
+        harness.Notifications.Attempts.Should().BeEmpty();
+
+        room.ScheduledAt = DateTime.UtcNow.AddMinutes(8);
+        harness.Notifications.Reset();
+        await harness.PollAsync();
+        harness.Notifications.SentTo.Should().HaveCount(1);
+        room.Reminder10MinSentAt.Should().NotBeNull();
+
+        room.ScheduledAt = DateTime.UtcNow.AddSeconds(45);
+        harness.Notifications.Reset();
+        await harness.PollAsync();
+        harness.Notifications.SentTo.Should().HaveCount(1);
+        room.Reminder1MinSentAt.Should().NotBeNull();
+
+        // Meeting has started: nothing more, ever.
+        room.ScheduledAt = DateTime.UtcNow.AddSeconds(-1);
+        harness.Notifications.Reset();
+        await harness.PollAsync();
+        harness.Notifications.Attempts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Sweep_CatchesUpOnAMissedThirtyMinuteWindowWithoutSkippingTheNarrowerOne()
+    {
+        // A room booked 8 minutes out never had a T-30min window to sit in, but it is inside the
+        // T-30min LEAD TIME, so both stamps are owed and both fire on the same poll. Each is a
+        // separate notification, so the recipient sees two — which is the honest reading of
+        // "remind me 30 and 10 minutes before" for a meeting booked 8 minutes ahead.
+        var room = Room(status: "SCHEDULED", startsIn: TimeSpan.FromMinutes(8), alreadyRemindedAtThirty: false);
+        var harness = new Harness(room);
+
+        await harness.PollAsync();
+
+        harness.Notifications.SentTo.Should().HaveCount(2);
+        room.Reminder30MinSentAt.Should().NotBeNull();
+        room.Reminder10MinSentAt.Should().NotBeNull();
     }
 
     [Fact]
@@ -212,7 +307,15 @@ public sealed class ReminderNotificationWorkerTests
     // Fixtures
     // ─────────────────────────────────────────────────────────────
 
-    private static TranslationRoom Room(string status, TimeSpan startsIn, Guid[]? participants = null)
+    /// <param name="alreadyRemindedAtThirty">
+    /// Defaults to true so a room created inside the T-30min window does not also fire the T-30min
+    /// reminder in tests that are about the narrower windows. The T-30min tests pass false.
+    /// </param>
+    private static TranslationRoom Room(
+        string status,
+        TimeSpan startsIn,
+        Guid[]? participants = null,
+        bool alreadyRemindedAtThirty = true)
     {
         var room = new TranslationRoom
         {
@@ -227,6 +330,7 @@ public sealed class ReminderNotificationWorkerTests
             TargetLanguages = "[\"vi\"]",
             Settings = "{}",
             ScheduledAt = DateTime.UtcNow.Add(startsIn),
+            Reminder30MinSentAt = alreadyRemindedAtThirty ? DateTime.UtcNow.AddMinutes(-1) : null,
         };
 
         foreach (var userId in participants ?? Array.Empty<Guid>())

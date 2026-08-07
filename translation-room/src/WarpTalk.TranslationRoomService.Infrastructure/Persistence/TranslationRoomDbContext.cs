@@ -164,6 +164,7 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.SeriesOccurrenceLocalDate)
                 .HasColumnType("date")
                 .HasColumnName("series_occurrence_local_date");
+            entity.Property(e => e.Reminder30MinSentAt).HasColumnName("reminder_30min_sent_at");
             entity.Property(e => e.Reminder10MinSentAt).HasColumnName("reminder_10min_sent_at");
             entity.Property(e => e.Reminder1MinSentAt).HasColumnName("reminder_1min_sent_at");
             entity.Property(e => e.Settings)

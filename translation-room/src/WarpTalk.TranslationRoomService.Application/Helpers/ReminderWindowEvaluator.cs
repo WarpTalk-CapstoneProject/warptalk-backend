@@ -6,12 +6,14 @@ namespace WarpTalk.TranslationRoomService.Application.Helpers;
 
 /// <summary>
 /// WT-14: pure decision logic for whether a scheduled-room reminder should fire for a given
-/// window (T-10min / T-1min). Kept independent of the "already sent" persistence and of the
-/// polling cadence so it is correct regardless of how often the worker actually runs — a room
+/// window (T-30min / T-10min / T-1min). Kept independent of the "already sent" persistence and of
+/// the polling cadence so it is correct regardless of how often the worker actually runs — a room
 /// is reminded exactly once per window as long as `alreadySentAtUtc` is set right after sending.
 /// </summary>
 public static class ReminderWindowEvaluator
 {
+    /// <summary>WT-326: the third window, added alongside the two WT-14 shipped with.</summary>
+    public static readonly TimeSpan ThirtyMinuteWindow = TimeSpan.FromMinutes(30);
     public static readonly TimeSpan TenMinuteWindow = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan OneMinuteWindow = TimeSpan.FromMinutes(1);
 
@@ -20,7 +22,7 @@ public static class ReminderWindowEvaluator
     /// Must equal the widest window above; <see cref="SweepCandidateFilter"/> is the only
     /// consumer, and it is wrong the moment a wider window is added without updating this.
     /// </summary>
-    public static readonly TimeSpan WidestWindow = TenMinuteWindow;
+    public static readonly TimeSpan WidestWindow = ThirtyMinuteWindow;
 
     /// <summary>
     /// True when `nowUtc` falls inside [scheduledAtUtc - window, scheduledAtUtc) and no
@@ -67,6 +69,6 @@ public static class ReminderWindowEvaluator
             && room.ScheduledAt != null
             && room.ScheduledAt > nowUtc
             && room.ScheduledAt <= horizon
-            && (room.Reminder10MinSentAt == null || room.Reminder1MinSentAt == null);
+            && (room.Reminder30MinSentAt == null || room.Reminder10MinSentAt == null || room.Reminder1MinSentAt == null);
     }
 }
