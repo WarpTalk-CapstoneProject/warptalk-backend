@@ -301,11 +301,22 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             return false;
         }
 
-        if (document.OwnerId == userId)
-        {
-            return true;
-        }
-
+        // Membership is checked BEFORE ownership, and deliberately so.
+        //
+        // This method authorizes mutation: renaming the document, flipping its AI
+        // eligibility, and adding or removing access policies. An ownership shortcut
+        // used to sit ahead of this lookup, so a member who had been removed from the
+        // workspace kept all of it for as long as their JWT stayed valid — including
+        // the ability to grant themselves an ALLOW policy.
+        //
+        // Ownership does not survive losing membership. A removed member retains
+        // nothing over documents they uploaded: the document stays, their rights over
+        // it do not. WT-158 frames documents as belonging to the enterprise workspace
+        // rather than to an individual account, with access following workspace
+        // membership; WT-157 requires that policy "must not bypass explicit
+        // suspended/removed member state". Continuity is the workspace's problem to
+        // solve, and Owners and Admins already have full authority over every document
+        // in the workspace, so nothing becomes unmanageable when an uploader leaves.
         var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
             m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
         if (member == null)
@@ -313,6 +324,8 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
             return false;
         }
 
+        // A current member keeps full control of the documents they own, whatever their
+        // workspace role.
         if (document.OwnerId == userId)
         {
             return true;

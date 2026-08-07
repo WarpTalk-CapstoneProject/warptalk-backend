@@ -80,12 +80,42 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
             }
 
+            // ── Caller eligibility ────────────────────────────────────────────────
+            // These two rules are properties of the CALLER, not of the workspace being
+            // created, so they must not sit behind a flag the caller supplies in the
+            // request body. RequireVerifiedDomainForInternal answers a different
+            // question — "how do future JOINERS get classified in this workspace" — and
+            // is a legitimate per-workspace setting. It never decides who is allowed to
+            // found a workspace in the first place. Previously both checks ran only when
+            // that flag was on, so `{"requireVerifiedDomainForInternal": false}` turned
+            // them both off from the request body. WT-142: "FE disabled states do not
+            // replace backend authorization."
+
+            // The web client blocks this unconditionally in workspace/create/page.tsx
+            // ("Use a business email or join by invitation"). This is the server-side
+            // half of that rule.
+            if (emailAddress.IsPublicDomain)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, ErrorCodes.ValidationError);
+            }
+
+            // One Enterprise (internal) home per user.
+            var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
+            if (isInternalElsewhere)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
+            }
+
             var domainsToVerify = new List<string>();
             bool requireVerified;
 
             if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
             {
-                domainsToVerify = request.VerifiedDomains;
+                domainsToVerify = request.VerifiedDomains
+                    .Where(d => !string.IsNullOrWhiteSpace(d))
+                    .Select(d => d.Trim().ToLowerInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
                 requireVerified = request.RequireVerifiedDomainForInternal ?? true;
             }
             else
@@ -101,26 +131,34 @@ public class WorkspaceService : IWorkspaceService
                 }
             }
 
-            if (requireVerified)
+            // ── Domain claims ─────────────────────────────────────────────────────
+            // Claiming a domain grants this workspace the trusted Internal tier over
+            // everyone who later joins from that domain, so it is an authorization
+            // decision, not a preference. It is validated unconditionally: even when
+            // requireVerified is false the list is still persisted into the settings
+            // JSON, which IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync reads.
+            foreach (var domain in domainsToVerify)
             {
-                var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
-                if (isInternalElsewhere)
+                // A caller may only claim the domain of their own account email.
+                // Without this an attacker at attacker.com could claim victimcorp.com
+                // and auto-classify every victimcorp.com joiner as Internal.
+                if (!string.Equals(domain, emailAddress.Domain, StringComparison.OrdinalIgnoreCase))
                 {
-                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
+                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, ErrorCodes.Forbidden);
                 }
 
-                foreach (var domain in domainsToVerify)
+                // Redundant while the ownership rule above holds (a public caller is
+                // already refused), kept so relaxing that rule cannot silently
+                // re-open public-domain verification.
+                if (EmailAddress.IsPublicDomainName(domain))
                 {
-                    if (EmailAddress.IsPublicDomainName(domain))
-                    {
-                        return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
-                    }
+                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
+                }
 
-                    var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, domain, ct);
-                    if (owningWorkspaceId.HasValue)
-                    {
-                        return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
-                    }
+                var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, domain, ct);
+                if (owningWorkspaceId.HasValue)
+                {
+                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
                 }
             }
 
