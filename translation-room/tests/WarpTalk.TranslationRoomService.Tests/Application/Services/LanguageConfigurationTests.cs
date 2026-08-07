@@ -55,6 +55,11 @@ public class LanguageConfigurationTests
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
+        // ...and the tenant itself is live unless a test suspends it.
+        _mockWorkspaceMeetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             _mockUnitOfWork.Object,
             _mockLanguagePolicy.Object,
