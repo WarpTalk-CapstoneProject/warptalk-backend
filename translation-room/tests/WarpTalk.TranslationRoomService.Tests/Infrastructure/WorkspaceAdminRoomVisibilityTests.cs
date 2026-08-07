@@ -12,21 +12,26 @@ using WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 namespace WarpTalk.TranslationRoomService.Tests.Infrastructure;
 
 /// <summary>
-/// A workspace member who did not create a room, was never in it, and was never personally invited
-/// by email saw NOTHING: "No active meetings found." and a dashboard tile reading 0, for a workspace
+/// A workspace ADMIN who did not create a room, was never in it, and was never personally invited by
+/// email saw NOTHING: "No active meetings found." and a dashboard tile reading 0, for a workspace
 /// that had rooms in it. The room's own detail page opened for that same account by direct URL, with
 /// a working Join button — so the list was stricter than the thing it was a list of, and because the
-/// Join control exists only on the detail page, an empty list left them no route into any meeting.
+/// Join control lives only on the detail page, an empty list left her no route into any meeting.
 ///
 /// The list knew three ways in — host, prior participant, invited-by-email — and workspace
-/// membership was not one of them, because it is not a fact the translation-room database holds.
+/// Owner/Admin was not one of them, because it is not a fact the translation-room database holds.
+/// WT-313 had already ratified host OR participant OR workspace Owner/Admin as the rule for who may
+/// act on a room; it audited TranslationRoomParticipantService and never reached the rooms list.
+///
+/// A plain workspace MEMBER is deliberately still outside the widening — WT-313 keeps that as a
+/// negative case — which the last test here pins.
 ///
 /// Real Postgres on purpose, matching <see cref="RoomOccupancyCountTests"/>: the list path runs
 /// CountAsync/ToListAsync over the repository's IQueryable, which a mock-backed in-memory sequence
 /// cannot execute, so a unit test here would have to assert against a different query than the one
 /// that ships.
 /// </summary>
-public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
+public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _dbContainer = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
@@ -39,9 +44,14 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
     private static readonly Guid WorkspaceId = Guid.Parse("33333333-3333-3333-3333-333333333333");
     private static readonly Guid HostId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 
-    /// <summary>An active member of the workspace, and nothing else: not the host, never a
-    /// participant, never invited by email. This is the account the defect was reported against.</summary>
-    private static readonly Guid WorkspaceMemberId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+    /// <summary>An Admin of the workspace, and nothing else: not the host, never a participant,
+    /// never invited by email. This is the account the defect was reported against — the mentor who
+    /// could not find, and therefore could not join, a room in the workspace she administers.</summary>
+    private static readonly Guid WorkspaceAdminId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+
+    /// <summary>A plain member of the workspace. Deliberately NOT widened: WT-313 keeps a plain
+    /// member as a negative case, so this account must keep seeing only its own rooms.</summary>
+    private static readonly Guid PlainMemberId = Guid.Parse("88888888-8888-8888-8888-888888888888");
 
     /// <summary>Not a member of the workspace at all. Must keep seeing nothing.</summary>
     private static readonly Guid OutsiderId = Guid.Parse("66666666-6666-6666-6666-666666666666");
@@ -78,11 +88,8 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
         languagePolicy.Setup(p => p.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
 
         _workspaceMembers
-            .Setup(d => d.IsActiveMemberAsync(WorkspaceId, WorkspaceMemberId, It.IsAny<CancellationToken>()))
+            .Setup(d => d.IsOwnerOrAdminAsync(WorkspaceId, WorkspaceAdminId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(true);
-        _workspaceMembers
-            .Setup(d => d.IsActiveMemberAsync(It.IsAny<Guid>(), OutsiderId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(false);
 
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             unitOfWork,
@@ -144,11 +151,11 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
             $"{userId}@example.test");
 
     [Fact]
-    public async Task ActiveList_ShowsWorkspaceRooms_ToAMemberWhoIsNeitherHostNorParticipantNorInvitee()
+    public async Task ActiveList_ShowsWorkspaceRooms_ToAnAdminWhoIsNeitherHostNorParticipantNorInvitee()
     {
         var room = await SeedRoomAsync(WorkspaceId, "WAITING");
 
-        var result = await ListAsync(WorkspaceMemberId);
+        var result = await ListAsync(WorkspaceAdminId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Rooms.Should().ContainSingle(r => r.Id == room.Id);
@@ -161,11 +168,11 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
     /// still claiming the workspace had never held a meeting.
     /// </summary>
     [Fact]
-    public async Task History_ShowsWorkspaceRooms_ToAMemberWhoIsNeitherHostNorParticipantNorInvitee()
+    public async Task History_ShowsWorkspaceRooms_ToAnAdminWhoIsNeitherHostNorParticipantNorInvitee()
     {
         var room = await SeedRoomAsync(WorkspaceId, "ENDED");
 
-        var result = await HistoryAsync(WorkspaceMemberId);
+        var result = await HistoryAsync(WorkspaceAdminId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == room.Id);
@@ -188,8 +195,8 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Membership widens ONE workspace, not the instance. A member of this workspace must not
-    /// inherit sight of another workspace's rooms.
+    /// The role widens ONE workspace, not the instance. An Admin of this workspace must not inherit
+    /// sight of another workspace's rooms.
     /// </summary>
     [Fact]
     public async Task ActiveList_DoesNotLeakRoomsFromAnotherWorkspace()
@@ -198,9 +205,25 @@ public class WorkspaceMemberRoomVisibilityTests : IAsyncLifetime
         await SeedRoomAsync(otherWorkspaceId, "WAITING");
         var ownRoom = await SeedRoomAsync(WorkspaceId, "WAITING");
 
-        var result = await ListAsync(WorkspaceMemberId);
+        var result = await ListAsync(WorkspaceAdminId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Rooms.Should().ContainSingle(r => r.Id == ownRoom.Id);
+    }
+
+    /// <summary>
+    /// The scope boundary, stated as a test so it cannot be widened by accident. WT-313 settled that
+    /// a plain workspace Member is NOT host-adjacent, and this change deliberately does not reopen
+    /// that. A member who neither hosts, has joined, nor was invited to a room still does not see it.
+    /// </summary>
+    [Fact]
+    public async Task ActiveList_StaysEmpty_ForAPlainWorkspaceMember()
+    {
+        await SeedRoomAsync(WorkspaceId, "WAITING");
+
+        var result = await ListAsync(PlainMemberId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().BeEmpty();
     }
 }

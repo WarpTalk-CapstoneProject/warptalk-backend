@@ -1464,23 +1464,34 @@ public class TranslationRoomService : ITranslationRoomService
     /// The rooms a caller may SEE LISTED for one workspace.
     ///
     /// <see cref="BuildAccessibleRoomsQuery"/> knows three ways in — host, prior participant,
-    /// invited by email — and workspace membership is not one of them, because it is not a fact the
-    /// translation-room database holds. The effect was that a colleague added to the workspace saw
-    /// "No active meetings found." and a dashboard tile reading 0 for a workspace that had rooms in
-    /// it, while the same account could open any of those rooms by direct URL and join: the list was
-    /// stricter than the thing it was a list of, and since the Join control only exists on the room
-    /// detail page, an empty list left them no route into any meeting at all.
+    /// invited by email — and a workspace Owner/Admin is none of them, because that is not a fact
+    /// the translation-room database holds. So a workspace Admin saw "No active meetings found."
+    /// and a dashboard tile reading 0 for a workspace that had rooms in it, while the same account
+    /// could open any of those rooms by direct URL and join: the list was stricter than the thing it
+    /// was a list of. Since the Join control lives only on the room detail page, and the list is the
+    /// only route to it, an empty list left an Admin no way into any meeting in her own workspace.
     ///
-    /// So membership is asked of WorkspaceService, once per request, and only when the request names
-    /// a workspace. A member sees that workspace's rooms; everyone else keeps exactly the previous
-    /// answer, as does every caller when WorkspaceService cannot be reached.
+    /// WHY OWNER/ADMIN AND NOT EVERY MEMBER. This is the rule WT-313 already ratified for "who may
+    /// act on this room" — host OR participant OR workspace Owner/Admin — after the same predicate
+    /// had drifted into three different spellings. That work audited
+    /// <c>TranslationRoomParticipantService</c> and never reached this file, so the rooms list is
+    /// the un-audited next instance of a settled question rather than a new one. WT-313 also keeps a
+    /// plain workspace Member as a deliberate NEGATIVE case, so widening to every member would
+    /// reverse a decision the team has already taken; a member still sees exactly the rooms they
+    /// host, joined, or were invited to.
     ///
-    /// HOW FAR THIS WIDENS. To every non-deleted room of that workspace, deliberately: a room has no
-    /// private/unlisted/visibility attribute to respect — <c>TranslationRoomTypes</c> selects
-    /// behaviour (approval, recording, capacity), not audience — and entry is already governed
-    /// per-room by <c>RequiresApproval</c>, which is unaffected here. Listing a room is not
-    /// admission to it, and artifact bodies stay behind their own per-room ArtifactAccess policy.
-    /// If a private room type is ever introduced, its exclusion belongs in this method.
+    /// The role is asked of WorkspaceService through the same directory WT-313 uses, once per
+    /// request, and only when the request names a workspace. Everyone else keeps precisely the
+    /// previous answer — as does every caller when WorkspaceService cannot be reached, since the
+    /// directory swallows its own failures and returns false, narrowing the list rather than
+    /// failing the request.
+    ///
+    /// HOW FAR THIS WIDENS. For an Owner/Admin, to every non-deleted room of that one workspace,
+    /// deliberately: a room has no private/unlisted/visibility attribute to respect —
+    /// <c>TranslationRoomTypes</c> selects behaviour (approval, recording, capacity), not audience —
+    /// and entry is still governed per-room by <c>RequiresApproval</c>, untouched here. Listing a
+    /// room is not admission to it, and artifact bodies stay behind their own per-room
+    /// ArtifactAccess policy. If a private room type is ever introduced, its exclusion belongs here.
     /// </summary>
     private async Task<IQueryable<TranslationRoom>> BuildListableRoomsQueryAsync(
         Guid userId,
@@ -1490,7 +1501,7 @@ public class TranslationRoomService : ITranslationRoomService
     {
         if (workspaceId.HasValue
             && workspaceId.Value != Guid.Empty
-            && await _workspaceMemberDirectory.IsActiveMemberAsync(workspaceId.Value, userId, ct))
+            && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId.Value, userId, ct))
         {
             var scopedWorkspaceId = workspaceId.Value;
             return _unitOfWork.TranslationRoomRepository

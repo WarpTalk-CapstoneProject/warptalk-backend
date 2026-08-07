@@ -25,55 +25,35 @@ public sealed class WorkspaceMemberGrpcDirectory : IWorkspaceMemberDirectory
         Guid userId,
         CancellationToken ct = default)
     {
-        var member = await GetMemberAsync(workspaceId, userId, ct);
-
-        if (member is null || !member.IsMember || !member.IsActive)
-        {
-            return false;
-        }
-
-        return string.Equals(member.RoleName, OwnerRole, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(member.RoleName, AdminRole, StringComparison.OrdinalIgnoreCase);
-    }
-
-    public async Task<bool> IsActiveMemberAsync(
-        Guid workspaceId,
-        Guid userId,
-        CancellationToken ct = default)
-    {
-        var member = await GetMemberAsync(workspaceId, userId, ct);
-
-        return member is not null && member.IsMember && member.IsActive;
-    }
-
-    /// <summary>
-    /// Null when WorkspaceService could not answer. Deliberately swallowed: both callers only ever
-    /// *widen* a decision the caller has already denied, so letting a WorkspaceService outage bubble
-    /// up would turn "you are not the host" into a 500 for legitimate users.
-    /// </summary>
-    private async Task<GetWorkspaceMemberResponse?> GetMemberAsync(
-        Guid workspaceId,
-        Guid userId,
-        CancellationToken ct)
-    {
         try
         {
-            return await _client.GetWorkspaceMemberDetailsAsync(
+            var response = await _client.GetWorkspaceMemberDetailsAsync(
                 new GetWorkspaceMemberRequest
                 {
                     WorkspaceId = workspaceId.ToString(),
                     UserId = userId.ToString()
                 },
                 cancellationToken: ct);
+
+            if (!response.IsMember || !response.IsActive)
+            {
+                return false;
+            }
+
+            return string.Equals(response.RoleName, OwnerRole, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response.RoleName, AdminRole, StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
+            // Deliberately swallowed: this only ever *widens* an authorization decision the caller
+            // has already denied on host identity. Letting a WorkspaceService outage bubble up would
+            // turn "you are not the host" into a 500 for legitimate non-host users.
             _logger.LogWarning(
                 ex,
                 "Failed to resolve workspace membership. WorkspaceId: {WorkspaceId}, UserId: {UserId}",
                 workspaceId,
                 userId);
-            return null;
+            return false;
         }
     }
 }
