@@ -31,6 +31,7 @@ public class HostParticipantSeedTests
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy = new();
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory = new();
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy = new();
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory = new();
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
     private TranslationRoomParticipant? _seededParticipant;
@@ -48,6 +49,11 @@ public class HostParticipantSeedTests
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
+        // ...and the tenant itself is live unless a test suspends it.
+        _mockWorkspaceMeetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _mockParticipantRepo
             .Setup(p => p.AddAsync(It.IsAny<TranslationRoomParticipant>(), It.IsAny<CancellationToken>()))
             .Callback<TranslationRoomParticipant, CancellationToken>((p, _) => _seededParticipant = p)
@@ -60,6 +66,7 @@ public class HostParticipantSeedTests
             new Mock<ITranslationRoomAudioRouteService>().Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
                 WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object);

@@ -375,9 +375,18 @@ public partial class WorkspaceDbContext : DbContext
                 .HasMaxLength(20)
                 .HasDefaultValueSql("'active'::character varying")
                 .HasColumnName("status");
+            // No HasDefaultValue here, deliberately. The column still carries DEFAULT true in
+            // Postgres, but declaring that default to EF as well set the property's SENTINEL to
+            // true — and EF omits a column from the INSERT only while the property equals its
+            // sentinel. Every member entity is built by WorkspaceMemberMapper, which did not
+            // assign the property, so it held the CLR default false; false is not the sentinel,
+            // so EF wrote false EXPLICITLY and the database default was never consulted.
+            // Declaring the default as true is what caused false to be stored.
+            // The value is now always set in the mapper, so EF always writes what the code says.
+            // (Status above escapes the same trap only by luck: its unassigned CLR value is null,
+            // which HasDefaultValueSql does treat as the sentinel.)
             entity.Property(e => e.CanCreateMeetings)
-                .HasColumnName("can_create_meetings")
-                .HasDefaultValue(true);
+                .HasColumnName("can_create_meetings");
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.WorkspaceId).HasColumnName("workspace_id");
 

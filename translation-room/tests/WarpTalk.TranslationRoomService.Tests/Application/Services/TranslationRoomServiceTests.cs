@@ -25,6 +25,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
@@ -42,6 +43,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        _mockWorkspaceMemberDirectory = new Mock<IWorkspaceMemberDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -69,6 +71,11 @@ public class TranslationRoomServiceTests
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
+        // ...and the tenant itself is live unless a test suspends it.
+        _mockWorkspaceMeetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             _mockUow.Object,
             _mockLanguagePolicy.Object,
@@ -76,6 +83,7 @@ public class TranslationRoomServiceTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);
@@ -348,7 +356,6 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         room.StartedAt.Should().NotBeNull();
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
     [Fact]
@@ -415,25 +422,19 @@ public class TranslationRoomServiceTests
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
-        _mockAudioRouteEventProcessor.Verify(a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default), Times.Once);
     }
 
-    // WT-322 — a participant already in the room never learned translation went live, because
-    // starting over REST never reached the SignalR hub in the Gateway process. The client flag
-    // that gate lives behind unsubscribes every interpreter track and drops every transcript
-    // segment. The raw microphones still come through, so they hear the untranslated original
-    // with no interpreter dub and no captions, while the host sees translation running.
-
     [Fact]
-    public async Task StartTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
+    public async Task ResumeTranslationRoomAsync_PublishesRoomStartedToTheGatewayRelay()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         _mockRedisStateRepository.Verify(
@@ -443,19 +444,19 @@ public class TranslationRoomServiceTests
                     payload.Contains("\"Command\":\"RoomStarted\"")
                     && payload.Contains(roomId.ToString()))),
             Times.Once);
+        _mockAudioRouteEventProcessor.Verify(
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", default),
+            Times.Once);
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
+    public async Task ResumeTranslationRoomAsync_RoomStartedCarriesTheStateTheClientBindsTo()
     {
-        // The web client types this payload as TranslationRoomStateDto and feeds it straight into
-        // its store, which does `participants: state.participants` — so an absent participants
-        // array would blank the roster of everyone in the room. Only CONNECTED participants count
-        // as "in the room", the same definition the roster and the seat count already use.
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var connectedUserId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
         _mockParticipantRepo
@@ -491,7 +492,7 @@ public class TranslationRoomServiceTests
                 }
             });
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
 
@@ -513,30 +514,29 @@ public class TranslationRoomServiceTests
         participants[0].GetProperty("speakLanguage").GetString().Should().Be("vi");
         participants[0].GetProperty("listenLanguage").GetString().Should().Be("en");
 
-        // Same six fields as the hub's ParticipantJoined, no more: merge-participants.ts keeps
-        // role and identity with the REST roster because the live payload has never carried them.
         participants[0].EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(
             "userId", "displayName", "speakLanguage", "listenLanguage", "isMuted", "joinedAt");
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_StillStartsTheRoom_WhenTheRelayPublishFails()
+    public async Task ResumeTranslationRoomAsync_StillStartsTranslation_WhenTheRelayPublishFails()
     {
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
         _mockRedisStateRepository
             .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
             .ThrowsAsync(new InvalidOperationException("redis is down"));
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
         _mockAudioRouteEventProcessor.Verify(
-            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", default),
+            a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", default),
             Times.Once);
     }
 
@@ -555,6 +555,68 @@ public class TranslationRoomServiceTests
         CreatedAt = DateTime.UtcNow,
         Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
     };
+
+    /// <summary>
+    /// Ending is a two-call client-side saga: "End for everyone" calls MeetingService and then this
+    /// endpoint. MeetingRoomService.EndMeetingAsync accepts the ACTIVE host
+    /// (isOriginalHost || isActiveHost) while this accepted only the ORIGINAL one — so after a host
+    /// transfer the first call tore down LiveKit and marked the meeting FINISHED, the second was
+    /// refused, and the translation room stayed IN_PROGRESS forever. Nothing repairs that:
+    /// ExpireTranslationRoomAsync has no production callers.
+    ///
+    /// The rule here is now RoomHostAccess — host OR workspace Owner/Admin — which is what WT-188
+    /// established and WT-313 reconciled, so an orphaned room is always recoverable by an
+    /// Owner/Admin instead of being permanent.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ShouldEnd_WhenRequesterIsAWorkspaceOwnerOrAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var admin = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Status = "IN_PROGRESS",
+            StartedAt = DateTime.UtcNow.AddMinutes(-5),
+            Settings = "{}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default)).ReturnsAsync(new List<TranslationRoomParticipant>());
+        _mockWorkspaceMemberDirectory
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, admin, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, admin);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        room.Status.Should().Be("ENDED");
+    }
+
+    /// <summary>The widening stops at Owner/Admin: an unrelated user still cannot end a meeting.</summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ShouldRefuse_WhenRequesterIsNeitherHostNorOwnerAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            Settings = "{}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        room.Status.Should().Be("IN_PROGRESS");
+    }
 
     [Fact]
     public async Task EndTranslationRoomAsync_SetsEndedAtWithoutPersistingDurationAndFiresEvent()

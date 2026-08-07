@@ -9,10 +9,17 @@ public static class RequestRateLimitPartitionKeys
         ?? context.Request.Headers.Host.ToString()
         ?? "unknown";
 
+    /// <summary>
+    /// Prefix of the value <see cref="User"/> returns when there is no user to key on. Named rather
+    /// than spelled out at each call site: a caller that compares against the wrong literal
+    /// silently treats every anonymous request as a distinct identity.
+    /// </summary>
+    public const string AnonymousPrefix = "anonymous:";
+
     public static string User(HttpContext context) =>
         context.User.FindFirstValue(ClaimTypes.NameIdentifier)
         ?? context.User.FindFirstValue("sub")
-        ?? $"anonymous:{Ip(context)}";
+        ?? $"{AnonymousPrefix}{Ip(context)}";
 
     public static string? Workspace(HttpContext context)
     {
