@@ -100,6 +100,9 @@ builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 // Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
+// Named client so the Google verification calls are poolable and, more importantly, so a test
+// can substitute the handler and prove a foreign-client token is rejected.
+builder.Services.AddHttpClient(nameof(GoogleTokenVerifier));
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
 builder.Services.AddVoiceSampleStorage(builder.Configuration, builder.Environment);
 
