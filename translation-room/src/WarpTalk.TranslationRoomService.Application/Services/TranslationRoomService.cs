@@ -1718,12 +1718,22 @@ public class TranslationRoomService : ITranslationRoomService
     /// boundary and changing its execution model in the same commit is how this predicate got
     /// three different spellings in the first place.
     /// </summary>
-    private Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken ct)
+    private async Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken ct)
     {
-        return Task.FromResult(_unitOfWork.TranslationRoomRepository
+        var scoped = _unitOfWork.TranslationRoomRepository
             .Query()
-            .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive)
-            .Any(RoomReadAccess.IsReadableBy(userId, userEmail)));
+            .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive);
+
+        if (scoped.Any(RoomReadAccess.IsReadableBy(userId, userEmail))) return true;
+
+        var workspaceId = scoped.Select(r => r.WorkspaceId).FirstOrDefault();
+
+        // A workspace Owner/Admin can see every room in their workspace in the list
+        // (BuildListableRoomsQueryAsync), so the detail read has to agree. Without this the
+        // product hands an Admin a list of rooms and then refuses to open them — the mentor
+        // incident inverted, and worse on stage, because the presenter has already clicked.
+        return workspaceId != Guid.Empty
+            && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId, userId, ct);
     }
 
     /// <summary>

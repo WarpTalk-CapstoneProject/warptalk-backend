@@ -38,6 +38,7 @@ public class TranslationRoomDetailReadAuthorizationTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ITranslationRoomRepository> _roomRepository = new();
     private readonly Mock<ITranslationRoomParticipantRepository> _participantRepository = new();
+    private readonly Mock<IWorkspaceMemberDirectory> _workspaceMemberDirectory = new();
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _sut;
 
     private static readonly Guid RoomId = Guid.NewGuid();
@@ -62,6 +63,11 @@ public class TranslationRoomDetailReadAuthorizationTests
             Mock.Of<ITranslationRoomAudioRouteService>(),
             Mock.Of<IUserSettingsDirectory>(),
             Mock.Of<IWorkspaceMeetingPolicy>(),
+            // Not an Owner/Admin of anything. The detail read also admits a workspace
+            // Owner/Admin — it has to, because the rooms list shows them every room in the
+            // workspace — and these cases are about the personal predicate, so this substitute
+            // deliberately answers false and leaves that branch to its own test below.
+            _workspaceMemberDirectory.Object,
             Mock.Of<WarpTalk.Shared.Interfaces.IEmailService>(),
             Mock.Of<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>());
     }
