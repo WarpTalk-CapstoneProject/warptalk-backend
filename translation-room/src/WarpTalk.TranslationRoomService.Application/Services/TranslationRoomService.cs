@@ -560,6 +560,35 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // S7. A room that is already running gets this participant's audio routes NOW.
+            //
+            // Routes used to be generated exactly once, inside StartTranslationRoomAsync, and
+            // nothing on this path ever added any — so anyone who joined after Start had no
+            // route row at all. Translation and TTS still worked for them (the AI re-reads the
+            // live languages hash per utterance), but BaseWorker.is_voice_clone_consented
+            // matches against the route rows delivered by AUDIO_ROUTES_UPDATED and fails closed
+            // without one: their buffered audio was discarded and they were permanently dubbed
+            // in a hashed default voice instead of their own. Voice cloning is the headline
+            // feature, and it silently switched itself off for anyone a minute late.
+            //
+            // Only for IN_PROGRESS: a join before Start is already covered by
+            // StartTranslationRoomAsync's own GenerateRoutesAsync, and doing it twice would
+            // charge every pre-start join for work Start is about to redo.
+            //
+            // Best-effort, exactly like the Start-path call it complements: a routing failure
+            // must not turn a successful join into a failed one. The participant is saved above
+            // and this only affects which voice they are dubbed in.
+            if (translationRoom.Status == "IN_PROGRESS")
+            {
+                var routeResult = await _audioRouteService.AddRoutesForParticipantAsync(translationRoom.Id, participant.Id, ct);
+                if (!routeResult.IsSuccess)
+                {
+                    _logger.LogWarning(
+                        "Could not add audio routes for participant {ParticipantId} joining in-progress room {RoomId}: {Error}",
+                        participant.Id, translationRoom.Id, routeResult.Error);
+                }
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -614,6 +643,16 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+
+                // S7. This early return used to skip route generation entirely, which is why
+                // "just restart the room" never recovered a late joiner who had no route row.
+                // The join path now adds routes as people arrive, so this is the repair path
+                // for a room that was already running when that fix shipped — and for any
+                // future gap, one deliberate host action is a safe place to reconcile the mesh.
+                var restartRouteResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
+                if (!restartRouteResult.IsSuccess)
+                    _logger.LogWarning("Could not reconcile audio routes for already-running room {RoomId}: {Error}", translationRoomId, restartRouteResult.Error);
+
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
@@ -625,8 +664,10 @@ public class TranslationRoomService : ITranslationRoomService
             // routed correctly once translation starts. Routes form a full mesh between
             // participants whose languages differ, so a room with only the host — or where
             // everyone shares a language — legitimately has zero routes and that must NOT block
-            // Start (additional routes are generated as more participants join). Route generation
-            // is best-effort: a failure here should not prevent the host from opening the room.
+            // Start. Additional routes for people who arrive after this point are added
+            // incrementally by JoinTranslationRoomAsync (S7); this comment used to claim that
+            // happened already, and no code path did it. Route generation is best-effort: a
+            // failure here should not prevent the host from opening the room.
             var routeResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
             if (!routeResult.IsSuccess)
                 _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
