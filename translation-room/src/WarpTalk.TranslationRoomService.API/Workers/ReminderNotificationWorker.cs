@@ -20,18 +20,20 @@ namespace WarpTalk.TranslationRoomService.API.Workers;
 
 /// <summary>
 /// WT-14: mirrors IdleRoomMonitoringWorker's polling shape. Every minute, checks rooms that have
-/// not started yet against the T-10min / T-1min reminder windows (ReminderWindowEvaluator) and —
+/// not started yet against the T-30min / T-10min / T-1min reminder windows (ReminderWindowEvaluator) and —
 /// for any room that enters a window and hasn't been reminded for it yet — pushes a notification
 /// via the SAME gRPC path other services use to create user notifications
 /// (NotificationGrpcServiceImpl.SendNotification, which persists + Redis-publishes so
 /// NotificationHub relays it to "user:{userId}" in real time — see NotificationRedisSubscriberService).
-/// The reminder_10min_sent_at/reminder_1min_sent_at columns are stamped right after sending so a
-/// restart or a slow poll never double-sends for the same window.
+/// The reminder_30min_sent_at/reminder_10min_sent_at/reminder_1min_sent_at columns are stamped
+/// right after sending so a restart or a slow poll never double-sends for the same window.
 ///
-/// WT-326 changed two things about that:
+/// WT-326 changed three things about that:
 ///   * the candidate sweep no longer looks only at SCHEDULED rooms (see CheckAndSendRemindersAsync);
 ///   * "already reminded" is now tracked per RECIPIENT as well as per room+window
-///     (see SendReminderAsync), so one failing recipient no longer re-notifies the whole room.
+///     (see SendReminderAsync), so one failing recipient no longer re-notifies the whole room;
+///   * T-30min was added as a third window, following the two above rather than replacing them
+///     with a generic mechanism — three windows do not pay for the indirection.
 /// </summary>
 public class ReminderNotificationWorker : BackgroundService
 {
@@ -46,7 +48,7 @@ public class ReminderNotificationWorker : BackgroundService
 
     /// <summary>
     /// WT-326. How long a per-recipient "already reminded" marker lives. Only has to outlive the
-    /// widest reminder window plus the retries inside it; the reminder_Nmin_sent_at columns remain
+    /// widest reminder window (T-30min) plus the retries inside it; the reminder_Nmin_sent_at columns remain
     /// the durable record, so an expired marker costs at most one duplicate notification.
     /// </summary>
     private static readonly TimeSpan RecipientSentMarkerTtl = TimeSpan.FromHours(1);
@@ -106,6 +108,11 @@ public class ReminderNotificationWorker : BackgroundService
 
         foreach (var room in candidates)
         {
+            if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder30MinSentAt, ReminderWindowEvaluator.ThirtyMinuteWindow))
+            {
+                await TrySendReminderOnceAsync(room, 30, now, roomRepo, unitOfWork, ct);
+            }
+
             if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder10MinSentAt, ReminderWindowEvaluator.TenMinuteWindow))
             {
                 await TrySendReminderOnceAsync(room, 10, now, roomRepo, unitOfWork, ct);
@@ -143,13 +150,25 @@ public class ReminderNotificationWorker : BackgroundService
                 return;
             }
 
-            if (minutesUntilStart == 10)
+            // One column per window, deliberately — the same shape WT-14 established. The throw
+            // is the point of writing it as a switch: a fourth window added without its column
+            // fails immediately and loudly instead of silently never being recorded as sent.
+            switch (minutesUntilStart)
             {
-                room.Reminder10MinSentAt = sentAt;
-            }
-            else
-            {
-                room.Reminder1MinSentAt = sentAt;
+                case 30:
+                    room.Reminder30MinSentAt = sentAt;
+                    break;
+                case 10:
+                    room.Reminder10MinSentAt = sentAt;
+                    break;
+                case 1:
+                    room.Reminder1MinSentAt = sentAt;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(minutesUntilStart),
+                        minutesUntilStart,
+                        "No reminder_Nmin_sent_at column exists for this window.");
             }
             roomRepo.Update(room);
             await unitOfWork.SaveChangesAsync(ct);

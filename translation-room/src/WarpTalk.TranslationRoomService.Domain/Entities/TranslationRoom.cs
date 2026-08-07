@@ -71,6 +71,8 @@ public partial class TranslationRoom
     /// cannot produce two rooms for the same day.
     /// </summary>
     public DateOnly? SeriesOccurrenceLocalDate { get; set; }
+    /// <summary>WT-326: set once the T-30min reminder notification has been sent for this room.</summary>
+    public DateTime? Reminder30MinSentAt { get; set; }
 
     /// <summary>WT-14: set once the T-10min reminder notification has been sent for this room.</summary>
     public DateTime? Reminder10MinSentAt { get; set; }
