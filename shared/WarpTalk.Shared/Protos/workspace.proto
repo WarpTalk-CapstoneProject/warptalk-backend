@@ -34,6 +34,8 @@ message GetWorkspaceMemberResponse {
   bool is_member = 1;
   string role_name = 2;
   string membership_type = 3; // INTERNAL, EXTERNAL
+  // The MEMBER's status, not the workspace's. A suspended workspace still reports its members
+  // as active — ask GetWorkspacePreflightDetails for the tenant's own lifecycle.
   bool is_active = 4;
   bool can_create_meetings = 5;
 }
@@ -69,10 +71,15 @@ message GetWorkspaceSettingsResponse {
 
 message GetWorkspacePreflightRequest {
   string workspace_id = 1;
+  // Optional. Leave empty to skip the verified-domain lookup entirely — that is how
+  // TranslationRoomService uses this RPC as a cheap tenant-lifecycle check when a
+  // participant joins a room or a host starts one.
   string user_email = 2;
 }
 
 message GetWorkspacePreflightResponse {
+  // The WORKSPACE's own lifecycle: false once a system admin suspends or soft-deletes it.
+  // This is the tenant kill switch — GetWorkspaceMemberResponse.is_active is not.
   bool is_active = 1;
   string workspace_name = 2;
   string workspace_slug = 3;

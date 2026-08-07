@@ -20,6 +20,14 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
     private const string ActiveMemberStatus = "active";
     private const string VerifiedDomainStatus = "verified";
 
+    /// <summary>
+    /// The one denial reason every tenant-lifecycle gate returns. Worded for the person who hits
+    /// it, not the admin who caused it: the suspension reason is audit data and is deliberately
+    /// not leaked to members.
+    /// </summary>
+    internal const string WorkspaceSuspendedMessage =
+        "This workspace is suspended. Contact your administrator to restore it.";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
@@ -88,6 +96,14 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
         if (workspace == null)
             return Decision(MeetingCreationDecisionDto.Denied("Workspace not found."));
+
+        // A suspended tenant may not open new meetings. Every other rule below is about WHO is
+        // asking or WHAT they asked for; this one is about whether the workspace is entitled to
+        // spend anything at all, so it is answered before any of them. Its absence is the whole
+        // reason suspending a workspace used to stop document upload and new invitations while
+        // leaving meetings — and the billable AI usage they drive — running.
+        if (!IsLiveTenant(workspace))
+            return Decision(MeetingCreationDecisionDto.Denied(WorkspaceSuspendedMessage));
 
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
@@ -251,12 +267,32 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         }
 
         return Result.Success(new WorkspacePreflightDto(
-            workspace.IsActive && workspace.DeletedAt == null,
+            IsLiveTenant(workspace),
             workspace.Name,
             workspace.Slug,
             isDomainMatched,
             config.AllowExternalCollaboration));
     }
+
+    /// <summary>
+    /// A workspace is a live tenant only while it is active and not soft-deleted.
+    ///
+    /// Suspension flips <c>is_active</c> and nothing else (AdminWorkspaceService.ChangeLifecycleAsync)
+    /// — no data is removed, no event is published — so this pair IS the tenant kill switch, and
+    /// reading it is the only way any caller can observe a suspension. It lives in one place so the
+    /// next gate that needs it copies a call rather than a comparison; the comparison had already
+    /// been written out longhand four times (WorkspaceDocumentService twice,
+    /// WorkspaceInvitationService, and the preflight below) and missed in the one place that
+    /// governs spend.
+    ///
+    /// Deliberately NOT folded into <see cref="GetMemberDetailsAsync"/>'s <c>IsActive</c>: that flag
+    /// is the MEMBER's status and its consumers — BillingService's WorkspaceAuthorizationService,
+    /// the Gateway's RoomHostAuthority, TranslationRoomService's WorkspaceMemberGrpcDirectory — read
+    /// it to mean "this person is a live member". Overloading it would, among other things, lock a
+    /// suspended workspace's owner out of the billing pages they need to get reinstated.
+    /// </summary>
+    private static bool IsLiveTenant(Domain.Entities.Workspace workspace) =>
+        workspace.IsActive && workspace.DeletedAt == null;
 
     private Task<Domain.Entities.WorkspaceMember?> FindActiveMembershipAsync(
         Guid workspaceId,
