@@ -42,8 +42,12 @@ builder.Services.AddOpenApi();
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"];
 if (!string.IsNullOrEmpty(redisConnectionString))
 {
+    // This block is already conditional because Redis is optional for MeetingService; a
+    // configured-but-unreachable Redis must therefore degrade the same way an unconfigured
+    // one does, rather than killing the process. Registered as a factory (it used to
+    // Connect() eagerly here) with abortConnect=false so the multiplexer reconnects itself.
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
-        StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
+        _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddSingleton<IRedisService, RedisService>();
 }
 

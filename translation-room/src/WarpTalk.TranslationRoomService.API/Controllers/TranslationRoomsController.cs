@@ -20,13 +20,16 @@ public class TranslationRoomsController : ControllerBase
 {
     private readonly ITranslationRoomService _translationRoomService;
     private readonly ITranslationRoomArtifactService _artifactService;
+    private readonly ITranslationRoomSeriesService _seriesService;
 
     public TranslationRoomsController(
         ITranslationRoomService translationRoomService,
-        ITranslationRoomArtifactService artifactService)
+        ITranslationRoomArtifactService artifactService,
+        ITranslationRoomSeriesService seriesService)
     {
         _translationRoomService = translationRoomService;
         _artifactService = artifactService;
+        _seriesService = seriesService;
     }
 
     [HttpGet]
@@ -58,6 +61,29 @@ public class TranslationRoomsController : ControllerBase
             return StatusCode(403, new ApiErrorResponse("Email not verified", ErrorCodes.AccountPending));
         }
 
+        // WT-327: a request carrying a recurrence rule is a BOOKING, not a meeting. It goes to
+        // the series service, which materialises the occurrences inside the current horizon and
+        // hands back the first one — so the client's happy path is unchanged: it still gets a
+        // room with an id and a code to show and share.
+        if (request.Recurrence is not null)
+        {
+            var seriesResult = await _seriesService.CreateSeriesAsync(request, hostId.Value, HttpContext.RequestAborted);
+            if (!seriesResult.IsSuccess)
+            {
+                return seriesResult.ErrorCode switch
+                {
+                    ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                    ErrorCodes.ServiceUnavailable => StatusCode(503, new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                    _ => BadRequest(new ApiErrorResponse(seriesResult.Error, seriesResult.ErrorCode)),
+                };
+            }
+
+            return CreatedAtAction(
+                nameof(CreateTranslationRoom),
+                new { id = seriesResult.Value!.FirstOccurrence.Id },
+                seriesResult.Value);
+        }
+
         var result = await _translationRoomService.CreateTranslationRoomAsync(request, hostId.Value);
 
         if (!result.IsSuccess)
@@ -75,10 +101,24 @@ public class TranslationRoomsController : ControllerBase
         return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value!.Id }, result.Value);
     }
 
+    /// <summary>
+    /// WT-334: now passes the caller, like every sibling read on this controller already did
+    /// (<see cref="GetTranslationRooms"/>, and the invitation/artifact/feedback reads below). This
+    /// one did not, and the service method it called took no user id, so <c>[Authorize]</c> alone
+    /// let any authenticated user read any room across every tenant.
+    ///
+    /// Still returns NotFound for a refusal — the service returns the same not-found Result for
+    /// "no such room" and "not yours" on purpose, so this mapping stays a single branch and cannot
+    /// grow a 403 that re-confirms the room's existence.
+    /// </summary>
     [HttpGet("{id}")]
     public async Task<IActionResult> GetTranslationRoom(Guid id, CancellationToken ct)
     {
-        var result = await _translationRoomService.GetTranslationRoomAsync(id, ct);
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomAsync(id, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
             return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
 

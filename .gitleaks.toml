@@ -1,0 +1,32 @@
+# Gitleaks configuration for warptalk-backend.
+#
+# The CI step scans a COMMIT RANGE (development..main at release time), not the working
+# tree. That means a synthetic credential is still reported from the commit that
+# introduced it even after a later commit removes it — which is correct behaviour for a
+# range scan, and the reason this file exists.
+#
+# Every entry below must be a per-finding fingerprint:
+#   <commit>:<path>:<rule>:<line>
+# Never allowlist by rule, by path, or by regex. A blanket entry would hide the next real
+# leak in the same file, and the whole point of the gate is that a scanner cannot tell a
+# convincing fake from the real thing.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+A synthetic JWT in a unit test, since removed from the tree.
+
+WT-334 auth work needed a token with the header.payload.signature *shape* to prove that
+GoogleTokenVerifier attempts ID-token validation and does not fall through to the
+access-token path when it fails. The value decoded to {"alg":"HS256"} / {"sub":"victim"}
+with the literal signature "not-a-real-signature": it is signed by nothing, grants nothing,
+and authenticates against nothing.
+
+Commit 60b4269 replaced it with a runtime-assembled equivalent so no literal JWT is
+committed again. This entry covers only the original commit, which stays in history.
+"""
+targetRules = ["jwt"]
+commits = ["09526e1ff13c2397783536d5cf6b66fecf07a7b9"]
+paths = ['''auth/tests/WarpTalk\.AuthService\.Tests/GoogleTokenVerifierTests\.cs''']

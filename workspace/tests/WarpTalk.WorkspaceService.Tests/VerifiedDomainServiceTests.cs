@@ -92,12 +92,23 @@ public class VerifiedDomainServiceTests
             .Returns(member);
     }
 
+    /// <summary>
+    /// A domain may only be claimed by a caller whose own account email is on it, so
+    /// AddDomainAsync now needs the caller's identity resolved.
+    /// </summary>
+    private void SetupCallerEmail(string email)
+    {
+        _authIdentity.GetUserByIdAsync(_userId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = _userId, Email = email });
+    }
+
     [Fact]
     public async Task AddDomainAsync_ShouldSucceed_WhenValidCorporateDomain_ByOwner()
     {
         // Arrange
         SetupWorkspace();
         SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@enterprise.com");
 
         _verifiedDomainRepo.AnyAsync(
             Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
@@ -137,6 +148,34 @@ public class VerifiedDomainServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
+    }
+
+    [Fact]
+    [Trait("Category", "DomainValidation")]
+    public async Task AddDomainAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn()
+    {
+        // Without this, fixing CreateWorkspaceAsync alone is cosmetic: an attacker
+        // founds a workspace on their own domain and then claims victimcorp.com here.
+        // These rows are what DetermineMembershipTypeAsync reads to hand out Internal.
+        // Arrange
+        SetupWorkspace();
+        SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@attacker.com");
+
+        _verifiedDomainRepo.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+
+        // Act
+        var result = await _service.AddDomainAsync(_workspaceId, "victimcorp.com", _userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, result.Error);
+        await _verifiedDomainRepo.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]

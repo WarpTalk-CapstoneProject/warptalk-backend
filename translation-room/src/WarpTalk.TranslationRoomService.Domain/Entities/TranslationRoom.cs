@@ -53,6 +53,27 @@ public partial class TranslationRoom
 
     public DateTime? ScheduledAt { get; set; }
 
+    /// <summary>
+    /// WT-327: the recurring series this room is an occurrence of, or null for a one-off room —
+    /// which is every room that existed before this column.
+    ///
+    /// A series occurrence is an ORDINARY room in every other respect: same statuses, same
+    /// lifecycle, its own code, its own transcript, its own billing. This column is a
+    /// back-reference so the series can be cancelled as a unit and so the UI can say "this
+    /// repeats"; nothing downstream is required to read it.
+    /// </summary>
+    public Guid? SeriesId { get; set; }
+
+    /// <summary>
+    /// WT-327: the local calendar date (in the series' own time zone) this occurrence was
+    /// generated for. Unique per series — that uniqueness IS the idempotency of the
+    /// materialisation sweep, so a double-run, a restart mid-pass or two service replicas
+    /// cannot produce two rooms for the same day.
+    /// </summary>
+    public DateOnly? SeriesOccurrenceLocalDate { get; set; }
+    /// <summary>WT-326: set once the T-30min reminder notification has been sent for this room.</summary>
+    public DateTime? Reminder30MinSentAt { get; set; }
+
     /// <summary>WT-14: set once the T-10min reminder notification has been sent for this room.</summary>
     public DateTime? Reminder10MinSentAt { get; set; }
 
@@ -87,6 +108,9 @@ public partial class TranslationRoom
     /// External AuthService user id. No physical FK.
     /// </summary>
     public Guid? DeletedBy { get; set; }
+
+    /// <summary>WT-327: null unless <see cref="SeriesId"/> is set.</summary>
+    public virtual TranslationRoomSeries? Series { get; set; }
 
     public virtual ICollection<TranslationRoomArtifact> TranslationRoomArtifacts { get; set; } = new List<TranslationRoomArtifact>();
 

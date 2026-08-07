@@ -50,19 +50,13 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         _logger.LogInformation("DocumentSecurityGuardrailConsumerService started.");
         var db = _redis.GetDatabase();
 
-        // Step 1: Ensure Redis Stream Consumer Group exists
-        try
-        {
-            await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", true);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
-        {
-            // Group already exists
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to initialize Redis Stream Consumer Group for stream: {StreamKey}", StreamKey);
-        }
+        // Step 1: Ensure Redis Stream Consumer Group exists.
+        // This catch-all already stopped StopHost, but it swallowed once and never retried: after
+        // a Redis outage at startup the group was never created, so every StreamReadGroupAsync
+        // below failed NOGROUP forever and the DLP/PII guardrail ran deaf while looking alive.
+        // Retry with bounded backoff instead, so it recovers on its own once Redis returns.
+        if (!await EnsureConsumerGroupAsync(db, stoppingToken))
+            return;
 
         // Step 2: Enter stream consumption loop
         while (!stoppingToken.IsCancellationRequested)
@@ -111,6 +105,54 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 await Task.Delay(5000, stoppingToken);
             }
         }
+    }
+
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", true);
+                return true;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
+            {
+                // Group already exists
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "Failed to initialize Redis Stream Consumer Group {Group} for stream {StreamKey} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Uploaded documents are NOT being "
+                    + "PII/DLP scanned or indexed until it succeeds.",
+                    ConsumerGroup, StreamKey, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
     }
 
     public async Task<bool> ProcessDocumentUploadAsync(Guid documentId, Dictionary<string, string> eventValues, CancellationToken ct)

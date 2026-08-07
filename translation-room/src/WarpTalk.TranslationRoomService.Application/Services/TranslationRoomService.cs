@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
+using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -34,6 +35,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
+    private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
@@ -79,6 +81,7 @@ public class TranslationRoomService : ITranslationRoomService
         ITranslationRoomAudioRouteService audioRouteService,
         IUserSettingsDirectory userSettingsDirectory,
         IWorkspaceMeetingPolicy workspaceMeetingPolicy,
+        IWorkspaceMemberDirectory workspaceMemberDirectory,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
@@ -90,6 +93,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
         _workspaceMeetingPolicy = workspaceMeetingPolicy;
+        _workspaceMemberDirectory = workspaceMemberDirectory;
         _emailService = emailService;
         _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
@@ -170,7 +174,12 @@ public class TranslationRoomService : ITranslationRoomService
         return TranslationRoomConstants.HostDisplayNameFallback;
     }
 
-    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(CreateTranslationRoomRequest request, Guid hostId, CancellationToken ct = default)
+    /// <inheritdoc />
+    public async Task<Result<TranslationRoomDto>> CreateTranslationRoomAsync(
+        CreateTranslationRoomRequest request,
+        Guid hostId,
+        CancellationToken ct = default,
+        SeriesOccurrenceContext? occurrence = null)
     {
         try
         {
@@ -211,6 +220,20 @@ public class TranslationRoomService : ITranslationRoomService
                     return Result.Failure<TranslationRoomDto>(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
             }
 
+            // Same gate as the settings-update path: an unrecognised artifact-access level must
+            // never reach the database, where it is indistinguishable from HOST_ONLY and quietly
+            // denies every participant the host meant to admit.
+            if (request.Settings?.ArtifactAccess is { } requestedArtifactAccess
+                && !ArtifactAccessLevels.IsValid(requestedArtifactAccess))
+            {
+                return Result.Failure<TranslationRoomDto>(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        requestedArtifactAccess,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
+
             // WT-249: the workspace owns who may open a room — a member whose host permission was
             // revoked must be stopped here. Runs after language resolution so the workspace also
             // gets to veto the languages actually being used, not the ones merely requested.
@@ -243,6 +266,13 @@ public class TranslationRoomService : ITranslationRoomService
             // 3. Create entity
             var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);
 
+            // WT-327: an occurrence of a recurring series is an ORDINARY room that additionally
+            // knows which series and which local day it belongs to. The (series_id,
+            // series_occurrence_local_date) unique index is what makes the materialisation
+            // sweep idempotent, so both are stamped before the insert, never afterwards.
+            room.SeriesId = occurrence?.SeriesId;
+            room.SeriesOccurrenceLocalDate = occurrence?.LocalDate;
+
             // 4. Save via repository and UnitOfWork
             await _translationRoomRepository.AddAsync(room, ct);
 
@@ -251,42 +281,12 @@ public class TranslationRoomService : ITranslationRoomService
             // directory this method already uses for language defaults.
             var hostDisplayName = await ResolveHostDisplayNameAsync(hostId, ct);
 
-            // WT-281: the host LISTENS in a language the room actually translates INTO. Both sides
-            // used to be seeded from sourceLang, so a Vietnamese -> English room showed its own
-            // host as "English -> English", which is not a translation at all.
-            //
-            // A multi-target room has to collapse to a single value on this one row. First target,
-            // deliberately:
-            //  - targetLangs is ordered exactly as the creator supplied it, so its first entry is
-            //    the language the room was primarily opened for.
-            //  - The host's stored DefaultListenLanguage is NOT consulted. It is a global
-            //    preference that need not be among this room's targets at all, so honouring it
-            //    could seed a language the room never produces — and it would silently contradict
-            //    the room the host had just explicitly configured.
-            //  - Null is not an option: ListenLanguage is NOT NULL on the participant row and the
-            //    audio-route pipeline keys off it.
-            // The host can still change this in-meeting through the participant language update;
-            // this is the seed, not a lock.
-            var hostListenLanguage = targetLangs[0];
-
-            // WT-82: Auto-add the Host as a participant so they exist in the DB
-            var hostParticipant = new TranslationRoomParticipant
-            {
-                Id = Guid.CreateVersion7(),
-                TranslationRoomId = room.Id,
-                UserId = hostId,
-                DisplayName = hostDisplayName,
-                SpeakLanguage = sourceLang,
-                ListenLanguage = hostListenLanguage,
-                Role = "HOST",
-                Status = TranslationRoomParticipantStatuses.Connected,
-                ConnectionType = "WEBRTC",
-                IsTranslationAudioEnabled = true,
-                IsUsingVoiceClone = false,
-                JoinedAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
+            // WT-82 / WT-281: auto-add the host as a participant so they exist in the DB, with
+            // the right speak/listen pair. WT-327 moved the rules themselves into
+            // TranslationRoomMapper.BuildHostParticipant so the recurring-series materialiser
+            // seeds its occurrences identically instead of from a second hand-written copy.
+            var hostParticipant = TranslationRoomMapper.BuildHostParticipant(
+                room.Id, hostId, hostDisplayName, sourceLang, targetLangs);
             await _participantRepository.AddAsync(hostParticipant, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
@@ -295,6 +295,13 @@ public class TranslationRoomService : ITranslationRoomService
             // Send invitations
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
+                // WT-327: every occurrence of a recurring series gets invitation ROWS — without
+                // them an invitee would not see days 2..N in their meeting list at all, because
+                // GetTranslationRoomsAsync resolves an invitee's visibility through exactly this
+                // table. Only the occurrence created at series-creation time sends the EMAIL:
+                // thirty identical "you're invited" messages for one daily booking is spam.
+                var sendInvitationEmails = occurrence is null || occurrence.SendInvitationEmails;
+
                 var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
@@ -312,7 +319,10 @@ public class TranslationRoomService : ITranslationRoomService
                     }, ct);
 
                     // 2. Send the email
-                    emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                    if (sendInvitationEmails)
+                    {
+                        emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                    }
                 }
 
                 // Save the newly added invitations
@@ -368,13 +378,36 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default)
+    /// <summary>
+    /// WT-334: this read had NO authorization. The controller's class-level <c>[Authorize]</c> was
+    /// the entire check, and this method took no user at all — so any authenticated user could read
+    /// any room in any workspace: title, description, room code, schedule, settings, host.
+    ///
+    /// The guard is <see cref="CanAccessRoomAsync"/>, i.e. WT-304's
+    /// <c>RoomReadAccess.IsReadableBy</c> — the same host-OR-participant-OR-invited-by-email
+    /// predicate the rooms list, the artifacts guard and the session read already use. This endpoint
+    /// was left out of PR #116 as too wide a blast radius for that change; it is the fourth consumer
+    /// now rather than a fifth spelling.
+    ///
+    /// The refusal is NotFound, not Forbidden, and reuses the not-found message verbatim: a 403
+    /// would confirm that a room with this id exists, which is exactly what a cross-tenant prober
+    /// wants and is a leak in its own right. The two branches below are deliberately
+    /// indistinguishable to the caller.
+    /// </summary>
+    public async Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
     {
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
 
             if (translationRoom == null)
+                return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
             return Result.Success(translationRoom.ToResponseDto(
@@ -393,7 +426,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
-            var query = BuildAccessibleRoomsQuery(userId, userEmail)
+            var query = (await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct))
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
@@ -440,6 +473,22 @@ public class TranslationRoomService : ITranslationRoomService
             if (TranslationRoomConstants.TerminalStatuses.Contains(translationRoom.Status))
             {
                 return Result.Failure<JoinTranslationRoomResponse>("This room has already ended or has been cancelled.", ErrorCodes.InvalidState);
+            }
+
+            // A suspended workspace admits nobody new. Checked here and not only at creation
+            // because a room created while the tenant was live outlives the suspension, and every
+            // participant who enters it opens a fresh billable STT/TTS stream.
+            //
+            // This does NOT evict anyone already connected — see EndTranslationRoomAsync, which
+            // stays open precisely so an in-flight call can be wound down rather than cut. The
+            // cost is that a participant who drops out of a live call in a workspace suspended
+            // mid-meeting cannot reconnect; that is accepted deliberately, because a reconnect is
+            // indistinguishable at this layer from a new arrival and admitting one admits both.
+            var lifecycle = await _workspaceMeetingPolicy.EnsureWorkspaceCanHostMeetingsAsync(
+                translationRoom.WorkspaceId, ct);
+            if (!lifecycle.IsSuccess)
+            {
+                return Result.Failure<JoinTranslationRoomResponse>(lifecycle.Error!, lifecycle.ErrorCode);
             }
 
             // WT-65: Fallback to user settings for Join
@@ -554,6 +603,42 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // S7. A room that is already running gets this participant's audio routes NOW.
+            //
+            // Routes used to be generated exactly once, inside StartTranslationRoomAsync, and
+            // nothing on this path ever added any — so anyone who joined after Start had no
+            // route row at all. Translation and TTS still worked for them (the AI re-reads the
+            // live languages hash per utterance), but BaseWorker.is_voice_clone_consented
+            // matches against the route rows delivered by AUDIO_ROUTES_UPDATED and fails closed
+            // without one: their buffered audio was discarded and they were permanently dubbed
+            // in a hashed default voice instead of their own. Voice cloning is the headline
+            // feature, and it silently switched itself off for anyone a minute late.
+            //
+            // Only for IN_PROGRESS: a join before Start is already covered by
+            // StartTranslationRoomAsync's own GenerateRoutesAsync, and doing it twice would
+            // charge every pre-start join for work Start is about to redo.
+            //
+            // Best-effort, exactly like the Start-path call it complements: a routing failure
+            // must not turn a successful join into a failed one. The participant is saved above
+            // and this only affects which voice they are dubbed in.
+            if (translationRoom.Status == "IN_PROGRESS")
+            {
+                var routeResult = await _audioRouteService.AddRoutesForParticipantAsync(translationRoom.Id, participant.Id, ct);
+                if (!routeResult.IsSuccess)
+                {
+                    _logger.LogWarning(
+                        "Could not add audio routes for participant {ParticipantId} joining in-progress room {RoomId}: {Error}",
+                        participant.Id, translationRoom.Id, routeResult.Error);
+                }
+                else
+                {
+                    // S8: the routes just created are PENDING, and PENDING is what the client
+                    // renders as "Waiting". The room is already running, so they are ready the
+                    // moment they exist. Idempotent for every route already broadcasting.
+                    await PublishRouteReadinessAsync(translationRoom.Id, ct);
+                }
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -566,6 +651,36 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// S8 — drive this room's audio routes out of PENDING and into BROADCASTING.
+    ///
+    /// GenerateRoutesAsync creates every route at PENDING, and the ONLY transition out of
+    /// PENDING is <c>config_ready</c> — an event no code in this repository has ever emitted.
+    /// session_starts is only accepted from READY, so it was rejected on every route, and
+    /// telemetry_state_updated is rejected outright because PENDING is not a streaming state.
+    /// A route therefore sat at PENDING for the entire meeting no matter what happened, and
+    /// PENDING is what the client renders as "Waiting" — the status frozen on the projector.
+    ///
+    /// The missing piece was the producer, not the state table: routes ARE configured at the
+    /// moment GenerateRoutesAsync returns, so that is when config_ready is true. Emitting it
+    /// here keeps the modelled lifecycle (PENDING -> READY -> BROADCASTING) intact rather than
+    /// rewriting the transition table around a step nothing performs.
+    ///
+    /// Both events are idempotent: a route already BROADCASTING rejects config_ready and
+    /// session_starts as invalid transitions, ProcessTransition returns false, and nothing is
+    /// written. That is what makes this safe to call again on a late join or a restart.
+    ///
+    /// This is also what makes the status correct in a room where NOBODY SPEAKS. It is driven
+    /// by the room's own lifecycle, so it needs no telemetry payload, no timer, and no
+    /// heartbeat — a few seconds of silence at the start of a demo can no longer leave the
+    /// status stuck.
+    /// </summary>
+    private async Task PublishRouteReadinessAsync(Guid translationRoomId, CancellationToken ct)
+    {
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.config_ready.ToString(), "{}", ct);
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
     }
 
     public async Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -608,6 +723,20 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+
+                // S7. This early return used to skip route generation entirely, which is why
+                // "just restart the room" never recovered a late joiner who had no route row.
+                // The join path now adds routes as people arrive, so this is the repair path
+                // for a room that was already running when that fix shipped — and for any
+                // future gap, one deliberate host action is a safe place to reconcile the mesh.
+                var restartRouteResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
+                if (!restartRouteResult.IsSuccess)
+                    _logger.LogWarning("Could not reconcile audio routes for already-running room {RoomId}: {Error}", translationRoomId, restartRouteResult.Error);
+
+                // S8: and drive any route still sitting at PENDING into BROADCASTING. Idempotent
+                // for routes that are already streaming.
+                await PublishRouteReadinessAsync(translationRoomId, ct);
+
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
@@ -615,12 +744,28 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
+            // A suspended workspace may not take a room live. This is the transition that actually
+            // turns on billable AI — it opens a translation session and hands the room to the audio
+            // routing state machine — so a room scheduled before the suspension must stop here
+            // rather than at creation, which already happened.
+            //
+            // Placed AFTER the IN_PROGRESS short-circuit above on purpose: a room that is already
+            // running keeps its idempotent re-Start, because refusing it would strand a host whose
+            // client retried mid-call. Suspension stops meetings from starting; it does not end one
+            // that has.
+            var lifecycle = await _workspaceMeetingPolicy.EnsureWorkspaceCanHostMeetingsAsync(
+                translationRoom.WorkspaceId, ct);
+            if (!lifecycle.IsSuccess)
+                return Result.Failure<TranslationRoomDto>(lifecycle.Error!, lifecycle.ErrorCode);
+
             // (Re)generate audio routes for the participants currently in the room so speech is
             // routed correctly once translation starts. Routes form a full mesh between
             // participants whose languages differ, so a room with only the host — or where
             // everyone shares a language — legitimately has zero routes and that must NOT block
-            // Start (additional routes are generated as more participants join). Route generation
-            // is best-effort: a failure here should not prevent the host from opening the room.
+            // Start. Additional routes for people who arrive after this point are added
+            // incrementally by JoinTranslationRoomAsync (S7); this comment used to claim that
+            // happened already, and no code path did it. Route generation is best-effort: a
+            // failure here should not prevent the host from opening the room.
             var routeResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
             if (!routeResult.IsSuccess)
                 _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
@@ -632,10 +777,6 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
 
-            // Each Start/Resume opens a new numbered translation session — the transcript
-            // labels segments by which session they fall in ("Translation 1", "Translation 2"...).
-            await StartNewTranslationSessionAsync(translationRoom, ct);
-
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
 
@@ -645,8 +786,13 @@ public class TranslationRoomService : ITranslationRoomService
             // not fail the start — the room is IN_PROGRESS and persisted by this point.
             await PublishRoomStartedAsync(translationRoom, ct);
 
-            // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
+            // S8: routes are created PENDING and the only exit is config_ready, which nothing in
+            // the repository has ever emitted — so every route sat at PENDING for the whole
+            // meeting and the client rendered "Waiting" regardless of whether anyone spoke.
+            // Start is where the routes genuinely become configured, so it is where the event
+            // belongs. Resume publishes the same pair; both are invalid transitions on a live
+            // route, so replay is a no-op.
+            await PublishRouteReadinessAsync(translationRoomId, ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
@@ -800,7 +946,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != "PAUSED")
+            if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
             translationRoom.Status = "IN_PROGRESS";
@@ -812,6 +958,7 @@ public class TranslationRoomService : ITranslationRoomService
             await StartNewTranslationSessionAsync(translationRoom, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishRoomStartedAsync(translationRoom, ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);
@@ -974,7 +1121,26 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
+            // Host OR workspace Owner/Admin — RoomHostAccess, the rule WT-188 established and WT-313
+            // reconciled. This site was still spelling it as "is the original host", and the
+            // mismatch strands rooms.
+            //
+            // Ending a meeting is a two-call client-side saga with no server-side reconciliation:
+            // "End for everyone" calls MeetingService and then this endpoint.
+            // MeetingRoomService.EndMeetingAsync accepts the ACTIVE host (isOriginalHost ||
+            // isActiveHost); this accepted only the ORIGINAL one. So after a host transfer the
+            // first call tore down LiveKit and marked the meeting FINISHED, the second was refused,
+            // and the translation room stayed IN_PROGRESS forever — never reaching History, and
+            // repaired by nothing, since ExpireTranslationRoomAsync has no production callers. A
+            // network blip between the two calls leaves the same orphan.
+            //
+            // Widening to workspace Owner/Admin does not close the mismatch completely: an active
+            // host who is a plain workspace member is still refused, because ActiveHostId lives in
+            // MeetingService's own table and is not a fact this service can see. Making the two
+            // agree by construction needs the active host propagated here (or read over gRPC), and
+            // that is a larger change than this one. What this does buy is that the orphan is
+            // always recoverable by an Owner/Admin rather than permanent.
+            if (!await RoomHostAccess.HasHostAuthorityAsync(translationRoom, hostId, _workspaceMemberDirectory, ct))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status == "ENDED")
@@ -1065,6 +1231,23 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure(TranslationRoomConstants.ErrorSettingsLocked, ErrorCodes.InvalidState);
+
+            // ArtifactAccess is a free-form string in a jsonb blob, and for its whole life nothing
+            // checked what went into it. That is how the guard came to compare against values no
+            // writer produced without anyone noticing: an unrecognised level is indistinguishable
+            // from HOST_ONLY at read time, so the policy silently denied everyone and looked
+            // enforced. Reject it here, at the only door it can come through, so the stored value
+            // is always one the guard can actually act on.
+            if (request.Settings?.ArtifactAccess is { } requestedArtifactAccess
+                && !ArtifactAccessLevels.IsValid(requestedArtifactAccess))
+            {
+                return Result.Failure(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        requestedArtifactAccess,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
 
             if (!string.IsNullOrWhiteSpace(request.Title))
                 translationRoom.Title = request.Title;
@@ -1185,7 +1368,9 @@ public class TranslationRoomService : ITranslationRoomService
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
             var historyRequest = request with { Status = request.Status ?? $"{"ENDED"},{"CANCELLED"}" };
-            var query = ApplyRoomFilters(BuildAccessibleRoomsQuery(userId, userEmail), historyRequest)
+            var query = ApplyRoomFilters(
+                    await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct),
+                    historyRequest)
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var total = await query.CountAsync(ct);
@@ -1221,9 +1406,33 @@ public class TranslationRoomService : ITranslationRoomService
                 .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
                 .ToListAsync(ct);
+
+            // Artifact BODIES are decided per room by the room's own ArtifactAccess policy, not by
+            // the room-read gate that got this caller onto the page. History is reachable by every
+            // participant and by anyone holding an unaccepted invitation, so a HOST_ONLY room used
+            // to hand all of them its AI summary here while the download endpoint refused it.
+            // Participation is read from the roster already materialised above rather than from the
+            // (unloaded) navigation on each room entity.
+            var roomsById = roomEntities.ToDictionary(r => r.Id);
+            var participantUserIdsByRoom = participantEntities
+                .GroupBy(p => p.TranslationRoomId)
+                .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+
             var artifactsByRoom = artifactEntities
                 .GroupBy(a => a.TranslationRoomId)
-                .ToDictionary(g => g.Key, g => g.Select(ToArtifactDto).ToList());
+                .ToDictionary(
+                    g => g.Key,
+                    g =>
+                    {
+                        var room = roomsById[g.Key];
+                        var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
+                            room.HostId,
+                            room.Settings,
+                            participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
+                            userId);
+
+                        return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
+                    });
 
             var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
                     ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
@@ -1248,12 +1457,22 @@ public class TranslationRoomService : ITranslationRoomService
             if (!await CanAccessRoomAsync(translationRoomId, userId, userEmail, ct))
                 return Result.Failure<List<TranslationRoomArtifactDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
+            // Room-read got the caller this far — that is what entitles them to know which
+            // artifacts exist. Whether they may also read an artifact's inline body is the
+            // stricter, policy-driven question the download endpoint asks, so ask it with the
+            // same predicate rather than letting the list be the looser of the two.
+            var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+                r => r.Id == translationRoomId,
+                "TranslationRoomParticipants",
+                ct);
+            var includeContent = room != null && ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId);
+
             var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
                 .Query()
                 .Where(a => a.TranslationRoomId == translationRoomId && a.DeletedAt == null)
                 .OrderByDescending(a => a.CreatedAt)
                 .ToListAsync(ct);
-            var artifacts = artifactEntities.Select(ToArtifactDto).ToList();
+            var artifacts = artifactEntities.Select(a => ToArtifactDto(a, includeContent)).ToList();
 
             return Result.Success(artifacts);
         }
@@ -1398,6 +1617,58 @@ public class TranslationRoomService : ITranslationRoomService
             .Where(RoomReadAccess.IsReadableBy(userId, userEmail));
     }
 
+    /// <summary>
+    /// The rooms a caller may SEE LISTED for one workspace.
+    ///
+    /// <see cref="BuildAccessibleRoomsQuery"/> knows three ways in — host, prior participant,
+    /// invited by email — and a workspace Owner/Admin is none of them, because that is not a fact
+    /// the translation-room database holds. So a workspace Admin saw "No active meetings found."
+    /// and a dashboard tile reading 0 for a workspace that had rooms in it, while the same account
+    /// could open any of those rooms by direct URL and join: the list was stricter than the thing it
+    /// was a list of. Since the Join control lives only on the room detail page, and the list is the
+    /// only route to it, an empty list left an Admin no way into any meeting in her own workspace.
+    ///
+    /// WHY OWNER/ADMIN AND NOT EVERY MEMBER. This is the rule WT-313 already ratified for "who may
+    /// act on this room" — host OR participant OR workspace Owner/Admin — after the same predicate
+    /// had drifted into three different spellings. That work audited
+    /// <c>TranslationRoomParticipantService</c> and never reached this file, so the rooms list is
+    /// the un-audited next instance of a settled question rather than a new one. WT-313 also keeps a
+    /// plain workspace Member as a deliberate NEGATIVE case, so widening to every member would
+    /// reverse a decision the team has already taken; a member still sees exactly the rooms they
+    /// host, joined, or were invited to.
+    ///
+    /// The role is asked of WorkspaceService through the same directory WT-313 uses, once per
+    /// request, and only when the request names a workspace. Everyone else keeps precisely the
+    /// previous answer — as does every caller when WorkspaceService cannot be reached, since the
+    /// directory swallows its own failures and returns false, narrowing the list rather than
+    /// failing the request.
+    ///
+    /// HOW FAR THIS WIDENS. For an Owner/Admin, to every non-deleted room of that one workspace,
+    /// deliberately: a room has no private/unlisted/visibility attribute to respect —
+    /// <c>TranslationRoomTypes</c> selects behaviour (approval, recording, capacity), not audience —
+    /// and entry is still governed per-room by <c>RequiresApproval</c>, untouched here. Listing a
+    /// room is not admission to it, and artifact bodies stay behind their own per-room
+    /// ArtifactAccess policy. If a private room type is ever introduced, its exclusion belongs here.
+    /// </summary>
+    private async Task<IQueryable<TranslationRoom>> BuildListableRoomsQueryAsync(
+        Guid userId,
+        string? userEmail,
+        Guid? workspaceId,
+        CancellationToken ct)
+    {
+        if (workspaceId.HasValue
+            && workspaceId.Value != Guid.Empty
+            && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId.Value, userId, ct))
+        {
+            var scopedWorkspaceId = workspaceId.Value;
+            return _unitOfWork.TranslationRoomRepository
+                .Query()
+                .Where(r => r.WorkspaceId == scopedWorkspaceId);
+        }
+
+        return BuildAccessibleRoomsQuery(userId, userEmail);
+    }
+
     private static IQueryable<TranslationRoom> ApplyRoomFilters(IQueryable<TranslationRoom> query, GetTranslationRoomsRequest request)
     {
         if (request.WorkspaceId.HasValue)
@@ -1447,12 +1718,22 @@ public class TranslationRoomService : ITranslationRoomService
     /// boundary and changing its execution model in the same commit is how this predicate got
     /// three different spellings in the first place.
     /// </summary>
-    private Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken ct)
+    private async Task<bool> CanAccessRoomAsync(Guid translationRoomId, Guid userId, string? userEmail, CancellationToken ct)
     {
-        return Task.FromResult(_unitOfWork.TranslationRoomRepository
+        var scoped = _unitOfWork.TranslationRoomRepository
             .Query()
-            .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive)
-            .Any(RoomReadAccess.IsReadableBy(userId, userEmail)));
+            .Where(r => r.Id == translationRoomId && r.DeletedAt == null && r.IsActive);
+
+        if (scoped.Any(RoomReadAccess.IsReadableBy(userId, userEmail))) return true;
+
+        var workspaceId = scoped.Select(r => r.WorkspaceId).FirstOrDefault();
+
+        // A workspace Owner/Admin can see every room in their workspace in the list
+        // (BuildListableRoomsQueryAsync), so the detail read has to agree. Without this the
+        // product hands an Admin a list of rooms and then refuses to open them — the mentor
+        // incident inverted, and worse on stage, because the presenter has already clicked.
+        return workspaceId != Guid.Empty
+            && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId, userId, ct);
     }
 
     /// <summary>
@@ -1489,11 +1770,28 @@ public class TranslationRoomService : ITranslationRoomService
             room.CreatedAt,
             settings,
             seatsTaken,
-            room.HostId == userId
+            room.HostId == userId,
+            room.SeriesId
         );
     }
 
-    private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact)
+    /// <summary>
+    /// The artifact list projection.
+    /// </summary>
+    /// <param name="includeContent">
+    /// Whether the caller is entitled to the artifact's inline BODY, as opposed to the fact that it
+    /// exists. These two lists — the room's artifacts and the per-room artifacts inside room history
+    /// — are guarded only by <c>CanAccessRoomAsync</c>, which is room-READ: it admits every
+    /// participant, and (via <c>RoomReadAccess</c>) anyone holding an unaccepted email invitation.
+    /// <c>Content</c> is where the AI meeting summary lives — overview, decisions, action items —
+    /// so shipping it unconditionally handed the entire summary to exactly the people a
+    /// <c>HOST_ONLY</c> room is meant to withhold it from. The download endpoint refused them, which
+    /// is precisely why the policy looked like it was working. Metadata still goes to everyone who
+    /// may see the room: they should know a summary exists and may ask the host for it.
+    /// The caller decides entitlement with <see cref="ArtifactAccessHelper"/> — the same predicate
+    /// the download endpoint uses, so the two cannot drift apart again.
+    /// </param>
+    private static TranslationRoomArtifactDto ToArtifactDto(TranslationRoomArtifact artifact, bool includeContent)
     {
         // WT-13: previously this ignored artifact.ArtifactType entirely and derived `type`
         // only from FileFormat, so every artifact (summary, recording, transcript alike)
@@ -1521,7 +1819,7 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.RetentionUntil,
             artifact.Status,
             artifact.CreatedAt,
-            artifact.Content
+            includeContent ? artifact.Content : null
         );
     }
 

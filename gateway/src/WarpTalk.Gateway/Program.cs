@@ -25,29 +25,24 @@ builder.Services.AddWarpTalkObservability(
     "warptalk-gateway");
 
 // 1. Configure JWT Authentication
-var jwtSettings = builder.Configuration.GetSection("Jwt");
-var secretKey = jwtSettings["Secret"];
-
-if (string.IsNullOrEmpty(secretKey))
-{
-    throw new InvalidOperationException("JWT Secret is not configured.");
-}
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+//
+// This goes through the shared helper deliberately. The gateway used to read Jwt:Secret itself
+// and reject only null/empty, which meant it would boot in Production on the CHANGE_ME
+// placeholder that is committed to appsettings.json in this public repository. The gateway is
+// the only component that validates end-user JWTs on proxied routes, so a known signing key
+// there is not a weak link — it is the whole lock: anyone could mint a token for any user id
+// and any role and be believed. Every other service already refused to start in that state via
+// AddWarpTalkJwtAuthentication; the perimeter was the one place that did not.
+//
+// Adopting the helper also restores PreviousSecrets support, so a key rotation that works for
+// the backend services no longer breaks at the gateway. JwtKeyRotationTests already asserted
+// that behaviour against the helper from inside this very test project, while the gateway's own
+// Program.cs did not implement it.
+builder.Services.AddWarpTalkJwtAuthentication(
+    builder.Configuration,
+    builder.Environment,
+    options =>
     {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings["Issuer"],
-            ValidAudience = jwtSettings["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
-            ClockSkew = TimeSpan.Zero
-        };
-
         // SignalR: Extract JWT from query string for WebSocket handshake.
         // Browsers cannot send Authorization headers during WebSocket upgrade requests,
         // so the client passes the token as ?access_token=<jwt> query parameter.
@@ -152,6 +147,9 @@ if (!string.IsNullOrEmpty(redisConnectionString))
     signalRBuilder.AddStackExchangeRedis(redisConnectionString, options =>
     {
         options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal("WarpTalk");
+        // Same reason as the multiplexer below: a backplane that cannot reach Redis must
+        // degrade this instance to single-node SignalR, not stop the gateway from booting.
+        options.Configuration.AbortOnConnectFail = false;
     });
 }
 
@@ -169,8 +167,15 @@ if (string.IsNullOrWhiteSpace(redisStreamConnectionString))
     redisStreamConnectionString = "localhost:6379";
 }
 
+// abortConnect=false is load-bearing, not tuning. Without it StackExchange.Redis throws
+// out of this factory while the service provider is being built, i.e. before any
+// BackgroundService exists to guard, and the process dies. The gateway's primary job is
+// proxying HTTP and terminating SignalR; the whole API surface must keep answering when
+// realtime is temporarily down. The multiplexer returned here is disconnected and
+// reconnects on its own, and /health/ready reports the degradation (see
+// AddWarpTalkRedisReadiness below) so nothing pretends to be healthy.
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
-    ConnectionMultiplexer.Connect(redisStreamConnectionString));
+    ConnectionMultiplexer.Connect(redisStreamConnectionString + ",abortConnect=false"));
 
 builder.Services.AddSingleton<RedisStreamService>();
 builder.Services.AddSingleton<ActiveTranslationRoomRegistry>();
@@ -219,6 +224,15 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 
+// Server-side host check for TranslationRoomHub's host-only methods (MuteAll,
+// SpotlightParticipant, AdmitWaitingParticipant). Registered after both gRPC clients above
+// because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
+// WorkspaceService — the same two clauses the REST paths enforce.
+builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
+// singleton would also be the wrong lifetime for something that must never cache its answer.
+builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -237,9 +251,15 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseAuthentication();
+
+// AFTER UseAuthentication, and this ordering is load-bearing. The global limiter partitions a
+// signed-in caller by user id so that everyone behind one NAT — an office, a venue, a defence
+// room — does not share a single budget. HttpContext.User is not populated until authentication
+// has run, so a limiter placed above it would find no identity and silently partition every
+// request by IP again, which is the exact failure it is there to prevent.
 app.UseRateLimiter();
 
-app.UseAuthentication();
 app.UseAuthorization();
 
 // Map YARP
@@ -271,3 +291,5 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 });
 
 app.Run();
+
+public partial class Program { }

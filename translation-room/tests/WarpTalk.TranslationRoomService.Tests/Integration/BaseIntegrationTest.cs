@@ -22,6 +22,14 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
     protected HttpClient Client { get; private set; } = null!;
     private WebApplicationFactory<Program> _factory = null!;
 
+    /// <summary>
+    /// A scope on the running host's own container, for tests that need to seed a row the API has
+    /// no endpoint to create (artifacts arrive from the AI pipeline and the LiveKit egress webhook,
+    /// not from a client) or to read back what the API actually persisted. Same DbContext and same
+    /// Postgres the request pipeline uses — not a parallel fixture.
+    /// </summary>
+    protected IServiceScope CreateScope() => _factory.Services.CreateScope();
+
     public async Task InitializeAsync()
     {
         await _dbContainer.StartAsync();
@@ -86,6 +94,11 @@ public abstract class BaseIntegrationTest : IAsyncLifetime
                     var mockMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
                     mockMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
                             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                        .ReturnsAsync(Result.Success());
+
+                    // ...and the tenant itself is live unless a test suspends it.
+                    mockMeetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                            It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                         .ReturnsAsync(Result.Success());
                     services.AddScoped<IWorkspaceMeetingPolicy>(_ => mockMeetingPolicy.Object);
 

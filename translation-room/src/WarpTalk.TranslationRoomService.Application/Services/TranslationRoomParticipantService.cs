@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
@@ -22,17 +24,35 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
     private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
+    private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomParticipantService> _logger;
+
+    /// <summary>
+    /// The same cross-process relay <see cref="TranslationRoomService"/> publishes RoomStarted and
+    /// RoomEnded on. The SignalR hub lives in the Gateway process, so this service cannot reach
+    /// connected clients directly — TranslationRoomRedisSubscriberService fans out to the room's
+    /// group.
+    /// </summary>
+    private const string GatewayCommandsChannel = "warptalk:translation-room:commands";
+
+    /// <summary>
+    /// The relay command TranslationRoomRedisSubscriberService turns into the "ParticipantAdmitted"
+    /// SignalR event. Named to sit beside the RoomStarted/RoomEnded commands the same channel
+    /// already carries.
+    /// </summary>
+    private const string ParticipantAdmittedCommand = "ParticipantAdmitted";
 
     public TranslationRoomParticipantService(
         IUnitOfWork unitOfWork,
         IWorkspaceMemberDirectory workspaceMemberDirectory,
-        ILogger<TranslationRoomParticipantService> logger)
+        ILogger<TranslationRoomParticipantService> logger,
+        IRedisStateRepository? redisStateRepository = null)
     {
         _unitOfWork = unitOfWork;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
         _participantRepository = _unitOfWork.TranslationRoomParticipantRepository;
         _workspaceMemberDirectory = workspaceMemberDirectory;
+        _redisStateRepository = redisStateRepository;
         _logger = logger;
     }
 
@@ -200,12 +220,60 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             _participantRepository.Update(participant);
             await _unitOfWork.SaveChangesAsync(ct);
 
+            await PublishParticipantAdmittedAsync(translationRoomId, participant.UserId);
+
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while admitting participant. RoomId: {RoomId}, ParticipantId: {ParticipantId}", translationRoomId, participantId);
             return Result.Failure("An unexpected error occurred while admitting participant.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Tell the admitted client it may come in.
+    ///
+    /// Approve in the People panel is a REST call that flipped this row and invalidated the HOST's
+    /// participants query — nothing reached the admitted user. Their own participant poll is
+    /// deliberately disabled while they are in the waiting room and their room query has no
+    /// refetch interval, so they sat on the "Waiting for Host" spinner until they happened to press
+    /// Refresh Status. It only ever looked like it worked because a host who pressed Start
+    /// Translation afterwards triggered RoomStarted, which re-joins everyone; admit with no
+    /// subsequent start left the guest stuck indefinitely.
+    ///
+    /// Same shape as <c>TranslationRoomService.PublishRoomStartedAsync</c>/RoomEnded, for the same
+    /// reason: the hub lives in the Gateway process. Published AFTER SaveChangesAsync so a client
+    /// that re-joins on the event cannot observe itself still WAITING, and it never throws — an
+    /// unnotified guest can still press Refresh Status, but failing the host's Approve after the
+    /// row is already CONNECTED would be strictly worse.
+    /// </summary>
+    private async Task PublishParticipantAdmittedAsync(Guid translationRoomId, Guid? admittedUserId)
+    {
+        if (_redisStateRepository is null || admittedUserId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = ParticipantAdmittedCommand,
+                RoomId = translationRoomId.ToString(),
+                UserId = admittedUserId.Value.ToString()
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogError(
+                publishEx,
+                "Failed to publish ParticipantAdmitted for RoomId: {RoomId}, UserId: {UserId}. The participant is admitted; "
+                + "their client will stay on the waiting screen until it retries.",
+                translationRoomId,
+                admittedUserId);
         }
     }
 
@@ -306,13 +374,14 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     /// <see cref="IWorkspaceMemberDirectory.IsOwnerOrAdminAsync"/> is never called for a host.
     /// </para>
     /// </remarks>
-    private async Task<bool> HasRoomHostAuthorityAsync(TranslationRoom room, Guid requestedByUserId, CancellationToken ct)
-    {
-        if (room.HostId == requestedByUserId)
-            return true;
-
-        return await _workspaceMemberDirectory.IsOwnerOrAdminAsync(room.WorkspaceId, requestedByUserId, ct);
-    }
+    /// <remarks>
+    /// The rule itself moved to <see cref="RoomHostAccess"/> when TranslationRoomSessionService
+    /// needed the same predicate — a private method here was not reusable, which is how these
+    /// spellings drift apart in the first place. This stays as the named entry point the comments
+    /// above and the pinned tests refer to.
+    /// </remarks>
+    private Task<bool> HasRoomHostAuthorityAsync(TranslationRoom room, Guid requestedByUserId, CancellationToken ct)
+        => RoomHostAccess.HasHostAuthorityAsync(room, requestedByUserId, _workspaceMemberDirectory, ct);
 
     /// <summary>
     /// WT-304 — "was this caller invited to this room, and does that invitation still stand".

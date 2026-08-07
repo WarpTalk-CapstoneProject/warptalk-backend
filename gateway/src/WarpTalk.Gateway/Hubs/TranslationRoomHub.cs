@@ -22,6 +22,7 @@ public class TranslationRoomHub : Hub
     private readonly RedisStreamService _streamService;
     private readonly ActiveTranslationRoomRegistry _translationRoomRegistry;
     private readonly IConnectionMultiplexer _redis;
+    private readonly IRoomHostAuthority _hostAuthority;
     private readonly ILogger<TranslationRoomHub> _logger;
 
     // Track which connection belongs to which room
@@ -36,6 +37,7 @@ public class TranslationRoomHub : Hub
         RedisStreamService streamService,
         ActiveTranslationRoomRegistry translationRoomRegistry,
         IConnectionMultiplexer redis,
+        IRoomHostAuthority hostAuthority,
         ILogger<TranslationRoomHub> logger)
     {
         _connectionManager = connectionManager;
@@ -43,7 +45,37 @@ public class TranslationRoomHub : Hub
         _streamService = streamService;
         _translationRoomRegistry = translationRoomRegistry;
         _redis = redis;
+        _hostAuthority = hostAuthority;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Closes the KNOWN GAP that used to be documented (and left open) on MuteAll,
+    /// SpotlightParticipant and AdmitWaitingParticipant: those methods took the caller's claimed
+    /// identity from the JWT and verified nothing server-side, so any authenticated participant
+    /// could force-mute the whole room including the host, or seize everyone's stage, straight from
+    /// the browser console.
+    ///
+    /// The gap comment said a real fix needed "a gRPC client to TranslationRoomService injected
+    /// into this hub" — the Gateway had already registered one; see <see cref="IRoomHostAuthority"/>
+    /// for the predicate and why it fails closed. Throws rather than returning a bool so no caller
+    /// can forget to check: an unauthorized invoke surfaces on the client as a rejected hub call,
+    /// and no broadcast is sent.
+    /// </summary>
+    private async Task EnsureHostAuthorityAsync(Guid translationRoomId, string action)
+    {
+        var userId = GetUserId();
+
+        if (await _hostAuthority.HasHostAuthorityAsync(translationRoomId, userId, Context.ConnectionAborted))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "TranslationRoomHub: refused {Action} on room {RoomId} — user {UserId} is not the host and is not a workspace Owner/Admin.",
+            action, translationRoomId, userId);
+
+        throw new HubException("Only the meeting host can do that.");
     }
 
     // ── Lifecycle ─────────────────────────────────────────
@@ -288,9 +320,18 @@ public class TranslationRoomHub : Hub
 
     /// <summary>
     /// Host-only: admit a waiting participant from the queue into the live room.
+    ///
+    /// Cosmetic compared with the other two — it only broadcasts, and the authoritative admission
+    /// is the REST call that flips the participant row — but an unauthorized caller could still
+    /// spoof "you're in" at every waiting client in the room, so it is checked in the same pass.
+    /// The production path is now TranslationRoomParticipantService.AdmitParticipantAsync, through
+    /// Redis to TranslationRoomRedisSubscriberService, which emits the same ParticipantAdmitted
+    /// event with the participant row already updated.
     /// </summary>
     public async Task AdmitWaitingParticipant(Guid translationRoomId, string targetUserId)
     {
+        await EnsureHostAuthorityAsync(translationRoomId, nameof(AdmitWaitingParticipant));
+
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         await Clients.Group(groupName)
@@ -302,19 +343,15 @@ public class TranslationRoomHub : Hub
     /// <summary>
     /// Host-only: force everyone's view to spotlight one participant.
     ///
-    /// KNOWN GAP: unlike MeetingRoomService.TransferHostAsync (which can check
-    /// room.ActiveHostId/HostId against the caller because it owns a DB/gRPC-backed
-    /// room lookup), this Gateway hub has no injected repository or gRPC client for
-    /// TranslationRoom/host data — only Redis, the connection registry, and the JWT
-    /// claims already on Context.User. There is no cheap way to verify the caller is
-    /// actually the room host from inside the hub today, so — like ToggleMute,
-    /// SetListenLanguage, etc. — this trusts the caller's claimed identity from the JWT
-    /// and does not verify host status server-side. A real fix needs either a gRPC
-    /// client to TranslationRoomService injected into this hub, or a Redis-cached
-    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// The KNOWN GAP that used to be documented here is closed. It said the fix needed "a gRPC
+    /// client to TranslationRoomService injected into this hub" — the Gateway had already
+    /// registered one (Program.cs), so <see cref="EnsureHostAuthorityAsync"/> now uses it. Until
+    /// then any authenticated participant could hijack everyone's stage from the browser console.
     /// </summary>
     public async Task SpotlightParticipant(Guid translationRoomId, Guid targetUserId, bool on)
     {
+        await EnsureHostAuthorityAsync(translationRoomId, nameof(SpotlightParticipant));
+
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         await Clients.Group(groupName)
@@ -325,17 +362,14 @@ public class TranslationRoomHub : Hub
     /// Host-only (WT-04): force-mute every OTHER participant's mic. Each person can unmute
     /// themselves afterwards — this is not a hard/enforced mute, just a one-time nudge.
     ///
-    /// KNOWN GAP: identical trust-boundary gap to SpotlightParticipant above, for the exact
-    /// same reason — this Gateway hub has no injected repository/gRPC client for
-    /// TranslationRoom/host data, only Redis, the connection registry, and JWT claims. There
-    /// is no cheap way to verify the caller is actually the room host from inside the hub
-    /// today, so this trusts the caller's claimed identity and does not verify host status
-    /// server-side. A real fix needs the same thing SpotlightParticipant's comment describes:
-    /// a gRPC client to TranslationRoomService injected into this hub, or a Redis-cached
-    /// "translationRoom:{id}:hostId" value written by that service to check against.
+    /// The KNOWN GAP that used to be documented here is closed the same way SpotlightParticipant's
+    /// was — see <see cref="EnsureHostAuthorityAsync"/>. This was the worse of the two in practice:
+    /// any authenticated participant could force-mute the entire room, the host included.
     /// </summary>
     public async Task MuteAll(Guid translationRoomId)
     {
+        await EnsureHostAuthorityAsync(translationRoomId, nameof(MuteAll));
+
         var groupName = TranslationRoomGroupName(translationRoomId);
 
         await Clients.OthersInGroup(groupName)

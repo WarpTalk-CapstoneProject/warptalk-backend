@@ -47,7 +47,8 @@ public class AssistantChatResultConsumerService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var db = _redis.GetDatabase();
-        await EnsureConsumerGroupAsync(db);
+        if (!await EnsureConsumerGroupAsync(db, stoppingToken))
+            return;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -135,16 +136,58 @@ public class AssistantChatResultConsumerService : BackgroundService
             useApproximateMaxLength: true);
     }
 
-    private async Task EnsureConsumerGroupAsync(IDatabase db)
+    /// <summary>
+    /// GUARDED: only BUSYGROUP used to be caught here, so an unreachable Redis threw XGROUP
+    /// out of <see cref="ExecuteAsync"/> and tripped BackgroundServiceExceptionBehavior.StopHost,
+    /// killing AssistantService rather than just this consumer. Retries with bounded backoff so
+    /// the consumer starts on its own once Redis returns.
+    /// </summary>
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
     {
-        try
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
         {
-            await db.StreamCreateConsumerGroupAsync(StreamName, GroupName, "0", createStream: true);
+            try
+            {
+                await db.StreamCreateConsumerGroupAsync(StreamName, GroupName, "0", createStream: true);
+                return true;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
+            {
+                // Group already exists — fine.
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "AssistantChatResultConsumerService could not create consumer group {Group} on {Stream} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. Assistant chat replies are NOT being "
+                    + "delivered until it succeeds.",
+                    GroupName, StreamName, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
         }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
-        {
-            // Group already exists — fine.
-        }
+
+        return false;
     }
 
     private async Task ProcessEntryAsync(StreamEntry entry, CancellationToken ct)

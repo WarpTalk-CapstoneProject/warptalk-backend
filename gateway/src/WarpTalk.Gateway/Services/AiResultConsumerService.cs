@@ -92,6 +92,69 @@ public sealed class AiResultConsumerService : BackgroundService
 
 
 
+    /// <summary>
+    /// Creates the consumer group for <paramref name="streamKey"/>, retrying with bounded
+    /// backoff until it succeeds or the host stops.
+    ///
+    /// GUARDED: this used to be a bare call at the top of each consumer loop, outside every
+    /// try. Redis Streams was missed by the earlier pub/sub sweep, so an unreachable Redis
+    /// threw XGROUP straight out of <see cref="ExecuteAsync"/> (whose only catch is
+    /// OperationCanceledException), tripped the default
+    /// BackgroundServiceExceptionBehavior.StopHost and took the whole gateway down — YARP
+    /// proxying and SignalR included. The app and infra roles deploy in parallel, so reaching
+    /// this line before Redis accepts connections is routine.
+    ///
+    /// Retries rather than giving up so the consumer starts on its own once Redis returns;
+    /// same bounded-backoff shape as TranslationRoomRedisSubscriberService.
+    /// </summary>
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupWithRetryAsync(string streamKey, CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+                if (attempt > 0)
+                {
+                    _logger.LogInformation(
+                        "Consumer group {Group} on {Stream} is ready after {Attempts} failed attempt(s); resuming delivery.",
+                        ConsumerGroupName, streamKey, attempt);
+                }
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "Could not create consumer group {Group} on {Stream} (attempt {Attempt}); retrying in {RetryDelay}. "
+                    + "AI pipeline results from this stream are NOT reaching clients until it succeeds.",
+                    ConsumerGroupName, streamKey, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
+    }
+
     // ── Profanity Masking ────────────────────────────────────
 
     private async Task<bool> IsProfanityFilterEnabledAsync(string translationRoomId, CancellationToken ct)
@@ -175,7 +238,8 @@ public sealed class AiResultConsumerService : BackgroundService
     {
         var streamKey = "stt:results";
 
-        await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
 
         _logger.LogDebug("Consuming STT results: {StreamKey}", streamKey);
 
@@ -235,7 +299,8 @@ public sealed class AiResultConsumerService : BackgroundService
     {
         var streamKey = "translate:results";
 
-        await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
 
         while (!ct.IsCancellationRequested)
         {
@@ -295,7 +360,8 @@ public sealed class AiResultConsumerService : BackgroundService
     {
         var streamKey = "tts:results";
 
-        await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
 
         _logger.LogDebug("Consuming TTS results: {StreamKey}", streamKey);
 
@@ -356,7 +422,8 @@ public sealed class AiResultConsumerService : BackgroundService
     {
         var streamKey = "ai_assistant:results";
 
-        await _streamService.EnsureConsumerGroupAsync(streamKey, ConsumerGroupName);
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
 
         _logger.LogDebug("Consuming AI Assistant results: {StreamKey}", streamKey);
 

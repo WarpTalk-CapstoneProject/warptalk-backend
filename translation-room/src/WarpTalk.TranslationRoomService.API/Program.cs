@@ -81,7 +81,11 @@ builder.Services.AddScoped<ITranslationRoomArtifactRepository, TranslationRoomAr
 builder.Services.AddScoped<ITranslationRoomSessionRepository, TranslationRoomSessionRepository>();
 builder.Services.AddScoped<ITranslationRoomInvitationRepository, TranslationRoomInvitationRepository>();
 builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFeedbackRepository>();
+// WT-327: recurring bookings. Repository-per-entity, like every other repository above — there
+// is no generic on IUnitOfWork and no Repository<T>() factory.
+builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
+builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
 builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomParticipantService>();
@@ -113,6 +117,9 @@ builder.Services.AddHostedService<IdleRoomMonitoringWorker>();
 builder.Services.AddHostedService<WorkspaceEventConsumerWorker>();
 // WT-14: reminds the host/participants at T-10min and T-1min before a SCHEDULED room's start.
 builder.Services.AddHostedService<ReminderNotificationWorker>();
+// WT-327: rolls each recurring booking's horizon forward. Polling, not a Redis subscriber —
+// "a day passed" is a clock fact, and an unguarded SubscribeAsync takes down the host process.
+builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
@@ -131,8 +138,13 @@ builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.
 // --- Redis ---
 var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
                           ?? throw new InvalidOperationException("Redis:ConnectionString is not configured");
+// abortConnect=false: room CRUD and the gRPC surface are Postgres-backed; Redis is the event
+// bus. Safe here specifically because the two Redis-backed *gates* fail CLOSED rather than
+// open — SubscriptionQuotaInterceptor and RateLimitingFilter let the RedisConnectionException
+// surface, so the guarded call is rejected rather than silently allowed. If either is ever
+// changed to catch-and-allow, this line becomes a quota bypass and must be revisited.
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
-    ConnectionMultiplexer.Connect(redisConnectionString));
+    ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
 
 // Hosted Services
 builder.Services.AddHostedService<TranslationRoomEventConsumerService>();

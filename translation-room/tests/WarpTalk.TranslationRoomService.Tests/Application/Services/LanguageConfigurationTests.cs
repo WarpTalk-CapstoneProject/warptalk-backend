@@ -29,6 +29,7 @@ public class LanguageConfigurationTests
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _roomService;
@@ -43,6 +44,7 @@ public class LanguageConfigurationTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        _mockWorkspaceMemberDirectory = new Mock<IWorkspaceMemberDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -55,6 +57,11 @@ public class LanguageConfigurationTests
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
+        // ...and the tenant itself is live unless a test suspends it.
+        _mockWorkspaceMeetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _roomService = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             _mockUnitOfWork.Object,
             _mockLanguagePolicy.Object,
@@ -62,6 +69,7 @@ public class LanguageConfigurationTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);

@@ -96,12 +96,42 @@ public class TokenService : ITokenService
             var tokenHash = TokenHasher.Hash(refreshToken);
             var storedToken = await _refreshTokenRepository.GetByTokenHashAsync(tokenHash, ct);
 
-            if (storedToken is not null && storedToken.UserId == userId)
+            if (storedToken is null)
             {
-                storedToken.RevokedAt = DateTime.UtcNow;
-                _refreshTokenRepository.Update(storedToken);
-                await _unitOfWork.SaveChangesAsync(ct);
+                // Nothing to revoke. Still a success: logout is idempotent, and telling the
+                // caller whether a token exists would make this endpoint an oracle.
+                _logger.LogInformation(
+                    "Logout presented an unknown refresh token. UserId: {UserId}", userId);
+                return Result.Success();
             }
+
+            if (storedToken.UserId != userId)
+            {
+                // The presented token belongs to somebody else. It is NOT revoked — otherwise
+                // any authenticated user holding another user's refresh token could terminate
+                // their session. There is no legitimate way to reach this branch, so it is an
+                // attack signal and gets logged as one.
+                _logger.LogWarning(
+                    "Logout presented a refresh token owned by a different user. "
+                    + "Caller: {UserId}. Token was not revoked.",
+                    userId);
+                return Result.Success();
+            }
+
+            // Revoke the whole rotation family, not just the presented leaf.
+            //
+            // A family is one login lineage: the token issued at sign-in and every token that
+            // rotation has since derived from it. Revoking only the leaf ended the session on
+            // paper while leaving the lineage intact, so "log out" did less than the name
+            // promises. RefreshTokenAsync already revokes by family when it detects reuse; a
+            // deliberate logout should be at least as thorough as reuse detection.
+            await _refreshTokenRepository.RevokeFamilyAsync(storedToken.FamilyId, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Logout revoked refresh token family {FamilyId}. UserId: {UserId}",
+                storedToken.FamilyId,
+                userId);
 
             return Result.Success();
         }

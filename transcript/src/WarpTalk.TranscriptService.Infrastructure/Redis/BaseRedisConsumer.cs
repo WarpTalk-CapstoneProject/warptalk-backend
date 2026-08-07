@@ -27,14 +27,8 @@ public abstract class BaseRedisConsumer : BackgroundService
         var db = _redis.GetDatabase();
 
         // Ensure consumer group exists
-        try
-        {
-            await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", true);
-        }
-        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
-        {
-            // Group already exists, ignore
-        }
+        if (!await EnsureConsumerGroupAsync(db, stoppingToken))
+            return;
 
         _logger.LogInformation($"Starting consumer {ConsumerName} on group {ConsumerGroup} for stream {StreamKey}");
 
@@ -80,6 +74,61 @@ public abstract class BaseRedisConsumer : BackgroundService
                 await Task.Delay(1000, stoppingToken);
             }
         }
+    }
+
+    /// <summary>
+    /// GUARDED: only BUSYGROUP used to be caught here, so an unreachable Redis threw XGROUP
+    /// out of <see cref="ExecuteAsync"/> and tripped BackgroundServiceExceptionBehavior.StopHost,
+    /// killing TranscriptService rather than just this consumer — and this is a base class, so
+    /// every derived consumer inherited the fault. Retries with bounded backoff so consumption
+    /// resumes on its own once Redis returns; same shape as GlossaryStartedEventConsumer.
+    /// </summary>
+    /// <returns>true once the group exists; false only when the host is shutting down.</returns>
+    private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
+    {
+        var retryDelay = TimeSpan.FromSeconds(2);
+        var attempt = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "0-0", true);
+                return true;
+            }
+            catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP"))
+            {
+                // Group already exists, ignore
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogError(
+                    ex,
+                    "Consumer {ConsumerName} could not create group {ConsumerGroup} on stream {StreamKey} "
+                    + "(attempt {Attempt}); retrying in {RetryDelay}. This stream is NOT being consumed "
+                    + "until it succeeds.",
+                    ConsumerName, ConsumerGroup, StreamKey, attempt, retryDelay);
+
+                try
+                {
+                    await Task.Delay(retryDelay, ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+            }
+        }
+
+        return false;
     }
 
     private async Task ProcessPendingMessages(IDatabase db, CancellationToken stoppingToken)

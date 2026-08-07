@@ -1,0 +1,29 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Current Workspace Home Page" as CurrentWorkspaceHome
+rectangle "Workspace Selector Dropdown" as WorkspaceDropdown
+rectangle "Target Workspace Home Page" as TargetWorkspaceHome
+rectangle "Create Workspace Page" as CreateWorkspacePage
+rectangle "Workspace Selection Page" as WorkspaceSelectionPage
+
+' Switch Workspace Flow via Dropdown
+CurrentWorkspaceHome --> WorkspaceDropdown : Click Workspace Dropdown Header
+WorkspaceDropdown --> TargetWorkspaceHome : Select Target Workspace (selectWorkspace API success)
+
+' Secondary Actions from Dropdown
+WorkspaceDropdown --> CreateWorkspacePage : Click "Create Workspace"
+CreateWorkspacePage --> TargetWorkspaceHome : Click "Submit" (workspace created)
+
+WorkspaceDropdown --> WorkspaceSelectionPage : Click "View All Workspaces"
+WorkspaceSelectionPage --> TargetWorkspaceHome : Click "Select Workspace"
+
+@enduml

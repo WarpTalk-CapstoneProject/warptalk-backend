@@ -3,31 +3,28 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using Grpc.Core;
 using WarpTalk.Shared;
+using WarpTalk.TranscriptService.Application.Authorization;
 using WarpTalk.TranscriptService.Application.DTOs;
 using WarpTalk.TranscriptService.Application.Interfaces;
 using WarpTalk.TranscriptService.Application.Mappers;
 using WarpTalk.TranscriptService.Domain.Interfaces;
-using GetParticipantsByRoomIdRequest = WarpTalk.Shared.Protos.GetParticipantsByRoomIdRequest;
-using GetTranslationRoomRequest = WarpTalk.Shared.Protos.GetTranslationRoomRequest;
-using TranslationRoomServiceClient = WarpTalk.Shared.Protos.TranslationRoomService.TranslationRoomServiceClient;
 
 namespace WarpTalk.TranscriptService.Application.Services;
 
 public class TranscriptQueryService : ITranscriptQueryService
 {
     private readonly IUnitOfWork _unitOfWork;
-    private readonly TranslationRoomServiceClient _roomClient;
+    private readonly ITranscriptReadAccess _readAccess;
     private readonly ILogger<TranscriptQueryService> _logger;
 
     public TranscriptQueryService(
         IUnitOfWork unitOfWork,
-        TranslationRoomServiceClient roomClient,
+        ITranscriptReadAccess readAccess,
         ILogger<TranscriptQueryService> logger)
     {
         _unitOfWork = unitOfWork;
-        _roomClient = roomClient;
+        _readAccess = readAccess;
         _logger = logger;
     }
 
@@ -178,30 +175,6 @@ public class TranscriptQueryService : ITranscriptQueryService
         }
     }
 
-    private async Task<bool> CanAccessTranscriptAsync(WarpTalk.TranscriptService.Domain.Entities.Transcript transcript, Guid userId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var room = await _roomClient.GetTranslationRoomByIdAsync(
-                new GetTranslationRoomRequest { Id = transcript.TranslationRoomId.ToString() },
-                cancellationToken: cancellationToken);
-
-            if (Guid.TryParse(room.HostId, out var hostId) && hostId == userId)
-                return true;
-
-            // WT-65: Loosen permissions, anyone with Room ID can access
-            // var participants = await _roomClient.GetParticipantsByRoomIdAsync(
-            //     new GetParticipantsByRoomIdRequest { RoomId = transcript.TranslationRoomId.ToString() },
-            //     cancellationToken: cancellationToken);
-            // 
-            // return participants.Participants.Any(p =>
-            //     Guid.TryParse(p.Id, out var participantUserId) &&
-            //     participantUserId == userId);
-            return true;
-        }
-        catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
-        {
-            return false;
-        }
-    }
+    private Task<bool> CanAccessTranscriptAsync(WarpTalk.TranscriptService.Domain.Entities.Transcript transcript, Guid userId, CancellationToken cancellationToken)
+        => _readAccess.CanReadRoomTranscriptAsync(transcript.TranslationRoomId, userId, cancellationToken);
 }

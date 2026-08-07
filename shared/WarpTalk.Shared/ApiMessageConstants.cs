@@ -51,7 +51,7 @@ public static class ApiMessageConstants
         public const string RefreshTokenRequired = "Refresh token is required.";
         public const string GoogleIdTokenRequired = "Google ID token is required.";
         public const string PreferredLanguageInvalid = "Preferred language format is invalid.";
-        public const string TimezoneInvalid = "Mã IANA timezone không hợp lệ.";
+        public const string TimezoneInvalid = "Timezone must be a valid IANA identifier.";
         public const string NewPasswordRequired = "New password is required.";
         public const string NewPasswordMinLength = "New password must be at least 6 characters long.";
 

@@ -57,7 +57,10 @@ public class AuthServiceTests
             DefaultRole = "user",
             MaxFailedAttempts = 5,
             LockoutDurationMinutes = 15,
-            AutoVerifySelfRegistration = true
+            // Mirrors the production default. Any test that wants a self-registration treated as
+            // verified must now say so, because that is a security-relevant deviation and not
+            // something a fixture should hand out silently.
+            AutoVerifySelfRegistration = false
         };
         _authSettingsOptions = Options.Create(settings);
 
@@ -95,11 +98,70 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
-        Assert.True(result.Value!.User.EmailVerified);
         await _userSettingRepository.Received(1).AddAsync(
             Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
             Arg.Any<CancellationToken>()
         );
+    }
+
+    /// <summary>
+    /// The spec-137 anti-takeover guard. <c>AutoVerifySelfRegistration</c> defaulted to true and
+    /// was set nowhere, so every self-registered address was treated as proven — which meant
+    /// someone could register an address they did not control and be trusted as its owner.
+    /// </summary>
+    [Fact]
+    public void AutoVerifySelfRegistration_ShouldDefaultToFalse()
+    {
+        Assert.False(new AuthSettings().AutoVerifySelfRegistration);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ShouldNotMarkEmailVerified_WhenAutoVerifyIsOff()
+    {
+        _authSettingsOptions.Value.AutoVerifySelfRegistration = false;
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        var result = await _authService.RegisterAsync(
+            new RegisterRequest("unproven@warptalk.vn", "Password123!", "Unproven"));
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.User.EmailVerified);
+
+        // And the address must actually be challenged rather than just left unflagged.
+        await _userRepository.Received(1).AddAsync(
+            Arg.Is<User>(u =>
+                !u.EmailVerified
+                && u.EmailVerificationTokenHash != null
+                && u.EmailVerificationTokenExpiresAt != null),
+            Arg.Any<CancellationToken>());
+        await _authEmailSender.Received(1).SendVerificationEmailAsync(
+            Arg.Any<User>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The opt-in still works, but a caller has to ask for it explicitly.
+    /// </summary>
+    [Fact]
+    public async Task RegisterAsync_ShouldMarkEmailVerified_OnlyWhenAutoVerifyIsExplicitlyEnabled()
+    {
+        _authSettingsOptions.Value.AutoVerifySelfRegistration = true;
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        var result = await _authService.RegisterAsync(
+            new RegisterRequest("auto-verified@warptalk.vn", "Password123!", "Auto Verified"));
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.User.EmailVerified);
+        await _authEmailSender.DidNotReceive().SendVerificationEmailAsync(
+            Arg.Any<User>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]

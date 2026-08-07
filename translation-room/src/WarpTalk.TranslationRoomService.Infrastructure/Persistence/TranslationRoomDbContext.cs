@@ -34,6 +34,9 @@ public partial class TranslationRoomDbContext : DbContext
 
     public virtual DbSet<TranslationRoomInvitation> TranslationRoomInvitations { get; set; }
 
+    /// <summary>WT-327: recurring bookings. Each one materialises into ordinary TranslationRooms.</summary>
+    public virtual DbSet<TranslationRoomSeries> TranslationRoomSeries { get; set; }
+
 
 
 
@@ -156,6 +159,12 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValue(10)
                 .HasColumnName("max_participants");
             entity.Property(e => e.ScheduledAt).HasColumnName("scheduled_at");
+            // WT-327
+            entity.Property(e => e.SeriesId).HasColumnName("series_id");
+            entity.Property(e => e.SeriesOccurrenceLocalDate)
+                .HasColumnType("date")
+                .HasColumnName("series_occurrence_local_date");
+            entity.Property(e => e.Reminder30MinSentAt).HasColumnName("reminder_30min_sent_at");
             entity.Property(e => e.Reminder10MinSentAt).HasColumnName("reminder_10min_sent_at");
             entity.Property(e => e.Reminder1MinSentAt).HasColumnName("reminder_1min_sent_at");
             entity.Property(e => e.Settings)
@@ -193,6 +202,124 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.WorkspaceId)
                 .HasComment("External AuthService workspace id. No physical FK.")
                 .HasColumnName("workspace_id");
+
+            // WT-327: the back-reference to the recurring booking this room came from. A REAL
+            // foreign key, unlike the workspace/user ids above — the series lives in this same
+            // logical database and schema, so there is no cross-service boundary to respect
+            // (WT-263 dropped those). RESTRICT, not CASCADE: deleting a series must never take
+            // the meetings it produced — and their transcripts, artifacts and billing — with it.
+            entity.HasOne(e => e.Series)
+                .WithMany(s => s.Occurrences)
+                .HasForeignKey(e => e.SeriesId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("translation_rooms_series_id_fkey");
+
+            // WT-327: THE idempotency guarantee of the materialisation sweep. One series can
+            // hold at most one room per local date, so a double-run, a restart mid-pass, or two
+            // service replicas sweeping at once cannot produce two rooms for the same day.
+            entity.HasIndex(e => new { e.SeriesId, e.SeriesOccurrenceLocalDate },
+                    "translation_rooms_series_id_occurrence_date_key")
+                .IsUnique()
+                .HasFilter("series_id IS NOT NULL");
+        });
+
+        modelBuilder.Entity<TranslationRoomSeries>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("translation_room_series_pkey");
+
+            entity.ToTable("translation_room_series", "translation_room", tb => tb.HasComment(
+                "WT-327: a recurring booking rather than a meeting - each occurrence is materialised as an ordinary translation_rooms row linked by series_id"));
+
+            // The sweep's own query: ACTIVE series whose horizon has not reached their end date.
+            entity.HasIndex(e => new { e.Status, e.MaterializedThroughLocalDate },
+                "translation_room_series_status_materialized_through_idx");
+
+            entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt },
+                "translation_room_series_workspace_id_created_at_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.WorkspaceId)
+                .HasComment("External AuthService workspace id. No physical FK.")
+                .HasColumnName("workspace_id");
+            entity.Property(e => e.HostId)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("host_id");
+            entity.Property(e => e.RecurrenceType)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'DAILY'::character varying")
+                .HasColumnName("recurrence_type");
+            entity.Property(e => e.RecurrenceInterval)
+                .HasDefaultValue(1)
+                .HasColumnName("recurrence_interval");
+            entity.Property(e => e.RecurrenceByWeekdays)
+                .HasColumnType("jsonb")
+                .HasComment("WEEKLY only: ISO weekday numbers, e.g. [1,3,5]. Null for DAILY.")
+                .HasColumnName("recurrence_by_weekdays");
+            entity.Property(e => e.RecurrenceByMonthDay)
+                .HasComment("MONTHLY only: day of month 1-31. Null for DAILY.")
+                .HasColumnName("recurrence_by_month_day");
+            entity.Property(e => e.StartTimeLocal)
+                .HasColumnType("time without time zone")
+                .HasColumnName("start_time_local");
+            entity.Property(e => e.TimeZone)
+                .HasMaxLength(64)
+                .HasComment("IANA zone id, e.g. Asia/Ho_Chi_Minh. Never a UTC offset.")
+                .HasColumnName("time_zone");
+            entity.Property(e => e.StartsOnLocalDate)
+                .HasColumnType("date")
+                .HasColumnName("starts_on_local_date");
+            entity.Property(e => e.EndsOnLocalDate)
+                .HasColumnType("date")
+                .HasComment("Inclusive. NOT NULL: a series must terminate.")
+                .HasColumnName("ends_on_local_date");
+            entity.Property(e => e.Status)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'ACTIVE'::character varying")
+                .HasColumnName("status");
+            entity.Property(e => e.MaterializedThroughLocalDate)
+                .HasColumnType("date")
+                .HasComment("Rolling-horizon watermark. Generation resumes strictly after this date.")
+                .HasColumnName("materialized_through_local_date");
+            entity.Property(e => e.Title)
+                .HasMaxLength(255)
+                .HasColumnName("title");
+            entity.Property(e => e.Description).HasColumnName("description");
+            entity.Property(e => e.TranslationRoomType)
+                .HasMaxLength(20)
+                .HasColumnName("translation_room_type");
+            entity.Property(e => e.MaxParticipants)
+                .HasDefaultValue(0)
+                .HasComment("0 means 'let the meeting type decide', preserved rather than frozen at creation.")
+                .HasColumnName("max_participants");
+            entity.Property(e => e.SourceLanguage)
+                .HasMaxLength(15)
+                .HasColumnName("source_language");
+            entity.Property(e => e.TargetLanguages)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("target_languages");
+            entity.Property(e => e.Settings)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("settings");
+            entity.Property(e => e.InvitedEmails)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("invited_emails");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+            entity.Property(e => e.CreatedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("created_by");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UpdatedBy)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("updated_by");
         });
 
         modelBuilder.Entity<TranslationRoomArtifact>(entity =>

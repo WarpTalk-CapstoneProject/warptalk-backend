@@ -160,4 +160,86 @@ public class TokenServiceTests
         Assert.Equal(ErrorCodes.AccountPending, result.ErrorCode);
         Assert.Equal(AuthConstants.ErrorAccountPending, result.Error);
     }
+
+    #region LogoutAsync Tests
+
+    /// <summary>
+    /// Logout revoked only the presented leaf token, leaving the rest of the rotation family
+    /// intact — so "log out" ended the session on paper only. RefreshTokenAsync already revokes
+    /// by family when it merely *suspects* theft; a deliberate logout should be at least as
+    /// thorough.
+    /// </summary>
+    [Fact]
+    public async Task LogoutAsync_ShouldRevokeTheWholeRotationFamily()
+    {
+        var userId = Guid.NewGuid();
+        var familyId = Guid.NewGuid();
+        const string presented = "presented-refresh-token";
+
+        _refreshTokenRepository
+            .GetByTokenHashAsync(TokenHasher.Hash(presented), Arg.Any<CancellationToken>())
+            .Returns(new RefreshToken
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                FamilyId = familyId,
+                TokenHash = TokenHasher.Hash(presented),
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
+            });
+
+        var result = await _tokenService.LogoutAsync(userId, presented);
+
+        Assert.True(result.IsSuccess);
+        await _refreshTokenRepository.Received(1).RevokeFamilyAsync(familyId, Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The reported concern: a caller presenting somebody else's refresh token must not be able
+    /// to revoke it. Confirmed the ownership check does hold — this pins it, because a separate
+    /// client-side change is being written against this guarantee.
+    /// </summary>
+    [Fact]
+    public async Task LogoutAsync_ShouldNotRevokeATokenTheCallerDoesNotOwn()
+    {
+        var caller = Guid.NewGuid();
+        var victim = Guid.NewGuid();
+        const string victimsToken = "victims-refresh-token";
+
+        _refreshTokenRepository
+            .GetByTokenHashAsync(TokenHasher.Hash(victimsToken), Arg.Any<CancellationToken>())
+            .Returns(new RefreshToken
+            {
+                Id = Guid.NewGuid(),
+                UserId = victim,
+                FamilyId = Guid.NewGuid(),
+                TokenHash = TokenHasher.Hash(victimsToken),
+                ExpiresAt = DateTime.UtcNow.AddDays(7)
+            });
+
+        var result = await _tokenService.LogoutAsync(caller, victimsToken);
+
+        // Success, deliberately: logout is idempotent and must not become an oracle that tells
+        // a caller whether a token exists. What matters is that nothing was revoked.
+        Assert.True(result.IsSuccess);
+        await _refreshTokenRepository.DidNotReceive().RevokeFamilyAsync(
+            Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task LogoutAsync_ShouldSucceedAndRevokeNothing_WhenTheTokenIsUnknown()
+    {
+        _refreshTokenRepository
+            .GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((RefreshToken?)null);
+
+        var result = await _tokenService.LogoutAsync(Guid.NewGuid(), "never-issued");
+
+        Assert.True(result.IsSuccess);
+        await _refreshTokenRepository.DidNotReceive().RevokeFamilyAsync(
+            Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    #endregion
 }

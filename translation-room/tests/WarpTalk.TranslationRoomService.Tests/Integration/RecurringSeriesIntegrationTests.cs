@@ -1,0 +1,430 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.Http.Json;
+using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Moq;
+using StackExchange.Redis;
+using Testcontainers.PostgreSql;
+using WarpTalk.Shared;
+using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Application.Services;
+using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.TranslationRoomService.Domain.Interfaces;
+using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
+using Microsoft.Extensions.Logging;
+
+namespace WarpTalk.TranslationRoomService.Tests.Integration;
+
+/// <summary>
+/// WT-327, end to end against a real Postgres.
+///
+/// This is the test that actually proves the feature, because the interesting behaviour is not
+/// in any one method — it is that a rule turns into N ordinary rooms, at the right instants, in
+/// the status the reminder sweep can see, and that the horizon keeps moving without anybody
+/// asking it to.
+///
+/// The clock is injectable so "two days pass" is a variable assignment rather than a two-day
+/// test. Everything else — HTTP, routing, validation, EF, the unique index — is real.
+/// </summary>
+public class RecurringSeriesIntegrationTests : IAsyncLifetime
+{
+    private const string Hcm = "Asia/Ho_Chi_Minh";
+
+    private readonly PostgreSqlContainer _dbContainer = new PostgreSqlBuilder()
+        .WithImage("postgres:16-alpine")
+        .Build();
+
+    private WebApplicationFactory<Program> _factory = null!;
+    private HttpClient _client = null!;
+
+    /// <summary>The clock the series service reads. Moving it is how this test makes days pass.</summary>
+    private DateTime _now = new(2026, 8, 6, 3, 0, 0, DateTimeKind.Utc); // 10:00 in Ho Chi Minh City
+
+    public async Task InitializeAsync()
+    {
+        await _dbContainer.StartAsync();
+
+        _factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Grpc:InternalSecret", "test-only-internal-grpc-secret-32-characters");
+            builder.ConfigureTestServices(services =>
+            {
+                var descriptor = services.SingleOrDefault(
+                    d => d.ServiceType == typeof(DbContextOptions<TranslationRoomDbContext>));
+                if (descriptor != null) services.Remove(descriptor);
+                services.AddDbContext<TranslationRoomDbContext>(o => o.UseNpgsql(_dbContainer.GetConnectionString()));
+
+                var redisDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IConnectionMultiplexer));
+                if (redisDescriptor != null) services.Remove(redisDescriptor);
+                services.AddSingleton(BuildRedisStub());
+
+                var policyDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(IWorkspaceMeetingPolicy));
+                if (policyDescriptor != null) services.Remove(policyDescriptor);
+                var meetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+                meetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                        It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Success());
+
+                // ...and the tenant itself is live unless a test suspends it.
+                meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                        It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Success());
+                services.AddScoped(_ => meetingPolicy.Object);
+
+                // The one substitution that matters: a clock this test owns.
+                var seriesDescriptor = services.SingleOrDefault(d => d.ServiceType == typeof(ITranslationRoomSeriesService));
+                if (seriesDescriptor != null) services.Remove(seriesDescriptor);
+                services.AddScoped<ITranslationRoomSeriesService>(sp => new TranslationRoomSeriesService(
+                    sp.GetRequiredService<IUnitOfWork>(),
+                    sp.GetRequiredService<ITranslationRoomService>(),
+                    sp.GetRequiredService<ILogger<TranslationRoomSeriesService>>(),
+                    () => _now));
+
+                services.AddAuthentication("Test")
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
+                services.AddAuthorization(options =>
+                {
+                    options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder("Test")
+                        .RequireAuthenticatedUser().Build();
+                });
+            });
+        });
+
+        _client = _factory.CreateClient();
+        _client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Test");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+        db.Database.ExecuteSqlRaw("CREATE EXTENSION IF NOT EXISTS pgcrypto;");
+        db.Database.ExecuteSqlRaw("CREATE OR REPLACE FUNCTION public.uuidv7() RETURNS uuid AS $$ BEGIN RETURN gen_random_uuid(); END; $$ LANGUAGE plpgsql;");
+        await db.Database.EnsureCreatedAsync();
+        db.Database.ExecuteSqlRaw("CREATE SCHEMA IF NOT EXISTS translation_room;");
+        db.Database.ExecuteSqlRaw("CREATE TABLE IF NOT EXISTS translation_room.supported_languages (code VARCHAR(15) PRIMARY KEY, name VARCHAR(100) NOT NULL, native_name VARCHAR(100), is_active BOOLEAN NOT NULL DEFAULT TRUE);");
+        db.Database.ExecuteSqlRaw("INSERT INTO translation_room.supported_languages (code, name, native_name) VALUES ('en-US','English','English'),('vi-VN','Vietnamese','Tiếng Việt') ON CONFLICT DO NOTHING;");
+    }
+
+    public async Task DisposeAsync()
+    {
+        await _dbContainer.DisposeAsync();
+        _factory.Dispose();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Daily_at_eight_am_materialises_the_horizon_at_one_am_UTC_every_day()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        response.Series.Type.Should().Be(RecurrenceTypes.Daily);
+        response.Series.StartTimeLocal.Should().Be("08:00");
+        response.Series.TimeZone.Should().Be(Hcm);
+
+        // Booked at 10:00 local, so the first 08:00 is tomorrow, 2026-08-07.
+        response.Series.StartDateLocal.Should().Be("2026-08-07");
+
+        // Horizon is 14 days from today (the 6th) => through the 20th => 14 occurrences.
+        response.MaterializedOccurrenceCount.Should().Be(14);
+        response.TotalOccurrenceCount.Should().Be(30); // 08-07 .. 09-05 inclusive
+
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        rooms.Should().HaveCount(14);
+
+        // Every occurrence is one day apart, at 01:00 UTC == 08:00 Ho Chi Minh City.
+        rooms.Select(r => r.ScheduledAt!.Value)
+            .Should().BeEquivalentTo(
+                Enumerable.Range(0, 14).Select(i => new DateTime(2026, 8, 7, 1, 0, 0, DateTimeKind.Utc).AddDays(i)),
+                options => options.WithStrictOrdering());
+
+        // SCHEDULED with a non-null scheduled_at is exactly what ReminderNotificationWorker
+        // filters on, so occurrences get their T-10min/T-1min reminders like any booked meeting.
+        rooms.Should().OnlyContain(r => r.Status == "SCHEDULED");
+        rooms.Should().OnlyContain(r => r.ScheduledAt != null);
+
+        // One room row per meeting — the invariant the whole design exists to preserve.
+        rooms.Select(r => r.TranslationRoomCode).Distinct().Should().HaveCount(14);
+        rooms.Should().OnlyContain(r => r.HostId == hostId);
+        rooms.Select(r => r.SeriesOccurrenceLocalDate).Distinct().Should().HaveCount(14);
+    }
+
+    [Fact]
+    public async Task The_horizon_rolls_forward_as_days_pass()
+    {
+        var response = await CreateDailyAsync(Guid.NewGuid(), "08:00", endDateLocal: "2026-09-05");
+        response.MaterializedOccurrenceCount.Should().Be(14);
+
+        // Three days pass. Nothing else changes.
+        _now = _now.AddDays(3);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            var created = await series.MaterializeDueOccurrencesAsync();
+            created.Should().Be(3, "three new days came inside the 14-day horizon");
+        }
+
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        rooms.Should().HaveCount(17);
+        rooms.Last().ScheduledAt.Should().Be(new DateTime(2026, 8, 23, 1, 0, 0, DateTimeKind.Utc));
+
+        // Idempotent: sweeping again on the same clock creates nothing and, critically, cannot
+        // duplicate a day — the unique (series_id, occurrence_date) index makes that impossible.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(0);
+        }
+
+        (await OccurrencesOfAsync(response.Series.SeriesId)).Should().HaveCount(17);
+    }
+
+    [Fact]
+    public async Task A_series_stops_generating_once_it_reaches_its_end_date()
+    {
+        // The end condition, demonstrated rather than asserted in the abstract: this is what
+        // stops an abandoned demo workspace producing rooms forever.
+        var response = await CreateDailyAsync(Guid.NewGuid(), "08:00", endDateLocal: "2026-08-09");
+        response.TotalOccurrenceCount.Should().Be(3);   // 07, 08, 09
+        response.MaterializedOccurrenceCount.Should().Be(3);
+
+        _now = _now.AddDays(60);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(0);
+        }
+
+        (await OccurrencesOfAsync(response.Series.SeriesId)).Should().HaveCount(3);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+            var series = await db.TranslationRoomSeries.SingleAsync(s => s.Id == response.Series.SeriesId);
+            series.Status.Should().Be(RecurrenceSeriesStatuses.Completed);
+        }
+    }
+
+    [Fact]
+    public async Task Cancelling_the_series_cancels_future_occurrences_and_stops_the_sweep()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(hostId);
+        var cancel = await _client.PostAsync(
+            $"/api/v1/translation-room-series/{response.Series.SeriesId}/cancel", content: null);
+        cancel.StatusCode.Should().Be(HttpStatusCode.OK, await cancel.Content.ReadAsStringAsync());
+
+        var cancelled = await cancel.Content.ReadFromJsonAsync<CancelSeriesResult>();
+        cancelled!.CancelledOccurrenceCount.Should().Be(14);
+
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        rooms.Should().OnlyContain(r => r.Status == "CANCELLED");
+
+        // And no more arrive, however much time passes.
+        _now = _now.AddDays(10);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(0);
+        }
+        (await OccurrencesOfAsync(response.Series.SeriesId)).Should().HaveCount(14);
+    }
+
+    [Fact]
+    public async Task Cancelling_one_occurrence_does_not_kill_the_series()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        var victim = rooms[5];
+
+        SetCaller(hostId);
+        var cancel = await _client.PostAsync($"/api/v1/translation-rooms/{victim.Id}/cancel", content: null);
+        cancel.StatusCode.Should().Be(HttpStatusCode.OK, await cancel.Content.ReadAsStringAsync());
+
+        // The series keeps going, and the sweep still extends it.
+        _now = _now.AddDays(2);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(2);
+        }
+
+        var after = await OccurrencesOfAsync(response.Series.SeriesId);
+        after.Should().HaveCount(16);
+        after.Count(r => r.Status == "CANCELLED").Should().Be(1);
+
+        // The cancelled day is NOT regenerated: the watermark never moves backwards.
+        after.Count(r => r.SeriesOccurrenceLocalDate == victim.SeriesOccurrenceLocalDate).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Only_the_host_can_cancel_a_series()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00");
+
+        SetCaller(Guid.NewGuid());
+        var cancel = await _client.PostAsync(
+            $"/api/v1/translation-room-series/{response.Series.SeriesId}/cancel", content: null);
+
+        cancel.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task An_omitted_end_date_is_bounded_not_infinite()
+    {
+        var response = await CreateDailyAsync(Guid.NewGuid(), "08:00");
+
+        response.TotalOccurrenceCount.Should().Be(RecurrenceLimits.DefaultDurationDays + 1);
+        response.Series.EndDateLocal.Should().Be("2026-09-06"); // 2026-08-07 + 30 days
+    }
+
+    [Fact]
+    public async Task A_request_carrying_both_a_one_off_time_and_a_repeat_rule_is_refused()
+    {
+        // Not silently resolved in favour of one of them: a silently discarded field on this
+        // exact dialog is the bug WT-327 exists to remove.
+        var request = new CreateTranslationRoomRequest(
+            WorkspaceId: Guid.NewGuid(),
+            Title: "Contradictory",
+            Description: null,
+            TranslationRoomType: "EVENT",
+            MaxParticipants: null,
+            SourceLanguage: "en-US",
+            TargetLanguages: new List<string> { "vi-VN" },
+            Settings: null,
+            ScheduledAt: new DateTime(2026, 8, 20, 1, 0, 0, DateTimeKind.Utc),
+            InvitedEmails: null,
+            Recurrence: new RecurrenceRequest(RecurrenceTypes.Daily, "08:00", Hcm));
+
+        SetCaller(Guid.NewGuid());
+        var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("not both");
+    }
+
+    [Fact]
+    public async Task A_weekly_request_is_refused_rather_than_stored_as_an_inert_series()
+    {
+        SetCaller(Guid.NewGuid());
+        var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", BuildRequest(
+            Guid.NewGuid(), new RecurrenceRequest(RecurrenceTypes.Weekly, "08:00", Hcm)));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("not available yet");
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+        (await db.TranslationRoomSeries.CountAsync(s => s.RecurrenceType == RecurrenceTypes.Weekly))
+            .Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_one_off_room_is_completely_unaffected()
+    {
+        // The regression that would matter most: every room that is not part of a series must
+        // look exactly as it always did.
+        SetCaller(Guid.NewGuid());
+        var request = new CreateTranslationRoomRequest(
+            WorkspaceId: Guid.NewGuid(),
+            Title: "Ordinary room",
+            Description: null,
+            TranslationRoomType: "EVENT",
+            MaxParticipants: null,
+            SourceLanguage: "en-US",
+            TargetLanguages: new List<string> { "vi-VN" },
+            Settings: null,
+            ScheduledAt: null,
+            InvitedEmails: null);
+
+        var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", request);
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+
+        var room = await response.Content.ReadFromJsonAsync<TranslationRoomDto>();
+        room!.SeriesId.Should().BeNull();
+        room.Status.Should().Be(RoomStatus.WAITING);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void SetCaller(Guid userId)
+    {
+        _client.DefaultRequestHeaders.Remove(TestAuthHandler.UserIdHeader);
+        _client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, userId.ToString());
+    }
+
+    private static CreateTranslationRoomRequest BuildRequest(Guid workspaceId, RecurrenceRequest recurrence) =>
+        new(
+            WorkspaceId: workspaceId,
+            Title: "Daily standup",
+            Description: "Recurring",
+            TranslationRoomType: "EVENT",
+            MaxParticipants: null,
+            SourceLanguage: "en-US",
+            TargetLanguages: new List<string> { "en-US", "vi-VN" },
+            Settings: null,
+            ScheduledAt: null,
+            InvitedEmails: null,
+            Recurrence: recurrence);
+
+    private async Task<CreateRecurringRoomResponse> CreateDailyAsync(
+        Guid hostId, string timeLocal, string? endDateLocal = null)
+    {
+        SetCaller(hostId);
+        var request = BuildRequest(Guid.NewGuid(),
+            new RecurrenceRequest(RecurrenceTypes.Daily, timeLocal, Hcm, null, endDateLocal));
+
+        var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", request);
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+
+        return (await response.Content.ReadFromJsonAsync<CreateRecurringRoomResponse>())!;
+    }
+
+    private async Task<List<TranslationRoom>> OccurrencesOfAsync(Guid seriesId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+        return await db.TranslationRooms
+            .AsNoTracking()
+            .Where(r => r.SeriesId == seriesId)
+            .OrderBy(r => r.ScheduledAt)
+            .ToListAsync();
+    }
+
+    private static IConnectionMultiplexer BuildRedisStub()
+    {
+        var redis = new Mock<IConnectionMultiplexer>();
+        var database = new Mock<IDatabase>();
+        var subscriber = new Mock<ISubscriber>();
+
+        database.Setup(d => d.StreamCreateConsumerGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<bool>(), It.IsAny<CommandFlags>())).ReturnsAsync(true);
+        database.Setup(d => d.StreamReadGroupAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>())).ReturnsAsync(Array.Empty<StreamEntry>());
+        database.Setup(d => d.StreamAcknowledgeAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>())).ReturnsAsync(1L);
+        database.Setup(d => d.StreamAddAsync(It.IsAny<RedisKey>(), It.IsAny<NameValueEntry[]>(), It.IsAny<RedisValue?>(), It.IsAny<int?>(), It.IsAny<bool>(), It.IsAny<CommandFlags>())).ReturnsAsync(new RedisValue("dummy-id"));
+        database.Setup(d => d.StringSetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<TimeSpan?>(), It.IsAny<bool>(), It.IsAny<When>(), It.IsAny<CommandFlags>())).ReturnsAsync(true);
+
+        subscriber.Setup(s => s.SubscribeAsync(It.IsAny<RedisChannel>(), It.IsAny<Action<RedisChannel, RedisValue>>(), It.IsAny<CommandFlags>())).Returns(Task.CompletedTask);
+        subscriber.Setup(s => s.UnsubscribeAsync(It.IsAny<RedisChannel>(), It.IsAny<Action<RedisChannel, RedisValue>>(), It.IsAny<CommandFlags>())).Returns(Task.CompletedTask);
+        subscriber.Setup(s => s.PublishAsync(It.IsAny<RedisChannel>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>())).ReturnsAsync(1L);
+
+        redis.Setup(r => r.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(database.Object);
+        redis.Setup(r => r.GetSubscriber(It.IsAny<object>())).Returns(subscriber.Object);
+        return redis.Object;
+    }
+}

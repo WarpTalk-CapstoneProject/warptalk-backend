@@ -56,8 +56,13 @@ try
     // stream (see AssistantChatResultConsumerService) to update the DB and relay to SignalR.
     var redisConnectionString = builder.Configuration["Redis:ConnectionString"]
         ?? throw new InvalidOperationException("Redis:ConnectionString is not configured.");
+    // Registered as a factory, not an eagerly-connected instance: the old form ran
+    // Connect() here at composition time, so an unreachable Redis threw before logging was
+    // even configured. abortConnect=false then keeps the throw from moving to the first
+    // resolve — the multiplexer comes back disconnected and reconnects on its own, so
+    // conversation history still reads from Postgres while the assistant pipeline is down.
     builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(
-        StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
+        _ => StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddHostedService<AssistantChatResultConsumerService>();
 
     builder.Services.AddWarpTalkJwtAuthentication(

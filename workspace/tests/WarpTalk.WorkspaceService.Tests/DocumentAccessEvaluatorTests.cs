@@ -572,6 +572,40 @@ public class DocumentAccessEvaluatorTests
     }
 
     [Fact]
+    public async Task CanManagePoliciesAsync_ShouldDeny_WhenDocumentOwnerHasBeenRemovedFromWorkspace()
+    {
+        // An ownership shortcut used to run BEFORE the membership lookup, so a removed
+        // member holding a still-valid JWT kept the right to rename the document, flip
+        // its AI eligibility back on, and grant themselves an ALLOW policy. Ownership
+        // does not survive losing membership.
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = workspaceId,
+            OwnerId = userId // they uploaded it while they were still a member
+        };
+
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        // The membership query filters on RemovedAt == null, so a removed member
+        // resolves to null here.
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+
+        // Act
+        var result = await _evaluator.CanManagePoliciesAsync(userId, workspaceId, documentId);
+
+        // Assert
+        Assert.False(result);
+    }
+
+    [Fact]
     public async Task EvaluateAccessAsync_ShouldDenyDownload_WhenViewIsDenied()
     {
         // Arrange

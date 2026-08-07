@@ -99,6 +99,30 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(WorkspaceMemberStatus.Active.ToStorageValue(), invited.Status);
     }
 
+    /// <summary>
+    /// The column has DEFAULT true in Postgres, but nothing in this process ever saw that default:
+    /// EF treated true as the property's sentinel, the mappers left the property at the CLR default
+    /// false, and EF therefore wrote false explicitly on every INSERT. The result was a workspace
+    /// Owner refused meeting creation in the workspace they had just created, and the same for
+    /// everyone who joined by accepting an invitation.
+    ///
+    /// This asserts the value in the ENTITY the mappers hand to EF, which is the only place the
+    /// answer is now decided — a test that asserted the column default would have passed throughout
+    /// the entire lifetime of the bug.
+    /// </summary>
+    [Fact]
+    public void CreateMemberMappers_ShouldGrantMeetingCreation()
+    {
+        var workspaceId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+
+        var owner = WorkspaceMemberMapper.CreateOwnerMember(workspaceId, Guid.NewGuid(), roleId);
+        var invited = WorkspaceMemberMapper.CreateInvitationMember(workspaceId, Guid.NewGuid(), roleId, "Internal");
+
+        Assert.True(owner.CanCreateMeetings);
+        Assert.True(invited.CanCreateMeetings);
+    }
+
     private void StubRoleName(Guid roleId, string roleName)
     {
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
@@ -382,6 +406,110 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(WorkspaceMemberStatus.Removed.ToStorageValue(), targetMember.Status);
         Assert.Equal(ownerUserId, targetMember.RemovedBy);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoveMemberAsync_ShouldFail_WhenAdminTriesToRemovePeerAdmin()
+    {
+        // UpdateMemberAsync has always refused Admin-on-Admin edits; removal, the more
+        // destructive operation, did not. The web client disables the button for exactly
+        // this case (members/page.tsx: `isAdmin && memberRole === "admin"`).
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminAUserId = Guid.NewGuid();
+        var adminBUserId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId };
+        var adminARoleId = Guid.NewGuid();
+        var adminBRoleId = Guid.NewGuid();
+        var adminAMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminAUserId, RoleId = adminARoleId };
+        var adminBMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminBUserId, RoleId = adminBRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(adminAMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminAMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(adminBMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminBMember);
+
+        StubRoleName(adminARoleId, "Admin");
+        StubRoleName(adminBRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.RemoveMemberAsync(workspaceId, adminBUserId, adminAUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.AdminCannotRemovePeerAdmin, result.Error);
+        Assert.Null(adminBMember.RemovedAt);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoveMemberAsync_ShouldSucceed_WhenOwnerRemovesAdmin()
+    {
+        // The Owner keeps full authority over Admins.
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId };
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(ownerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(ownerMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+
+        StubRoleName(ownerRoleId, "Owner");
+        StubRoleName(adminRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.RemoveMemberAsync(workspaceId, adminUserId, ownerUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(adminMember.RemovedAt);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RemoveMemberAsync_ShouldSucceed_WhenAdminLeavesVoluntarily()
+    {
+        // The peer-Admin guard must not trap an Admin in the workspace: self-removal is
+        // handled before it and stays open.
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId };
+        var adminRoleId = Guid.NewGuid();
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(expr => expr.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+
+        StubRoleName(adminRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.RemoveMemberAsync(workspaceId, adminUserId, adminUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(adminMember.RemovedAt);
     }
 
     [Fact]
@@ -999,8 +1127,13 @@ public class WorkspaceMemberServiceTests
     }
 
     [Fact]
-    public async Task UpdateMemberAsync_ShouldSucceed_WhenAdminUpdatesSelf()
+    public async Task UpdateMemberAsync_ShouldFail_WhenAdminSelfGrantsMeetingPermission()
     {
+        // This test previously asserted the opposite ("ShouldSucceed_WhenAdminUpdatesSelf"),
+        // pinning the self-grant hole in place as though it were a feature. An Admin
+        // whose meeting-hosting permission an Owner has just revoked could PATCH their
+        // own row and restore it — the exact revocation WT-249 made a real enforcement
+        // gate, and the beat the demo script builds to.
         // Arrange
         var workspaceId = Guid.NewGuid();
         var adminUserId = Guid.NewGuid();
@@ -1020,10 +1153,109 @@ public class WorkspaceMemberServiceTests
         var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, adminUserId, request, adminUserId);
 
         // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.AdminCannotModifyPeerAdmin, result.Error);
+        Assert.False(adminMember.CanCreateMeetings);
+        _workspaceMemberRepository.DidNotReceiveWithAnyArgs().Update(Arg.Any<WorkspaceMember>());
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldSucceed_WhenOwnerRevokesAdminMeetingPermission()
+    {
+        // The demo beat, in the direction that must keep working: the Owner revokes.
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId, CanCreateMeetings = true };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: false);
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(ownerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(ownerMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+
+        StubRoleName(ownerRoleId, "Owner");
+        StubRoleName(adminRoleId, "Admin");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, adminUserId, request, ownerUserId);
+
+        // Assert
         Assert.True(result.IsSuccess);
-        Assert.True(adminMember.CanCreateMeetings);
-        _workspaceMemberRepository.Received(1).Update(adminMember);
+        Assert.False(adminMember.CanCreateMeetings);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldSucceed_WhenAdminUpdatesOrdinaryMember()
+    {
+        // Admins must keep their ordinary job: managing Members.
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var memberUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+        var targetMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = memberUserId, RoleId = memberRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(adminMember)),
+            "", Arg.Any<CancellationToken>()).Returns(adminMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(targetMember)),
+            "", Arg.Any<CancellationToken>()).Returns(targetMember);
+
+        StubRoleName(adminRoleId, "Admin");
+        StubRoleName(memberRoleId, "Member");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, memberUserId, request, adminUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(targetMember.CanCreateMeetings);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateMemberAsync_ShouldSucceed_WhenOwnerUpdatesSelf()
+    {
+        // Deliberately still allowed. ValidateMeetingCreationAsync reads
+        // CanCreateMeetings with no Owner bypass and an Admin cannot edit an Owner, so
+        // refusing this would strand a sole Owner who had switched their own hosting
+        // off. The web client hides the control; the API does not need to.
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId, CanCreateMeetings = false };
+        var request = new UpdateWorkspaceMemberRequest(CanCreateMeetings: true);
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(ownerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(ownerMember);
+
+        StubRoleName(ownerRoleId, "Owner");
+
+        // Act
+        var result = await _workspaceMemberService.UpdateMemberAsync(workspaceId, ownerUserId, request, ownerUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.True(ownerMember.CanCreateMeetings);
     }
 
     [Fact]

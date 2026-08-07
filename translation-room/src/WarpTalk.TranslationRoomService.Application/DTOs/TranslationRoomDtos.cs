@@ -49,6 +49,42 @@ public record GetTranslationRoomsRequest(
     Guid? WorkspaceId = null
 );
 
+/// <summary>
+/// WT-327: the recurrence rule for a repeating booking.
+///
+/// Time is a WALL CLOCK plus an IANA zone, never a UTC instant. "8am daily" is a statement
+/// about the clock on the wall in Ho Chi Minh City; an instant would drift the moment a zone's
+/// rules change. The per-occurrence UTC <c>scheduledAt</c> is derived from this, once per
+/// occurrence, at materialisation time.
+/// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public record RecurrenceRequest(
+    // One of RecurrenceTypes. Only DAILY is accepted today; WEEKLY/MONTHLY are refused
+    // explicitly rather than stored inert.
+    string Type,
+    // Local time of day, "HH:mm" (24h). The hour the user picked in the Daily modal.
+    [Required] string StartTimeLocal,
+    // IANA zone id, e.g. "Asia/Ho_Chi_Minh". Not a UTC offset.
+    [Required] string TimeZone,
+    // Local date of the first occurrence, "yyyy-MM-dd". Defaults to today, or tomorrow when
+    // today's time has already passed.
+    string? StartDateLocal = null,
+    // Local date of the last occurrence, INCLUSIVE, "yyyy-MM-dd". Omitted means
+    // RecurrenceLimits.DefaultDurationDays from the start — never "forever".
+    string? EndDateLocal = null
+);
+
+/// <summary>WT-327: what a room reports about the series it belongs to.</summary>
+public record RecurrenceSummaryResponse(
+    Guid SeriesId,
+    string Type,
+    string StartTimeLocal,
+    string TimeZone,
+    string StartDateLocal,
+    string EndDateLocal,
+    string Status
+);
+
 public record CreateTranslationRoomRequest(
     Guid? WorkspaceId,
     [Required] string Title,
@@ -60,7 +96,22 @@ public record CreateTranslationRoomRequest(
     List<string>? TargetLanguages,
     RoomSettingsRequest? Settings,
     DateTime? ScheduledAt,
-    List<string>? InvitedEmails
+    List<string>? InvitedEmails,
+    // WT-327: present means "this is a recurring booking, not a single meeting". Mutually
+    // exclusive with ScheduledAt — the recurrence rule owns every occurrence's time, so a
+    // second, contradictory time on the same request is rejected rather than silently ignored.
+    RecurrenceRequest? Recurrence = null
+);
+
+/// <summary>WT-327: what creating a recurring booking returns.</summary>
+public record CreateRecurringRoomResponse(
+    RecurrenceSummaryResponse Series,
+    // The first materialised occurrence — what the client navigates to and shares a code for.
+    TranslationRoomDto FirstOccurrence,
+    // How many occurrences exist right now. The rest arrive as the horizon rolls forward.
+    int MaterializedOccurrenceCount,
+    // How many the series will have in total once fully materialised.
+    int TotalOccurrenceCount
 );
 
 public record JoinTranslationRoomRequest(
@@ -95,7 +146,11 @@ public record TranslationRoomDto(
     // Deliberately has no default: every construction site must supply a real count rather than
     // inherit a silent 0, which is precisely how the list bug went unnoticed.
     int ParticipantCount,
-    List<RoomArtifactDto>? Artifacts = null
+    List<RoomArtifactDto>? Artifacts = null,
+    // WT-327: the recurring series this room is an occurrence of, or null for a one-off.
+    // Optional with a default so every existing construction site — and every existing client —
+    // is unaffected: a room that is not part of a series looks exactly as it always did.
+    Guid? SeriesId = null
 );
 
 public record TranslationRoomListItemDto(
@@ -118,7 +173,10 @@ public record TranslationRoomListItemDto(
     DateTime CreatedAt,
     RoomSettingsResponse Settings,
     int ParticipantCount,
-    bool IsHost
+    bool IsHost,
+    // WT-327: lets the meetings list and the day timeline mark an occurrence as repeating
+    // without a second request. Null for every room that is not part of a series.
+    Guid? SeriesId = null
 );
 
 public record TranslationRoomListResponse(

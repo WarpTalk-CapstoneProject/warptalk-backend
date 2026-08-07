@@ -27,6 +27,8 @@ public static class WorkspaceConstants
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";
         public const string DomainRegisteredElsewhere = "This email belongs to a corporate domain registered with another workspace.";
         public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
+        public const string PublicEmailDomainCannotCreateWorkspace = "A public email domain cannot create a workspace. Use a business email address, or join an existing workspace by invitation.";
+        public const string CannotVerifyUnownedDomain = "A workspace can only verify the email domain of the account creating it.";
         public const string RequiredOwnerRoleNotFound = "Required owner role not found.";
         public const string UnexpectedErrorCreatingWorkspace = "An unexpected error occurred while creating the workspace.";
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";
@@ -54,6 +56,7 @@ public static class WorkspaceConstants
         public const string OnlyOwnerAdminCanRemoveMembers = "Only Owner or Admin can remove members.";
         public const string TargetMemberNotFoundOrRemoved = "Target member not found or already removed.";
         public const string CannotRemoveOwner = "Cannot remove the Owner of the workspace.";
+        public const string AdminCannotRemovePeerAdmin = "Admin cannot remove other Admins.";
         public const string RoleMustBeAdminOrMember = "Role name must be Admin or Member.";
         public const string OnlyOwnerAdminCanChangeRoles = "Only the workspace Owner can change member roles.";
         public const string ExternalRoleImmutable = "External members can only retain the Member role.";

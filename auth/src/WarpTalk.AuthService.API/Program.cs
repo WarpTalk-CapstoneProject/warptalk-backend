@@ -73,14 +73,18 @@ else
 {
     builder.Services.AddStackExchangeRedisCache(options =>
     {
-        options.Configuration = redisConnectionString;
+        options.Configuration = redisConnectionString + ",abortConnect=false";
     });
 
     // Separate from the IDistributedCache above on purpose: the voice catalog is a plain
     // string key written by the Python TTS worker, and IDistributedCache can only read
     // values it wrote itself (it wraps them in its own hash envelope).
+    // abortConnect=false: authentication is the one dependency every other service has, and
+    // Redis here backs only a cache and the voice catalog. Refusing to boot would take login
+    // and token issuance down over a degraded convenience. RedisVoiceCatalogDirectory already
+    // fails soft (returns an empty catalog, same as a cold cache).
     builder.Services.AddSingleton<IConnectionMultiplexer>(
-        _ => ConnectionMultiplexer.Connect(redisConnectionString));
+        _ => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddScoped<IVoiceCatalogDirectory, RedisVoiceCatalogDirectory>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -96,6 +100,9 @@ builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 // Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
+// Named client so the Google verification calls are poolable and, more importantly, so a test
+// can substitute the handler and prove a foreign-client token is rejected.
+builder.Services.AddHttpClient(nameof(GoogleTokenVerifier));
 builder.Services.AddScoped<IGoogleTokenVerifier, GoogleTokenVerifier>();
 builder.Services.AddVoiceSampleStorage(builder.Configuration, builder.Environment);
 

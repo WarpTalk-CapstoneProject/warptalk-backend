@@ -93,10 +93,15 @@ builder.Services.AddAuthorization();
 builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
 
+// abortConnect=false: the notification read APIs are served from Postgres and must keep
+// answering when Redis is down. Delivery is genuinely degraded in that state, which is why
+// /health/ready carries the Redis check — refusing to boot would not have delivered anything
+// either, and would have taken the read side down with it.
 builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
     StackExchange.Redis.ConnectionMultiplexer.Connect(
-        builder.Configuration["Redis:ConnectionString"]
-        ?? throw new InvalidOperationException("Redis:ConnectionString is not configured.")));
+        (builder.Configuration["Redis:ConnectionString"]
+        ?? throw new InvalidOperationException("Redis:ConnectionString is not configured."))
+        + ",abortConnect=false"));
 
 builder.Services.AddSingleton<WarpTalk.NotificationService.Domain.Interfaces.IMessagePublisher, WarpTalk.NotificationService.Infrastructure.Messaging.RedisMessagePublisher>();
 

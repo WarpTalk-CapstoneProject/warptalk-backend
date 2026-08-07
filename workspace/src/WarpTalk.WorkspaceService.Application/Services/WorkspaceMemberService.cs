@@ -286,6 +286,20 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure(WorkspaceConstants.Errors.CannotRemoveOwner, ErrorCodes.Forbidden);
             }
 
+            // Admins are peers: one may not remove another. UpdateMemberAsync has always
+            // had this guard; removal — the more destructive operation — did not, so an
+            // Admin could evict a peer Admin through the API. The web client disables the
+            // button for exactly this case (`isAdmin && memberRole === "admin"` in
+            // members/page.tsx); WT-142: "FE disabled states do not replace backend
+            // authorization."
+            //
+            // Self-removal is unaffected: `memberUserId == executingUserId` returns
+            // above, so an Admin can still leave the workspace voluntarily.
+            if (execRoleName.IsAdmin() && targetRoleName.IsAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AdminCannotRemovePeerAdmin, ErrorCodes.Forbidden);
+            }
+
             targetMember.RemovedAt = DateTime.UtcNow;
             targetMember.RemovedBy = executingUserId;
             targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
@@ -521,7 +535,20 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 return Result.Failure("Admins cannot modify settings of workspace owners.", ErrorCodes.Forbidden);
             }
 
-            if (execRoleName.IsAdmin() && targetRoleName.IsAdmin() && memberUserId != executingUserId)
+            // An Admin may not edit any Admin's member settings — including their own.
+            // The `memberUserId != executingUserId` carve-out that used to sit here let
+            // an Admin PATCH their own row and restore a CanCreateMeetings permission an
+            // Owner had just revoked, which is the exact revocation WT-249 made a real
+            // enforcement gate (ValidateMeetingCreationAsync grants no Owner/Admin
+            // bypass). The web client already disables the self-toggle
+            // (members/page.tsx); WT-142: "FE disabled states do not replace backend
+            // authorization."
+            //
+            // Owner self-edit stays allowed on purpose. ValidateMeetingCreationAsync
+            // reads CanCreateMeetings with no role bypass, and an Admin cannot edit an
+            // Owner (guard above), so blocking Owner self-edit would strand a sole Owner
+            // who had switched their own hosting off.
+            if (execRoleName.IsAdmin() && targetRoleName.IsAdmin())
             {
                 return Result.Failure(WorkspaceConstants.Errors.AdminCannotModifyPeerAdmin, ErrorCodes.Forbidden);
             }

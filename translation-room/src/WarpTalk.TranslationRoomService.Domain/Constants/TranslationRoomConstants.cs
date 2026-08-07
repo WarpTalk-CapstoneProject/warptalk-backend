@@ -89,6 +89,7 @@ public static class TranslationRoomConstants
     public const string ValidationTranslationRoomCodeRequired = "Translation room code is required.";
     public const string ValidationTranslationRoomCodeLength = "Translation room code must be exactly 12 characters.";
     public const string ValidationLanguageUnsupported = "Language '{0}' is not supported by the platform.";
+    public const string ValidationArtifactAccessUnsupported = "Artifact access level '{0}' is not supported. Allowed values: {1}.";
     public const string ValidationLanguageNotAllowedByPolicy = "{0} language '{1}' is not allowed by room policy. It must be the source language or one of the target languages.";
     public const string ValidationSourceLanguageUnsupported = "Source language is not supported.";
     public const string ValidationListenLanguageRequired = "Listen language is required.";

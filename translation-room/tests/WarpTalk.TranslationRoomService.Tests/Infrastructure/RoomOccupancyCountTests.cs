@@ -61,10 +61,20 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             new TranslationRoomArtifactRepository(_dbContext),
             new TranslationRoomSessionRepository(_dbContext),
             new TranslationRoomInvitationRepository(_dbContext),
-            new TranslationRoomFeedbackRepository(_dbContext));
+            new TranslationRoomFeedbackRepository(_dbContext),
+            new TranslationRoomSeriesRepository(_dbContext));
 
         var languagePolicy = new Mock<ILanguagePolicy>();
         languagePolicy.Setup(p => p.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
+
+        var meetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        meetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        // ...and the tenant itself is live unless a test suspends it.
+        meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
 
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             unitOfWork,
@@ -72,7 +82,10 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             new Mock<IAudioRouteEventProcessor>().Object,
             new Mock<ITranslationRoomAudioRouteService>().Object,
             new Mock<IUserSettingsDirectory>().Object,
-            new Mock<IWorkspaceMeetingPolicy>().Object,
+            // meetingPolicy (not a bare mock) — development's suspension gate needs
+            // EnsureWorkspaceCanHostMeetingsAsync stubbed, or every room here fails closed.
+            meetingPolicy.Object,
+            new Mock<IWorkspaceMemberDirectory>().Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
                 WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object);
@@ -211,7 +224,9 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             TranslationRoomParticipantStatuses.Kicked,
             TranslationRoomParticipantStatuses.Waiting);
 
-        var detail = await _service.GetTranslationRoomAsync(room.Id);
+        // WT-334: the detail read now takes the caller. HostId is the room's host, which is who
+        // ListRoomAsync already reads as, so this stays the same scenario.
+        var detail = await _service.GetTranslationRoomAsync(room.Id, HostId, null);
         var listed = await ListRoomAsync(room.Id);
 
         detail.IsSuccess.Should().BeTrue(detail.Error);

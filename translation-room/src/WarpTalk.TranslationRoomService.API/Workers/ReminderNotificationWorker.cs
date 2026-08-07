@@ -19,14 +19,21 @@ using NotificationRequest = WarpTalk.Shared.Protos.SendNotificationRequest;
 namespace WarpTalk.TranslationRoomService.API.Workers;
 
 /// <summary>
-/// WT-14: mirrors IdleRoomMonitoringWorker's polling shape. Every minute, checks SCHEDULED
-/// rooms against the T-10min / T-1min reminder windows (ReminderWindowEvaluator) and — for any
-/// room that enters a window and hasn't been reminded for it yet — pushes a notification via
-/// the SAME gRPC path other services use to create user notifications
+/// WT-14: mirrors IdleRoomMonitoringWorker's polling shape. Every minute, checks rooms that have
+/// not started yet against the T-30min / T-10min / T-1min reminder windows (ReminderWindowEvaluator) and —
+/// for any room that enters a window and hasn't been reminded for it yet — pushes a notification
+/// via the SAME gRPC path other services use to create user notifications
 /// (NotificationGrpcServiceImpl.SendNotification, which persists + Redis-publishes so
 /// NotificationHub relays it to "user:{userId}" in real time — see NotificationRedisSubscriberService).
-/// The reminder_10min_sent_at/reminder_1min_sent_at columns are stamped right after sending so a
-/// restart or a slow poll never double-sends for the same window.
+/// The reminder_30min_sent_at/reminder_10min_sent_at/reminder_1min_sent_at columns are stamped
+/// right after sending so a restart or a slow poll never double-sends for the same window.
+///
+/// WT-326 changed three things about that:
+///   * the candidate sweep no longer looks only at SCHEDULED rooms (see CheckAndSendRemindersAsync);
+///   * "already reminded" is now tracked per RECIPIENT as well as per room+window
+///     (see SendReminderAsync), so one failing recipient no longer re-notifies the whole room;
+///   * T-30min was added as a third window, following the two above rather than replacing them
+///     with a generic mechanism — three windows do not pay for the indirection.
 /// </summary>
 public class ReminderNotificationWorker : BackgroundService
 {
@@ -38,6 +45,13 @@ public class ReminderNotificationWorker : BackgroundService
     private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(1);
 
     private const string NotificationType = "MEETING_REMINDER";
+
+    /// <summary>
+    /// WT-326. How long a per-recipient "already reminded" marker lives. Only has to outlive the
+    /// widest reminder window (T-30min) plus the retries inside it; the reminder_Nmin_sent_at columns remain
+    /// the durable record, so an expired marker costs at most one duplicate notification.
+    /// </summary>
+    private static readonly TimeSpan RecipientSentMarkerTtl = TimeSpan.FromHours(1);
 
     public ReminderNotificationWorker(
         IServiceProvider serviceProvider,
@@ -72,7 +86,8 @@ public class ReminderNotificationWorker : BackgroundService
         }
     }
 
-    private async Task CheckAndSendRemindersAsync(CancellationToken ct)
+    /// <summary>One poll. Internal so the tests can drive it directly — see InternalsVisibleTo.</summary>
+    internal async Task CheckAndSendRemindersAsync(CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -80,18 +95,24 @@ public class ReminderNotificationWorker : BackgroundService
 
         var now = DateTime.UtcNow;
 
-        // Candidates: still SCHEDULED, has a ScheduledAt, and at least one window unsent.
-        // The precise window check (which is much cheaper to keep correct as pure logic) happens
-        // in-memory via ReminderWindowEvaluator, same as IdleRoomMonitoringWorker's idle check.
+        // Candidates: not started yet, inside the widest reminder lead time, at least one window
+        // unsent. The predicate lives with the windows themselves (ReminderWindowEvaluator
+        // .SweepCandidateFilter) because the two must agree — see the WT-326 note there for why
+        // it can no longer be `Status == "SCHEDULED"`. The precise per-window check (much cheaper
+        // to keep correct as pure logic) still happens in-memory below, same as
+        // IdleRoomMonitoringWorker's idle check.
         var candidates = await roomRepo.FindAsync(
-            r => r.Status == "SCHEDULED"
-                 && r.ScheduledAt != null
-                 && (r.Reminder10MinSentAt == null || r.Reminder1MinSentAt == null),
+            ReminderWindowEvaluator.SweepCandidateFilter(now),
             "TranslationRoomParticipants",
             ct);
 
         foreach (var room in candidates)
         {
+            if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder30MinSentAt, ReminderWindowEvaluator.ThirtyMinuteWindow))
+            {
+                await TrySendReminderOnceAsync(room, 30, now, roomRepo, unitOfWork, ct);
+            }
+
             if (ReminderWindowEvaluator.ShouldSendReminder(room.ScheduledAt!.Value, now, room.Reminder10MinSentAt, ReminderWindowEvaluator.TenMinuteWindow))
             {
                 await TrySendReminderOnceAsync(room, 10, now, roomRepo, unitOfWork, ct);
@@ -129,13 +150,25 @@ public class ReminderNotificationWorker : BackgroundService
                 return;
             }
 
-            if (minutesUntilStart == 10)
+            // One column per window, deliberately — the same shape WT-14 established. The throw
+            // is the point of writing it as a switch: a fourth window added without its column
+            // fails immediately and loudly instead of silently never being recorded as sent.
+            switch (minutesUntilStart)
             {
-                room.Reminder10MinSentAt = sentAt;
-            }
-            else
-            {
-                room.Reminder1MinSentAt = sentAt;
+                case 30:
+                    room.Reminder30MinSentAt = sentAt;
+                    break;
+                case 10:
+                    room.Reminder10MinSentAt = sentAt;
+                    break;
+                case 1:
+                    room.Reminder1MinSentAt = sentAt;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(minutesUntilStart),
+                        minutesUntilStart,
+                        "No reminder_Nmin_sent_at column exists for this window.");
             }
             roomRepo.Update(room);
             await unitOfWork.SaveChangesAsync(ct);
@@ -146,11 +179,34 @@ public class ReminderNotificationWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// WT-326. Sends the reminder to every recipient who has not already received it for this
+    /// (room, window), and returns whether the room as a whole is now fully notified.
+    ///
+    /// The bug this fixes: the return value used to be the ONLY idempotency signal, and
+    /// TrySendReminderOnceAsync stamps reminder_Nmin_sent_at only when it is true. One transient
+    /// gRPC failure to one person in a five-person room therefore left the column null, and the
+    /// next poll — a minute later, and every minute after that for the rest of the window —
+    /// re-sent to all five. The Redis lock is per (room, window), so it does not stop this: the
+    /// resend is the next poll, not a concurrent one.
+    ///
+    /// The fix records a per-recipient marker in Redis and skips anyone who already has one, so a
+    /// retry costs one send per FAILED recipient instead of one per recipient. The durable column
+    /// still means "everybody got it" and is still only stamped when that is true — see
+    /// TrySendReminderOnceAsync — which is what keeps the retry alive for whoever was missed.
+    ///
+    /// The marker is written AFTER a successful send, never before: a crash in between then
+    /// re-sends (at-least-once), which is the same direction the column stamping already errs in
+    /// and the right one for a reminder. The TTL only has to outlive the window — the column, not
+    /// Redis, is the durable record — so an evicted or expired marker degrades to exactly the old
+    /// behaviour rather than to a lost reminder.
+    /// </summary>
     private async Task<bool> SendReminderAsync(
         TranslationRoom room,
         int minutesUntilStart,
         CancellationToken ct)
     {
+        var database = _redis.GetDatabase();
         var recipientIds = ResolveRecipientIds(room);
         var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
         var title = minutesUntilStart == 1
@@ -160,6 +216,15 @@ public class ReminderNotificationWorker : BackgroundService
         var allSent = true;
         foreach (var userId in recipientIds)
         {
+            var recipientKey = RecipientSentKey(room.Id, minutesUntilStart, userId);
+            if (await database.KeyExistsAsync(recipientKey))
+            {
+                _logger.LogDebug(
+                    "ReminderNotificationWorker: user {UserId} already has the T-{Minutes}min reminder for room {RoomId}; not re-sending.",
+                    userId, minutesUntilStart, room.Id);
+                continue;
+            }
+
             try
             {
                 var request = new NotificationRequest
@@ -175,6 +240,7 @@ public class ReminderNotificationWorker : BackgroundService
                 request.Metadata.Add("minutes_until_start", minutesUntilStart.ToString());
 
                 await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+                await database.StringSetAsync(recipientKey, DateTime.UtcNow.ToString("O"), RecipientSentMarkerTtl);
             }
             catch (Exception ex)
             {
@@ -185,6 +251,9 @@ public class ReminderNotificationWorker : BackgroundService
 
         return allSent;
     }
+
+    internal static string RecipientSentKey(Guid roomId, int minutesUntilStart, Guid userId)
+        => $"warptalk:reminder-sent:{roomId}:{minutesUntilStart}:{userId}";
 
     /// <summary>
     /// Known userIds for a SCHEDULED room: the host (always a participant, auto-added at
