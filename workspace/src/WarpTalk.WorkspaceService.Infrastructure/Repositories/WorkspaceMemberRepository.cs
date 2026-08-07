@@ -48,6 +48,40 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
                              && m.RemovedAt == null, ct);
     }
 
+    /// <inheritdoc />
+    public async Task<List<Guid>> GetCoMemberUserIdsAsync(
+        Guid userId,
+        IReadOnlyCollection<Guid> candidateUserIds,
+        CancellationToken ct = default)
+    {
+        if (candidateUserIds.Count == 0)
+        {
+            return new List<Guid>();
+        }
+
+        // The caller's own active workspaces, left as an IQueryable so it becomes a subquery in the
+        // SAME statement rather than a second round trip.
+        var callerWorkspaceIds = _dbSet
+            .AsNoTracking()
+            .Where(m => m.UserId == userId
+                        && m.Status.ToLower() == ActiveStatus
+                        && m.RemovedAt == null)
+            .Select(m => m.WorkspaceId);
+
+        // One query for the whole batch: every active membership row belonging to a candidate, in a
+        // workspace the caller is also actively in. Distinct because a pair sharing three workspaces
+        // must still yield one id.
+        return await _dbSet
+            .AsNoTracking()
+            .Where(m => candidateUserIds.Contains(m.UserId)
+                        && m.Status.ToLower() == ActiveStatus
+                        && m.RemovedAt == null
+                        && callerWorkspaceIds.Contains(m.WorkspaceId))
+            .Select(m => m.UserId)
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
     public async Task<(List<WorkspaceMember> Items, int TotalCount)> GetPagedMembersAsync(
         Guid workspaceId,
         int page,
