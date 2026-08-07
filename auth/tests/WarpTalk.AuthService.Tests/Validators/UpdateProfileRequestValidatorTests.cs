@@ -60,6 +60,6 @@ public class UpdateProfileRequestValidatorTests
         Assert.False(result.IsValid);
         var error = Assert.Single(result.Errors);
         Assert.Equal("Timezone", error.PropertyName);
-        Assert.Contains("Mã IANA timezone không hợp lệ.", error.ErrorMessage);
+        Assert.Contains("Timezone must be a valid IANA identifier.", error.ErrorMessage);
     }
 }
