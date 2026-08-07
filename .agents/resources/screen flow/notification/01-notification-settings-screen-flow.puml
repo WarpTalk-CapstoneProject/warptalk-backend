@@ -1,0 +1,20 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "Notifications Center Modal" as NotificationsModal
+rectangle "Notification Preferences Page" as NotificationPreferencesPage
+
+WorkspaceHome --> NotificationsModal : Click "Notification Bell Icon"
+NotificationsModal --> NotificationPreferencesPage : Click "Configure Notification Channels"
+NotificationPreferencesPage --> WorkspaceHome : Save Email / Push Notification Settings
+
+@enduml

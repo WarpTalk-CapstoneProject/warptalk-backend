@@ -1,0 +1,21 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "User Preferences Page" as PreferencesPage
+rectangle "User Profile Page" as ProfilePage
+
+WorkspaceHome --> PreferencesPage : Click "User Profile Avatar -> Settings"
+PreferencesPage --> ProfilePage : Click "Profile Tab"
+ProfilePage --> PreferencesPage : Click "Preferences Tab"
+PreferencesPage --> WorkspaceHome : Click "Back to App"
+
+@enduml

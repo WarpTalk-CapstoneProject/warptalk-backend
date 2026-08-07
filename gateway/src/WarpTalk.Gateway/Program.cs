@@ -256,9 +256,15 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseAuthentication();
+
+// AFTER UseAuthentication, and this ordering is load-bearing. The global limiter partitions a
+// signed-in caller by user id so that everyone behind one NAT — an office, a venue, a defence
+// room — does not share a single budget. HttpContext.User is not populated until authentication
+// has run, so a limiter placed above it would find no identity and silently partition every
+// request by IP again, which is the exact failure it is there to prevent.
 app.UseRateLimiter();
 
-app.UseAuthentication();
 app.UseAuthorization();
 
 // Map YARP

@@ -176,6 +176,120 @@ public sealed class GatewayRateLimiterWiringTests
         Assert.False(second.IsAcquired);
     }
 
+    /// <summary>
+    /// The defence-room case. IP was the only partition, so everyone behind one NAT shared a single
+    /// budget: the presenter's laptop, the projector machine and three examiners on the same wifi
+    /// were one partition, and the first person to exhaust it broke the app for the rest. Two
+    /// signed-in users from the SAME address must now have independent budgets.
+    /// </summary>
+    [Fact]
+    public void TwoUsersBehindOneNat_DoNotShareOneBudget()
+    {
+        var limiter = BuildGlobalLimiter(new Dictionary<string, string?>
+        {
+            ["RateLimits:UserPermitLimit"] = "2"
+        });
+
+        const string sharedIp = "203.0.113.20";
+        var presenter = AuthenticatedRequestFrom(sharedIp, "/api/v1/workspaces", "user-presenter");
+        var examiner = AuthenticatedRequestFrom(sharedIp, "/api/v1/workspaces", "user-examiner");
+
+        for (var i = 0; i < 2; i++)
+        {
+            using var lease = limiter.AttemptAcquire(presenter);
+            Assert.True(lease.IsAcquired);
+        }
+
+        using var presenterRefused = limiter.AttemptAcquire(presenter);
+        Assert.False(presenterRefused.IsAcquired, "The presenter should have spent their own budget.");
+
+        // The examiner shares the presenter's IP and nothing else. Before the fix this was already
+        // refused, because the budget was the address rather than the person.
+        using var examinerAdmitted = limiter.AttemptAcquire(examiner);
+        Assert.True(
+            examinerAdmitted.IsAcquired,
+            "A second signed-in user on the same address must not inherit the first user's exhausted budget.");
+    }
+
+    /// <summary>
+    /// One user is still limited — per-user partitioning must not become no partitioning. Also
+    /// pins that a signed-in caller is measured against UserPermitLimit, not IpPermitLimit.
+    /// </summary>
+    [Fact]
+    public void AnAuthenticatedCaller_IsHeldToUserPermitLimit()
+    {
+        var limiter = BuildGlobalLimiter(new Dictionary<string, string?>
+        {
+            ["RateLimits:UserPermitLimit"] = "3",
+            ["RateLimits:IpPermitLimit"] = "300"
+        });
+
+        var context = AuthenticatedRequestFrom("203.0.113.21", "/api/v1/workspaces", "user-solo");
+
+        for (var i = 1; i <= 3; i++)
+        {
+            using var lease = limiter.AttemptAcquire(context);
+            Assert.True(lease.IsAcquired, $"Request {i} of the configured 3 should have been admitted.");
+        }
+
+        using var rejected = limiter.AttemptAcquire(context);
+        Assert.False(rejected.IsAcquired);
+    }
+
+    /// <summary>
+    /// Anonymous traffic keeps the IP budget. An unauthenticated flood has no other identity, so
+    /// this is where an address-shaped limit belongs — and it must not silently become per-request.
+    /// </summary>
+    [Fact]
+    public void AnonymousCallers_StillShareTheIpBudget()
+    {
+        var limiter = BuildGlobalLimiter(new Dictionary<string, string?>
+        {
+            ["RateLimits:IpPermitLimit"] = "2",
+            ["RateLimits:UserPermitLimit"] = "180"
+        });
+
+        const string sharedIp = "203.0.113.22";
+        var first = RequestFrom(sharedIp, "/api/v1/auth/register");
+        var second = RequestFrom(sharedIp, "/api/v1/workspaces");
+
+        using var one = limiter.AttemptAcquire(first);
+        Assert.True(one.IsAcquired);
+        using var two = limiter.AttemptAcquire(second);
+        Assert.True(two.IsAcquired);
+
+        using var three = limiter.AttemptAcquire(first);
+        Assert.False(three.IsAcquired, "Two anonymous requests from one address share one budget.");
+    }
+
+    /// <summary>
+    /// A user id must not be confused with an address. Two anonymous callers from DIFFERENT
+    /// addresses stay in different partitions, as they always did.
+    /// </summary>
+    [Fact]
+    public void AnonymousCallersFromDifferentAddresses_KeepSeparateBudgets()
+    {
+        var limiter = BuildGlobalLimiter(new Dictionary<string, string?>
+        {
+            ["RateLimits:IpPermitLimit"] = "1"
+        });
+
+        using var first = limiter.AttemptAcquire(RequestFrom("203.0.113.23", "/api/v1/workspaces"));
+        Assert.True(first.IsAcquired);
+        using var second = limiter.AttemptAcquire(RequestFrom("203.0.113.24", "/api/v1/workspaces"));
+        Assert.True(second.IsAcquired);
+    }
+
+    private static DefaultHttpContext AuthenticatedRequestFrom(string ip, string path, string userId)
+    {
+        var context = RequestFrom(ip, path);
+        context.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, userId)],
+                authenticationType: "TestAuth"));
+        return context;
+    }
+
     private static PartitionedRateLimiter<HttpContext> BuildGlobalLimiter(
         Dictionary<string, string?> settings)
     {

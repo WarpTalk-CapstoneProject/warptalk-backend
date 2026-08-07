@@ -1,0 +1,25 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Home Page" as WorkspaceHome
+rectangle "Workspace Settings Page" as WorkspaceSettingsPage
+rectangle "Billing Page" as BillingPage
+rectangle "Plan Upgrade Modal" as PlanUpgradeModal
+rectangle "Checkout Page" as CheckoutPage
+
+WorkspaceHome --> WorkspaceSettingsPage : Click "Workspace Settings"
+WorkspaceSettingsPage --> BillingPage : Click "Billing & Subscription"
+BillingPage --> PlanUpgradeModal : Click "Upgrade / Renew Plan"
+PlanUpgradeModal --> CheckoutPage : Click "Proceed to Checkout"
+CheckoutPage --> BillingPage : Click "Pay Now" (payment success)
+CheckoutPage --> BillingPage : Click "Cancel" / Payment Failed
+
+@enduml
