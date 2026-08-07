@@ -296,6 +296,25 @@ public class WorkspaceSuspensionTests
     }
 
     /// <summary>
+    /// Resume is PAUSED → IN_PROGRESS, and only a room that already STARTED can be paused. So it is
+    /// continuation of a meeting in flight, not the beginning of one, and it stays allowed under
+    /// the same rule that leaves an IN_PROGRESS room alone. Pinned because "resume opens a new
+    /// numbered translation session" makes it look like a start if you only read that line.
+    /// </summary>
+    [Fact]
+    public async Task Resuming_APausedRoom_StaysAllowed_WhenTheWorkspaceIsSuspended()
+    {
+        var hostId = Guid.NewGuid();
+        var room = ArrangeRoom(hostId, status: "PAUSED");
+        ArrangeWorkspaceIsSuspended();
+
+        var result = await _service.ResumeTranslationRoomAsync(room.Id, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("IN_PROGRESS");
+    }
+
+    /// <summary>
     /// A suspended tenant must still be able to WIND DOWN. Ending a room costs nothing and is the
     /// only way the host closes out a call that was running when the suspension landed — blocking
     /// it would leave rooms stuck IN_PROGRESS forever.
