@@ -580,6 +580,42 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
 
+            // S7. A room that is already running gets this participant's audio routes NOW.
+            //
+            // Routes used to be generated exactly once, inside StartTranslationRoomAsync, and
+            // nothing on this path ever added any — so anyone who joined after Start had no
+            // route row at all. Translation and TTS still worked for them (the AI re-reads the
+            // live languages hash per utterance), but BaseWorker.is_voice_clone_consented
+            // matches against the route rows delivered by AUDIO_ROUTES_UPDATED and fails closed
+            // without one: their buffered audio was discarded and they were permanently dubbed
+            // in a hashed default voice instead of their own. Voice cloning is the headline
+            // feature, and it silently switched itself off for anyone a minute late.
+            //
+            // Only for IN_PROGRESS: a join before Start is already covered by
+            // StartTranslationRoomAsync's own GenerateRoutesAsync, and doing it twice would
+            // charge every pre-start join for work Start is about to redo.
+            //
+            // Best-effort, exactly like the Start-path call it complements: a routing failure
+            // must not turn a successful join into a failed one. The participant is saved above
+            // and this only affects which voice they are dubbed in.
+            if (translationRoom.Status == "IN_PROGRESS")
+            {
+                var routeResult = await _audioRouteService.AddRoutesForParticipantAsync(translationRoom.Id, participant.Id, ct);
+                if (!routeResult.IsSuccess)
+                {
+                    _logger.LogWarning(
+                        "Could not add audio routes for participant {ParticipantId} joining in-progress room {RoomId}: {Error}",
+                        participant.Id, translationRoom.Id, routeResult.Error);
+                }
+                else
+                {
+                    // S8: the routes just created are PENDING, and PENDING is what the client
+                    // renders as "Waiting". The room is already running, so they are ready the
+                    // moment they exist. Idempotent for every route already broadcasting.
+                    await PublishRouteReadinessAsync(translationRoom.Id, ct);
+                }
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -592,6 +628,36 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// S8 — drive this room's audio routes out of PENDING and into BROADCASTING.
+    ///
+    /// GenerateRoutesAsync creates every route at PENDING, and the ONLY transition out of
+    /// PENDING is <c>config_ready</c> — an event no code in this repository has ever emitted.
+    /// session_starts is only accepted from READY, so it was rejected on every route, and
+    /// telemetry_state_updated is rejected outright because PENDING is not a streaming state.
+    /// A route therefore sat at PENDING for the entire meeting no matter what happened, and
+    /// PENDING is what the client renders as "Waiting" — the status frozen on the projector.
+    ///
+    /// The missing piece was the producer, not the state table: routes ARE configured at the
+    /// moment GenerateRoutesAsync returns, so that is when config_ready is true. Emitting it
+    /// here keeps the modelled lifecycle (PENDING -> READY -> BROADCASTING) intact rather than
+    /// rewriting the transition table around a step nothing performs.
+    ///
+    /// Both events are idempotent: a route already BROADCASTING rejects config_ready and
+    /// session_starts as invalid transitions, ProcessTransition returns false, and nothing is
+    /// written. That is what makes this safe to call again on a late join or a restart.
+    ///
+    /// This is also what makes the status correct in a room where NOBODY SPEAKS. It is driven
+    /// by the room's own lifecycle, so it needs no telemetry payload, no timer, and no
+    /// heartbeat — a few seconds of silence at the start of a demo can no longer leave the
+    /// status stuck.
+    /// </summary>
+    private async Task PublishRouteReadinessAsync(Guid translationRoomId, CancellationToken ct)
+    {
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.config_ready.ToString(), "{}", ct);
+        await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
     }
 
     public async Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
@@ -634,6 +700,20 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status == "IN_PROGRESS")
             {
                 await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+
+                // S7. This early return used to skip route generation entirely, which is why
+                // "just restart the room" never recovered a late joiner who had no route row.
+                // The join path now adds routes as people arrive, so this is the repair path
+                // for a room that was already running when that fix shipped — and for any
+                // future gap, one deliberate host action is a safe place to reconcile the mesh.
+                var restartRouteResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
+                if (!restartRouteResult.IsSuccess)
+                    _logger.LogWarning("Could not reconcile audio routes for already-running room {RoomId}: {Error}", translationRoomId, restartRouteResult.Error);
+
+                // S8: and drive any route still sitting at PENDING into BROADCASTING. Idempotent
+                // for routes that are already streaming.
+                await PublishRouteReadinessAsync(translationRoomId, ct);
+
                 return Result.Success(translationRoom.ToResponseDto(
                     await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
             }
@@ -659,8 +739,10 @@ public class TranslationRoomService : ITranslationRoomService
             // routed correctly once translation starts. Routes form a full mesh between
             // participants whose languages differ, so a room with only the host — or where
             // everyone shares a language — legitimately has zero routes and that must NOT block
-            // Start (additional routes are generated as more participants join). Route generation
-            // is best-effort: a failure here should not prevent the host from opening the room.
+            // Start. Additional routes for people who arrive after this point are added
+            // incrementally by JoinTranslationRoomAsync (S7); this comment used to claim that
+            // happened already, and no code path did it. Route generation is best-effort: a
+            // failure here should not prevent the host from opening the room.
             var routeResult = await _audioRouteService.GenerateRoutesAsync(translationRoomId, ct);
             if (!routeResult.IsSuccess)
                 _logger.LogWarning("Could not generate audio routes while starting room {RoomId}: {Error}", translationRoomId, routeResult.Error);
@@ -674,6 +756,20 @@ public class TranslationRoomService : ITranslationRoomService
 
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
+
+            // WT-322: tell everyone already in the room that translation is now live. Published
+            // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
+            // the event must not be able to observe the room still WAITING. Failure to notify must
+            // not fail the start — the room is IN_PROGRESS and persisted by this point.
+            await PublishRoomStartedAsync(translationRoom, ct);
+
+            // S8: routes are created PENDING and the only exit is config_ready, which nothing in
+            // the repository has ever emitted — so every route sat at PENDING for the whole
+            // meeting and the client rendered "Waiting" regardless of whether anyone spoke.
+            // Start is where the routes genuinely become configured, so it is where the event
+            // belongs. Resume publishes the same pair; both are invalid transitions on a live
+            // route, so replay is a no-op.
+            await PublishRouteReadinessAsync(translationRoomId, ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));

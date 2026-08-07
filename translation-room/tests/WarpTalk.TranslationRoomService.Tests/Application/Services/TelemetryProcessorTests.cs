@@ -88,9 +88,103 @@ public class TelemetryProcessorTests
                 d["warmup_count"] == "2" &&
                 d["last_timestamp"] == payload.Timestamp.ToString())), Times.Once);
 
-        // Assert no event is processed due to warm-up protective bypass
+        // Warm-up still suppresses what it exists to suppress: the 5000ms cold-start sample
+        // must not compute an EMA or raise a DEGRADED alarm.
+        _mockRedisStateRepo.Verify(r => r.HashSetAsync(
+            It.IsAny<string>(),
+            It.Is<Dictionary<string, string>>(d => d.ContainsKey("stt_ema"))), Times.Never);
         _mockEventProcessor.Verify(e => e.ProcessEventAsync(
-            It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+                It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(),
+                It.Is<string>(p => p.Contains(nameof(AudioRouteStatus.SPEECH_DELAYED))), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    // ------------------------------------------------------------------
+    // S8 — a room where nobody speaks is stuck forever.
+    //
+    // The warm-up gate used to `return` before step 7, so no effective status was resolved and
+    // nothing reached Postgres for the first `warmupThreshold` payloads. warmupCount only
+    // advances when a worker publishes telemetry — i.e. only when somebody speaks — so a few
+    // seconds of silence at the start of a meeting left the status frozen on "Waiting".
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task ProcessTelemetryAsync_StillReportsTheHealthyStatus_WhileWarmingUp()
+    {
+        var payload = new TelemetryPayload
+        {
+            RoomId = Guid.NewGuid(),
+            RouteId = Guid.NewGuid(),
+            WorkerType = "stt",
+            LatencyMs = 120.0,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(new Dictionary<string, string> { { "warmup_count", "0" } });
+
+        await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+
+        _mockEventProcessor.Verify(e => e.ProcessEventAsync(
+                payload.RoomId,
+                payload.RouteId,
+                AudioRoutingEventType.telemetry_state_updated.ToString(),
+                It.Is<string>(p => p.Contains(nameof(AudioRouteStatus.BROADCASTING))),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessTelemetryAsync_BoundsTheTelemetryKeyLifetime_EvenDuringWarmup()
+    {
+        // The warm-up branch writes to this hash too, and the TTL used to sit after the early
+        // return — so for a room that never spoke three times, the key never expired.
+        var payload = new TelemetryPayload
+        {
+            RoomId = Guid.NewGuid(),
+            RouteId = Guid.NewGuid(),
+            WorkerType = "tts",
+            LatencyMs = 200.0,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(new Dictionary<string, string> { { "warmup_count", "1" } });
+
+        await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+
+        _mockRedisStateRepo.Verify(r => r.KeyExpireAsync(It.IsAny<string>(), It.IsAny<TimeSpan>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ProcessTelemetryAsync_KeepsAnAlreadyDegradedFlag_WhileWarmingUp()
+    {
+        // Reporting during warm-up must report the state that is actually recorded, not an
+        // optimistic constant — otherwise a room that degraded, restarted its warm-up, and went
+        // quiet would advertise itself as healthy.
+        var payload = new TelemetryPayload
+        {
+            RoomId = Guid.NewGuid(),
+            RouteId = Guid.NewGuid(),
+            WorkerType = "stt",
+            LatencyMs = 100.0,
+            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        _mockRedisStateRepo.Setup(r => r.GetHashAllAsync(It.IsAny<string>()))
+            .ReturnsAsync(new Dictionary<string, string>
+            {
+                { "warmup_count", "1" },
+                { "is_tts_degraded", "True" }
+            });
+
+        await _service.ProcessTelemetryAsync(payload, CancellationToken.None);
+
+        _mockEventProcessor.Verify(e => e.ProcessEventAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(),
+                It.Is<string>(p => p.Contains(nameof(AudioRouteStatus.VOICE_DELAYED))),
+                It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

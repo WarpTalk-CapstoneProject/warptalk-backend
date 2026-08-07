@@ -10,6 +10,22 @@ namespace WarpTalk.TranslationRoomService.Application.Interfaces;
 public interface ITranslationRoomAudioRouteService
 {
     Task<Result<List<TranslationRoomAudioRouteDto>>> GenerateRoutesAsync(Guid roomId, CancellationToken ct = default);
+
+    /// <summary>
+    /// S7 — add only the routes one newly-joined participant needs (them to everyone already
+    /// here, and everyone already here to them), leaving every other pair alone.
+    ///
+    /// Called from the JOIN path, which previously generated no routes at all: routes were
+    /// built once inside StartTranslationRoomAsync and never again, so anyone who joined after
+    /// Start had no route row — and BaseWorker.is_voice_clone_consented, which matches against
+    /// exactly those rows, fails closed. A late joiner permanently got a hashed default voice
+    /// instead of their own cloned one.
+    ///
+    /// Incremental on purpose: the mesh is O(n^2), so calling GenerateRoutesAsync on every join
+    /// would re-evaluate every existing pair each time and broadcast a full route update to
+    /// every AI worker per joiner.
+    /// </summary>
+    Task<Result<List<TranslationRoomAudioRouteDto>>> AddRoutesForParticipantAsync(Guid roomId, Guid participantId, CancellationToken ct = default);
     Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default);
     Task<Result<TranslationRoomAudioRouteDto>> UpdateRuntimeContextAsync(Guid roomId, Guid routeId, UpdateAudioRouteRuntimeContextDto dto, CancellationToken ct = default);
     Task<Result<TranslationRoomAudioRouteDto>> ToggleVoiceCloneAsync(Guid roomId, Guid routeId, ToggleVoiceCloneDto dto, CancellationToken ct = default);

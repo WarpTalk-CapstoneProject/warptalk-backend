@@ -164,6 +164,155 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         }
     }
 
+    /// <summary>
+    /// S7 — add only the routes a single newly-joined participant needs, leaving every other
+    /// pair in the room untouched.
+    ///
+    /// Routes used to be generated exactly once, inside StartTranslationRoomAsync. Nothing on
+    /// the join path ever generated any (the comment there claimed "additional routes are
+    /// generated as more participants join" — no code path did that), and restarting did not
+    /// help because StartTranslationRoomAsync returns early for a room that is already
+    /// IN_PROGRESS. Translation and TTS still worked for a late joiner, because the AI re-reads
+    /// the live languages hash per utterance — but BaseWorker.is_voice_clone_consented matches
+    /// against the route rows delivered by AUDIO_ROUTES_UPDATED, and with no row it fails closed.
+    /// The late joiner's buffered audio was discarded and they permanently got a hashed default
+    /// voice instead of their own. Voice cloning is this project's headline feature; a
+    /// participant who joins a minute late silently loses it for the rest of the meeting.
+    ///
+    /// Incremental rather than a full GenerateRoutesAsync per join, deliberately. The mesh is
+    /// O(n^2): regenerating it on every join makes the Nth joiner re-evaluate every existing
+    /// pair, so a busy room pays O(n^3) route work over the course of filling up, and every one
+    /// of those joins publishes a full AUDIO_ROUTES_UPDATED to every AI worker. This touches
+    /// only the 2*(n-1) pairs that genuinely did not exist a moment ago.
+    /// </summary>
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> AddRoutesForParticipantAsync(Guid roomId, Guid participantId, CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _translationRoomRepository.GetByIdAsync(roomId, ct);
+            if (room == null)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            }
+
+            if (string.IsNullOrWhiteSpace(room.SourceLanguage) || string.IsNullOrWhiteSpace(room.TargetLanguages))
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorRoomPolicyIncomplete, ErrorCodes.InvalidState);
+            }
+
+            var participants = await _translationRoomParticipantRepository.GetByRoomIdAsync(roomId, ct);
+            var joiner = participants?.FirstOrDefault(p => p.Id == participantId);
+            if (joiner == null)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+            }
+
+            var existingRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            var sourceLanguage = room.SourceLanguage;
+            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var newRoutes = new List<TranslationRoomAudioRoute>();
+            var updatedRoutes = new List<TranslationRoomAudioRoute>();
+
+            // Only the pairs this participant is one half of: they speak to everyone already
+            // here, and everyone already here speaks to them.
+            foreach (var other in participants!.Where(p => p.Id != joiner.Id))
+            {
+                foreach (var (speaker, listener) in new[] { (joiner, other), (other, joiner) })
+                {
+                    var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
+                    var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
+
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue;
+
+                    var existingRoute = existingRoutes.FirstOrDefault(r =>
+                        r.SourceParticipantId == speaker.Id &&
+                        r.TargetParticipantId == listener.Id);
+
+                    if (existingRoute != null)
+                    {
+                        // A rejoin: the participant row is reused, so their route may already
+                        // exist and may be carrying the languages they used last time.
+                        if (existingRoute.SourceLanguage != sourceLang || existingRoute.TargetLanguage != targetLang)
+                        {
+                            existingRoute.SourceLanguage = sourceLang;
+                            existingRoute.TargetLanguage = targetLang;
+                            existingRoute.UpdatedAt = DateTime.UtcNow;
+                            updatedRoutes.Add(existingRoute);
+                        }
+                        continue;
+                    }
+
+                    newRoutes.Add(new TranslationRoomAudioRoute
+                    {
+                        Id = Guid.NewGuid(),
+                        TranslationRoomId = roomId,
+                        SourceParticipantId = speaker.Id,
+                        TargetParticipantId = listener.Id,
+                        SourceLanguage = sourceLang,
+                        TargetLanguage = targetLang,
+                        VoiceCloneEnabled = SpeakerHasConsentedInRoom(existingRoutes, speaker.Id),
+                        Status = AudioRouteStatus.PENDING.ToString(),
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    });
+                }
+            }
+
+            if (newRoutes.Any())
+            {
+                await _translationRoomAudioRouteRepository.AddRoutesAsync(newRoutes, ct);
+            }
+
+            if (updatedRoutes.Any())
+            {
+                await _translationRoomAudioRouteRepository.UpdateRoutesAsync(updatedRoutes, ct);
+            }
+
+            if (newRoutes.Any() || updatedRoutes.Any())
+            {
+                await _unitOfWork.SaveChangesAsync(ct);
+                // The AI workers' only source of route rows. Without this publish the rows exist
+                // in Postgres and the consent gate still fails closed.
+                await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
+
+                _logger.LogInformation(
+                    "Added {NewCount} and refreshed {UpdatedCount} audio routes for participant {ParticipantId} joining room {RoomId}",
+                    newRoutes.Count, updatedRoutes.Count, participantId, roomId);
+            }
+
+            var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            return Result.Success(allRoutes.Select(TranslationRoomAudioRouteMapper.ToDto).ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while adding audio routes for participant {ParticipantId} in room {RoomId}", participantId, roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Whether this speaker has already consented to voice cloning in THIS room.
+    ///
+    /// A new outgoing route for a speaker who already said yes inherits that yes. Consent is
+    /// given per meeting and per speaker — SetVoiceCloneConsentAsync applies it to every route
+    /// where the caller is the source, precisely because "a participant consents once for 'my
+    /// voice may be cloned', not per listener". Defaulting the new route to false instead would
+    /// mean an already-consented speaker silently drops back to a hashed default voice the
+    /// moment anyone joins late, which is the same failure S7 is about, pointed the other way.
+    ///
+    /// This never widens consent: it can only copy a value the speaker themselves set, in this
+    /// same room. A participant with no prior route (the late joiner as a speaker) still starts
+    /// at false and must opt in.
+    /// </summary>
+    private static bool SpeakerHasConsentedInRoom(List<TranslationRoomAudioRoute> existingRoutes, Guid speakerParticipantId)
+    {
+        return existingRoutes.Any(r =>
+            r.SourceParticipantId == speakerParticipantId &&
+            r.Status != AudioRouteStatus.COMPLETED.ToString() &&
+            r.VoiceCloneEnabled);
+    }
+
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default)
     {
         try
@@ -286,10 +435,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
             // Every route where THIS caller is the speaker — a participant consents once
-            // for "my voice may be cloned", not per listener. New listeners joining later
-            // get their own route from GenerateRoutesAsync with VoiceCloneEnabled defaulted
-            // to false (matches the "opt-in per meeting, not silently inherited" policy) —
-            // this method only re-applies consent retroactively if called again.
+            // for "my voice may be cloned", not per listener. A listener who joins later gets
+            // a route from AddRoutesForParticipantAsync that INHERITS this speaker's answer
+            // (see SpeakerHasConsentedInRoom): consent is per speaker and per meeting, so a
+            // speaker who already said yes must not silently drop back to a default voice
+            // just because somebody new walked in. It is never inherited across meetings, and
+            // the joiner's own outgoing routes still start at false.
             var myOutgoingRoutes = allRoutes
                 .Where(r => r.SourceParticipantId == participant.Id
                     && r.Status != AudioRouteStatus.COMPLETED.ToString())
