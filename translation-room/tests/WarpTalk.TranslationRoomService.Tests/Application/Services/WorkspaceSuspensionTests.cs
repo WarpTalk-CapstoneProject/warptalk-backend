@@ -81,6 +81,9 @@ public class WorkspaceSuspensionTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            // Added by the workspace-wide room-list change; these tests are about tenant
+            // suspension and never read the directory, so a bare substitute is enough.
+            new Mock<IWorkspaceMemberDirectory>().Object,
             _mockEmailService.Object,
             _mockLogger.Object);
     }
