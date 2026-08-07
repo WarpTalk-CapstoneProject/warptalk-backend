@@ -19,6 +19,7 @@ public class ProfileService : IProfileService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserRepository _userRepository;
+    private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly IPasswordHasher _passwordHasher;
     private readonly AuthSettings _authSettings;
     private readonly ILogger<ProfileService> _logger;
@@ -34,6 +35,7 @@ public class ProfileService : IProfileService
         _authSettings = authSettings.Value;
         _logger = logger;
         _userRepository = _unitOfWork.UserRepository;
+        _refreshTokenRepository = _unitOfWork.RefreshTokenRepository;
     }
 
     public async Task<Result<UserDto>> GetProfileAsync(Guid userId, CancellationToken ct = default)
@@ -107,7 +109,20 @@ public class ProfileService : IProfileService
             user.UpdatedAt = DateTime.UtcNow;
 
             _userRepository.Update(user);
+
+            // Changing a password is how a user evicts someone who got in. It only works if the
+            // sessions that someone already holds die with the old password.
+            //
+            // AuthService.ResetPasswordAsync already did this; the change-password path did not,
+            // so a user who noticed a compromise and changed their password stayed compromised:
+            // the attacker's stolen refresh token kept rotating into fresh access tokens for the
+            // rest of its lifetime, and nothing the victim could do from the UI stopped it.
+            await _refreshTokenRepository.RevokeAllForUserAsync(userId, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "Password changed and all refresh tokens revoked. UserId: {UserId}", userId);
 
             return Result.Success();
         }

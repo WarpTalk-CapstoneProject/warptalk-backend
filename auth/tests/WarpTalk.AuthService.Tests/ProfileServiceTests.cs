@@ -22,6 +22,7 @@ public class ProfileServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserRepository _userRepository;
     private readonly IPasswordHasher _passwordHasher;
+    private readonly IRefreshTokenRepository _refreshTokenRepository;
     private readonly IOptions<AuthSettings> _authSettingsOptions;
     private readonly ProfileService _profileService;
 
@@ -30,8 +31,10 @@ public class ProfileServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _userRepository = Substitute.For<IUserRepository>();
         _passwordHasher = Substitute.For<IPasswordHasher>();
+        _refreshTokenRepository = Substitute.For<IRefreshTokenRepository>();
 
         _unitOfWork.UserRepository.Returns(_userRepository);
+        _unitOfWork.RefreshTokenRepository.Returns(_refreshTokenRepository);
 
         var settings = new AuthSettings
         {
@@ -503,4 +506,61 @@ public class ProfileServiceTests
     }
 
     #endregion
+
+    /// <summary>
+    /// Changing a password is how a user evicts an intruder. It only works if the sessions the
+    /// intruder already holds die with the old password. AuthService.ResetPasswordAsync revoked
+    /// them; ChangePasswordAsync did not, so a user who reacted to a compromise stayed
+    /// compromised for the remaining lifetime of the attacker's refresh token.
+    /// </summary>
+    [Fact]
+    public async Task ChangePasswordAsync_ShouldRevokeEveryRefreshToken()
+    {
+        var userId = Guid.NewGuid();
+        _userRepository.GetByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new User
+        {
+            Id = userId,
+            Email = "evicting@warptalk.vn",
+            PasswordHash = "old_hash",
+            IsActive = true,
+            EmailVerified = true
+        });
+        _passwordHasher.Verify("OldPassword123!", "old_hash").Returns(true);
+        _passwordHasher.Hash("NewPassword123!").Returns("new_hash");
+
+        var result = await _profileService.ChangePasswordAsync(
+            userId,
+            new ChangePasswordRequest("OldPassword123!", "NewPassword123!"));
+
+        Assert.True(result.IsSuccess);
+        await _refreshTokenRepository.Received(1).RevokeAllForUserAsync(userId, Arg.Any<CancellationToken>());
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// A rejected password change must not terminate the user's sessions — otherwise anyone who
+    /// can reach the endpoint logs the victim out of everything by guessing wrong.
+    /// </summary>
+    [Fact]
+    public async Task ChangePasswordAsync_ShouldNotRevokeAnything_WhenCurrentPasswordIsWrong()
+    {
+        var userId = Guid.NewGuid();
+        _userRepository.GetByIdAsync(userId, Arg.Any<CancellationToken>()).Returns(new User
+        {
+            Id = userId,
+            Email = "wrong-password@warptalk.vn",
+            PasswordHash = "old_hash",
+            IsActive = true,
+            EmailVerified = true
+        });
+        _passwordHasher.Verify("NotThePassword", "old_hash").Returns(false);
+
+        var result = await _profileService.ChangePasswordAsync(
+            userId,
+            new ChangePasswordRequest("NotThePassword", "NewPassword123!"));
+
+        Assert.False(result.IsSuccess);
+        await _refreshTokenRepository.DidNotReceive().RevokeAllForUserAsync(
+            Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
 }
