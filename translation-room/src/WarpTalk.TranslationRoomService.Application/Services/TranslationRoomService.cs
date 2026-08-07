@@ -452,6 +452,22 @@ public class TranslationRoomService : ITranslationRoomService
                 return Result.Failure<JoinTranslationRoomResponse>("This room has already ended or has been cancelled.", ErrorCodes.InvalidState);
             }
 
+            // A suspended workspace admits nobody new. Checked here and not only at creation
+            // because a room created while the tenant was live outlives the suspension, and every
+            // participant who enters it opens a fresh billable STT/TTS stream.
+            //
+            // This does NOT evict anyone already connected — see EndTranslationRoomAsync, which
+            // stays open precisely so an in-flight call can be wound down rather than cut. The
+            // cost is that a participant who drops out of a live call in a workspace suspended
+            // mid-meeting cannot reconnect; that is accepted deliberately, because a reconnect is
+            // indistinguishable at this layer from a new arrival and admitting one admits both.
+            var lifecycle = await _workspaceMeetingPolicy.EnsureWorkspaceCanHostMeetingsAsync(
+                translationRoom.WorkspaceId, ct);
+            if (!lifecycle.IsSuccess)
+            {
+                return Result.Failure<JoinTranslationRoomResponse>(lifecycle.Error!, lifecycle.ErrorCode);
+            }
+
             // WT-65: Fallback to user settings for Join
             var speakLang = request.SpeakLanguage;
             var listenLang = request.ListenLanguage;
@@ -625,6 +641,20 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorInvalidTransitionToStart, ErrorCodes.InvalidState);
 
+            // A suspended workspace may not take a room live. This is the transition that actually
+            // turns on billable AI — it opens a translation session and hands the room to the audio
+            // routing state machine — so a room scheduled before the suspension must stop here
+            // rather than at creation, which already happened.
+            //
+            // Placed AFTER the IN_PROGRESS short-circuit above on purpose: a room that is already
+            // running keeps its idempotent re-Start, because refusing it would strand a host whose
+            // client retried mid-call. Suspension stops meetings from starting; it does not end one
+            // that has.
+            var lifecycle = await _workspaceMeetingPolicy.EnsureWorkspaceCanHostMeetingsAsync(
+                translationRoom.WorkspaceId, ct);
+            if (!lifecycle.IsSuccess)
+                return Result.Failure<TranslationRoomDto>(lifecycle.Error!, lifecycle.ErrorCode);
+
             // (Re)generate audio routes for the participants currently in the room so speech is
             // routed correctly once translation starts. Routes form a full mesh between
             // participants whose languages differ, so a room with only the host — or where
@@ -642,21 +672,8 @@ public class TranslationRoomService : ITranslationRoomService
 
             _translationRoomRepository.Update(translationRoom);
 
-            // Each Start/Resume opens a new numbered translation session — the transcript
-            // labels segments by which session they fall in ("Translation 1", "Translation 2"...).
-            await StartNewTranslationSessionAsync(translationRoom, ct);
-
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(translationRoom, ct);
-
-            // WT-322: tell everyone already in the room that translation is now live. Published
-            // after SaveChangesAsync for the same reason RoomEnded is: a client that refetches on
-            // the event must not be able to observe the room still WAITING. Failure to notify must
-            // not fail the start — the room is IN_PROGRESS and persisted by this point.
-            await PublishRoomStartedAsync(translationRoom, ct);
-
-            // Trigger Audio Routing State Machine (Transition routes from ROUTING_READY to AUDIO_ROUTING_ACTIVE)
-            await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
@@ -810,7 +827,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
-            if (translationRoom.Status != "PAUSED")
+            if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
 
             translationRoom.Status = "IN_PROGRESS";
@@ -822,6 +839,7 @@ public class TranslationRoomService : ITranslationRoomService
             await StartNewTranslationSessionAsync(translationRoom, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await PublishRoomStartedAsync(translationRoom, ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);

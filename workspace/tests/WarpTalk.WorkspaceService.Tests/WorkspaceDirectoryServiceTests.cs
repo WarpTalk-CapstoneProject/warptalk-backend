@@ -133,6 +133,7 @@ public class WorkspaceDirectoryServiceTests
         StubWorkspace(workspaceId, new Workspace
         {
             Id = workspaceId,
+            IsActive = true,
             Settings = "{\"AllowedTargetLanguages\":[\"en\",\"vi\"],\"MaxActiveRooms\":10}"
         });
 
@@ -191,6 +192,7 @@ public class WorkspaceDirectoryServiceTests
         StubWorkspace(workspaceId, new Workspace
         {
             Id = workspaceId,
+            IsActive = true,
             Settings = "{\"AllowedTargetLanguages\":[\"vi\"],\"MaxActiveRooms\":10}"
         });
 
@@ -213,7 +215,7 @@ public class WorkspaceDirectoryServiceTests
             Status = "Active",
             CanCreateMeetings = true
         });
-        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = "{\"MaxActiveRooms\":2}" });
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, IsActive = true, Settings = "{\"MaxActiveRooms\":2}" });
         _translationRoomClient
             .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(2);
@@ -249,7 +251,7 @@ public class WorkspaceDirectoryServiceTests
             CanCreateMeetings = true
         });
 
-        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, Settings = settings });
+        StubWorkspace(workspaceId, new Workspace { Id = workspaceId, IsActive = true, Settings = settings });
 
         return userId;
     }
@@ -498,5 +500,170 @@ public class WorkspaceDirectoryServiceTests
         var result = await _service.GetPreflightAsync(workspaceId, "someone@example.com");
 
         Assert.False(result.IsSuccess);
+    }
+
+    // ── Tenant lifecycle: suspending a workspace must stop what costs money ──────
+    //
+    // Suspension flips is_active and nothing else (AdminWorkspaceService.ChangeLifecycleAsync),
+    // so reading that flag is the ONLY way a caller can observe it. ValidateMeetingCreationAsync
+    // loaded the workspace and never read it, which is why suspending a workspace blocked document
+    // upload and new invitations while meeting creation — and every billable STT/TTS stream a
+    // meeting drives — carried on.
+    //
+    // These arrange a member who would otherwise be allowed through every remaining rule, so the
+    // only thing that can deny them is the tenant's own state. Delete the IsLiveTenant check in
+    // ValidateMeetingCreationAsync and the two denial cases go red while the allow case stays
+    // green.
+
+    /// <summary>
+    /// Arranges a member who passes every non-lifecycle rule: active, permitted to create
+    /// meetings, in a workspace whose settings and entitlements veto nothing.
+    /// </summary>
+    private Guid ArrangeOtherwisePermittedMember(Guid workspaceId, bool isActive, DateTime? deletedAt = null)
+    {
+        var userId = Guid.NewGuid();
+
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            Name = "Acme",
+            IsActive = isActive,
+            DeletedAt = deletedAt,
+            Settings = "{\"MaxActiveRooms\":10}"
+        });
+
+        return userId;
+    }
+
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Denies_WhenWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangeOtherwisePermittedMember(workspaceId, isActive: false);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("suspended", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The same member in the same workspace, differing ONLY in is_active. Without this the
+    /// suspended case above would also pass against a gate that denied everybody.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_WhenWorkspaceIsActive()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangeOtherwisePermittedMember(workspaceId, isActive: true);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+        Assert.Empty(result.Value.ErrorMessage);
+    }
+
+    /// <summary>
+    /// A soft-deleted workspace has left the lifecycle entirely. AdminWorkspaceService refuses to
+    /// suspend or reactivate one, so its is_active is frozen at whatever it held when it was
+    /// deleted — an active-then-deleted workspace would sail through a check that read is_active
+    /// alone.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Denies_WhenWorkspaceIsSoftDeleted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangeOtherwisePermittedMember(
+            workspaceId, isActive: true, deletedAt: DateTime.UtcNow);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("suspended", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Suspension is a decision about the TENANT, so it must not depend on the caller's own
+    /// permissions being intact. A member who could create meetings yesterday and a member whose
+    /// permission was revoked both get stopped — this pins that the lifecycle check runs even when
+    /// the workspace's own settings would have vetoed the languages anyway, i.e. it is not
+    /// accidentally shadowed by a later rule.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Denies_WhenSuspended_BeforeConsultingEntitlements()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangeOtherwisePermittedMember(workspaceId, isActive: false);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
+
+        Assert.False(result.Value!.IsAllowed);
+        // The tenant is not entitled to anything, so nothing downstream is even asked. A denial
+        // that still burned a snapshot read and a cross-service room count would work, but it
+        // would mean the check had been bolted on at the end rather than answered first.
+        await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .DidNotReceiveWithAnyArgs()
+            .GetForWorkspaceAsync(default, default);
+        await _translationRoomClient
+            .DidNotReceiveWithAnyArgs()
+            .GetActiveRoomCountAsync(default, default);
+    }
+
+    [Fact]
+    public async Task GetPreflightAsync_ReportsInactive_WhenWorkspaceIsSuspended()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            Name = "Acme",
+            Slug = "acme",
+            IsActive = false,
+            Settings = "{}"
+        });
+
+        var result = await _service.GetPreflightAsync(workspaceId, userEmail: null);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsActive);
+    }
+
+    /// <summary>
+    /// TranslationRoomService calls this RPC with an empty email purely to learn whether the tenant
+    /// is live, on the room join and start paths. That is only affordable because an absent email
+    /// skips the verified-domain query entirely — if that ever stopped being true, every join in
+    /// the product would start paying for a lookup it has no use for.
+    /// </summary>
+    [Fact]
+    public async Task GetPreflightAsync_SkipsTheVerifiedDomainLookup_WhenNoEmailIsSupplied()
+    {
+        var workspaceId = Guid.NewGuid();
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            Name = "Acme",
+            Slug = "acme",
+            IsActive = true,
+            Settings = "{}"
+        });
+
+        var result = await _service.GetPreflightAsync(workspaceId, userEmail: null);
+
+        Assert.True(result.Value!.IsActive);
+        Assert.False(result.Value.IsDomainMatched);
+        await _unitOfWork.WorkspaceVerifiedDomainRepository
+            .DidNotReceiveWithAnyArgs()
+            .AnyAsync(default!, default);
     }
 }

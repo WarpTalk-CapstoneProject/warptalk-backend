@@ -75,6 +75,11 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
                 meetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
                         It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync(Result.Success());
+
+                // ...and the tenant itself is live unless a test suspends it.
+                meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                        It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Result.Success());
                 services.AddScoped(_ => meetingPolicy.Object);
 
                 // The one substitution that matters: a clock this test owns.

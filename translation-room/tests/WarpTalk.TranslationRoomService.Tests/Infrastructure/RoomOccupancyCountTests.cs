@@ -67,13 +67,24 @@ public class RoomOccupancyCountTests : IAsyncLifetime
         var languagePolicy = new Mock<ILanguagePolicy>();
         languagePolicy.Setup(p => p.IsSupportedAsync(It.IsAny<string>())).ReturnsAsync(true);
 
+        var meetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        meetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+        // ...and the tenant itself is live unless a test suspends it.
+        meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(
+                It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Success());
+
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
             unitOfWork,
             languagePolicy.Object,
             new Mock<IAudioRouteEventProcessor>().Object,
             new Mock<ITranslationRoomAudioRouteService>().Object,
             new Mock<IUserSettingsDirectory>().Object,
-            new Mock<IWorkspaceMeetingPolicy>().Object,
+            // meetingPolicy (not a bare mock) — development's suspension gate needs
+            // EnsureWorkspaceCanHostMeetingsAsync stubbed, or every room here fails closed.
+            meetingPolicy.Object,
             new Mock<IWorkspaceMemberDirectory>().Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
