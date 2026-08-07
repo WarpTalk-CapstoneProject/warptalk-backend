@@ -234,6 +234,9 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranslationRoomService.Tra
 // because it composes them: room host from TranslationRoomService, workspace Owner/Admin from
 // WorkspaceService — the same two clauses the REST paths enforce.
 builder.Services.AddScoped<WarpTalk.Gateway.Services.IRoomHostAuthority, WarpTalk.Gateway.Services.RoomHostAuthority>();
+// WT-335: scoped, like RoomHostAuthority — it depends on the scoped WorkspaceServiceClient, and a
+// singleton would also be the wrong lifetime for something that must never cache its answer.
+builder.Services.AddScoped<IPresenceVisibility, PresenceVisibility>();
 
 var app = builder.Build();
 

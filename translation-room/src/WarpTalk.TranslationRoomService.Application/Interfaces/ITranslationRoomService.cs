@@ -28,7 +28,28 @@ public interface ITranslationRoomService
         CancellationToken ct = default,
         SeriesOccurrenceContext? occurrence = null);
     Task<Result<TranslationRoomListResponse>> GetTranslationRoomsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
-    Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
+    /// <summary>
+    /// WT-334: the room detail read, for a HUMAN caller. <paramref name="userId"/> and
+    /// <paramref name="userEmail"/> are required and positional, not optional — this method used to
+    /// take neither, and <c>[Authorize]</c> on the controller was the entire check, so any
+    /// authenticated user could read any room's title, description, code, schedule, settings and
+    /// host across every tenant.
+    ///
+    /// The pair is deliberately NOT nullable-with-a-skip: a <c>userId</c> of null meaning "don't
+    /// check" is the shape that lets a future call site opt out of authorization by accident. The
+    /// one caller that genuinely has no user — the gRPC mesh — goes through
+    /// <see cref="ITranslationRoomDirectoryService.GetRoomAsync"/> instead, which is a different
+    /// interface with a different registration and no HTTP surface.
+    ///
+    /// A caller who may not read the room gets <c>ErrorCodes.NotFound</c>, identical to a room that
+    /// does not exist. Distinguishing the two would confirm a room id to a cross-tenant prober,
+    /// which is most of the value of the id.
+    /// </summary>
+    Task<Result<TranslationRoomDto>> GetTranslationRoomAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);

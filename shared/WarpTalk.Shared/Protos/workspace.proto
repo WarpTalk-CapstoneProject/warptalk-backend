@@ -10,6 +10,25 @@ service WorkspaceService {
   rpc GetWorkspaceSettings (GetWorkspaceSettingsRequest) returns (GetWorkspaceSettingsResponse);
   rpc GetWorkspacePreflightDetails (GetWorkspacePreflightRequest) returns (GetWorkspacePreflightResponse);
   rpc GetWorkspaceNames (GetWorkspaceNamesRequest) returns (GetWorkspaceNamesResponse);
+  rpc GetSharedWorkspaceMembers (GetSharedWorkspaceMembersRequest) returns (GetSharedWorkspaceMembersResponse);
+}
+
+// WT-335: "which of these users share an active workspace with this caller?"
+//
+// A batch intersection rather than a membership probe per user id. The Gateway's presence query
+// accepts up to 500 ids on a hot path, so asking GetWorkspaceMemberDetails per id would be 500
+// round trips -- a performance defect swapped in for a security one. This answers the whole set in
+// one call, which WorkspaceService serves with one indexed self-join.
+message GetSharedWorkspaceMembersRequest {
+  string caller_user_id = 1;
+  repeated string candidate_user_ids = 2;
+}
+
+message GetSharedWorkspaceMembersResponse {
+  // The subset of candidate_user_ids that share at least one active workspace with the caller.
+  // Ids the caller may not see are simply absent -- there is no "denied" marker, because a marker
+  // would confirm the account exists, which is the leak this closes.
+  repeated string visible_user_ids = 1;
 }
 
 message GetWorkspaceNamesRequest {

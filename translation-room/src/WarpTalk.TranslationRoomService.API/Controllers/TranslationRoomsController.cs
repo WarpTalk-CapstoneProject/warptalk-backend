@@ -101,10 +101,24 @@ public class TranslationRoomsController : ControllerBase
         return CreatedAtAction(nameof(CreateTranslationRoom), new { id = result.Value!.Id }, result.Value);
     }
 
+    /// <summary>
+    /// WT-334: now passes the caller, like every sibling read on this controller already did
+    /// (<see cref="GetTranslationRooms"/>, and the invitation/artifact/feedback reads below). This
+    /// one did not, and the service method it called took no user id, so <c>[Authorize]</c> alone
+    /// let any authenticated user read any room across every tenant.
+    ///
+    /// Still returns NotFound for a refusal — the service returns the same not-found Result for
+    /// "no such room" and "not yours" on purpose, so this mapping stays a single branch and cannot
+    /// grow a 403 that re-confirms the room's existence.
+    /// </summary>
     [HttpGet("{id}")]
     public async Task<IActionResult> GetTranslationRoom(Guid id, CancellationToken ct)
     {
-        var result = await _translationRoomService.GetTranslationRoomAsync(id, ct);
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetTranslationRoomAsync(id, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
             return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
 

@@ -224,7 +224,9 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             TranslationRoomParticipantStatuses.Kicked,
             TranslationRoomParticipantStatuses.Waiting);
 
-        var detail = await _service.GetTranslationRoomAsync(room.Id);
+        // WT-334: the detail read now takes the caller. HostId is the room's host, which is who
+        // ListRoomAsync already reads as, so this stays the same scenario.
+        var detail = await _service.GetTranslationRoomAsync(room.Id, HostId, null);
         var listed = await ListRoomAsync(room.Id);
 
         detail.IsSuccess.Should().BeTrue(detail.Error);

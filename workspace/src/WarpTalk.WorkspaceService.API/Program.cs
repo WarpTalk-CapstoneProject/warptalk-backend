@@ -35,6 +35,8 @@ builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
+// WT-335: backs the presence query's membership intersection in the Gateway.
+builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();
 
 // --- Infrastructure Layer Services (DbContext, Repositories, Storage, Redis, gRPC Clients, Consumers) ---
 builder.Services.AddInfrastructureServices(builder.Configuration, builder.Environment);
