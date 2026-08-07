@@ -25,29 +25,24 @@ builder.Services.AddWarpTalkObservability(
     "warptalk-gateway");
 
 // 1. Configure JWT Authentication
-var jwtSettings = builder.Configuration.GetSection("Jwt");
-var secretKey = jwtSettings["Secret"];
-
-if (string.IsNullOrEmpty(secretKey))
-{
-    throw new InvalidOperationException("JWT Secret is not configured.");
-}
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+//
+// This goes through the shared helper deliberately. The gateway used to read Jwt:Secret itself
+// and reject only null/empty, which meant it would boot in Production on the CHANGE_ME
+// placeholder that is committed to appsettings.json in this public repository. The gateway is
+// the only component that validates end-user JWTs on proxied routes, so a known signing key
+// there is not a weak link — it is the whole lock: anyone could mint a token for any user id
+// and any role and be believed. Every other service already refused to start in that state via
+// AddWarpTalkJwtAuthentication; the perimeter was the one place that did not.
+//
+// Adopting the helper also restores PreviousSecrets support, so a key rotation that works for
+// the backend services no longer breaks at the gateway. JwtKeyRotationTests already asserted
+// that behaviour against the helper from inside this very test project, while the gateway's own
+// Program.cs did not implement it.
+builder.Services.AddWarpTalkJwtAuthentication(
+    builder.Configuration,
+    builder.Environment,
+    options =>
     {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSettings["Issuer"],
-            ValidAudience = jwtSettings["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
-            ClockSkew = TimeSpan.Zero
-        };
-
         // SignalR: Extract JWT from query string for WebSocket handshake.
         // Browsers cannot send Authorization headers during WebSocket upgrade requests,
         // so the client passes the token as ?access_token=<jwt> query parameter.
@@ -287,3 +282,5 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 });
 
 app.Run();
+
+public partial class Program { }
