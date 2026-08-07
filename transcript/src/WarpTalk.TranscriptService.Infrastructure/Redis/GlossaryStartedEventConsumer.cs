@@ -60,27 +60,51 @@ public class GlossaryStartedEventConsumer : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var subscriber = _redis.GetSubscriber();
-        _logger.LogInformation("GlossaryStartedEventConsumer is listening to 'meeting.started' channel.");
 
-        await subscriber.SubscribeAsync(RedisChannel.Literal("meeting.started"), async (channel, message) =>
+        // GUARDED: an exception escaping ExecuteAsync trips the default
+        // BackgroundServiceExceptionBehavior.StopHost and takes the whole TranscriptService
+        // process down, not just this consumer. The app and infra roles deploy in parallel, so
+        // reaching this line before Redis is accepting connections is routine. Same
+        // bounded-backoff shape as HostFallbackConsumerWorker.
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (TryParseStartedEvent(message.ToString(), out var payload))
+                await subscriber.SubscribeAsync(RedisChannel.Literal("meeting.started"), async (channel, message) =>
                 {
-                    await PublishGlossaryPromptsAsync(
-                        payload!.TranslationRoomId.ToString(),
-                        payload.WorkspaceId,
-                        payload.Title,
-                        payload.Description,
-                        stoppingToken);
-                }
+                    try
+                    {
+                        if (TryParseStartedEvent(message.ToString(), out var payload))
+                        {
+                            await PublishGlossaryPromptsAsync(
+                                payload!.TranslationRoomId.ToString(),
+                                payload.WorkspaceId,
+                                payload.Title,
+                                payload.Description,
+                                stoppingToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing meeting.started event for glossary STT/MT prompt.");
+                    }
+                });
+
+                _logger.LogInformation("GlossaryStartedEventConsumer is listening to 'meeting.started' channel.");
+                break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                _logger.LogError(ex, "Error processing meeting.started event for glossary STT/MT prompt.");
+                _logger.LogError(
+                    ex,
+                    "GlossaryStartedEventConsumer could not subscribe to 'meeting.started'; retrying in {RetryDelay}. "
+                    + "Glossary STT/MT prompts are not being published until it succeeds.",
+                    retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
             }
-        });
+        }
     }
 
     internal static bool TryParseStartedEvent(

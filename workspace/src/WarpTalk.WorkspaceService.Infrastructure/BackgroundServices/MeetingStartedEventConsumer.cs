@@ -32,25 +32,49 @@ public class MeetingStartedEventConsumer : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var subscriber = _redis.GetSubscriber();
-        _logger.LogInformation("MeetingStartedEventConsumer is listening to 'meeting.started' channel.");
 
-        await subscriber.SubscribeAsync(RedisChannel.Literal("meeting.started"), async (channel, message) =>
+        // GUARDED: an exception escaping ExecuteAsync trips the default
+        // BackgroundServiceExceptionBehavior.StopHost and takes the whole WorkspaceService
+        // process down, not just this consumer — the same outage EntitlementsChangedConsumer in
+        // this very assembly documents. The app and infra roles deploy in parallel, so reaching
+        // this line before Redis is accepting connections is routine.
+        var retryDelay = TimeSpan.FromSeconds(2);
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (TryParseEvent(message.ToString(), out var payload))
+                await subscriber.SubscribeAsync(RedisChannel.Literal("meeting.started"), async (channel, message) =>
                 {
-                    await ProcessContextSnapshotAsync(
-                        payload!.TranslationRoomId.ToString(),
-                        payload.WorkspaceId,
-                        stoppingToken);
-                }
+                    try
+                    {
+                        if (TryParseEvent(message.ToString(), out var payload))
+                        {
+                            await ProcessContextSnapshotAsync(
+                                payload!.TranslationRoomId.ToString(),
+                                payload.WorkspaceId,
+                                stoppingToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error processing meeting.started event.");
+                    }
+                });
+
+                _logger.LogInformation("MeetingStartedEventConsumer is listening to 'meeting.started' channel.");
+                break;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                _logger.LogError(ex, "Error processing meeting.started event.");
+                _logger.LogError(
+                    ex,
+                    "MeetingStartedEventConsumer could not subscribe to 'meeting.started'; retrying in {RetryDelay}. "
+                    + "Meeting context snapshots are not being captured until it succeeds.",
+                    retryDelay);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
             }
-        });
+        }
     }
 
     public static bool TryParseEvent(
