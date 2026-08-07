@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
@@ -38,8 +39,16 @@ public class PaymentsController : ControllerBase
         _workspaceClient = workspaceClient;
     }
 
+    /// <summary>
+    /// WT-260: this used [Authorize(Roles = ...)], which authorizes off JWT role claims.
+    /// "Owner" and "Admin" are per-workspace membership resolved through workspace-service
+    /// and never appear as claims in the token — the production seed grants ordinary accounts
+    /// only the platform role 'user' — so a workspace Owner could never pass and the request
+    /// 403'd before reaching any filter. Same fix already applied to Credits, Invoices,
+    /// SalesInquiries, Subscriptions and Usages.
+    /// </summary>
     [HttpGet("workspace/{workspaceId}/history")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<PaginatedResponse<PaymentTransactionDto>>> GetPaymentHistory(
         Guid workspaceId,
         [FromQuery] PaginationQuery query,
@@ -53,8 +62,15 @@ public class PaymentsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// Platform-admin only. <see cref="CreatePaymentRequest"/> carries no workspace id — it is
+    /// keyed on a subscription — so there is nothing for the workspace-role filter to resolve;
+    /// pointing it at this action would make it verify the caller's role against whichever Guid
+    /// it found first. "Admin"/"admin" *are* real JWT platform roles, so authorizing off claims
+    /// is correct here. Dropping "Owner" takes nothing away: it was never a token claim.
+    /// </summary>
     [HttpPost]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PaymentTransactionDto>> CreatePayment([FromBody] CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var result = await _paymentService.CreatePaymentAsync(request, cancellationToken);
@@ -66,8 +82,14 @@ public class PaymentsController : ControllerBase
         return StatusCode(201, result.Value);
     }
 
+    /// <summary>
+    /// WT-260, as above. This is the endpoint behind both plan checkout and credit top-up, so
+    /// the JWT-role check meant every real workspace Owner got a 403 on both. The workspace id
+    /// arrives in the body, which <see cref="RequireWorkspaceRoleAttribute"/> resolves through
+    /// <see cref="WarpTalk.Shared.IWorkspaceScopedRequest"/>.
+    /// </summary>
     [HttpPost("checkout")]
-    [Authorize(Roles = WorkspaceRoleConstants.OwnerAdminSystem)]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<IActionResult> CreateCheckoutSession([FromBody] CreateCheckoutSessionRequest request)
     {
         try
