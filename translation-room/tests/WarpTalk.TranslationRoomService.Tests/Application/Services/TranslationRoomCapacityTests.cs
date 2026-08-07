@@ -34,6 +34,7 @@ public class TranslationRoomCapacityTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService = new();
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory = new();
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy = new();
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory = new();
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService = new();
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository = new();
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger = new();
@@ -88,6 +89,7 @@ public class TranslationRoomCapacityTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);

@@ -25,6 +25,7 @@ public class TranslationRoomServiceTests
     private readonly Mock<ITranslationRoomAudioRouteService> _mockAudioRouteService;
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory;
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy;
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory;
     private readonly Mock<WarpTalk.Shared.Interfaces.IEmailService> _mockEmailService;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepository;
     private readonly Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>> _mockLogger;
@@ -42,6 +43,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteService = new Mock<ITranslationRoomAudioRouteService>();
         _mockUserSettingsDirectory = new Mock<IUserSettingsDirectory>();
         _mockWorkspaceMeetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
+        _mockWorkspaceMemberDirectory = new Mock<IWorkspaceMemberDirectory>();
         _mockEmailService = new Mock<WarpTalk.Shared.Interfaces.IEmailService>();
         _mockRedisStateRepository = new Mock<IRedisStateRepository>();
         _mockLogger = new Mock<Microsoft.Extensions.Logging.ILogger<WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>();
@@ -81,6 +83,7 @@ public class TranslationRoomServiceTests
             _mockAudioRouteService.Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             _mockEmailService.Object,
             _mockLogger.Object,
             redisStateRepository: _mockRedisStateRepository.Object);
@@ -552,6 +555,68 @@ public class TranslationRoomServiceTests
         CreatedAt = DateTime.UtcNow,
         Settings = "{\"requires_approval\":true,\"artifact_access\":\"HostOnly\"}"
     };
+
+    /// <summary>
+    /// Ending is a two-call client-side saga: "End for everyone" calls MeetingService and then this
+    /// endpoint. MeetingRoomService.EndMeetingAsync accepts the ACTIVE host
+    /// (isOriginalHost || isActiveHost) while this accepted only the ORIGINAL one — so after a host
+    /// transfer the first call tore down LiveKit and marked the meeting FINISHED, the second was
+    /// refused, and the translation room stayed IN_PROGRESS forever. Nothing repairs that:
+    /// ExpireTranslationRoomAsync has no production callers.
+    ///
+    /// The rule here is now RoomHostAccess — host OR workspace Owner/Admin — which is what WT-188
+    /// established and WT-313 reconciled, so an orphaned room is always recoverable by an
+    /// Owner/Admin instead of being permanent.
+    /// </summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ShouldEnd_WhenRequesterIsAWorkspaceOwnerOrAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var admin = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Status = "IN_PROGRESS",
+            StartedAt = DateTime.UtcNow.AddMinutes(-5),
+            Settings = "{}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo.Setup(p => p.GetByRoomIdAsync(roomId, default)).ReturnsAsync(new List<TranslationRoomParticipant>());
+        _mockWorkspaceMemberDirectory
+            .Setup(d => d.IsOwnerOrAdminAsync(workspaceId, admin, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, admin);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        room.Status.Should().Be("ENDED");
+    }
+
+    /// <summary>The widening stops at Owner/Admin: an unrelated user still cannot end a meeting.</summary>
+    [Fact]
+    public async Task EndTranslationRoomAsync_ShouldRefuse_WhenRequesterIsNeitherHostNorOwnerAdmin()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom
+        {
+            Id = roomId,
+            HostId = Guid.NewGuid(),
+            WorkspaceId = Guid.NewGuid(),
+            Status = "IN_PROGRESS",
+            Settings = "{}"
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.EndTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        room.Status.Should().Be("IN_PROGRESS");
+    }
 
     [Fact]
     public async Task EndTranslationRoomAsync_SetsEndedAtWithoutPersistingDurationAndFiresEvent()

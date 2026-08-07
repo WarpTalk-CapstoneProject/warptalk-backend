@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
+using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -34,6 +35,7 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly IWorkspaceMeetingPolicy _workspaceMeetingPolicy;
+    private readonly IWorkspaceMemberDirectory _workspaceMemberDirectory;
     private readonly WarpTalk.Shared.Interfaces.IEmailService _emailService;
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
@@ -79,6 +81,7 @@ public class TranslationRoomService : ITranslationRoomService
         ITranslationRoomAudioRouteService audioRouteService,
         IUserSettingsDirectory userSettingsDirectory,
         IWorkspaceMeetingPolicy workspaceMeetingPolicy,
+        IWorkspaceMemberDirectory workspaceMemberDirectory,
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
@@ -90,6 +93,7 @@ public class TranslationRoomService : ITranslationRoomService
         _audioRouteService = audioRouteService;
         _userSettingsDirectory = userSettingsDirectory;
         _workspaceMeetingPolicy = workspaceMeetingPolicy;
+        _workspaceMemberDirectory = workspaceMemberDirectory;
         _emailService = emailService;
         _redisStateRepository = redisStateRepository;
         _translationRoomRepository = _unitOfWork.TranslationRoomRepository;
@@ -399,7 +403,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
-            var query = BuildAccessibleRoomsQuery(userId, userEmail)
+            var query = (await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct))
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
@@ -998,7 +1002,26 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
+            // Host OR workspace Owner/Admin — RoomHostAccess, the rule WT-188 established and WT-313
+            // reconciled. This site was still spelling it as "is the original host", and the
+            // mismatch strands rooms.
+            //
+            // Ending a meeting is a two-call client-side saga with no server-side reconciliation:
+            // "End for everyone" calls MeetingService and then this endpoint.
+            // MeetingRoomService.EndMeetingAsync accepts the ACTIVE host (isOriginalHost ||
+            // isActiveHost); this accepted only the ORIGINAL one. So after a host transfer the
+            // first call tore down LiveKit and marked the meeting FINISHED, the second was refused,
+            // and the translation room stayed IN_PROGRESS forever — never reaching History, and
+            // repaired by nothing, since ExpireTranslationRoomAsync has no production callers. A
+            // network blip between the two calls leaves the same orphan.
+            //
+            // Widening to workspace Owner/Admin does not close the mismatch completely: an active
+            // host who is a plain workspace member is still refused, because ActiveHostId lives in
+            // MeetingService's own table and is not a fact this service can see. Making the two
+            // agree by construction needs the active host propagated here (or read over gRPC), and
+            // that is a larger change than this one. What this does buy is that the orphan is
+            // always recoverable by an Owner/Admin rather than permanent.
+            if (!await RoomHostAccess.HasHostAuthorityAsync(translationRoom, hostId, _workspaceMemberDirectory, ct))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status == "ENDED")
@@ -1226,7 +1249,9 @@ public class TranslationRoomService : ITranslationRoomService
             var page = Math.Max(1, request.Page);
             var pageSize = Math.Clamp(request.PageSize, 1, 100);
             var historyRequest = request with { Status = request.Status ?? $"{"ENDED"},{"CANCELLED"}" };
-            var query = ApplyRoomFilters(BuildAccessibleRoomsQuery(userId, userEmail), historyRequest)
+            var query = ApplyRoomFilters(
+                    await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct),
+                    historyRequest)
                 .Where(r => r.DeletedAt == null && r.IsActive);
 
             var total = await query.CountAsync(ct);
@@ -1471,6 +1496,58 @@ public class TranslationRoomService : ITranslationRoomService
         return _unitOfWork.TranslationRoomRepository
             .Query()
             .Where(RoomReadAccess.IsReadableBy(userId, userEmail));
+    }
+
+    /// <summary>
+    /// The rooms a caller may SEE LISTED for one workspace.
+    ///
+    /// <see cref="BuildAccessibleRoomsQuery"/> knows three ways in — host, prior participant,
+    /// invited by email — and a workspace Owner/Admin is none of them, because that is not a fact
+    /// the translation-room database holds. So a workspace Admin saw "No active meetings found."
+    /// and a dashboard tile reading 0 for a workspace that had rooms in it, while the same account
+    /// could open any of those rooms by direct URL and join: the list was stricter than the thing it
+    /// was a list of. Since the Join control lives only on the room detail page, and the list is the
+    /// only route to it, an empty list left an Admin no way into any meeting in her own workspace.
+    ///
+    /// WHY OWNER/ADMIN AND NOT EVERY MEMBER. This is the rule WT-313 already ratified for "who may
+    /// act on this room" — host OR participant OR workspace Owner/Admin — after the same predicate
+    /// had drifted into three different spellings. That work audited
+    /// <c>TranslationRoomParticipantService</c> and never reached this file, so the rooms list is
+    /// the un-audited next instance of a settled question rather than a new one. WT-313 also keeps a
+    /// plain workspace Member as a deliberate NEGATIVE case, so widening to every member would
+    /// reverse a decision the team has already taken; a member still sees exactly the rooms they
+    /// host, joined, or were invited to.
+    ///
+    /// The role is asked of WorkspaceService through the same directory WT-313 uses, once per
+    /// request, and only when the request names a workspace. Everyone else keeps precisely the
+    /// previous answer — as does every caller when WorkspaceService cannot be reached, since the
+    /// directory swallows its own failures and returns false, narrowing the list rather than
+    /// failing the request.
+    ///
+    /// HOW FAR THIS WIDENS. For an Owner/Admin, to every non-deleted room of that one workspace,
+    /// deliberately: a room has no private/unlisted/visibility attribute to respect —
+    /// <c>TranslationRoomTypes</c> selects behaviour (approval, recording, capacity), not audience —
+    /// and entry is still governed per-room by <c>RequiresApproval</c>, untouched here. Listing a
+    /// room is not admission to it, and artifact bodies stay behind their own per-room
+    /// ArtifactAccess policy. If a private room type is ever introduced, its exclusion belongs here.
+    /// </summary>
+    private async Task<IQueryable<TranslationRoom>> BuildListableRoomsQueryAsync(
+        Guid userId,
+        string? userEmail,
+        Guid? workspaceId,
+        CancellationToken ct)
+    {
+        if (workspaceId.HasValue
+            && workspaceId.Value != Guid.Empty
+            && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId.Value, userId, ct))
+        {
+            var scopedWorkspaceId = workspaceId.Value;
+            return _unitOfWork.TranslationRoomRepository
+                .Query()
+                .Where(r => r.WorkspaceId == scopedWorkspaceId);
+        }
+
+        return BuildAccessibleRoomsQuery(userId, userEmail);
     }
 
     private static IQueryable<TranslationRoom> ApplyRoomFilters(IQueryable<TranslationRoom> query, GetTranslationRoomsRequest request)

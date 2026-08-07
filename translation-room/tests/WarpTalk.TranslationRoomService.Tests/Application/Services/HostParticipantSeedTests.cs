@@ -31,6 +31,7 @@ public class HostParticipantSeedTests
     private readonly Mock<ILanguagePolicy> _mockLanguagePolicy = new();
     private readonly Mock<IUserSettingsDirectory> _mockUserSettingsDirectory = new();
     private readonly Mock<IWorkspaceMeetingPolicy> _mockWorkspaceMeetingPolicy = new();
+    private readonly Mock<IWorkspaceMemberDirectory> _mockWorkspaceMemberDirectory = new();
     private readonly WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService _service;
 
     private TranslationRoomParticipant? _seededParticipant;
@@ -65,6 +66,7 @@ public class HostParticipantSeedTests
             new Mock<ITranslationRoomAudioRouteService>().Object,
             _mockUserSettingsDirectory.Object,
             _mockWorkspaceMeetingPolicy.Object,
+            _mockWorkspaceMemberDirectory.Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
                 WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object);

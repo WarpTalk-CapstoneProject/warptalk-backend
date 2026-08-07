@@ -82,7 +82,10 @@ public class RoomOccupancyCountTests : IAsyncLifetime
             new Mock<IAudioRouteEventProcessor>().Object,
             new Mock<ITranslationRoomAudioRouteService>().Object,
             new Mock<IUserSettingsDirectory>().Object,
+            // meetingPolicy (not a bare mock) — development's suspension gate needs
+            // EnsureWorkspaceCanHostMeetingsAsync stubbed, or every room here fails closed.
             meetingPolicy.Object,
+            new Mock<IWorkspaceMemberDirectory>().Object,
             new Mock<WarpTalk.Shared.Interfaces.IEmailService>().Object,
             new Mock<Microsoft.Extensions.Logging.ILogger<
                 WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService>>().Object);
