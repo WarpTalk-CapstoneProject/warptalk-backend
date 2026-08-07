@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
+using WarpTalk.TranslationRoomService.Application.Authorization;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -983,7 +984,26 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
+            // Host OR workspace Owner/Admin — RoomHostAccess, the rule WT-188 established and WT-313
+            // reconciled. This site was still spelling it as "is the original host", and the
+            // mismatch strands rooms.
+            //
+            // Ending a meeting is a two-call client-side saga with no server-side reconciliation:
+            // "End for everyone" calls MeetingService and then this endpoint.
+            // MeetingRoomService.EndMeetingAsync accepts the ACTIVE host (isOriginalHost ||
+            // isActiveHost); this accepted only the ORIGINAL one. So after a host transfer the
+            // first call tore down LiveKit and marked the meeting FINISHED, the second was refused,
+            // and the translation room stayed IN_PROGRESS forever — never reaching History, and
+            // repaired by nothing, since ExpireTranslationRoomAsync has no production callers. A
+            // network blip between the two calls leaves the same orphan.
+            //
+            // Widening to workspace Owner/Admin does not close the mismatch completely: an active
+            // host who is a plain workspace member is still refused, because ActiveHostId lives in
+            // MeetingService's own table and is not a fact this service can see. Making the two
+            // agree by construction needs the active host propagated here (or read over gRPC), and
+            // that is a larger change than this one. What this does buy is that the orphan is
+            // always recoverable by an Owner/Admin rather than permanent.
+            if (!await RoomHostAccess.HasHostAuthorityAsync(translationRoom, hostId, _workspaceMemberDirectory, ct))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedEndRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status == "ENDED")
