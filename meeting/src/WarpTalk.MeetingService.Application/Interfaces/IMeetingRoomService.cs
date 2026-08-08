@@ -10,6 +10,7 @@ public interface IMeetingRoomService
     Task<Result<bool>> RejectParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId);
     Task<Result<bool>> TransferHostAsync(Guid translationRoomId, Guid currentHostUserId, Guid newHostUserId);
     Task<Result<bool>> KickParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId);
+    Task<Result<bool>> MuteParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId);
     Task<Result<bool>> EndMeetingAsync(Guid translationRoomId, Guid hostUserId);
 
     // WT-04: host controls.
