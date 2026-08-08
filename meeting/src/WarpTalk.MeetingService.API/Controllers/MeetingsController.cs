@@ -114,6 +114,34 @@ public class MeetingsController : ControllerBase
         return Ok(new { message = "Host role transferred successfully" });
     }
 
+    [HttpPost("rooms/{translationRoomId}/participants/{participantId}/mute")]
+    public async Task<IActionResult> MuteParticipant(Guid translationRoomId, Guid participantId)
+    {
+        var hostUserId = User.GetUserId();
+        if (hostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.MuteParticipantAsync(translationRoomId, hostUserId.Value, participantId);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.ValidationError)
+                return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Participant muted" });
+    }
+
     [HttpPost("rooms/{translationRoomId}/participants/{participantId}/kick")]
     public async Task<IActionResult> KickParticipant(Guid translationRoomId, Guid participantId)
     {
