@@ -167,6 +167,7 @@ function Start-Postgres {
             -e POSTGRES_USER=$env:POSTGRES_USER `
             -e POSTGRES_PASSWORD=$env:POSTGRES_PASSWORD `
             -p 5432:5432 `
+            -v "$ScriptDir\..\warptalk-infrastructure\scripts\init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro" `
             postgres:18-alpine | Out-Null
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
@@ -248,7 +249,7 @@ function Start-RabbitMQ {
             -p 5672:5672 -p 15672:15672 `
             -e RABBITMQ_DEFAULT_USER=$env:RabbitMQ__Username `
             -e RABBITMQ_DEFAULT_PASS=$env:RabbitMQ__Password `
-            rabbitmq:4-management-alpine | Out-Null
+            rabbitmq:4-management-alpine
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
 
@@ -269,7 +270,7 @@ function Start-RabbitMQ {
                 -p 5672:5672 -p 15672:15672 `
                 -e RABBITMQ_DEFAULT_USER=$env:RabbitMQ__Username `
                 -e RABBITMQ_DEFAULT_PASS=$env:RabbitMQ__Password `
-                rabbitmq:4-management-alpine | Out-Null
+                rabbitmq:4-management-alpine
             Write-Host -NoNewline "   Re-waiting for RabbitMQ to be ready"
             continue
         }
@@ -321,41 +322,14 @@ function Invoke-Migrations {
     $MigrationsDir = Join-Path $ScriptDir "..\warptalk-infrastructure\scripts\migrations"
     
     if (Test-Path $MigrationsDir) {
-        # Ordered migration files list as verified by dates & dependencies
-        $files = @(
-            "000-init-migrations.sql",
-            "001-14-04-2026-rename-meeting.sql",
-            "002-16-04-2026-rename-meeting-columns.sql",
-            "003-17-04-2026-uppercase-type.sql",
-            "004-01-05-2026-add-notification-message-table.sql",
-            "005-09-05-2026-add-admin-notifications-table.sql",
-            "006-14-05-2026-convert-transcript-status-to-enum.sql",
-            "006-15-05-2026-rename-participant-is-translation-audio-enabled.sql",
-            "007-16-05-2026-add-meeting-schema.sql",
-            "008-20-05-2026-add-translation-room-views.sql",
-            "007-03-06-2026-separate-workspace-schema-from-auth.sql",
-            "008-03-06-2026-add-workspace-documents-and-glossary.sql",
-            "009-04-06-2026-add-meeting-chat.sql",
-            "009-05-06-2026-rename-role-key-to-subject-key.sql",
-            "010-12-06-2026-add-chat-mentions.sql",
-            "010-12-06-2026-add-can-create-meetings-to-workspace-members.sql",
-            "011-12-06-2026-convert-enums-to-varchar.sql",
-            "012-14-06-2026-add-meeting-invitation.sql",
-            "013-14-06-2026-add-meeting-active-host.sql",
-            "014-15-06-2026-convert-translation-and-transcript-enums-to-varchar.sql",
-            "015-16-06-2026-add-translation-room-invitations.sql",
-            "016-03-07-2026-enforce-single-active-subscription.sql",
-            "016-14-07-2026-remove-is-sensitive-from-workspace-documents.sql",
-            "016-16-07-2026-add-segment-id-to-usage-records.sql",
-            "017-15-07-2026-translation-cluster-finalize.sql",
-            "018-16-07-2026-fix-users-user-settings-fk-direction.sql",
-            "019-16-07-2026-billing-schema-mismatch-and-idempotency.sql",
-            "020-17-07-2026-refresh-token-family-reuse-detection.sql",
-            "021-20-07-2026-add-translation-room-sessions.sql",
-            "022-20-07-2026-add-transcript-segment-id-to-billing.sql",
-            "023-20-07-2026-switch-payment-provider-to-stripe.sql",
-            "024-20-07-2026-drop-transcript-translations.sql"
-        )
+        # Ordered migration files list parsed dynamically
+        $files = Get-ChildItem -Path $MigrationsDir -Filter "*.sql" | Where-Object { $_.Name -ne "000-init-migrations.sql" } | Sort-Object @{Expression={
+            if ($_.Name -match "^(\d{3})-(\d{2})-(\d{2})-(\d{4})") {
+                "{0}-{1}-{2}-{3}" -f $Matches[4], $Matches[3], $Matches[2], $Matches[1]
+            } else {
+                $_.Name
+            }
+        }} | Select-Object -ExpandProperty Name
 
         # Initialize migrations log table
         Get-Content (Join-Path $MigrationsDir "000-init-migrations.sql") -Raw | docker exec -i $PGContainer psql -U postgres -d $env:POSTGRES_DB | Out-Null

@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
+using WarpTalk.WorkspaceService.Application.DTOs;
+using WarpTalk.WorkspaceService.Application.Entitlements;
 using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 using WarpTalk.WorkspaceService.Application.Mappers;
@@ -141,7 +143,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 }
             }
 
-            var capacityCheck = await EnsureTrialInviteCapacityAsync(workspaceId, ct);
+            var capacityCheck = await EnsureWorkspaceInviteCapacityAsync(workspaceId, ct);
             if (!capacityCheck.IsSuccess)
             {
                 return Result.Failure<InviteMemberResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
@@ -716,7 +718,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.OnlyRequestedCanBeApproved, ErrorCodes.InvalidState);
             }
 
-            var capacityCheck = await EnsureTrialInviteCapacityAsync(workspaceId, ct);
+            var capacityCheck = await EnsureWorkspaceInviteCapacityAsync(workspaceId, ct);
             if (!capacityCheck.IsSuccess)
             {
                 return Result.Failure<ApproveJoinRequestResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
@@ -873,13 +875,8 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         }
     }
 
-    private async Task<Result> EnsureTrialInviteCapacityAsync(Guid workspaceId, CancellationToken ct)
+    private async Task<Result> EnsureWorkspaceInviteCapacityAsync(Guid workspaceId, CancellationToken ct)
     {
-        if (!await _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
-        {
-            return Result.Success();
-        }
-
         var activeMemberCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveMembersByWorkspaceAsync(workspaceId, ct);
         var pendingInvitations = await _unitOfWork.WorkspaceInvitationRepository.FindAsync(
             i => i.WorkspaceId == workspaceId &&
@@ -888,9 +885,32 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             "",
             ct);
 
-        return activeMemberCount + pendingInvitations.Count >= WorkspaceConstants.TrialWorkspaceMemberLimit
-            ? Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden)
-            : Result.Success();
+        var totalProjectedMembers = activeMemberCount + pendingInvitations.Count + 1; // +1 for the new invite
+
+        // Check Trial Limit
+        if (await _billingSubscriptionClient.IsWorkspaceOnActiveTrialAsync(workspaceId, ct))
+        {
+            if (totalProjectedMembers > WorkspaceConstants.TrialWorkspaceMemberLimit)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.TrialWorkspaceMemberLimitReached, ErrorCodes.Forbidden);
+            }
+        }
+        else
+        {
+            // Check Paid Plan Limit
+            var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetForWorkspaceAsync(workspaceId, ct);
+            var entitlements = snapshot == null
+                ? WorkspaceEntitlements.Unknown
+                : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+
+            var maxParticipants = entitlements.Limit(EntitlementKeys.MaxParticipants);
+            if (maxParticipants.HasValue && totalProjectedMembers > maxParticipants.Value)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceMemberLimitReached, ErrorCodes.Forbidden);
+            }
+        }
+
+        return Result.Success();
     }
 
 }

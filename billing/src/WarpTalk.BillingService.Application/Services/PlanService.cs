@@ -99,7 +99,8 @@ public class PlanService : IPlanService
                 plans.Add(defaultEnterprisePlan);
             }
 
-            return Result.Success(plans.Select(p => p.ToDto()));
+            return Result.Success(plans.OrderBy(p => p.SortOrder).Select(p => p.ToDto()));
+
         }
         catch (Exception ex)
         {

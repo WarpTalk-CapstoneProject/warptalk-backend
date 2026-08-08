@@ -76,7 +76,13 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
             oldSub.UpdatedAt = DateTime.UtcNow;
         }
 
-        var periodEnd = CalculatePeriodEnd(context.Request.BillingCycle);
+        var currentEnd = context.Subscription?.CurrentPeriodEnd ?? DateTime.UtcNow;
+        if (currentEnd < DateTime.UtcNow)
+        {
+            currentEnd = DateTime.UtcNow;
+        }
+
+        var periodEnd = CalculatePeriodEnd(context.Request.BillingCycle, currentEnd);
         if (context.Subscription is null)
         {
             var newSubscription = SubscriptionMapper.CreateNewStripeSubscription(context.WorkspaceId, context.UserId, plan, periodEnd);
@@ -95,12 +101,22 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
             context.Subscription.SuspendedReason = null;
         }
         context.Subscription.CreditsUsedThisCycle = 0;
-        context.Subscription.CurrentPeriodStart = DateTime.UtcNow;
+        
+        // Only reset CurrentPeriodStart if the subscription was expired
+        if (context.Subscription.CurrentPeriodEnd < DateTime.UtcNow)
+        {
+            context.Subscription.CurrentPeriodStart = DateTime.UtcNow;
+        }
+        
         context.Subscription.CurrentPeriodEnd = periodEnd;
         context.Subscription.UpdatedAt = DateTime.UtcNow;
         return context.Subscription;
     }
 
-    private static DateTime CalculatePeriodEnd(string billingCycle)
-        => DateTime.UtcNow.AddMonths(1);
+    private static DateTime CalculatePeriodEnd(string billingCycle, DateTime currentEnd)
+    {
+        return billingCycle.ToLower() == "year" 
+            ? currentEnd.AddYears(1) 
+            : currentEnd.AddMonths(1);
+    }
 }

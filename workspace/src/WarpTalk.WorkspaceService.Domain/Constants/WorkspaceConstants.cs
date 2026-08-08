@@ -93,6 +93,7 @@ public static class WorkspaceConstants
         public const string CannotInviteInternalWithoutVerifiedDomain = "Cannot invite as an Internal member because the email domain is not verified for this workspace.";
         public const string ExternalMemberMustHaveMemberRole = "External members can only be assigned the Member role.";
         public const string TrialWorkspaceMemberLimitReached = "Enterprise trial workspaces can have up to 5 members. Ask an admin to approve the Enterprise contract before inviting more people.";
+        public const string WorkspaceMemberLimitReached = "Workspace has reached its maximum member limit based on the current subscription plan.";
 
         // Join Request Errors
         public const string TranslationRoomNotFound = "Translation room not found.";

@@ -49,6 +49,8 @@ public class StripePaymentService : IStripePaymentService
 
             bool isSubscription = request.PaymentType == PaymentConstants.PaymentTypes.Subscription;
 
+
+
             Dictionary<string, string> metadata = new Dictionary<string, string>
             {
                 { PaymentConstants.StripeMetadata.UserId, request.UserId.ToString() },

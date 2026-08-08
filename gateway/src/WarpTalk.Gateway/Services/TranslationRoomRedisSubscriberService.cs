@@ -14,15 +14,18 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
 {
     private readonly IConnectionMultiplexer _redis;
     private readonly IHubContext<TranslationRoomHub> _hubContext;
+    private readonly IHubContext<NotificationHub> _notificationHubContext;
     private readonly ILogger<TranslationRoomRedisSubscriberService> _logger;
 
     public TranslationRoomRedisSubscriberService(
         IConnectionMultiplexer redis,
         IHubContext<TranslationRoomHub> hubContext,
+        IHubContext<NotificationHub> notificationHubContext,
         ILogger<TranslationRoomRedisSubscriberService> logger)
     {
         _redis = redis;
         _hubContext = hubContext;
+        _notificationHubContext = notificationHubContext;
         _logger = logger;
     }
 
@@ -195,6 +198,13 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     var groupName = $"translationRoom:{payload.RoomId}";
                     await _hubContext.Clients.Group(groupName).SendAsync("TokenUsageUpdated", payload.TokensDeducted, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TokenUsageUpdated to room {RoomId} with deduction {Tokens}", payload.RoomId, payload.TokensDeducted);
+
+                    if (!string.IsNullOrEmpty(payload.WorkspaceId))
+                    {
+                        var workspaceGroupName = $"workspace:{payload.WorkspaceId}";
+                        await _notificationHubContext.Clients.Group(workspaceGroupName).SendAsync("WorkspaceTokenUsageUpdated", payload.TokensDeducted, stoppingToken);
+                        _logger.LogDebug("RedisSubscriber: Broadcasted WorkspaceTokenUsageUpdated to workspace {WorkspaceId} with deduction {Tokens}", payload.WorkspaceId, payload.TokensDeducted);
+                    }
                 }
             }
             catch (Exception ex)
@@ -282,4 +292,5 @@ public class TranslationRoomCommandMessage
     
     // Billing/Tokens
     public int? TokensDeducted { get; set; }
+    public string? WorkspaceId { get; set; }
 }
