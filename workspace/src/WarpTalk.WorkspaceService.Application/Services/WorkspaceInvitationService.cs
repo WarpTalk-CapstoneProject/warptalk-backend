@@ -188,7 +188,20 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             await _unitOfWork.SaveChangesAsync(ct);
 
             string emailLanguage = config.DefaultLanguage ?? WorkspaceConstants.DefaultWorkspaceLanguage;
-            var response = new InviteMemberResponse(newInvitation.ToDto(finalRoleName), null, emailLanguage, warning);
+
+            // The raw token is returned to the inviter so the UI can offer a shareable link.
+            // It was generated above, hashed into the row, handed to the email composer, and
+            // then dropped here — the DTO has carried a RawToken field the whole time and it
+            // was always null, so the only way to reach an invitation was the email. When
+            // delivery fails (see the warning branch above) that left a perfectly valid
+            // invitation nobody could ever open.
+            //
+            // Disclosure is bounded: this endpoint is [Authorize] and Owner/Admin-only, the
+            // caller is the person who just created the invitation, and the link still only
+            // admits the email it was issued for. The stored value stays hashed; this is the
+            // one moment the plaintext exists, and it is not logged.
+            var response = new InviteMemberResponse(
+                newInvitation.ToDto(finalRoleName), invitationToken, emailLanguage, warning);
 
             return Result.Success(response);
         }
