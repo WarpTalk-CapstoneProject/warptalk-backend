@@ -164,7 +164,13 @@ public class GlossaryStartedEventConsumer : BackgroundService
         var globalTerms = await LoadGlobalTermsAsync(scope, workspaceId, ct);
 
         var (merged, droppedAsOverridden, droppedAsOverBudget) = MergeTerms(workspaceTerms, globalTerms, MaxTermsInPrompt);
-        var sttKeywords = BuildSttKeywords(workspaceTerms, MaxSttKeywords);
+        // `merged`, not `workspaceTerms`. Global terms reached the translator but never the
+        // recogniser, so a platform-wide proper noun was translated correctly and heard
+        // wrongly — "Codex" came back as "cô đích" from a production rehearsal, and no
+        // amount of curating the global glossary could have fixed it, because the STT model
+        // was never told the word exists. MergeTerms has already applied workspace overrides
+        // and the priority ordering, so the workspace's own terms still win the budget.
+        var sttKeywords = BuildSttKeywords(merged, MaxSttKeywords);
 
         var meetingContext = BuildMeetingContext(title, description);
         if (merged.Count == 0 && string.IsNullOrEmpty(meetingContext))
@@ -255,8 +261,17 @@ public class GlossaryStartedEventConsumer : BackgroundService
         return string.Join(" ", parts);
     }
 
+    /// <summary>
+    /// Contextual-biasing keywords for the STT model.
+    /// </summary>
+    /// <param name="terms">
+    /// The MERGED term list — workspace and global together, already ordered by priority.
+    /// This parameter was named <c>workspaceTerms</c> and was passed only the workspace's
+    /// own terms, which is how a global proper noun could be translated correctly and
+    /// recognised as something else entirely.
+    /// </param>
     internal static List<string> BuildSttKeywords(
-        IReadOnlyCollection<PromptTerm> workspaceTerms,
+        IReadOnlyCollection<PromptTerm> terms,
         int maxKeywords)
     {
         if (maxKeywords <= 0)
@@ -264,7 +279,7 @@ public class GlossaryStartedEventConsumer : BackgroundService
 
         var keywords = new List<string>(maxKeywords);
         var seen = new HashSet<string>();
-        foreach (var term in workspaceTerms.OrderByDescending(t => t.Priority))
+        foreach (var term in terms.OrderByDescending(t => t.Priority))
         {
             foreach (var value in new[] { term.Source, term.Target })
             {
