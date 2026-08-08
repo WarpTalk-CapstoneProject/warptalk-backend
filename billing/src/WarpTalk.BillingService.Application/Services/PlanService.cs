@@ -144,6 +144,33 @@ public class PlanService : IPlanService
             if (plan is null)
                 return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
 
+            var hasActiveSubscriptions = await _unitOfWork.SubscriptionRepository.AnyAsync(
+                s => s.PlanId == id && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (hasActiveSubscriptions)
+            {
+                if (request.IsActive == false && plan.IsActive == true)
+                {
+                    // Allow deactivation, but we shouldn't update other properties to preserve contract
+                    plan.IsActive = false;
+                    plan.SortOrder = request.SortOrder;
+                    _unitOfWork.Plans.Update(plan);
+                    await _unitOfWork.SaveChangesAsync(cancellationToken);
+                    return Result.Success(plan.ToDto());
+                }
+
+                if (plan.Price != request.Price || 
+                    plan.CreditsPerCycle != request.CreditsPerCycle || 
+                    plan.MaxParticipants != request.MaxParticipants ||
+                    plan.Name != request.Name)
+                {
+                    return Result.Failure<PlanDto>(
+                        "Gói đang có người dùng (Active Subscriptions) không thể cập nhật thông số. Bạn chỉ có thể chuyển sang trạng thái Ẩn (Deactivated).", 
+                        ErrorCodes.ValidationError);
+                }
+            }
+
             var pricingConfig = await GetPricingConfigAsync(cancellationToken);
             var validationResult = ValidatePlanRequest(request, pricingConfig);
             if (!validationResult.IsSuccess)

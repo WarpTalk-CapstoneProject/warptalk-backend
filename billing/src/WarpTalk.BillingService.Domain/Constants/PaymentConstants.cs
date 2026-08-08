@@ -14,6 +14,7 @@ public static class PaymentConstants
         public const string SubscriptionRenewal = "SubscriptionRenewal";
         public const string SubscriptionUpdate = "SubscriptionUpdate";
         public const string InvoicePayment = "InvoicePayment";
+        public const string CreditTopUp = "CreditTopUp";
 
         public static readonly IReadOnlySet<string> SubscriptionLifecycleTypes = new HashSet<string>
         {

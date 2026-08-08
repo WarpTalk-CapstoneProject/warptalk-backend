@@ -79,6 +79,7 @@ try
     builder.Services.AddScoped<IPaymentService, PaymentService>();
 
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
+    builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 

@@ -184,6 +184,18 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("BreakoutsEnded", stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted BreakoutsEnded to room {RoomId}", payload.RoomId);
                 }
+                else if (payload.Command == "MeetingCreditExhausted" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("MeetingCreditExhausted", stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted MeetingCreditExhausted to room {RoomId}", payload.RoomId);
+                }
+                else if (payload.Command == "TokenUsageUpdated" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TokenUsageUpdated", payload.TokensDeducted, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TokenUsageUpdated to room {RoomId} with deduction {Tokens}", payload.RoomId, payload.TokensDeducted);
+                }
             }
             catch (Exception ex)
             {
@@ -267,4 +279,7 @@ public class TranslationRoomCommandMessage
     public JsonElement? Assignments { get; set; }
     public int? DurationSeconds { get; set; }
     public string? StartedAt { get; set; }
+    
+    // Billing/Tokens
+    public int? TokensDeducted { get; set; }
 }
