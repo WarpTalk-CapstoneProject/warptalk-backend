@@ -184,6 +184,12 @@ public class WorkspaceInvitationsController : ControllerBase
             ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            // An invitation that is no longer PENDING — already accepted, revoked, expired,
+            // replaced or rejected — is the single-use rule working, not a server fault. The
+            // acceptance processor returns InvalidState for every one of those and neither
+            // switch had an arm for it, so they all fell through to 500 and the client showed
+            // "something went wrong" instead of "this invitation has already been used".
+            ErrorCodes.InvalidState => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
         };
@@ -199,6 +205,12 @@ public class WorkspaceInvitationsController : ControllerBase
             ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.Conflict => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            // An invitation that is no longer PENDING — already accepted, revoked, expired,
+            // replaced or rejected — is the single-use rule working, not a server fault. The
+            // acceptance processor returns InvalidState for every one of those and neither
+            // switch had an arm for it, so they all fell through to 500 and the client showed
+            // "something went wrong" instead of "this invitation has already been used".
+            ErrorCodes.InvalidState => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
             ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
             _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode))
         };
