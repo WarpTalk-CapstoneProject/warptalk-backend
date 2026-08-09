@@ -100,4 +100,21 @@ public class RedisStateRepository : IRedisStateRepository
         var subscriber = _redis.GetSubscriber();
         return await subscriber.PublishAsync(RedisChannel.Literal(channel), message);
     }
+
+    public async Task<string> StreamAddAsync(string stream, Dictionary<string, string> fields)
+    {
+        var db = _redis.GetDatabase();
+        var entries = fields
+            .Select(pair => new NameValueEntry(pair.Key, pair.Value))
+            .ToArray();
+
+        // Trimmed so an unread stream cannot grow without bound if the AI worker stays down.
+        var id = await db.StreamAddAsync(
+            stream,
+            entries,
+            maxLength: 10_000,
+            useApproximateMaxLength: true);
+
+        return id.ToString();
+    }
 }

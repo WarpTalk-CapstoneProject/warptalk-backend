@@ -16,4 +16,11 @@ public interface IRedisStateRepository
     Task<bool> StringSetAsync(string key, string value, TimeSpan? expiry = null);
     Task<string?> StringGetAsync(string key);
     Task<long> PublishAsync(string channel, string message);
+
+    /// <summary>
+    /// Appends to a Redis Stream. Distinct from PublishAsync: pub/sub drops a message when
+    /// nobody is listening, and a summary regeneration must survive the AI worker being
+    /// briefly down rather than vanishing with no trace and no reply.
+    /// </summary>
+    Task<string> StreamAddAsync(string stream, Dictionary<string, string> fields);
 }
