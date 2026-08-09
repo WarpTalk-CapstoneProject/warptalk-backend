@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Application.Helpers;
@@ -49,5 +50,33 @@ public class LanguageRepository : ILanguageRepository
                 (language.Code.ToLower() == exact ||
                  language.Code.ToLower() == primary ||
                  language.Code.ToLower().StartsWith(regionPrefix)));
+    }
+
+    public async Task<System.Collections.Generic.IReadOnlyList<WarpTalk.TranslationRoomService.Domain.Entities.SupportedLanguage>> GetAllAsync(System.Threading.CancellationToken cancellationToken = default)
+    {
+        return await _dbContext.SupportedLanguages.AsNoTracking().ToListAsync(cancellationToken);
+    }
+
+    public async Task<System.Collections.Generic.IReadOnlyList<WarpTalk.TranslationRoomService.Domain.Entities.SupportedLanguage>> GetActiveAsync(System.Threading.CancellationToken cancellationToken = default)
+    {
+        return await _dbContext.SupportedLanguages.AsNoTracking().Where(l => l.IsActive).ToListAsync(cancellationToken);
+    }
+
+    public async Task<WarpTalk.TranslationRoomService.Domain.Entities.SupportedLanguage?> GetByCodeAsync(string code, System.Threading.CancellationToken cancellationToken = default)
+    {
+        var primary = LanguageHelper.NormalizeLanguageCode(code);
+        return await _dbContext.SupportedLanguages.FirstOrDefaultAsync(l => l.Code.ToLower() == code.ToLower() || l.Code.ToLower() == primary, cancellationToken);
+    }
+
+    public async Task AddAsync(WarpTalk.TranslationRoomService.Domain.Entities.SupportedLanguage language, System.Threading.CancellationToken cancellationToken = default)
+    {
+        _dbContext.SupportedLanguages.Add(language);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task UpdateAsync(WarpTalk.TranslationRoomService.Domain.Entities.SupportedLanguage language, System.Threading.CancellationToken cancellationToken = default)
+    {
+        _dbContext.SupportedLanguages.Update(language);
+        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 }

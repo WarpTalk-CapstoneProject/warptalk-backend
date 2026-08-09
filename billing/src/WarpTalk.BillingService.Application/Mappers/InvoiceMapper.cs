@@ -53,6 +53,7 @@ public static class InvoiceMapper
             PdfUrl = request.PdfUrl,
             LineItems = InvoiceConstants.Defaults.EmptyLineItems,
             IssuedAt = now,
+            DueAt = now,   // Stripe invoices are paid immediately; due date = issued date
             PaidAt = now,
             CreatedAt = now
         };

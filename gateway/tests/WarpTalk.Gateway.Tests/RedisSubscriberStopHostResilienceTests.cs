@@ -48,9 +48,11 @@ public sealed class RedisSubscriberStopHostResilienceTests
     public async Task TranslationRoomSubscriber_WhenRedisSubscribeFails_DoesNotThrow()
     {
         var logger = new Mock<ILogger<TranslationRoomRedisSubscriberService>>();
+        var notificationHubContext = new Mock<Microsoft.AspNetCore.SignalR.IHubContext<WarpTalk.Gateway.Hubs.NotificationHub>>();
         var service = new TranslationRoomRedisSubscriberService(
             FailingRedis(),
             HubContext<TranslationRoomHub>(),
+            notificationHubContext.Object,
             logger.Object);
 
         await StartAndStopAsync(service, logger);

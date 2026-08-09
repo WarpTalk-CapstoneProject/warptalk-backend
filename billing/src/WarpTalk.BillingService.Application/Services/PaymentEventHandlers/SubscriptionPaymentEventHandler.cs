@@ -69,8 +69,15 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
             s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.Id != (context.Subscription != null ? context.Subscription.Id : Guid.Empty),
             cancellationToken);
 
+        int totalRolloverCredits = 0;
+
         foreach (var oldSub in oldSubs)
         {
+            if (oldSub.CreditsRemaining > 0)
+            {
+                totalRolloverCredits += oldSub.CreditsRemaining;
+            }
+
             oldSub.AutoRenew = false;
             oldSub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
             oldSub.UpdatedAt = DateTime.UtcNow;
@@ -86,6 +93,7 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         if (context.Subscription is null)
         {
             var newSubscription = SubscriptionMapper.CreateNewStripeSubscription(context.WorkspaceId, context.UserId, plan, periodEnd);
+            newSubscription.CreditsRemaining += totalRolloverCredits;
             await _unitOfWork.SubscriptionRepository.AddAsync(newSubscription, cancellationToken);
             return newSubscription;
         }
@@ -93,7 +101,7 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         context.Subscription.PlanId = plan.Id;
         context.Subscription.Status = SubscriptionConstants.SubscriptionStatuses.Active;
         context.Subscription.IsActive = true;
-        context.Subscription.CreditsRemaining += plan.CreditsPerCycle;
+        context.Subscription.CreditsRemaining += plan.CreditsPerCycle + totalRolloverCredits;
         if (context.Subscription.CreditsRemaining >= 0)
         {
             context.Subscription.OverageStartedAt = null;

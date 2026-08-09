@@ -46,9 +46,12 @@ public class TranslationRoomRedisSubscriberServiceTests
         hubContext.Setup(c => c.Clients).Returns(_clients.Object);
         _clients.Setup(c => c.Group(It.IsAny<string>())).Returns(_proxy.Object);
 
+        var notificationHubContext = new Mock<IHubContext<WarpTalk.Gateway.Hubs.NotificationHub>>();
+
         _service = new TranslationRoomRedisSubscriberService(
             redis.Object,
             hubContext.Object,
+            notificationHubContext.Object,
             new Mock<ILogger<TranslationRoomRedisSubscriberService>>().Object);
     }
 

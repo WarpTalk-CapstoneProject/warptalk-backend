@@ -379,6 +379,17 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(settingsValidation.ErrorMessage, ErrorCodes.ValidationError);
             }
 
+            var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository.GetForWorkspaceAsync(workspaceId, ct);
+            var entitlements = snapshot == null 
+                ? WarpTalk.WorkspaceService.Application.Entitlements.WorkspaceEntitlements.Unknown 
+                : WarpTalk.WorkspaceService.Application.Entitlements.WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+
+            var maxLanguages = entitlements.Limit(WarpTalk.WorkspaceService.Application.Entitlements.EntitlementKeys.MaxLanguages);
+            if (maxLanguages.HasValue && settings.AllowedTargetLanguages != null && settings.AllowedTargetLanguages.Count > maxLanguages.Value)
+            {
+                return Result.Failure($"Your current plan limits you to {maxLanguages.Value} language(s).", ErrorCodes.Conflict);
+            }
+
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
             var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())

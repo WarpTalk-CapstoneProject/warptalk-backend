@@ -30,17 +30,6 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
     {
         var request = context.Request;
         
-        // Find the Add-on plan
-        var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
-            p => p.Slug.ToLower() == request.PlanSlug.ToLower() && p.DeletedAt == null,
-            cancellationToken);
-
-        if (plan is null)
-        {
-            _logger.LogError("Add-on Plan not found for payment: {PlanSlug}", request.PlanSlug);
-            return Result.Failure(ApiMessageConstants.ErrorMessages.BillingPlanNotFound, ErrorCodes.BillingPlanNotFound);
-        }
-
         if (context.ParsedPaymentStatus != PaymentConstants.PaymentStatuses.Paid)
         {
             return Result.Success();
@@ -54,12 +43,14 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         if (activeSub is null)
         {
             _logger.LogWarning("Workspace {WorkspaceId} attempted to buy Add-on but has no active subscription.", context.WorkspaceId);
-            // According to our plan, if no active sub, we fail it.
             return Result.Failure(ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound, ErrorCodes.BillingSubscriptionNotFound);
         }
 
+        // Calculate credits based on tiers
+        int creditsToAdd = CalculateCreditsFromAmount(request.Amount);
+
         // Increment Credits
-        activeSub.CreditsRemaining += plan.CreditsPerCycle;
+        activeSub.CreditsRemaining += creditsToAdd;
 
         // If service was suspended due to overage, we can resume it if credits are now positive
         if (activeSub.ServiceState == SubscriptionConstants.ServiceStates.Suspended &&
@@ -74,13 +65,20 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         _unitOfWork.SubscriptionRepository.Update(activeSub);
 
         // Record a transaction for the topup
-        var topupTx = CreditMapper.CreateStripeSubscriptionTransaction(
-            new StripeSubscriptionTransactionRequest(
-                activeSub,
-                plan,
-                request.PaymentType,
-                context.UserId,
-                context.PaymentId));
+        var topupTx = new CreditTransaction
+        {
+            Id = Guid.NewGuid(),
+            SubscriptionId = activeSub.Id,
+            UserId = context.UserId,
+            WorkspaceId = activeSub.WorkspaceId,
+            Amount = creditsToAdd,
+            Type = TransactionConstants.TransactionTypes.TopUp,
+            Description = $"Credit Top-up ({creditsToAdd:N0} credits)",
+            ReferenceId = context.PaymentId,
+            ReferenceType = TransactionConstants.ReferenceTypes.StripePayment,
+            BalanceAfter = activeSub.CreditsRemaining,
+            CreatedAt = DateTime.UtcNow
+        };
 
         await _unitOfWork.CreditTransactionRepository.AddAsync(topupTx, cancellationToken);
         
@@ -88,5 +86,13 @@ public sealed class CreditTopUpPaymentEventHandler : IPaymentEventHandler
         context.SubscriptionChanged = true;
 
         return Result.Success();
+    }
+
+    private int CalculateCreditsFromAmount(decimal amount)
+    {
+        if (amount >= 50000m * 8m) return (int)(amount / 8m);
+        if (amount >= 25000m * 8.5m) return (int)(amount / 8.5m);
+        if (amount >= 10000m * 9m) return (int)(amount / 9m);
+        return (int)(amount / 10m);
     }
 }

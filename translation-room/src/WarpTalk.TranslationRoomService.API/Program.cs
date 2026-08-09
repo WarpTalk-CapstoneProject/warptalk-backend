@@ -121,6 +121,7 @@ builder.Services.AddHostedService<ReminderNotificationWorker>();
 // "a day passed" is a clock fact, and an unguarded SubscribeAsync takes down the host process.
 builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
+builder.Services.AddScoped<ISupportedLanguageService, SupportedLanguageService>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();

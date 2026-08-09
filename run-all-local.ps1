@@ -7,6 +7,9 @@
 #   .\run-all-local.ps1           # Start all services
 #   .\run-all-local.ps1 -Stop     # Stop all running services
 #   .\run-all-local.ps1 -Status   # Check running status of services
+#
+# Environment Configuration (Optional):
+#   $env:Stripe__WebhookSecret = "whsec_0f09280f9ffee0a45a8d2dcfce4975ff82204f3c937a08a6e9910c2ee75cb5f8"
 # ====================================================================
 
 [CmdletBinding()]
@@ -78,6 +81,7 @@ $env:JWT_SECRET = Require-Env "JWT_SECRET"
 
 # Override connection variables for local native run
 $env:Redis__ConnectionString = "localhost:6379,password=$($env:REDIS_PASSWORD)"
+$env:ConnectionStrings__Redis = "localhost:6379,password=$($env:REDIS_PASSWORD)"
 $env:RabbitMQ__Host = "localhost"
 $env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
 $env:RabbitMQ__Password = $env:RABBITMQ_PASSWORD
@@ -249,7 +253,9 @@ function Start-RabbitMQ {
             -p 5672:5672 -p 15672:15672 `
             -e RABBITMQ_DEFAULT_USER=$env:RabbitMQ__Username `
             -e RABBITMQ_DEFAULT_PASS=$env:RabbitMQ__Password `
-            rabbitmq:4-management-alpine
+            -e RABBITMQ_ERLANG_COOKIE="warptalk_local_cookie" `
+            -e HOME="/tmp" `
+            rabbitmq:4-management
         Write-Host ($GREEN + "   Created and started new container" + $NC)
     }
 
@@ -270,7 +276,9 @@ function Start-RabbitMQ {
                 -p 5672:5672 -p 15672:15672 `
                 -e RABBITMQ_DEFAULT_USER=$env:RabbitMQ__Username `
                 -e RABBITMQ_DEFAULT_PASS=$env:RabbitMQ__Password `
-                rabbitmq:4-management-alpine
+                -e RABBITMQ_ERLANG_COOKIE="warptalk_local_cookie" `
+                -e HOME="/tmp" `
+                rabbitmq:4-management
             Write-Host -NoNewline "   Re-waiting for RabbitMQ to be ready"
             continue
         }
@@ -582,6 +590,8 @@ dotnet build "$ScriptDir\translation-room\src\WarpTalk.TranslationRoomService.AP
 dotnet build "$ScriptDir\transcript\src\WarpTalk.TranscriptService.API\WarpTalk.TranscriptService.API.csproj" -v m
 dotnet build "$ScriptDir\notification\src\WarpTalk.NotificationService.API\WarpTalk.NotificationService.API.csproj" -v m
 dotnet build "$ScriptDir\meeting\src\WarpTalk.MeetingService.API\WarpTalk.MeetingService.API.csproj" -v m
+dotnet build "$ScriptDir\billing\src\WarpTalk.BillingService.API\WarpTalk.BillingService.API.csproj" -v m
+dotnet build "$ScriptDir\assistant\src\WarpTalk.AssistantService.API\WarpTalk.AssistantService.API.csproj" -v m
 dotnet build "$ScriptDir\gateway\src\WarpTalk.Gateway\WarpTalk.Gateway.csproj" -v m
 Write-Host ($GREEN + "[OK] Build completed." + $NC)
 Write-Host ""
@@ -629,6 +639,7 @@ foreach ($service in $Services) {
 
     # Shared infra connection variables
     $env:Redis__ConnectionString = "localhost:6379,password=$env:REDIS_PASSWORD"
+    $env:ConnectionStrings__Redis = "localhost:6379,password=$env:REDIS_PASSWORD"
     $env:RabbitMQ__Host = "localhost"
     $env:RabbitMQ__Username = if ($env:RABBITMQ_USERNAME) { $env:RABBITMQ_USERNAME } else { "warptalk" }
     $env:RabbitMQ__Password = $env:RABBITMQ_PASSWORD
@@ -665,6 +676,7 @@ foreach ($service in $Services) {
     Remove-Item env:ConnectionStrings__NotificationDb
     Remove-Item env:ConnectionStrings__DefaultConnection -ErrorAction SilentlyContinue
     Remove-Item env:Redis__ConnectionString
+    Remove-Item env:ConnectionStrings__Redis -ErrorAction SilentlyContinue
     Remove-Item env:RabbitMQ__Host
     Remove-Item env:RabbitMQ__Username
     Remove-Item env:RabbitMQ__Password
