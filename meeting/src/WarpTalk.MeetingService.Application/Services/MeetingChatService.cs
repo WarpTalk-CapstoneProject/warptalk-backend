@@ -114,7 +114,12 @@ public class MeetingChatService : IMeetingChatService
                 RequestedByUserId = userId,
                 Prompt = originalText, // Extract prompt from mention if needed
                 ContextScope = "recent_messages",
-                Status = "pending",
+                // "queued", not "pending". The lifecycle every other reader speaks is
+                // queued → processing → completed/failed, and this was the only place that
+                // said "pending" — so MeetingChatAssistantResultConsumerService, which only
+                // announces "WarpBot is thinking" for a request still sitting at "queued",
+                // never announced anything at all. One word, and the feature was invisible.
+                Status = "queued",
                 CreatedAt = DateTime.UtcNow
             };
 

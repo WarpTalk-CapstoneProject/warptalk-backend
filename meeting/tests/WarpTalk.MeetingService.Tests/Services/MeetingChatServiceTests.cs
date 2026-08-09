@@ -193,6 +193,53 @@ public class MeetingChatServiceTests
         _notifierMock.Verify(n => n.BroadcastMessageReceivedAsync(_roomId, It.IsAny<MeetingChatMessageDto>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    /// <summary>
+    /// The status an @agent mention is recorded with must be one
+    /// MeetingChatAssistantResultConsumerService acts on.
+    ///
+    /// It was written as "pending" and the consumer only announces "WarpBot is thinking" for
+    /// a request still sitting at "queued". The two spellings never met, so the indicator
+    /// never once fired in production — and its absence was read as "the mention was never
+    /// sent", which sent a live investigation down the wrong half of the pipeline.
+    /// </summary>
+    [Fact]
+    public async Task SendMessageAsync_AgentMention_RecordsAStatusTheConsumerActsOn()
+    {
+        _roomRepoMock.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingRoom, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateRoom(_hostId));
+
+        _participantRepoMock.Setup(p => p.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreateParticipant(_hostId));
+
+        _unitOfWorkMock.Setup(u => u.SaveChangesAsync(It.IsAny<CancellationToken>())).ReturnsAsync(1);
+        _redisMock.Setup(r => r.PublishStreamMessageAsync(
+                "assistant:chat_requests",
+                It.IsAny<Dictionary<string, string>>()))
+            .ReturnsAsync(WarpTalk.Shared.Result.Success());
+
+        MeetingChatAssistantRequest? captured = null;
+        _assistantRepoMock
+            .Setup(repo => repo.AddAsync(It.IsAny<MeetingChatAssistantRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<MeetingChatAssistantRequest, CancellationToken>((entity, _) => captured = entity);
+
+        var request = new SendMeetingChatMessageRequest
+        {
+            OriginalText = "@WarpBot hello",
+            OriginalLanguage = "en",
+            Mentions = new List<ChatMentionDto>
+            {
+                new() { Id = "bot-warpbot", Display = "WarpBot", Type = "agent" }
+            }
+        };
+
+        var result = await _sut.SendMessageAsync(_roomId, _hostId, request);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(captured);
+        Assert.Equal("queued", captured!.Status);
+    }
+
     [Fact]
     public async Task SendMessageAsync_ActiveParticipantCanSendMessage_Success()
     {
