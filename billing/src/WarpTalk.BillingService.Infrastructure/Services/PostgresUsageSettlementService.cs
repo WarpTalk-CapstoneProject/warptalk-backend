@@ -15,14 +15,17 @@ public sealed class PostgresUsageSettlementService : IUsageSettlementService
     private readonly IUsageSettlementRepository _repository;
     private readonly ILogger<PostgresUsageSettlementService> _logger;
     private readonly IBillingOperationalAlertService? _alertService;
+    private readonly IBillingMessagePublisher _messagePublisher;
 
     public PostgresUsageSettlementService(
         IUsageSettlementRepository repository,
         ILogger<PostgresUsageSettlementService> logger,
+        IBillingMessagePublisher messagePublisher,
         IBillingOperationalAlertService? alertService = null)
     {
         _repository = repository;
         _logger = logger;
+        _messagePublisher = messagePublisher;
         _alertService = alertService;
     }
 
@@ -41,6 +44,14 @@ public sealed class PostgresUsageSettlementService : IUsageSettlementService
             var result = await _repository.ExecuteSettlementAsync(request, cancellationToken);
             if (result is null)
                 return Result.Failure<SettleUsageChargeResult>("Usage settlement returned no result.", ErrorCodes.InternalServerError);
+
+            if (request.TranslationRoomId.HasValue)
+            {
+                await _messagePublisher.PublishAsync("warptalk:meeting:credits_consumed", new {
+                    RoomId = request.TranslationRoomId.Value,
+                    CreditsConsumed = request.CreditsConsumed
+                }, cancellationToken);
+            }
 
             return Result.Success(result);
         }

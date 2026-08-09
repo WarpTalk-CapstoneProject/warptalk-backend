@@ -94,6 +94,9 @@ public class MeetingRoomService : IMeetingRoomService
                 meetingRoom = new MeetingRoom
                 {
                     TranslationRoomId = translationRoomId,
+                    WorkspaceId = Guid.Parse(roomDetails.WorkspaceId),
+                    MaxQuota = 5000,
+                    UsedToken = 0,
                     ProviderRoomName = translationRoomId.ToString(),
                     Status = roomDetails.Status
                 };
@@ -874,6 +877,44 @@ public class MeetingRoomService : IMeetingRoomService
         meetingRoom.ActiveHostId = null;
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
+
+        return Result.Success(true);
+    }
+
+    public async Task<Result<IEnumerable<ActiveMeetingDto>>> GetActiveMeetingsAsync(Guid workspaceId)
+    {
+        var meetings = await _unitOfWork.MeetingRoomRepository.FindAsync(x => x.WorkspaceId == workspaceId && x.IsActive);
+        
+        var dtos = meetings.Select(x => new ActiveMeetingDto(
+            x.TranslationRoomId,
+            x.ProviderRoomName,
+            x.Status,
+            x.MaxQuota,
+            x.UsedToken,
+            x.CreatedAt
+        ));
+        
+        return Result.Success(dtos);
+    }
+
+    public async Task<Result<bool>> AdjustQuotaAsync(Guid translationRoomId, Guid userId, int additionalQuota)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+        if (meetingRoom == null)
+            return Result.Failure<bool>("Meeting not found", ErrorCodes.NotFound);
+
+        bool isHost = await IsHostAsync(translationRoomId, meetingRoom, userId);
+        if (!isHost)
+            return Result.Failure<bool>("Only host can adjust quota", ErrorCodes.Forbidden);
+
+        meetingRoom.MaxQuota += additionalQuota;
+        _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
+        await _unitOfWork.SaveChangesAsync();
+
+        await PublishGatewayCommandAsync("QuotaAdjusted", translationRoomId, new {
+            MaxQuota = meetingRoom.MaxQuota,
+            UsedToken = meetingRoom.UsedToken
+        });
 
         return Result.Success(true);
     }

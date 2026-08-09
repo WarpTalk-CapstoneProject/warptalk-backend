@@ -311,6 +311,12 @@ public partial class MeetingDbContext : DbContext
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
             entity.Property(e => e.UpdatedBy).HasColumnName("updated_by");
+            entity.Property(e => e.MaxQuota)
+                .HasDefaultValue(5000)
+                .HasColumnName("max_quota");
+            entity.Property(e => e.UsedToken)
+                .HasDefaultValue(0)
+                .HasColumnName("used_token");
         });
 
         modelBuilder.Entity<MeetingTrack>(entity =>

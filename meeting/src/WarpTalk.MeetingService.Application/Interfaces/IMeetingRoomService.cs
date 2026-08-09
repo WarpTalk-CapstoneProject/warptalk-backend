@@ -25,4 +25,7 @@ public interface IMeetingRoomService
     // safe to call even when the departed user was not the host, or when a host has
     // already been elected by a previous invocation.
     Task<Result<bool>> HandleHostOfflineAsync(Guid translationRoomId, Guid departedUserId);
+
+    Task<Result<IEnumerable<ActiveMeetingDto>>> GetActiveMeetingsAsync(Guid workspaceId);
+    Task<Result<bool>> AdjustQuotaAsync(Guid translationRoomId, Guid userId, int additionalQuota);
 }

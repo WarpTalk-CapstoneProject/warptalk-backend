@@ -217,6 +217,44 @@ public class MeetingsController : ControllerBase
         return Ok(result.Value);
     }
 
+    [HttpGet("~/api/v1/workspaces/{workspaceId}/meetings/active")]
+    public async Task<IActionResult> GetActiveMeetings(Guid workspaceId)
+    {
+        var result = await _meetingRoomService.GetActiveMeetingsAsync(workspaceId);
+
+        if (!result.IsSuccess)
+        {
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
+
+    [HttpPost("rooms/{translationRoomId}/quota")]
+    public async Task<IActionResult> AdjustQuota(Guid translationRoomId, [FromBody] AdjustQuotaRequest request)
+    {
+        var hostUserId = User.GetUserId();
+        if (hostUserId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.AdjustQuotaAsync(translationRoomId, hostUserId.Value, request.AdditionalQuota);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(new { message = "Quota adjusted successfully" });
+    }
+
     [HttpPost("rooms/{translationRoomId}/end")]
     public async Task<IActionResult> EndMeeting(Guid translationRoomId)
     {

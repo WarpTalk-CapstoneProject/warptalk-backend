@@ -33,7 +33,8 @@ public class UsageSettlementIntegrationTests : BaseIntegrationTest
         var repository = new UsageSettlementRepository(_db);
         _settlementService = new PostgresUsageSettlementService(
             repository,
-            scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgresUsageSettlementService>>());
+            scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgresUsageSettlementService>>(),
+            new Moq.Mock<IBillingMessagePublisher>().Object);
     }
 
     private async Task<Subscription> CreateTestSubscriptionAsync(

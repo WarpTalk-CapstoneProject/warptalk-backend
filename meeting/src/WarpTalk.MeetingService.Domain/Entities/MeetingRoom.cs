@@ -9,6 +9,12 @@ public partial class MeetingRoom
 
     public Guid TranslationRoomId { get; set; }
 
+    public Guid WorkspaceId { get; set; }
+
+    public int MaxQuota { get; set; }
+
+    public int UsedToken { get; set; }
+
     public string ProviderRoomName { get; set; } = null!;
 
     public Guid? ActiveHostId { get; set; }

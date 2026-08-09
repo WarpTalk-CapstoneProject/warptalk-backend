@@ -130,6 +130,7 @@ builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
 // fully offline (see MeetingRoomService.HandleHostOfflineAsync for why this is the sole
 // authoritative election path).
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallbackConsumerWorker>();
+builder.Services.AddHostedService<WarpTalk.MeetingService.Infrastructure.BackgroundServices.RoomCreditsConsumedSubscriber>();
 
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
