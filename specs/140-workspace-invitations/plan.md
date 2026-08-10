@@ -66,7 +66,7 @@ Do not use email delivery as authorization. The authorization gate is the authen
 ## Canonical Flow
 
 1. Owner/Admin invites `invitee@example.com` to a workspace.
-2. Workspace Service validates workspace role, membership type, verified-domain policy, and external collaboration policy.
+2. Workspace Service validates workspace role and the membership type the inviter chose, against verified-domain policy and external collaboration policy. Create-time and accept-time run the **same** validation routine, so the two can never disagree about `AllowSubdomains`, public domains, or the External⇒Member role rule.
 3. Workspace Service replaces any active pending invitation for the same workspace/email.
 4. Workspace Service creates a new `PENDING` invitation without generating a raw invite token.
 5. Workspace Service sends a notification email through `IWorkspaceInvitationMailbox`.
@@ -115,7 +115,7 @@ Keep or add:
 - `ExpiresAt`
 - `AcceptedAt`
 - `RoleId`
-- `MembershipType`
+- `MembershipType`: the inviter's choice, not a snapshot of policy and not a derived value (FR-140-017/018). Acceptance validates it against the settings in force at that moment and either admits it unchanged or rejects — it never overwrites it (FR-140-021).
 - `InvitedBy`
 - `DeliveryStatus`: `NotSent`, `Sent`, `Failed`
 - `ProviderMessageId`: nullable Resend message id

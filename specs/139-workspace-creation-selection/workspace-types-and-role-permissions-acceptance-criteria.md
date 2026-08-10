@@ -100,10 +100,13 @@ There is no `WorkspaceType` branch in code and no non-enterprise workspace flow.
 - Only Owner/Admin may create invitations.
 - Admin must not assign Owner role.
 - Invitation role must resolve through Auth role catalog.
-- Invitation membership type must be either `Internal` or `External`.
-- Internal invitation requires a verified domain when `RequireVerifiedDomainForInternal = true`.
+- Invitation membership type must be either `Internal` or `External`, and it is **chosen by the inviter** — the system does not derive it from the email domain.
+- Internal invitation requires a verified domain when `RequireVerifiedDomainForInternal = true`; `AllowSubdomains` applies at both create time and accept time.
+- Internal invitation to a public mailbox domain (Gmail, Yahoo, …) is rejected under its own error code when `RequireVerifiedDomainForInternal = true` — such a domain can never be verified, so the unverified-domain remedy does not apply to it.
+- When `RequireVerifiedDomainForInternal = false`, no domain validation runs at all. The public-domain rule is a special case of the verified-domain rule, not a standalone one.
 - External invitation requires `AllowExternalCollaboration = true`.
-- External members can only receive the `Member` role.
+- External members can only receive the `Member` role, enforced on the accept path as well as the create path.
+- Acceptance re-checks the stored intent against the settings in force at that moment and may only admit it unchanged or reject it; it must never rewrite the membership type into one that passes.
 - If the invited email already belongs to an active member, the system must reject duplicate membership.
 - If a pending invitation exists for the same email, resend must replace the previous invitation and invalidate the old token.
 - Expired, revoked, accepted or replaced invitations must not grant access.
