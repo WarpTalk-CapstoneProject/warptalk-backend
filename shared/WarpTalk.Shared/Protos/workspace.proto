@@ -86,6 +86,15 @@ message GetWorkspaceSettingsResponse {
   // global glossary is merged into this workspace's STT/MT prompts. See
   // docs/global-glossary-plan.md §2.4.
   bool use_global_glossary = 5;
+  // WT-342. The workspace's default answer to "must the host approve people joining?", read by
+  // TranslationRoomService when it resolves a new room's settings. This value has had a working
+  // toggle in workspace settings and a column in the settings blob since the settings page was
+  // built, and until now nothing anywhere read it.
+  //
+  // It is a DEFAULT, not an enforcement, despite reading like one: an explicit
+  // RoomSettingsRequest.RequiresApproval from the meeting's creator still wins over it. See
+  // TranslationRoomMapper.ResolveSettings for the full precedence.
+  bool enforce_host_approval_default = 6;
 }
 
 message GetWorkspacePreflightRequest {

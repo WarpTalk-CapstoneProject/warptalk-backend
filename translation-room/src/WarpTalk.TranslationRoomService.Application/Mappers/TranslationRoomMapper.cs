@@ -84,7 +84,11 @@ public static class TranslationRoomMapper
         );
     }
 
-    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages)
+    /// <param name="workspaceApprovalDefault">
+    /// WT-342: the workspace's host-approval default, or null when it could not be read. Passed
+    /// straight through to <see cref="ResolveSettings"/>, which owns the precedence.
+    /// </param>
+    public static TranslationRoom ToEntity(this CreateTranslationRoomRequest request, Guid hostId, string roomCode, string status, string sourceLanguage, List<string> targetLanguages, bool? workspaceApprovalDefault = null)
     {
         if (!request.WorkspaceId.HasValue || request.WorkspaceId.Value == Guid.Empty)
             throw new ArgumentException("WorkspaceId must be a valid workspace.", nameof(request));
@@ -109,7 +113,8 @@ public static class TranslationRoomMapper
             MaxParticipants = request.MaxParticipants is > 0 ? request.MaxParticipants.Value : defaults.MaxParticipants,
             SourceLanguage = sourceLanguage,
             TargetLanguages = Helpers.LanguageHelper.SerializeTargetLanguages(targetLanguages),
-            Settings = System.Text.Json.JsonSerializer.Serialize(ResolveSettings(roomType, request.Settings)),
+            Settings = System.Text.Json.JsonSerializer.Serialize(
+                ResolveSettings(roomType, request.Settings, workspaceApprovalDefault)),
             ScheduledAt = request.ScheduledAt,
             IsActive = true
         };
@@ -171,13 +176,34 @@ public static class TranslationRoomMapper
     /// a caller who never mentions muting could not be told apart from one who asked for it
     /// off, and the type could never seed anything.
     /// </summary>
-    public static TranslationRoomSettings ResolveSettings(string roomType, RoomSettingsRequest? requested)
+    /// <param name="workspaceApprovalDefault">
+    /// WT-342: the workspace's own <c>EnforceHostApprovalDefault</c>, or null when it could not be
+    /// read. It sits BETWEEN the two existing layers — the creator's explicit choice still wins,
+    /// and the meeting type still fills in whatever nobody stated:
+    ///
+    ///   explicit request  →  workspace default  →  meeting type default
+    ///
+    /// Null is genuinely "no opinion", not false. It restores the exact pre-WT-342 behaviour for
+    /// that one room, which is what makes a WorkspaceService outage harmless here.
+    ///
+    /// This ordering does mean a workspace that turns the flag OFF opens up a WEBINAR or
+    /// VIRTUAL_APPOINTMENT that its type would have gated. That is the setting doing what it says
+    /// — and it is never silent, because the create dialog shows the resolved value on the toggle
+    /// before the host clicks Create, and the host can flip it for that one meeting.
+    /// </param>
+    public static TranslationRoomSettings ResolveSettings(
+        string roomType,
+        RoomSettingsRequest? requested,
+        bool? workspaceApprovalDefault = null)
     {
         var defaults = TranslationRoomTypePolicy.For(roomType);
 
         return new TranslationRoomSettings
         {
-            RequiresApproval = requested?.RequiresApproval ?? defaults.RequiresApproval,
+            RequiresApproval =
+                requested?.RequiresApproval
+                ?? workspaceApprovalDefault
+                ?? defaults.RequiresApproval,
             ArtifactAccess = requested?.ArtifactAccess ?? ArtifactAccessLevels.HostOnly,
             MuteOnEntry = requested?.MuteOnEntry ?? defaults.MuteOnEntry,
             AutoRecord = requested?.AutoRecord ?? defaults.AutoRecord,
