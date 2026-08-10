@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -42,7 +47,7 @@ package "API Layer" as ApiLayer {
 
   AssistantConversationsController -[hidden]right- AssistantHub
   AssistantHub -[hidden]right- AssistantChatResultConsumerService
-  AssistantChatResultConsumerService -[hidden]right- AssistantNotifier
+  AssistantConversationsController -[hidden]down- AssistantNotifier
 }
 
 package "Application Layer" as ApplicationLayer {
@@ -82,7 +87,7 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- AssistantConversationRepository
   AssistantConversationRepository -[hidden]right- AssistantMessageRepository
-  AssistantMessageRepository -[hidden]right- AssistantToolCallRepository
+  UnitOfWork -[hidden]down- AssistantToolCallRepository
   AssistantToolCallRepository -[hidden]right- RedisAssistantChatRequestPublisher
 
   UnitOfWork o-- AssistantConversationRepository
@@ -149,17 +154,17 @@ AssistantMessageRepository ..> AssistantMessage : persists
 AssistantToolCallRepository ..> AssistantToolCall : persists
 
 RedisAssistantChatRequestPublisher ..> RedisServer : publishes requests
-RedisServer ..> WarptalkAiWorker : dispatches prompt
-WarptalkAiWorker ..> RedisServer : returns result
+RedisServer ..> WarptalkAiWorker
+WarptalkAiWorker ..> RedisServer
 AssistantNotifier ..> SignalRClients : streams response
 
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

@@ -1,5 +1,5 @@
 @startuml
-title 1.2 WarpTalk Package Diagram
+title 1.2 WarpTalk System-Level Package Diagram
 
 left to right direction
 hide circle
@@ -8,98 +8,90 @@ hide empty members
 skinparam monochrome true
 skinparam shadowing false
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 55
+skinparam ranksep 75
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
 skinparam ArrowColor Black
 
-package "Client Apps" as ClientApps {
+package "Client Repositories" as ClientRepos {
   package "warptalk-web" as Web
   package "warptalk-desktop" as Desktop
 
   Web -[hidden]down- Desktop
 }
 
-package "Backend Services" as Backend {
-  package "Auth Service" as Auth
-  package "Workspace Service" as Workspace
-  package "Meeting Service" as Meeting
-  package "Translation Room Service" as TranslationRoom
-  package "Transcript Service" as Transcript
-  package "Billing Service" as Billing
-  package "Notification Service" as Notification
-  package "Assistant Service" as Assistant
+package "warptalk-backend" as Backend {
+  package "gateway" as Gateway
+  package "auth" as Auth
+  package "workspace" as Workspace
+  package "meeting" as Meeting
+  package "translation-room" as TranslationRoom
+  package "transcript" as Transcript
+  package "assistant" as Assistant
+  package "billing" as Billing
+  package "notification" as Notification
+  package "payment" as Payment
+  package "shared <<abstract>>" as BackendShared
+  package "contracts <<abstract>>" as BackendContracts
 
+  Gateway -[hidden]down- Auth
   Auth -[hidden]down- Workspace
   Workspace -[hidden]down- Meeting
   Meeting -[hidden]down- TranslationRoom
   TranslationRoom -[hidden]down- Transcript
-  Transcript -[hidden]down- Billing
+  Transcript -[hidden]down- Assistant
+  Assistant -[hidden]down- Billing
   Billing -[hidden]down- Notification
-  Notification -[hidden]down- Assistant
+  Notification -[hidden]down- Payment
+  Payment -[hidden]down- BackendShared
+  BackendShared -[hidden]down- BackendContracts
 }
 
-package "AI Workers" as AIWorkers {
-  package "security_worker" as SecurityWorker
-  package "embedding_worker" as EmbeddingWorker
-  package "translation_worker" as TranslationWorker
-  package "stt_worker" as SttWorker
-  package "tts_worker" as TtsWorker
-  package "billing_worker" as BillingWorker
-  package "ai_assistant_worker" as AssistantWorker
+package "warptalk-ai" as AIRuntime {
   package "livekit_ingress_worker" as IngressWorker
+  package "stt_worker" as SttWorker
+  package "translation_worker" as TranslationWorker
+  package "tts_worker" as TtsWorker
+  package "ai_assistant_worker" as AssistantWorker
+  package "embedding_worker" as EmbeddingWorker
+  package "security_worker" as SecurityWorker
+  package "billing_worker" as BillingWorker
+  package "metrics_exporter" as MetricsExporter
+  package "shared <<abstract>>" as AIShared
 
-  SecurityWorker -[hidden]down- EmbeddingWorker
-  EmbeddingWorker -[hidden]down- TranslationWorker
-  TranslationWorker -[hidden]down- SttWorker
-  SttWorker -[hidden]down- TtsWorker
-  TtsWorker -[hidden]down- BillingWorker
-  BillingWorker -[hidden]down- AssistantWorker
-  AssistantWorker -[hidden]down- IngressWorker
+  IngressWorker -[hidden]down- SttWorker
+  SttWorker -[hidden]down- TranslationWorker
+  TranslationWorker -[hidden]down- TtsWorker
+  TtsWorker -[hidden]down- AssistantWorker
+  AssistantWorker -[hidden]down- EmbeddingWorker
+  EmbeddingWorker -[hidden]down- SecurityWorker
+  SecurityWorker -[hidden]down- BillingWorker
+  BillingWorker -[hidden]down- MetricsExporter
+  MetricsExporter -[hidden]down- AIShared
 }
 
-package "Infrastructure" as Infrastructure {
-  package "warptalk-infrastructure" as InfraRepo
-  package "Terraform" as Terraform
-  package "Docker Compose" as DockerCompose
-  package "Observability" as Observability
-  package "Database Migrations" as Migrations
+package "warptalk-infrastructure" as Infrastructure {
+  package "terraform" as Terraform
+  package "deploy" as Deploy
+  package "observability" as Observability
+  package "pgbouncer" as Pgbouncer
+  package "coturn" as Coturn
 
-  InfraRepo -[hidden]down- Terraform
-  Terraform -[hidden]down- DockerCompose
-  DockerCompose -[hidden]down- Observability
-  Observability -[hidden]down- Migrations
+  Terraform -[hidden]down- Deploy
+  Deploy -[hidden]down- Observability
+  Observability -[hidden]down- Pgbouncer
+  Pgbouncer -[hidden]down- Coturn
 }
 
-package "External Systems" as ExternalSystems {
-  package "PostgreSQL" as PostgreSQL
-  package "Redis" as Redis
-  package "Qdrant" as Qdrant
-  package "LiveKit" as LiveKit
-  package "Stripe" as Stripe
-  package "Google APIs" as GoogleApis
-  package "OpenAI / Gemini" as LlmApis
-
-  PostgreSQL -[hidden]down- Redis
-  Redis -[hidden]down- Qdrant
-  Qdrant -[hidden]down- LiveKit
-  LiveKit -[hidden]down- Stripe
-  Stripe -[hidden]down- GoogleApis
-  GoogleApis -[hidden]down- LlmApis
-}
-
-ClientApps --> Backend
-Backend --> AIWorkers
-Backend --> ExternalSystems
-AIWorkers --> ExternalSystems
+ClientRepos ..> Backend
+Backend ..> AIRuntime
 Infrastructure ..> Backend
-Infrastructure ..> AIWorkers
+Infrastructure ..> AIRuntime
 
-ClientApps -[hidden]right- Backend
-Backend -[hidden]right- AIWorkers
-AIWorkers -[hidden]right- Infrastructure
-Infrastructure -[hidden]right- ExternalSystems
+ClientRepos -[hidden]right- Backend
+Backend -[hidden]right- AIRuntime
+AIRuntime -[hidden]right- Infrastructure
 @enduml

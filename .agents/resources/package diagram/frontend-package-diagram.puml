@@ -1,0 +1,87 @@
+@startuml
+title Frontend Package Diagram (warptalk-web/src)
+
+left to right direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam linetype ortho
+skinparam nodesep 60
+skinparam ranksep 85
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam ArrowColor Black
+
+package "app" as AppPkg {
+  package "(auth)" as AuthRoute
+  package "(app)" as AppRoute
+  package "(internal)" as InternalRoute
+  package "workspace" as WorkspaceRoute
+  package "api" as ApiRoute
+  package "invitations" as InvitationsRoute
+}
+
+package "components" as CompPkg {
+  package ui
+  package layout
+  package rooms
+  package auth
+  package documents
+  package workspace as compWorkspace
+  package voice
+  package notifications
+  package providers
+  package admin
+  package landing
+  package legal
+  package errors
+  package features as compFeatures
+  package language
+  package presence as compPresence
+  package visuals
+}
+
+package "lib" as LibPkg {
+  package api as libApi
+  package auth as libAuth
+  package format
+  package meeting
+  package realtime
+  package transcript
+}
+
+package "hooks" as HooksPkg {
+}
+
+package "stores" as StoresPkg {
+}
+
+package "services" as ServicesPkg {
+}
+
+package "types <<abstract>>" as TypesPkg {
+}
+
+package "constants <<abstract>>" as ConstantsPkg {
+}
+
+package "emails" as EmailsPkg {
+}
+
+' -------------------------------------------------------------
+' Dependency Rules
+' -------------------------------------------------------------
+AppPkg ..> CompPkg
+CompPkg ..> HooksPkg
+CompPkg ..> ServicesPkg
+HooksPkg ..> StoresPkg
+StoresPkg ..> ServicesPkg
+ServicesPkg ..> LibPkg
+LibPkg ..> TypesPkg
+TypesPkg ..> ConstantsPkg
+
+@enduml

@@ -1,0 +1,50 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam dpi 136
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+package "Host Actor" {
+  rectangle "Workspace Rooms Page" as HostWorkspaceRoomsPage
+  rectangle "Create Room Dialog" as CreateRoomDialog
+  rectangle "Daily Recurrence Schedule Dialog" as DailyRecurrenceScheduleDialog
+  rectangle "Setup Room Dialog" as HostSetupRoomDialog
+  rectangle "Room Information Page" as HostRoomInformationPage
+  rectangle "Live Meeting Page" as HostLiveMeetingPage
+}
+
+package "Participant Actor" {
+  rectangle "Workspace Rooms Page" as ParticipantWorkspaceRoomsPage
+  rectangle "Join Translation Room Dialog" as JoinTranslationRoomDialog
+  rectangle "Join Translation Room Page" as JoinTranslationRoomPage
+  rectangle "Room Information Page" as ParticipantRoomInformationPage
+  rectangle "Waiting Room Page" as WaitingRoomPage
+  rectangle "Setup Room Dialog" as ParticipantSetupRoomDialog
+  rectangle "Live Meeting Page" as ParticipantLiveMeetingPage
+}
+
+HostWorkspaceRoomsPage --> CreateRoomDialog : Click "New Meeting"
+CreateRoomDialog --> DailyRecurrenceScheduleDialog : Click "Repeat Daily"
+DailyRecurrenceScheduleDialog --> CreateRoomDialog : Save Daily Schedule
+CreateRoomDialog --> HostSetupRoomDialog : Click "Configure"
+CreateRoomDialog --> HostRoomInformationPage : Click "Join"
+HostSetupRoomDialog --> HostLiveMeetingPage : Click "Start Meeting"
+HostRoomInformationPage --> HostLiveMeetingPage : Click "Start meeting"
+
+ParticipantWorkspaceRoomsPage --> JoinTranslationRoomDialog : Click "Join via code"
+JoinTranslationRoomDialog --> JoinTranslationRoomPage : Submit Meeting Code
+JoinTranslationRoomPage --> ParticipantLiveMeetingPage : Click "Join Meeting"
+ParticipantWorkspaceRoomsPage --> ParticipantRoomInformationPage : Click Meeting Row
+ParticipantRoomInformationPage --> WaitingRoomPage : Click "Enter waiting room"
+ParticipantRoomInformationPage --> ParticipantSetupRoomDialog : Click "Join meeting"
+ParticipantSetupRoomDialog --> ParticipantLiveMeetingPage : Click "Join Meeting"
+WaitingRoomPage --> ParticipantSetupRoomDialog : Click "Back to setup"
+WaitingRoomPage --> ParticipantLiveMeetingPage : Host starts meeting
+
+@enduml

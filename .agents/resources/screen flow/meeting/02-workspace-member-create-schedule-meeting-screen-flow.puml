@@ -1,0 +1,37 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+' Exact Route Components & Modals in warptalk-web
+rectangle "Workspace Rooms Page" as WorkspaceRoomsPage
+rectangle "Create Room Modal" as CreateRoomModal
+rectangle "Daily Recurrence Schedule Modal" as DailyScheduleModal
+rectangle "Room Setup Modal" as RoomSetupModal
+rectangle "Room Information Page" as RoomInformationPage
+rectangle "Waiting Room Page" as WaitingRoomPage
+
+' 1. Open Create Room Modal
+WorkspaceRoomsPage --> CreateRoomModal : Click "New Meeting"
+
+' 2. Configure Meeting & Schedule Settings inside Create Room Modal
+CreateRoomModal --> DailyScheduleModal : Click "Repeat Daily"
+DailyScheduleModal --> CreateRoomModal : Save Daily Schedule (Time & End Date)
+
+' 3. Form Submit & Success State inside Create Room Modal
+CreateRoomModal --> RoomSetupModal : Click "Configure" (Room created)
+RoomSetupModal --> RoomInformationPage : Save Setup & Join Room
+
+CreateRoomModal --> RoomInformationPage : Click "Join" (Room created)
+CreateRoomModal --> WorkspaceRoomsPage : Click "Close" (Stay on Rooms list)
+
+' 4. Room Entry & Lobby Handling
+RoomInformationPage --> WaitingRoomPage : Non-host participant enters before host opens room
+
+@enduml

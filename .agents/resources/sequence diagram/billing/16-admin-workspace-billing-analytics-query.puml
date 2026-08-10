@@ -1,0 +1,92 @@
+@startuml
+title WarpTalk - System Admin Per-Workspace Billing & Credit Analytics Query
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+actor "System Admin" as Admin
+boundary "AdminDashboardPage" as Web
+control "API Gateway" as Gateway
+
+box "Billing Service" #LightCyan
+participant ":AdminWorkspaceAnalyticsController" as Controller <<boundary>>
+participant ":AdminWorkspaceAnalyticsService" as Service <<service>>
+participant ":CreditLedgerRepository" as Repository <<control>>
+database "Billing Database" as BillingDb
+end box
+
+== STEP 1: Query Workspace Billing & Credit Consumption Analytics (WT-204 / WT-206) ==
+
+Admin -> Web : Open workspace billing breakdown & select date range
+activate Web
+
+Web -> Gateway : GET /api/v1/admin/billing/workspaces/{workspaceId}/analytics?fromDate=2026-07-01&toDate=2026-08-01
+activate Gateway
+
+Gateway -> Gateway : Verify SystemAdmin JWT role claim & policy
+
+alt Non-SystemAdmin Access Attempt
+  Gateway --> Web : 403 Forbidden (SystemAdmin policy required)
+else Authorized SystemAdmin
+  Gateway -> Controller : GetAnalytics(workspaceId, range, ct)
+  activate Controller
+
+  Controller -> Service : GetAnalyticsAsync(workspaceId, range, ct)
+  activate Service
+
+  Service -> Repository : GetWorkspaceAnalyticsAsync(workspaceId, range)
+  activate Repository
+  Repository -> BillingDb : SELECT SUM(Amount), TransactionType, UsageType\nFROM CreditTransactions WHERE WorkspaceId = workspaceId\nGROUP BY UsageType
+  activate BillingDb
+  BillingDb --> Repository : Aggregated analytics records
+  deactivate BillingDb
+  Repository --> Service : WorkspaceBillingAnalytics entity
+  deactivate Repository
+
+  Service --> Controller : Result.Success(WorkspaceBillingAnalyticsDto)
+  deactivate Service
+  Controller --> Gateway : 200 OK (WorkspaceBillingAnalyticsDto)
+  deactivate Controller
+  deactivate Gateway
+
+  == STEP 2: Query Detailed Credit Ledger Transactions ==
+
+  Web -> Gateway : GET /api/v1/admin/billing/workspaces/{workspaceId}/credit-transactions?page=1&pageSize=20
+  activate Gateway
+
+  Gateway -> Controller : GetCreditTransactions(workspaceId, query, ct)
+  activate Controller
+
+  Controller -> Service : GetCreditTransactionsAsync(workspaceId, query, ct)
+  activate Service
+
+  Service -> Repository : QueryCreditLedgerAsync(workspaceId, query)
+  activate Repository
+  Repository -> BillingDb : SELECT FROM CreditTransactions\nWHERE WorkspaceId = workspaceId ORDER BY TransactionDate DESC
+  activate BillingDb
+  BillingDb --> Repository : Credit transaction records & total count
+  deactivate BillingDb
+  Repository --> Service : PagedList<CreditTransaction>
+  deactivate Repository
+
+  Service --> Controller : Result.Success(PagedResult<CreditTransactionDto>)
+  deactivate Service
+  Controller --> Gateway : 200 OK (PagedResult<CreditTransactionDto>)
+  deactivate Controller
+  deactivate Gateway
+
+  Gateway --> Web : Render credit analytics cards & ledger transaction table
+  deactivate Web
+end
+
+@enduml

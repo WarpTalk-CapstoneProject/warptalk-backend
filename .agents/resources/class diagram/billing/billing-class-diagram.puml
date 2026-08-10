@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -69,10 +74,10 @@ package "API Layer" as ApiLayer {
 
   BillingController -[hidden]right- CreditsController
   CreditsController -[hidden]right- PaymentsController
-  PaymentsController -[hidden]right- PlansController
+  BillingController -[hidden]down- PlansController
   PlansController -[hidden]right- SubscriptionsController
   SubscriptionsController -[hidden]right- UsagesController
-  UsagesController -[hidden]right- BillingGrpcService
+  PlansController -[hidden]down- BillingGrpcService
   BillingGrpcService -[hidden]right- StripeBillingGateway
 }
 
@@ -124,10 +129,10 @@ package "Application Layer" as ApplicationLayer {
 
   BillingService -[hidden]right- CreditService
   CreditService -[hidden]right- UsageService
-  UsageService -[hidden]right- SubscriptionService
+  BillingService -[hidden]down- SubscriptionService
   SubscriptionService -[hidden]right- PlanService
   PlanService -[hidden]right- PaymentAndLedgerService
-  PaymentAndLedgerService -[hidden]right- InvoiceService
+  SubscriptionService -[hidden]down- InvoiceService
   InvoiceService -[hidden]right- RefundService
 }
 
@@ -182,13 +187,13 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- PlanRepository
   PlanRepository -[hidden]right- SubscriptionRepository
-  SubscriptionRepository -[hidden]right- CreditTransactionRepository
+  UnitOfWork -[hidden]down- CreditTransactionRepository
   CreditTransactionRepository -[hidden]right- UsageRecordRepository
   UsageRecordRepository -[hidden]right- PaymentRepository
-  PaymentRepository -[hidden]right- InvoiceRepository
+  CreditTransactionRepository -[hidden]down- InvoiceRepository
   InvoiceRepository -[hidden]right- RefundRepository
   RefundRepository -[hidden]right- IdempotencyRepository
-  IdempotencyRepository -[hidden]right- WorkspaceDirectoryGrpcClient
+  InvoiceRepository -[hidden]down- WorkspaceDirectoryGrpcClient
 
   UnitOfWork o-- PlanRepository
   UnitOfWork o-- SubscriptionRepository
@@ -320,10 +325,10 @@ PaymentAndLedgerService ..> RedisEventStream : publishes events
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

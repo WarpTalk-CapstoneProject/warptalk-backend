@@ -1,0 +1,27 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Login Page" as LoginPage
+rectangle "Admin Overview Page" as AdminOverviewPage
+rectangle "Admin Workspaces Page" as AdminWorkspacesPage
+rectangle "Admin Workspace Detail Page" as AdminWorkspaceDetailPage
+rectangle "Admin Billing Page" as AdminBillingPage
+rectangle "Admin Global Glossary Page" as AdminGlobalGlossaryPage
+
+LoginPage --> AdminOverviewPage : Click "Submit" (with admin credentials)
+AdminOverviewPage --> AdminWorkspacesPage : Click "Workspaces"
+AdminOverviewPage --> AdminBillingPage : Click "Billing"
+AdminOverviewPage --> AdminGlobalGlossaryPage : Click "Global Glossary"
+
+AdminWorkspacesPage --> AdminWorkspaceDetailPage : Click Workspace Row
+AdminWorkspaceDetailPage --> AdminWorkspacesPage : Click "Back to directory"
+
+@enduml

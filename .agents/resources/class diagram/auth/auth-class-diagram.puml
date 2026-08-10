@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -58,7 +63,7 @@ package "API Layer" as ApiLayer {
 
   AuthController -[hidden]right- GoogleAuthController
   GoogleAuthController -[hidden]right- TokenController
-  TokenController -[hidden]right- ProfileController
+  AuthController -[hidden]down- ProfileController
   ProfileController -[hidden]right- UserSettingsController
   UserSettingsController -[hidden]right- VoiceProfilesController
 }
@@ -102,7 +107,7 @@ package "Application Layer" as ApplicationLayer {
 
   AuthService -[hidden]right- GoogleAuthService
   GoogleAuthService -[hidden]right- TokenService
-  TokenService -[hidden]right- ProfileService
+  AuthService -[hidden]down- ProfileService
   ProfileService -[hidden]right- UserSettingsService
   UserSettingsService -[hidden]right- VoiceProfileService
 }
@@ -164,13 +169,13 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- UserRepository
   UserRepository -[hidden]right- RefreshTokenRepository
-  RefreshTokenRepository -[hidden]right- UserSettingRepository
+  UnitOfWork -[hidden]down- UserSettingRepository
   UserSettingRepository -[hidden]right- VoiceProfileRepository
   VoiceProfileRepository -[hidden]right- PasswordHasher
-  PasswordHasher -[hidden]right- JwtTokenGenerator
+  UserSettingRepository -[hidden]down- JwtTokenGenerator
   JwtTokenGenerator -[hidden]right- GoogleTokenVerifier
   GoogleTokenVerifier -[hidden]right- ResendAuthEmailSender
-  ResendAuthEmailSender -[hidden]right- WorkspaceInvitationGrpcClient
+  JwtTokenGenerator -[hidden]down- WorkspaceInvitationGrpcClient
   WorkspaceInvitationGrpcClient -[hidden]right- RedisVoiceCatalogDirectory
 
   UnitOfWork o-- UserRepository
@@ -255,7 +260,7 @@ package "External Systems" as ExternalSystems {
 
   GoogleOAuthApi -[hidden]right- ResendMailServer
   ResendMailServer -[hidden]right- WorkspaceServiceGrpcServer
-  WorkspaceServiceGrpcServer -[hidden]right- RedisVoiceCatalog
+  GoogleOAuthApi -[hidden]down- RedisVoiceCatalog
 }
 
 AuthController --> AuthService
@@ -286,10 +291,10 @@ RedisVoiceCatalogDirectory ..> RedisVoiceCatalog : reads voices
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

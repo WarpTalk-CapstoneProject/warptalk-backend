@@ -338,9 +338,4 @@ ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
 DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

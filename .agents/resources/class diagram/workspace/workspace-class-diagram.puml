@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -70,10 +75,10 @@ package "API Layer" as ApiLayer {
 
   WorkspacesController -[hidden]right- WorkspaceMembersController
   WorkspaceMembersController -[hidden]right- WorkspaceInvitationsController
-  WorkspaceInvitationsController -[hidden]right- WorkspaceDocumentsController
+  WorkspacesController -[hidden]down- WorkspaceDocumentsController
   WorkspaceDocumentsController -[hidden]right- WorkspaceVerifiedDomainsController
   WorkspaceVerifiedDomainsController -[hidden]right- AdminWorkspacesController
-  AdminWorkspacesController -[hidden]right- AdminAuditLogController
+  WorkspaceDocumentsController -[hidden]down- AdminAuditLogController
   AdminAuditLogController -[hidden]right- WorkspaceGrpcService
   WorkspaceGrpcService -[hidden]right- WorkspaceInvitationGrpcService
 }
@@ -120,10 +125,10 @@ package "Application Layer" as ApplicationLayer {
 
   WorkspaceService -[hidden]right- WorkspaceMemberService
   WorkspaceMemberService -[hidden]right- WorkspaceInvitationService
-  WorkspaceInvitationService -[hidden]right- WorkspaceDocumentService
+  WorkspaceService -[hidden]down- WorkspaceDocumentService
   WorkspaceDocumentService -[hidden]right- VerifiedDomainService
   VerifiedDomainService -[hidden]right- AdminWorkspaceService
-  AdminWorkspaceService -[hidden]right- AdminAuditLogService
+  WorkspaceDocumentService -[hidden]down- AdminAuditLogService
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
@@ -179,13 +184,13 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- WorkspaceRepository
   WorkspaceRepository -[hidden]right- WorkspaceMemberRepository
-  WorkspaceMemberRepository -[hidden]right- WorkspaceInvitationRepository
+  UnitOfWork -[hidden]down- WorkspaceInvitationRepository
   WorkspaceInvitationRepository -[hidden]right- WorkspaceDocumentRepository
   WorkspaceDocumentRepository -[hidden]right- WorkspaceDocumentStorage
-  WorkspaceDocumentStorage -[hidden]right- DocumentSecurityScanner
+  WorkspaceInvitationRepository -[hidden]down- DocumentSecurityScanner
   DocumentSecurityScanner -[hidden]right- RedisEmbeddingIndexPublisher
   RedisEmbeddingIndexPublisher -[hidden]right- AuthIdentityGrpcClient
-  AuthIdentityGrpcClient -[hidden]right- TranslationRoomGrpcClient
+  DocumentSecurityScanner -[hidden]down- TranslationRoomGrpcClient
 
   UnitOfWork o-- WorkspaceRepository
   UnitOfWork o-- WorkspaceMemberRepository
@@ -280,7 +285,7 @@ package "External Systems" as ExternalSystems {
 
   AuthServiceGrpcServer -[hidden]right- TranslationRoomServiceGrpcServer
   TranslationRoomServiceGrpcServer -[hidden]right- ObjectStorageProvider
-  ObjectStorageProvider -[hidden]right- RedisEventStream
+  AuthServiceGrpcServer -[hidden]down- RedisEventStream
   RedisEventStream -[hidden]right- QdrantVectorDb
 }
 
@@ -315,10 +320,10 @@ TranslationRoomGrpcClient ..> TranslationRoomServiceGrpcServer : reads rooms
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

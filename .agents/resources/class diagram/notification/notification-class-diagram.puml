@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -41,7 +46,7 @@ package "API Layer" as ApiLayer {
 
   NotificationsController -[hidden]right- NotificationGrpcServiceImpl
   NotificationGrpcServiceImpl -[hidden]right- NotificationStreamConsumerService
-  NotificationStreamConsumerService -[hidden]right- RealtimeNotificationPersistenceService
+  NotificationsController -[hidden]down- RealtimeNotificationPersistenceService
 }
 
 package "Application Layer" as ApplicationLayer {
@@ -70,7 +75,7 @@ package "Application Layer" as ApplicationLayer {
 
   NotificationService -[hidden]right- AdminNotificationService
   AdminNotificationService -[hidden]right- BillingNotificationEventHandler
-  BillingNotificationEventHandler -[hidden]right- RealtimeNotificationPersistenceHandler
+  NotificationService -[hidden]down- RealtimeNotificationPersistenceHandler
   RealtimeNotificationPersistenceHandler -[hidden]right- EmailTemplateRenderer
 }
 
@@ -112,10 +117,10 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- NotificationMessageRepository
   NotificationMessageRepository -[hidden]right- NotificationPreferenceRepository
-  NotificationPreferenceRepository -[hidden]right- NotificationTemplateRepository
+  UnitOfWork -[hidden]down- NotificationTemplateRepository
   NotificationTemplateRepository -[hidden]right- AdminNotificationRepository
   AdminNotificationRepository -[hidden]right- PushSubscriptionRepository
-  PushSubscriptionRepository -[hidden]right- ResendEmailSender
+  NotificationTemplateRepository -[hidden]down- ResendEmailSender
   ResendEmailSender -[hidden]right- RedisMessagePublisher
 
   UnitOfWork o-- NotificationMessageRepository
@@ -216,10 +221,10 @@ RedisServer ..> SignalRGateway : forwards realtime
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

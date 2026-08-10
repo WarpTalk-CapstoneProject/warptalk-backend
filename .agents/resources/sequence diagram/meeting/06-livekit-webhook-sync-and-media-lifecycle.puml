@@ -1,0 +1,141 @@
+@startuml
+title WarpTalk - LiveKit Webhook Ingress Synchronization & Media Server Room Lifecycle
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+participant "LiveKit Media Server" as LiveKit <<external system>>
+
+box "Meeting Service" #PaleGreen
+participant ":LiveKitWebhooksController" as Controller <<boundary>>
+participant ":MeetingWebhookService" as WebhookService <<service>>
+participant ":MeetingRoomRepository" as RoomRepo <<control>>
+participant ":MeetingParticipantRepository" as ParticipantRepo <<control>>
+database "Meeting Database" as MeetingDb
+end box
+
+box "SignalR Gateway" #LightGray
+control "API Gateway / Hub" as Gateway <<boundary>>
+queue "Redis State Store" as Redis
+end box
+
+box "AI Worker Microservices" #LightGreen
+participant ":LiveKitBotIngress" as BotIngress <<boundary>>
+end box
+
+boundary "MeetingRoomPage" as Web
+
+== STEP 1: LiveKit Webhook Signature Verification ==
+
+LiveKit -> Controller : POST /api/v1/meetings/webhooks/livekit\n(Header: Authorization Bearer <Token>, Body: JSON event)
+activate LiveKit
+activate Controller
+
+Controller -> WebhookService : ValidateWebhookToken(token, bodyText)
+activate WebhookService
+WebhookService --> Controller : validationResult (bool)
+deactivate WebhookService
+
+alt Invalid Signature or Missing Bearer Token
+  Controller --> LiveKit : 401 Unauthorized (ApiErrorResponse)
+else Signature Verified
+  Controller -> WebhookService : ProcessWebhookAsync(payloadJson)
+  activate WebhookService
+
+  == STEP 2: Event Type Processing ==
+
+  alt Event: "participant_joined"
+    WebhookService -> RoomRepo : FirstOrDefaultAsync(r => r.ProviderRoomName == roomName)
+    activate RoomRepo
+    RoomRepo -> MeetingDb : SELECT Room WHERE ProviderRoomName = roomName
+    activate MeetingDb
+    MeetingDb --> RoomRepo : Room entity
+    deactivate MeetingDb
+    RoomRepo --> WebhookService : Room entity
+    deactivate RoomRepo
+
+    WebhookService -> ParticipantRepo : FirstOrDefaultAsync(p => p.MeetingRoomId == room.Id && p.ProviderIdentity == identity)
+    activate ParticipantRepo
+    ParticipantRepo -> MeetingDb : SELECT Participant WHERE Identity = identity
+    activate MeetingDb
+    MeetingDb --> ParticipantRepo : Participant entity
+    deactivate MeetingDb
+    ParticipantRepo --> WebhookService : Participant entity
+    deactivate ParticipantRepo
+
+    WebhookService -> WebhookService : Update JoinedAt = UtcNow, LeftAt = null
+    WebhookService -> Redis : PublishAsync("room:presence", ParticipantJoinedEvent)
+    activate Redis
+    Redis -->> Gateway : Broadcast ParticipantJoined Event
+    deactivate Redis
+    Gateway -->> Web : Push SignalR participant presence update
+
+  else Event: "participant_left"
+    WebhookService -> ParticipantRepo : FirstOrDefaultAsync(p => p.Identity == identity)
+    activate ParticipantRepo
+    ParticipantRepo -> MeetingDb : SELECT Participant
+    activate MeetingDb
+    MeetingDb --> ParticipantRepo : Participant entity
+    deactivate MeetingDb
+    ParticipantRepo --> WebhookService : Participant entity
+    deactivate ParticipantRepo
+
+    WebhookService -> WebhookService : Update LeftAt = UtcNow
+    WebhookService -> Redis : PublishAsync("room:presence", ParticipantLeftEvent)
+    activate Redis
+    Redis -->> Gateway : Broadcast ParticipantLeft Event
+    deactivate Redis
+    Gateway -->> Web : Push SignalR participant presence update
+
+  else Event: "room_finished" / "room_ended"
+    WebhookService -> RoomRepo : FirstOrDefaultAsync(r => r.ProviderRoomName == roomName)
+    activate RoomRepo
+    RoomRepo -> MeetingDb : UPDATE Room SET Status = Ended, EndedAt = UtcNow
+    activate MeetingDb
+    MeetingDb --> RoomRepo : Room status updated
+    deactivate MeetingDb
+    RoomRepo --> WebhookService : Room updated
+    deactivate RoomRepo
+
+    WebhookService -> BotIngress : ReleaseBotIngressAsync(roomName) [WT-314]
+    activate BotIngress
+    BotIngress -> BotIngress : Disconnect LiveKit AI bot & stop audio tracks
+    BotIngress --> WebhookService : Bot released
+    deactivate BotIngress
+
+    WebhookService -> Redis : PublishAsync("room:events", RoomEndedEvent)
+    activate Redis
+    Redis -->> Gateway : Broadcast RoomEnded Event
+    deactivate Redis
+    Gateway -->> Web : Push SignalR room ended & redirect participants to MeetingEndedPage
+
+  else Event: "egress_ended"
+    WebhookService -> RoomRepo : UpdateRecordingStateAsync(roomName, egressId, completed)
+    activate RoomRepo
+    RoomRepo -> MeetingDb : UPDATE Room SET ActiveEgressId = null
+    activate MeetingDb
+    MeetingDb --> RoomRepo : Egress state updated
+    deactivate MeetingDb
+    RoomRepo --> WebhookService : Egress status saved
+    deactivate RoomRepo
+  end
+
+  WebhookService --> Controller : Result.Success(true)
+  deactivate WebhookService
+
+  Controller --> LiveKit : 200 OK
+  deactivate Controller
+  deactivate LiveKit
+end
+
+@enduml
