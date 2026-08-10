@@ -346,20 +346,8 @@ public class TranslationRoomService : ITranslationRoomService
                 exists = await _translationRoomRepository.ExistsByCodeAsync(roomCode, TranslationRoomConstants.TerminalStatuses, ct);
             } while (exists);
 
-            // WT-342: the workspace's own host-approval default. Asked for HERE, on the create
-            // path, rather than read at join or start time — the resolved value is written into
-            // the room's settings blob once, so a room's behaviour cannot change under it when an
-            // admin later flips the workspace toggle. That is the same promise every other
-            // creation-time default in ResolveSettings already makes.
-            //
-            // Null when WorkspaceService could not answer, which leaves the meeting type's default
-            // in charge exactly as before. One room falling back is a far better outcome than a
-            // WorkspaceService blip failing the create.
-            var workspaceApprovalDefault =
-                await _workspaceMeetingPolicy.GetHostApprovalDefaultAsync(workspaceId, ct);
-
             // 3. Create entity
-            var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs, workspaceApprovalDefault);
+            var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);
 
             // WT-327: an occurrence of a recurring series is an ORDINARY room that additionally
             // knows which series and which local day it belongs to. The (series_id,

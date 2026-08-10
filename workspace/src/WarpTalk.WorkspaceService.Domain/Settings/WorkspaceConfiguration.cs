@@ -60,7 +60,6 @@ public class WorkspaceConfiguration
         };
     }
 
-    public bool EnforceHostApprovalDefault { get; set; } = true;
 
     // 4. Enterprise & External Collaboration
     public List<string> VerifiedDomains { get; set; } = new();

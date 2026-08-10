@@ -36,16 +36,8 @@ public class MeetingTypeDefaultsTests
     private static TranslationRoomSettings SettingsOf(Domain.Entities.TranslationRoom room) =>
         JsonSerializer.Deserialize<TranslationRoomSettings>(room.Settings)!;
 
-    private static Domain.Entities.TranslationRoom Build(
-        CreateTranslationRoomRequest request,
-        bool? workspaceApprovalDefault = null) =>
-        request.ToEntity(
-            Guid.NewGuid(),
-            "abc-defg-hij",
-            "WAITING",
-            "vi-VN",
-            new List<string> { "en-US" },
-            workspaceApprovalDefault);
+    private static Domain.Entities.TranslationRoom Build(CreateTranslationRoomRequest request) =>
+        request.ToEntity(Guid.NewGuid(), "abc-defg-hij", "WAITING", "vi-VN", new List<string> { "en-US" });
 
     // language=none — the agreed matrix, one row per type.
     public static TheoryData<string, bool, bool, bool, bool, int> Matrix => new()
@@ -146,68 +138,6 @@ public class MeetingTypeDefaultsTests
         explicitlyOff.RequiresApproval.Should().BeFalse();
         explicitlyOff.MuteOnEntry.Should().BeFalse();
         explicitlyOff.AutoRecord.Should().BeFalse();
-    }
-
-    // ── WT-342: the workspace default, between the two layers that already existed ──────
-
-    /// <summary>
-    /// The whole point of the ticket. EnforceHostApprovalDefault had a working toggle on the
-    /// workspace settings page and a value in the settings blob, and NOTHING read it — an admin
-    /// could turn it on, watch it save, reload and see it on, and every meeting created afterwards
-    /// ignored it. EVENT seeds approval OFF, so a workspace asking for approval must flip it.
-    /// </summary>
-    [Fact]
-    public void ToEntity_ShouldLetTheWorkspaceDefault_OverrideTheTypeDefault()
-    {
-        var room = Build(Request(TranslationRoomTypes.Event), workspaceApprovalDefault: true);
-
-        SettingsOf(room).RequiresApproval.Should().BeTrue();
-    }
-
-    /// <summary>
-    /// And in the other direction, which is what makes it a setting rather than a ratchet. A
-    /// workspace that turns it off opens up a WEBINAR its type would have gated — deliberate, and
-    /// never silent: the create dialog shows the resolved value on the toggle before Create, and
-    /// the host can flip it for that one meeting.
-    /// </summary>
-    [Fact]
-    public void ToEntity_ShouldLetTheWorkspaceDefault_RelaxTheTypeDefault()
-    {
-        var room = Build(Request(TranslationRoomTypes.Webinar), workspaceApprovalDefault: false);
-
-        SettingsOf(room).RequiresApproval.Should().BeFalse();
-        // Only approval is the workspace's business. The rest of the Webinar profile stands.
-        SettingsOf(room).MuteOnEntry.Should().BeTrue();
-        SettingsOf(room).AutoRecord.Should().BeTrue();
-    }
-
-    /// <summary>
-    /// The creator still outranks the workspace. Without this the per-meeting toggle would be
-    /// decorative in any workspace whose admin had an opinion.
-    /// </summary>
-    [Fact]
-    public void ToEntity_ShouldLetAnExplicitChoice_OutrankTheWorkspaceDefault()
-    {
-        var room = Build(
-            Request(TranslationRoomTypes.Event, settings: new RoomSettingsRequest(RequiresApproval: false)),
-            workspaceApprovalDefault: true);
-
-        SettingsOf(room).RequiresApproval.Should().BeFalse();
-    }
-
-    /// <summary>
-    /// Null is "we could not ask", not "false". WorkspaceService being unreachable must leave the
-    /// meeting type in charge, exactly as before WT-342 — otherwise an outage would quietly strip
-    /// approval from every meeting created during it, which is a security decision made by a
-    /// network error.
-    /// </summary>
-    [Fact]
-    public void ToEntity_ShouldFallBackToTheType_WhenTheWorkspaceHasNoAnswer()
-    {
-        SettingsOf(Build(Request(TranslationRoomTypes.Webinar), workspaceApprovalDefault: null))
-            .RequiresApproval.Should().BeTrue();
-        SettingsOf(Build(Request(TranslationRoomTypes.Event), workspaceApprovalDefault: null))
-            .RequiresApproval.Should().BeFalse();
     }
 
     [Fact]

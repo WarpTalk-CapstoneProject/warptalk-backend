@@ -166,10 +166,7 @@ public class WorkspaceGrpcServiceTests
     {
         _workspaceDirectory
             .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            // Trailing true is EnforceHostApprovalDefault. It has to be TRUE to prove anything:
-            // protobuf's default for a bool is false, so a mapping that dropped the field entirely
-            // would still satisfy an assertion expecting false.
-            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(15, true, false, true, true, true)));
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(15, true, false, true, true)));
 
         var response = await _service.GetWorkspaceSettings(
             new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
@@ -179,7 +176,6 @@ public class WorkspaceGrpcServiceTests
         Assert.True(response.AllowExternalCollaboration);
         Assert.True(response.AllowExternalLlm);
         Assert.True(response.UseGlobalGlossary);
-        Assert.True(response.EnforceHostApprovalDefault);
     }
 
     [Fact]

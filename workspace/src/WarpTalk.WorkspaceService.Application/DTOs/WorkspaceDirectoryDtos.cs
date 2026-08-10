@@ -34,12 +34,7 @@ public record WorkspaceSettingsSnapshotDto(
     bool AllowExternalCollaboration,
     bool IsProfanityFilterEnabled,
     bool AllowExternalLlm,
-    bool UseGlobalGlossary,
-    /// <summary>
-    /// WT-342: the workspace's default stance on host approval for new meetings. Read by
-    /// TranslationRoomService; an explicit per-meeting choice still overrides it.
-    /// </summary>
-    bool EnforceHostApprovalDefault
+    bool UseGlobalGlossary
 );
 
 public record WorkspacePreflightDto(

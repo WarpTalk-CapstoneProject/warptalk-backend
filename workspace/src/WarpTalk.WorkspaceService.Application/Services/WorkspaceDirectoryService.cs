@@ -237,8 +237,7 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             // DocumentSecurityGuardrailConsumerService.ResolvePolicySettingsAsync already
             // applies for documents.
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
-            config.AiUsagePolicy?.UseGlobalGlossary ?? true,
-            config.EnforceHostApprovalDefault));
+            config.AiUsagePolicy?.UseGlobalGlossary ?? true));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(

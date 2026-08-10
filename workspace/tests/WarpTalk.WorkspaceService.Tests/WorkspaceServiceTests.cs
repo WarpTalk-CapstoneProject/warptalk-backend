@@ -911,7 +911,6 @@ public class WorkspaceServiceTests
             false,
             5,
             30,
-            true,
             new List<string> { "warptalk.vn" },
             true,
             true,
@@ -983,7 +982,7 @@ public class WorkspaceServiceTests
             Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
         };
         var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30, true,
+            "en", "UTC", new List<string>(), true, 5, 30,
             new List<string>(), true, false, null, false);
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
@@ -1016,7 +1015,7 @@ public class WorkspaceServiceTests
             Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
         };
         var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30, true,
+            "en", "UTC", new List<string>(), true, 5, 30,
             new List<string>(), false, false, null, false);
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
@@ -1047,7 +1046,6 @@ public class WorkspaceServiceTests
             false,
             5,
             30,
-            true,
             new List<string>(),
             true,
             true,
@@ -1090,7 +1088,6 @@ public class WorkspaceServiceTests
             false,
             5,
             30,
-            true,
             new List<string> { "yahoo.com" }, // Public domain
             true,
             true,
@@ -1134,7 +1131,6 @@ public class WorkspaceServiceTests
             true,
             5,
             30,
-            true,
             new List<string>(),
             true,
             true,
@@ -1181,7 +1177,7 @@ public class WorkspaceServiceTests
             Settings = "{\"VerifiedDomains\":[\"company.com\"],\"AllowExternalCollaboration\":true}"
         };
         var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30, true,
+            "en", "UTC", new List<string>(), true, 5, 30,
             new List<string>(), false, false, null, false);
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
