@@ -45,6 +45,7 @@ public class TranslationRoomStartAuthorizationTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ITranslationRoomRepository> _roomRepository = new();
     private readonly Mock<ITranslationRoomParticipantRepository> _participantRepository = new();
+    private readonly Mock<ITranslationRoomSessionRepository> _sessionRepository = new();
     private readonly Mock<IWorkspaceMemberDirectory> _workspaceMemberDirectory = new();
     private readonly Mock<IWorkspaceMeetingPolicy> _workspaceMeetingPolicy = new();
     private readonly Mock<ITranslationRoomAudioRouteService> _audioRouteService = new();
@@ -70,6 +71,11 @@ public class TranslationRoomStartAuthorizationTests
     {
         _unitOfWork.Setup(u => u.TranslationRoomRepository).Returns(_roomRepository.Object);
         _unitOfWork.Setup(u => u.TranslationRoomParticipantRepository).Returns(_participantRepository.Object);
+        // WT-339: Start now ASKS whether a translation session is open before it lets the audio
+        // routes broadcast, so this fixture has to hand it a session repository to ask. Left with
+        // its default answer — no active session — because that is what a room being opened is:
+        // these cases are about WHO may open it, not about translation being switched on.
+        _unitOfWork.Setup(u => u.TranslationRoomSessionRepository).Returns(_sessionRepository.Object);
 
         _participantRepository
             .Setup(p => p.CountSeatHoldingParticipantsAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))

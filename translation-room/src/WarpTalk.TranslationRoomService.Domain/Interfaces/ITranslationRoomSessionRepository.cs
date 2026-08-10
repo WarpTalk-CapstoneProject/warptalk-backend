@@ -10,4 +10,5 @@ public interface ITranslationRoomSessionRepository : IGenericRepository<Translat
 {
     Task<List<TranslationRoomSession>> GetSessionsByRoomIdAsync(Guid roomId, CancellationToken ct = default);
     Task<TranslationRoomSession?> GetActiveSessionByRoomIdAsync(Guid roomId, CancellationToken ct = default);
+    Task AcquireSessionStartLockAsync(Guid roomId, CancellationToken ct = default);
 }
