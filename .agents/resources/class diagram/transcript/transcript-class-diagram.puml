@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -63,10 +68,10 @@ package "API Layer" as ApiLayer {
 
   TranscriptsController -[hidden]right- TranscriptSegmentsController
   TranscriptSegmentsController -[hidden]right- TranscriptTranslationsController
-  TranscriptTranslationsController -[hidden]right- TranscriptExportsController
+  TranscriptsController -[hidden]down- TranscriptExportsController
   TranscriptExportsController -[hidden]right- TranscriptCorrectionsController
   TranscriptCorrectionsController -[hidden]right- GlossariesController
-  GlossariesController -[hidden]right- GlobalGlossariesController
+  TranscriptExportsController -[hidden]down- GlobalGlossariesController
   GlobalGlossariesController -[hidden]right- TranscriptGrpcService
 }
 
@@ -101,7 +106,7 @@ package "Application Layer" as ApplicationLayer {
 
   TranscriptQueryService -[hidden]right- TranscriptExportService
   TranscriptExportService -[hidden]right- TranscriptCorrectionService
-  TranscriptCorrectionService -[hidden]right- GlossaryService
+  TranscriptQueryService -[hidden]down- GlossaryService
   GlossaryService -[hidden]right- GlobalGlossaryService
 }
 
@@ -153,10 +158,10 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- TranscriptRepository
   TranscriptRepository -[hidden]right- TranscriptSegmentRepository
-  TranscriptSegmentRepository -[hidden]right- TranscriptCorrectionRepository
+  UnitOfWork -[hidden]down- TranscriptCorrectionRepository
   TranscriptCorrectionRepository -[hidden]right- GlossaryRepository
   GlossaryRepository -[hidden]right- GlobalGlossaryTermsRepository
-  GlobalGlossaryTermsRepository -[hidden]right- TranscriptRedisConsumerService
+  TranscriptCorrectionRepository -[hidden]down- TranscriptRedisConsumerService
   TranscriptRedisConsumerService -[hidden]right- GlossaryStartedEventConsumer
   GlossaryStartedEventConsumer -[hidden]right- TranslationRoomGrpcClient
 
@@ -278,10 +283,10 @@ RedisServer ..> AiEmbeddingWorker : queues indexing
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

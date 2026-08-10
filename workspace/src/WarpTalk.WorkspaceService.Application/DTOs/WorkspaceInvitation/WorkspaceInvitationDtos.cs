@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
@@ -7,6 +8,23 @@ public record InviteMemberRequest(
     [Required][EmailAddress] string Email,
     [Required] string RoleName,
     string? MembershipType = null
+);
+
+/// <summary>
+/// What the invite form needs to render the Access type choice without re-implementing the
+/// domain rules client-side: which option to pre-select, which to disable, and the reason to
+/// show next to a disabled one.
+/// </summary>
+public record InvitationPolicyResponse(
+    string SuggestedMembershipType,
+    IReadOnlyList<string> AllowedMembershipTypes,
+    bool RequireVerifiedDomainForInternal,
+    bool AllowExternalCollaboration,
+    bool AllowSubdomains,
+    bool IsEmailDomainVerified,
+    bool IsPublicEmailDomain,
+    string? InternalDisabledReason,
+    string? ExternalDisabledReason
 );
 
 public record AcceptInvitationRequest(

@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 20
+skinparam ranksep 22
+skinparam dpi 130
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -59,7 +64,8 @@ package "API Layer" as ApiLayer {
 
   TranslationRoomsController -[hidden]right- TranslationRoomParticipantsController
   TranslationRoomParticipantsController -[hidden]right- TranslationRoomAudioRouteController
-  TranslationRoomAudioRouteController -[hidden]right- TranslationRoomSessionsController
+  TranslationRoomsController -[hidden]down- TranslationRoomSessionsController
+  TranslationRoomsController -[hidden]down- TranslationRoomSessionsController
   TranslationRoomSessionsController -[hidden]right- RoomArtifactsController
   RoomArtifactsController -[hidden]right- TranslationRoomGrpcService
 }
@@ -110,10 +116,10 @@ package "Application Layer" as ApplicationLayer {
 
   TranslationRoomService -[hidden]right- TranslationRoomParticipantService
   TranslationRoomParticipantService -[hidden]right- TranslationRoomAudioRouteService
-  TranslationRoomAudioRouteService -[hidden]right- TranslationRoomSessionService
+  TranslationRoomService -[hidden]down- TranslationRoomSessionService
   TranslationRoomSessionService -[hidden]right- TranslationRoomArtifactService
   TranslationRoomArtifactService -[hidden]right- AudioRouteCacheService
-  AudioRouteCacheService -[hidden]right- TelemetryStateService
+  TranslationRoomSessionService -[hidden]down- TelemetryStateService
   TelemetryStateService -[hidden]right- RecordingCompletedEventProcessor
 }
 
@@ -170,13 +176,15 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- TranslationRoomRepository
   TranslationRoomRepository -[hidden]right- TranslationRoomParticipantRepository
-  TranslationRoomParticipantRepository -[hidden]right- TranslationRoomAudioRouteRepository
+  UnitOfWork -[hidden]down- TranslationRoomAudioRouteRepository
+  UnitOfWork -[hidden]down- TranslationRoomAudioRouteRepository
   TranslationRoomAudioRouteRepository -[hidden]right- TranslationRoomSessionRepository
   TranslationRoomSessionRepository -[hidden]right- TranslationRoomArtifactRepository
-  TranslationRoomArtifactRepository -[hidden]right- RedisStateRepository
+  TranslationRoomAudioRouteRepository -[hidden]down- RedisStateRepository
   RedisStateRepository -[hidden]right- RedisStreamRepository
-  RedisStreamRepository -[hidden]right- WorkspaceMemberGrpcDirectory
+  RedisStateRepository -[hidden]down- WorkspaceMemberGrpcDirectory
   WorkspaceMemberGrpcDirectory -[hidden]right- UserSettingsGrpcDirectory
+  RedisStateRepository -[hidden]down- UserSettingsGrpcDirectory
 
   UnitOfWork o-- TranslationRoomRepository
   UnitOfWork o-- TranslationRoomParticipantRepository
@@ -239,11 +247,47 @@ package "Domain Layer" as DomainLayer {
     -Rating: Int
   }
 
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomParticipant : has participants
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomAudioRoute : routes audio
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomSession : tracks sessions
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomArtifact : produces artifacts
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomInvitation : invites users
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
   TranslationRoom "1" *-- "0..*" TranslationRoomFeedback : collects feedback
 }
 
@@ -293,10 +337,10 @@ UserSettingsGrpcDirectory ..> AuthServiceGrpcServer : reads settings
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

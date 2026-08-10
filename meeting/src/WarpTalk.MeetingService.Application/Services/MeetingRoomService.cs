@@ -665,6 +665,53 @@ public class MeetingRoomService : IMeetingRoomService
         return Result.Success(true);
     }
 
+    /// <summary>
+    /// Host silences one participant's microphone.
+    ///
+    /// Deliberately not a kick: the same authorization, and nothing else in common. Muting
+    /// leaves the participant in the room, their invitation intact and their seat active —
+    /// they can unmute themselves again, which is the whole difference between "you are
+    /// making noise" and "you are out".
+    /// </summary>
+    public async Task<Result<bool>> MuteParticipantAsync(
+        Guid translationRoomId,
+        Guid hostUserId,
+        Guid participantUserId)
+    {
+        var meetingRoom = await _unitOfWork.MeetingRoomRepository
+            .FirstOrDefaultAsync(r => r.TranslationRoomId == translationRoomId);
+
+        if (meetingRoom == null)
+            return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
+
+        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
+        var roomDetails = roomDetailsResult.Value;
+
+        if (roomDetails == null)
+        {
+            var grpcResult = await _grpcService.GetRoomDetailsAsync(translationRoomId);
+            if (!grpcResult.IsSuccess || grpcResult.Value == null)
+                return Result.Failure<bool>("Translation room not found.", ErrorCodes.NotFound);
+            roomDetails = grpcResult.Value;
+        }
+
+        bool isOriginalHost = roomDetails.HostId == hostUserId.ToString();
+        bool isActiveHost = meetingRoom.ActiveHostId == hostUserId;
+
+        if (!isOriginalHost && !isActiveHost)
+            return Result.Failure<bool>("Only the host can mute participants.", ErrorCodes.Forbidden);
+
+        // A host muting themselves is the microphone button they already have, and routing it
+        // through the SFU would leave their own UI out of step with the track.
+        if (participantUserId == hostUserId)
+            return Result.Failure<bool>("Use the microphone control to mute yourself.", ErrorCodes.ValidationError);
+
+        return await _roomAdminService.MuteParticipantMicrophoneAsync(
+            meetingRoom.ProviderRoomName,
+            participantUserId.ToString());
+    }
+
     public async Task<Result<bool>> EndMeetingAsync(Guid translationRoomId, Guid hostUserId)
     {
         // 1. Fetch Room Details for Authorization

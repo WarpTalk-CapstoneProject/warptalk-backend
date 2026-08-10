@@ -1,0 +1,32 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Selection Page" as WorkspaceSelectionPage
+rectangle "Workspace Creation Page" as WorkspaceCreationPage
+rectangle "Workspace Join Request Page" as WorkspaceJoinRequestPage
+rectangle "Workspace Home Page" as WorkspaceHomePage
+rectangle "Join Translation Room Page" as JoinTranslationRoomPage
+rectangle "Account Preferences Page" as AccountPreferencesPage
+rectangle "Account Profile Page" as AccountProfilePage
+rectangle "Voice Profiles Page" as VoiceProfilesPage
+
+WorkspaceSelectionPage --> WorkspaceHomePage : Click Workspace Card
+WorkspaceSelectionPage --> WorkspaceCreationPage : Click "Create workspace"
+WorkspaceSelectionPage --> WorkspaceJoinRequestPage : Click "Join workspace"
+
+WorkspaceCreationPage --> WorkspaceHomePage : Click "Create Workspace"
+WorkspaceJoinRequestPage --> JoinTranslationRoomPage : Click "Back to room join"
+
+WorkspaceHomePage --> AccountPreferencesPage : Click "Preferences"
+WorkspaceHomePage --> AccountProfilePage : Click "Profile"
+WorkspaceHomePage --> VoiceProfilesPage : Click "Voice Profiles"
+
+@enduml

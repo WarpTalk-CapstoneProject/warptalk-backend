@@ -86,6 +86,15 @@ message GetWorkspaceSettingsResponse {
   // global glossary is merged into this workspace's STT/MT prompts. See
   // docs/global-glossary-plan.md §2.4.
   bool use_global_glossary = 5;
+  // WT-343: enforce_host_approval_default lived here for one release. Host approval is a
+  // per-meeting decision made in the create dialog, and a workspace-wide default for it was a
+  // second place to set the same thing — the owner removed it rather than keep two.
+  //
+  // RESERVED, not simply deleted: a future field reusing number 6 would be read as this bool by
+  // any peer still running the old generated code, which is a wire-compatibility break that
+  // compiles cleanly on both sides.
+  reserved 6;
+  reserved "enforce_host_approval_default";
 }
 
 message GetWorkspacePreflightRequest {

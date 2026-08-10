@@ -202,11 +202,14 @@ public class TranslationRoomsController : ControllerBase
     [HttpPost("{id}/start")]
     public async Task<IActionResult> StartTranslationRoom(Guid id, CancellationToken ct)
     {
-        var hostId = User.GetUserId();
-        if (hostId == null)
+        // WT-341: no longer necessarily the host. Entitlement to start is resolved in the service,
+        // against the room's own RequiresApproval setting — the email claim is needed because an
+        // invitee is identified by email, not by a participant row they may not have yet.
+        var callerId = User.GetUserId();
+        if (callerId == null)
             return Unauthorized();
 
-        var result = await _translationRoomService.StartTranslationRoomAsync(id, hostId.Value, ct);
+        var result = await _translationRoomService.StartTranslationRoomAsync(id, callerId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));

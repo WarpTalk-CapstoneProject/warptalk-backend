@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
@@ -46,6 +47,135 @@ public sealed class LiveKitRoomAdminService : ILiveKitRoomAdminService
             roomName,
             requiresRoomCreate: false,
             ct);
+
+    /// <summary>
+    /// Mutes every microphone track the participant is publishing.
+    ///
+    /// LiveKit's MutePublishedTrack needs a track sid, which the caller does not have and
+    /// must not be trusted for: a browser's view of somebody else's tracks goes stale on
+    /// every republish, and a wrong sid silently mutes nothing. So the sid is resolved here,
+    /// from the SFU's own answer to "what is this participant publishing right now".
+    ///
+    /// Every microphone track, not the first: a participant republishing mid-call can briefly
+    /// have two, and muting one of them leaves the room still hearing the other.
+    /// </summary>
+    public async Task<Result<bool>> MuteParticipantMicrophoneAsync(
+        string roomName,
+        string participantIdentity,
+        CancellationToken ct = default)
+    {
+        var participant = await SendRoomQueryAsync(
+            "GetParticipant",
+            new { room = roomName, identity = participantIdentity },
+            roomName,
+            ct);
+        if (!participant.IsSuccess)
+            return Result.Failure<bool>(participant.Error!, participant.ErrorCode);
+
+        var trackSids = ReadMicrophoneTrackSids(participant.Value ?? string.Empty);
+        if (trackSids.Count == 0)
+        {
+            // Nobody is publishing, so the room is already not hearing them. Reporting this as
+            // a failure would make the host press a button that says it did not work when the
+            // outcome they asked for already holds.
+            _logger.LogInformation(
+                "Mute requested for {Identity} in {RoomName}, who has no live microphone track.",
+                participantIdentity,
+                roomName);
+            return Result.Success(true);
+        }
+
+        foreach (var trackSid in trackSids)
+        {
+            var muted = await SendRoomCommandAsync(
+                "MutePublishedTrack",
+                new { room = roomName, identity = participantIdentity, track_sid = trackSid, muted = true },
+                roomName,
+                requiresRoomCreate: false,
+                ct);
+            if (!muted.IsSuccess)
+                return muted;
+        }
+
+        return Result.Success(true);
+    }
+
+    /// <summary>
+    /// Twirp JSON answers in camelCase, but LiveKit deployments have been seen to answer in
+    /// snake_case for the same field. Both spellings are read rather than guessing one — a
+    /// miss here is a mute button that silently does nothing.
+    /// </summary>
+    private static List<string> ReadMicrophoneTrackSids(string participantJson)
+    {
+        var sids = new List<string>();
+        if (string.IsNullOrWhiteSpace(participantJson)) return sids;
+
+        using var document = JsonDocument.Parse(participantJson);
+        if (!document.RootElement.TryGetProperty("tracks", out var tracks) ||
+            tracks.ValueKind != JsonValueKind.Array)
+            return sids;
+
+        foreach (var track in tracks.EnumerateArray())
+        {
+            var source = ReadString(track, "source") ?? string.Empty;
+            var type = ReadString(track, "type") ?? string.Empty;
+            var isMicrophone =
+                source.Equals("MICROPHONE", StringComparison.OrdinalIgnoreCase) ||
+                (source.Length == 0 && type.Equals("AUDIO", StringComparison.OrdinalIgnoreCase));
+            if (!isMicrophone) continue;
+
+            var sid = ReadString(track, "sid");
+            if (!string.IsNullOrEmpty(sid)) sids.Add(sid);
+        }
+
+        return sids;
+    }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private async Task<Result<string>> SendRoomQueryAsync(
+        string command,
+        object payload,
+        string roomName,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{_host}/twirp/livekit.RoomService/{command}")
+            {
+                Content = JsonContent.Create(payload)
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                GenerateRoomServiceToken(roomName, requiresRoomCreate: false));
+
+            using var response = await _httpClient.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (response.IsSuccessStatusCode)
+                return Result.Success(body);
+
+            _logger.LogError(
+                "LiveKit room query {Command} failed ({Status}): {Body}",
+                command,
+                response.StatusCode,
+                body);
+            return Result.Failure<string>(
+                $"LiveKit {command} failed: {response.StatusCode}",
+                "LIVEKIT_ROOM_COMMAND_FAILED");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LiveKit room query {Command} failed for room {RoomName}", command, roomName);
+            return Result.Failure<string>(
+                $"LiveKit {command} failed: {ex.Message}",
+                "LIVEKIT_ROOM_COMMAND_FAILED");
+        }
+    }
 
     public Task<Result<bool>> DeleteRoomAsync(
         string roomName,

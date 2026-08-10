@@ -40,6 +40,18 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    private readonly WarpTalk.Shared.Protos.UserService.UserServiceClient? _userClient;
+
+    private const string MeetingInvitedNotificationType = "MEETING_INVITED";
+
+    /// <summary>
+    /// WT-341. Sibling of MEETING_INVITED and MEETING_REMINDER, and deliberately its own type
+    /// rather than a second MEETING_INVITED: "you were invited" and "it is happening now" are
+    /// different messages, and reusing the invite type would make the two indistinguishable to
+    /// anything that groups, counts, or mutes notifications by type.
+    /// </summary>
+    private const string MeetingStartedNotificationType = "MEETING_STARTED";
 
     /// <summary>
     /// Cross-process relay every room event already travels on. The SignalR hub lives in the
@@ -85,8 +97,15 @@ public class TranslationRoomService : ITranslationRoomService
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
-        IRedisStateRepository? redisStateRepository = null)
+        IRedisStateRepository? redisStateRepository = null,
+        // Optional so every existing construction site — and the whole test suite — keeps
+        // working. A room service that cannot reach the notification mesh still creates
+        // rooms and still sends the invitation email; it just cannot ring the bell.
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
+        WarpTalk.Shared.Protos.UserService.UserServiceClient? userClient = null)
     {
+        _notificationClient = notificationClient;
+        _userClient = userClient;
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
         _audioRouteEventProcessor = audioRouteEventProcessor;
@@ -113,6 +132,70 @@ public class TranslationRoomService : ITranslationRoomService
     /// Never throws — an unnotified client is stale, but the invitations are already persisted
     /// and the invitation emails already sent, so failing the caller here would be worse.
     /// </summary>
+    /// <summary>
+    /// Rings the bell for someone who was just invited.
+    ///
+    /// MeetingInvited already goes out on the meeting-events channel, but that is a
+    /// workspace-scoped "your room list changed" nudge, not a notification — its own doc says
+    /// so. Nothing addressed the invitee, so an invitation existed as an email and a row and
+    /// never as anything the app could show them.
+    ///
+    /// Invitations are keyed by EMAIL and notifications by USER ID, which is the whole reason
+    /// this needs a lookup: an invitee who has no account yet has nowhere to receive a
+    /// notification, and the email is correctly the only channel for them. That is a silent
+    /// skip, not a failure.
+    ///
+    /// Never throws. The invitation is already persisted and the email already sent by the
+    /// time this runs; failing the caller over the bell would trade the thing that matters
+    /// for the thing that is nice to have.
+    /// </summary>
+    private async Task NotifyInvitedUserAsync(
+        string email,
+        TranslationRoom room,
+        string meetingLink,
+        CancellationToken ct)
+    {
+        if (_notificationClient is null || _userClient is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var user = await _userClient.GetUserByEmailAsync(
+                new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email },
+                cancellationToken: ct);
+
+            if (string.IsNullOrWhiteSpace(user?.Id))
+            {
+                // No account yet. The invitation email is their only channel, by design.
+                return;
+            }
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = user.Id,
+                Type = MeetingInvitedNotificationType,
+                Title = $"You were invited to \"{room.Title}\"",
+                Body = room.ScheduledAt.HasValue
+                    ? $"\"{room.Title}\" is scheduled for {room.ScheduledAt.Value:f}."
+                    : $"You were invited to join \"{room.Title}\".",
+                ActionUrl = meetingLink,
+            };
+            request.Metadata.Add("room_id", room.Id.ToString());
+            request.Metadata.Add("room_title", room.Title);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to send the meeting-invite notification for RoomId {RoomId}. The invitation and its email are unaffected.",
+                room.Id);
+        }
+    }
+
     private async Task PublishRoomInvitationsChangedAsync(TranslationRoom room)
     {
         if (_redisStateRepository is null)
@@ -635,6 +718,11 @@ public class TranslationRoomService : ITranslationRoomService
                     // S8: the routes just created are PENDING, and PENDING is what the client
                     // renders as "Waiting". The room is already running, so they are ready the
                     // moment they exist. Idempotent for every route already broadcasting.
+                    //
+                    // WT-339: "the room is running" is not "translation is running". A late joiner
+                    // arriving before the host presses Start gets configured routes that wait with
+                    // everyone else's; PublishRouteReadinessAsync draws that line itself, so this
+                    // call needs no condition of its own.
                     await PublishRouteReadinessAsync(translationRoom.Id, ct);
                 }
             }
@@ -676,10 +764,34 @@ public class TranslationRoomService : ITranslationRoomService
     /// by the room's own lifecycle, so it needs no telemetry payload, no timer, and no
     /// heartbeat — a few seconds of silence at the start of a demo can no longer leave the
     /// status stuck.
+    ///
+    /// WT-339 — but READY IS AS FAR AS OPENING A ROOM GOES. The two events answer two different
+    /// questions and were being emitted as one pair from every caller, which is how opening a
+    /// room came to switch translation on:
+    ///
+    ///   config_ready   — "these routes are configured". True the moment GenerateRoutesAsync
+    ///                    returns, whoever asked and whatever the room is doing.
+    ///   session_starts — "translation is running on them". True only while a TranslationSession
+    ///                    is open, which now happens solely when the host presses Start
+    ///                    Translation (ResumeTranslationRoomAsync).
+    ///
+    /// BROADCASTING is not cosmetic here: AudioRouteEventProcessor publishes AUDIO_ROUTES_UPDATED
+    /// on session_starts, and that is the signal livekit_ingress_worker uses to tell a published
+    /// meeting microphone apart from translation being active. Emitting it at room open is what
+    /// made the AI start transcribing — and billing — before anybody asked it to.
+    ///
+    /// So the session is looked up rather than assumed. Every caller may still call this
+    /// unconditionally: a room open emits config_ready alone, a late join into a room where
+    /// translation IS running emits both, and replaying either over a live route is the same
+    /// no-op it always was.
     /// </summary>
     private async Task PublishRouteReadinessAsync(Guid translationRoomId, CancellationToken ct)
     {
         await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.config_ready.ToString(), "{}", ct);
+
+        var activeSession = await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(translationRoomId, ct);
+        if (activeSession == null) return;
+
         await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
     }
 
@@ -708,7 +820,11 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
-    public async Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    public async Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(
+        Guid translationRoomId,
+        Guid callerId,
+        string? callerEmail,
+        CancellationToken ct = default)
     {
         try
         {
@@ -717,8 +833,9 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
-                return Result.Failure<TranslationRoomDto>("Only the host can start the room.", ErrorCodes.Forbidden);
+            var permission = await ResolveStartPermissionAsync(translationRoom, callerId, callerEmail, ct);
+            if (!permission.IsSuccess)
+                return Result.Failure<TranslationRoomDto>(permission.Error!, permission.ErrorCode);
 
             if (translationRoom.Status == "IN_PROGRESS")
             {
@@ -773,7 +890,7 @@ public class TranslationRoomService : ITranslationRoomService
             translationRoom.Status = "IN_PROGRESS";
             translationRoom.StartedAt ??= DateTime.UtcNow;
             translationRoom.UpdatedAt = DateTime.UtcNow;
-            translationRoom.UpdatedBy = hostId;
+            translationRoom.UpdatedBy = callerId;
 
             _translationRoomRepository.Update(translationRoom);
 
@@ -790,17 +907,183 @@ public class TranslationRoomService : ITranslationRoomService
             // the repository has ever emitted — so every route sat at PENDING for the whole
             // meeting and the client rendered "Waiting" regardless of whether anyone spoke.
             // Start is where the routes genuinely become configured, so it is where the event
-            // belongs. Resume publishes the same pair; both are invalid transitions on a live
-            // route, so replay is a no-op.
+            // belongs.
+            //
+            // WT-339: configured, and no further. This call used to take the routes all the way to
+            // BROADCASTING, which is why merely opening a room started translation. There is no
+            // TranslationSession at this point in the method — nothing above creates one any more —
+            // so PublishRouteReadinessAsync stops at READY of its own accord.
             await PublishRouteReadinessAsync(translationRoomId, ct);
+
+            // WT-341: ring the bell for everyone who was invited. Deliberately here and not in the
+            // IN_PROGRESS short-circuit above — that path is the idempotent re-Start, and a host
+            // whose client retried mid-call must not re-notify the whole invite list. This is the
+            // one place the room genuinely crosses from not-started to started.
+            //
+            // It matters most for the case this change exists for: when somebody other than the
+            // host opens the meeting, the host is not the person clicking, so without this the host
+            // themselves would have no idea their meeting had begun.
+            await NotifyRoomStartedAsync(translationRoom, callerId, ct);
 
             return Result.Success(translationRoom.ToResponseDto(
                 await _participantRepository.CountSeatHoldingParticipantsAsync(translationRoom.Id, ct)));
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
+            _logger.LogError(ex, "Error occurred while starting translation room. RoomId: {RoomId}, CallerId: {CallerId}", translationRoomId, callerId);
             return Result.Failure<TranslationRoomDto>("An unexpected error occurred while starting the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-341 — "may this caller take the room live?", the whole of it, in one place.
+    ///
+    /// The rule this replaces was <c>room.HostId != callerId</c>. That is a correct rule for a
+    /// meeting whose door the host must answer, and the wrong rule for every other meeting: a host
+    /// who is busy, ill, or simply late made the meeting permanently unstartable, and no other
+    /// participant — not even the workspace owner — could rescue it.
+    ///
+    /// <c>RequiresApproval</c> is what separates the two, and it is not a new concept invented for
+    /// this: it already decides whether a joiner lands CONNECTED or WAITING
+    /// (<see cref="TranslationRoomParticipantMapper"/>), so it already means "entry is the host's
+    /// decision". A room that requires approval therefore stays host-only to start, because
+    /// starting it would open a room whose lobby only the host can clear. A room that does not
+    /// requires no host decision at any point, so requiring one to begin was never protecting
+    /// anything.
+    ///
+    /// Entitlement for the non-host path is <see cref="CanAccessRoomAsync"/> — host OR participant
+    /// OR invited-by-email, plus workspace Owner/Admin — the same predicate that decides who may
+    /// READ the room. That equivalence is the point: this hands no one a room they could not
+    /// already open and sit in. It is emphatically NOT "any authenticated user", which would let a
+    /// stranger holding a room id start someone else's meeting and begin billing their workspace
+    /// for STT and TTS.
+    /// </summary>
+    private async Task<Result> ResolveStartPermissionAsync(
+        TranslationRoom room,
+        Guid callerId,
+        string? callerEmail,
+        CancellationToken ct)
+    {
+        if (room.HostId == callerId)
+            return Result.Success();
+
+        // ReadSettings, not a raw Deserialize: it is case-insensitive and falls back to defaults on
+        // a malformed blob. A settings column this failed to parse would otherwise read as
+        // RequiresApproval=false and hand the room to a non-host — failing OPEN on unreadable data
+        // is exactly backwards for a permission check.
+        if (TranslationRoomMapper.ReadSettings(room.Settings).RequiresApproval)
+        {
+            return Result.Failure(
+                "This meeting requires the host's approval to join, so only the host can start it.",
+                ErrorCodes.Forbidden);
+        }
+
+        if (!await CanAccessRoomAsync(room.Id, callerId, callerEmail, ct))
+        {
+            return Result.Failure(
+                "You are not allowed to start this meeting.",
+                ErrorCodes.Forbidden);
+        }
+
+        return Result.Success();
+    }
+
+    /// <summary>
+    /// WT-341 — tells the people invited to this meeting that it has begun.
+    ///
+    /// The room-started Redis command published beside this reaches clients ALREADY IN the room;
+    /// it is a live-state push, not a notification, and someone who has not opened the room sees
+    /// nothing from it. Before this, a meeting starting was invisible to every invitee who was not
+    /// already looking at it — which is survivable when the host starts the meeting they scheduled,
+    /// and not survivable once anybody can, because then the host is an invitee too.
+    ///
+    /// Addressed by INVITATION rather than by participant row on purpose: the people who need
+    /// telling are the ones who have not arrived yet. Anyone already in the room learns from the
+    /// live push. An invitee with no account has no notification inbox — that is a silent skip,
+    /// exactly as in <see cref="NotifyInvitedUserAsync"/>, because their channel was the email.
+    ///
+    /// Never throws. The room is IN_PROGRESS and persisted by the time this runs; failing the
+    /// start over an undelivered bell would trade the meeting for the announcement of it.
+    /// </summary>
+    private async Task NotifyRoomStartedAsync(TranslationRoom room, Guid startedBy, CancellationToken ct)
+    {
+        if (_notificationClient is null || _userClient is null)
+            return;
+
+        try
+        {
+            var invitations = await _unitOfWork.TranslationRoomInvitationRepository
+                .FindAsync(i => i.TranslationRoomId == room.Id, ct: ct);
+
+            var emails = (invitations ?? Enumerable.Empty<TranslationRoomInvitation>())
+                .Where(i => RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))
+                .Select(i => RoomReadAccess.NormalizeEmail(i.Email))
+                .Where(email => email is not null)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (emails.Count == 0)
+                return;
+
+            var meetingLink = $"{_frontendBaseUrl.TrimEnd('/')}/room/{room.Id}";
+
+            foreach (var email in emails)
+            {
+                await NotifyRoomStartedRecipientAsync(email!, room, meetingLink, startedBy, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to announce the start of RoomId {RoomId}. The room is started and unaffected.",
+                room.Id);
+        }
+    }
+
+    /// <summary>
+    /// One recipient, so a single unresolvable invitee cannot silence the rest of the list — the
+    /// try/catch is per-person for the same reason the loop exists at all.
+    /// </summary>
+    private async Task NotifyRoomStartedRecipientAsync(
+        string email,
+        TranslationRoom room,
+        string meetingLink,
+        Guid startedBy,
+        CancellationToken ct)
+    {
+        try
+        {
+            var user = await _userClient!.GetUserByEmailAsync(
+                new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email },
+                cancellationToken: ct);
+
+            if (string.IsNullOrWhiteSpace(user?.Id))
+                return;
+
+            // The person who just clicked Start is watching the room open in front of them.
+            if (Guid.TryParse(user.Id, out var userId) && userId == startedBy)
+                return;
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = user.Id,
+                Type = MeetingStartedNotificationType,
+                Title = $"\"{room.Title}\" has started",
+                Body = $"\"{room.Title}\" is live now. Join when you're ready.",
+                ActionUrl = meetingLink,
+            };
+            request.Metadata.Add("room_id", room.Id.ToString());
+            request.Metadata.Add("room_title", room.Title);
+
+            await _notificationClient!.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify one invitee that RoomId {RoomId} started; the remaining invitees are unaffected.",
+                room.Id);
         }
     }
 
@@ -940,14 +1223,27 @@ public class TranslationRoomService : ITranslationRoomService
 
     public async Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
+        var transactionStarted = false;
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
+            // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
+            // because opening the room no longer starts translation with it — an open, never-yet-
+            // translated room is exactly the state the host presses the button from. Starting and
+            // resuming really are the same act on the same room; the transcript tells them apart
+            // by session number, not by which endpoint was called.
             if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
+
+            await _unitOfWork.BeginTransactionAsync(ct);
+            transactionStarted = true;
+
+            // Double-clicks and retries may arrive at different service instances. Serialize the
+            // check-and-create section in PostgreSQL so they cannot both observe "no session".
+            await _translationRoomSessionRepository.AcquireSessionStartLockAsync(translationRoomId, ct);
 
             translationRoom.Status = "IN_PROGRESS";
             translationRoom.UpdatedAt = DateTime.UtcNow;
@@ -958,7 +1254,20 @@ public class TranslationRoomService : ITranslationRoomService
             await StartNewTranslationSessionAsync(translationRoom, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await _unitOfWork.CommitTransactionAsync(ct);
+            transactionStarted = false;
             await PublishRoomStartedAsync(translationRoom, ct);
+
+            // WT-339: the routes are only now allowed to broadcast. Emitted AFTER SaveChangesAsync
+            // so the session this method just opened is readable — PublishRouteReadinessAsync
+            // looks it up rather than taking anyone's word for it, and would otherwise stop at
+            // READY on the very call that is meant to start translation.
+            //
+            // Covers the START case (routes sitting at READY since the room was opened: config_ready
+            // is a no-op, session_starts takes them to BROADCASTING). room_resume below covers the
+            // RESUME case (routes PAUSED), where the readiness pair is the no-op instead. Each is
+            // an invalid transition in the other's state, so both are safe to send every time.
+            await PublishRouteReadinessAsync(translationRoomId, ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);
@@ -967,6 +1276,18 @@ public class TranslationRoomService : ITranslationRoomService
         }
         catch (Exception ex)
         {
+            if (transactionStarted)
+            {
+                try
+                {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                }
+                catch (Exception rollbackException)
+                {
+                    _logger.LogError(rollbackException, "Error rolling back translation start. RoomId: {RoomId}", translationRoomId);
+                }
+            }
+
             _logger.LogError(ex, "Error resuming translation room. RoomId: {RoomId}", translationRoomId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
@@ -1286,6 +1607,7 @@ public class TranslationRoomService : ITranslationRoomService
                         }, ct);
 
                         await _emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, translationRoom.Title, scheduledTime, ct);
+                        await NotifyInvitedUserAsync(email, translationRoom, meetingLink, ct);
                         invitationsAdded = true;
                     }
                 }
@@ -1579,6 +1901,9 @@ public class TranslationRoomService : ITranslationRoomService
 
     private async Task StartNewTranslationSessionAsync(TranslationRoom translationRoom, CancellationToken ct)
     {
+        var activeSession = await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(translationRoom.Id, ct);
+        if (activeSession != null) return;
+
         var now = DateTime.UtcNow;
         await _translationRoomSessionRepository.AddAsync(new TranslationRoomSession
         {

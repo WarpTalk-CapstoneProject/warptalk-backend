@@ -42,7 +42,16 @@ public class GlossaryStartedEventConsumer : BackgroundService
     // Terminology UI) always get first claim on this budget; global terms only fill what's
     // left over — see MergeTerms.
     private const int MaxTermsInPrompt = 60;
+    // NOTE: published contextual-biasing studies put the sweet spot near 100 entries
+    // (~40% relative improvement on biased-word error rate), with degradation of the
+    // UNBIASED word error rate only appearing around 1000. warptalk-ai caps at 100 too
+    // (stt_worker/model.py:_normalized_keywords), so 24 — not either cap — is the binding
+    // constraint today. Raising it is likely a real accuracy win, but it should be
+    // measured rather than assumed, so it is left alone here and called out instead.
     private const int MaxSttKeywords = 24;
+    // Below this, an entry is treated as a false-accept risk rather than a useful hint;
+    // see IsUsefulSttKeyword for the acronym exception.
+    private const int MinSttKeywordLength = 3;
     private static readonly TimeSpan PromptTtl = TimeSpan.FromHours(24);
 
     public GlossaryStartedEventConsumer(
@@ -270,6 +279,32 @@ public class GlossaryStartedEventConsumer : BackgroundService
     /// own terms, which is how a global proper noun could be translated correctly and
     /// recognised as something else entirely.
     /// </param>
+    /// <summary>
+    /// Whether a term earns one of the scarce contextual-biasing slots.
+    /// <para>
+    /// Contextual-biasing research is consistent that very short entries are the main
+    /// source of false accepts: a two-letter string matches fragments of ordinary speech
+    /// constantly, so it drags unrelated audio toward the biased term and costs accuracy
+    /// on everything NOT in the list. That matters doubly here because the budget is only
+    /// <see cref="MaxSttKeywords"/> entries and BuildSttKeywords fills it from BOTH sides
+    /// of every pair — the Vietnamese target of a term is a keyword too, so short function
+    /// words can crowd out the proper nouns the list exists for.
+    /// </para>
+    /// <para>
+    /// Acronyms are the deliberate exception. "AI", "QA" and "ML" are exactly the terms
+    /// worth biasing and are short by nature, so two or more capitals buys a pass — that
+    /// keeps "gRPC" and "iOS" while still rejecting "và", "là" and "of".
+    /// </para>
+    /// </summary>
+    internal static bool IsUsefulSttKeyword(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+        if (value.Length >= MinSttKeywordLength)
+            return true;
+        return value.Count(char.IsUpper) >= 2;
+    }
+
     internal static List<string> BuildSttKeywords(
         IReadOnlyCollection<PromptTerm> terms,
         int maxKeywords)
@@ -286,7 +321,9 @@ public class GlossaryStartedEventConsumer : BackgroundService
                 var cleaned = string.Join(
                     " ",
                     value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
-                if (string.IsNullOrEmpty(cleaned) || !seen.Add(NormalizeKey(cleaned)))
+                if (string.IsNullOrEmpty(cleaned) || !IsUsefulSttKeyword(cleaned))
+                    continue;
+                if (!seen.Add(NormalizeKey(cleaned)))
                     continue;
 
                 keywords.Add(cleaned);

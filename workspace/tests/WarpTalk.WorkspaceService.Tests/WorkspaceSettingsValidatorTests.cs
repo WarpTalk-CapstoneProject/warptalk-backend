@@ -17,7 +17,6 @@ public class WorkspaceSettingsValidatorTests
             true,
             maxActiveRooms,
             artifactRetentionDays,
-            true,
             new List<string>(),
             true,
             false,

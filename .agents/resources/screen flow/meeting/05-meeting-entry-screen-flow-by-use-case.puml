@@ -1,0 +1,52 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam dpi 136
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+package "Create And Schedule Meeting" {
+  rectangle "Workspace Rooms Page" as ScheduleWorkspaceRoomsPage
+  rectangle "Create Room Dialog" as CreateRoomDialog
+  rectangle "Daily Recurrence Schedule Dialog" as DailyRecurrenceScheduleDialog
+}
+
+package "Review And Start Room" {
+  rectangle "Room Information Page" as RoomInformationPage
+  rectangle "Setup Room Dialog" as SetupRoomDialog
+}
+
+package "Join By Meeting Code" {
+  rectangle "Workspace Rooms Page" as JoinWorkspaceRoomsPage
+  rectangle "Join Translation Room Dialog" as JoinTranslationRoomDialog
+  rectangle "Join Translation Room Page" as JoinTranslationRoomPage
+}
+
+package "Waiting And Live Session" {
+  rectangle "Waiting Room Page" as WaitingRoomPage
+  rectangle "Live Meeting Page" as LiveMeetingPage
+}
+
+ScheduleWorkspaceRoomsPage --> CreateRoomDialog : Click "New Meeting"
+CreateRoomDialog --> DailyRecurrenceScheduleDialog : Click "Repeat Daily"
+DailyRecurrenceScheduleDialog --> CreateRoomDialog : Save Daily Schedule
+CreateRoomDialog --> SetupRoomDialog : Click "Configure"
+CreateRoomDialog --> RoomInformationPage : Click "Join"
+
+RoomInformationPage --> LiveMeetingPage : Click "Start meeting"
+RoomInformationPage --> WaitingRoomPage : Click "Enter waiting room"
+RoomInformationPage --> SetupRoomDialog : Click "Join meeting"
+SetupRoomDialog --> LiveMeetingPage : Click "Start Meeting" or "Join Meeting"
+WaitingRoomPage --> SetupRoomDialog : Click "Back to setup"
+WaitingRoomPage --> LiveMeetingPage : Host starts meeting
+
+JoinWorkspaceRoomsPage --> JoinTranslationRoomDialog : Click "Join via code"
+JoinTranslationRoomDialog --> JoinTranslationRoomPage : Submit Meeting Code
+JoinTranslationRoomPage --> LiveMeetingPage : Click "Join Meeting"
+
+@enduml

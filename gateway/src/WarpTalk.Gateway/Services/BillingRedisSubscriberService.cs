@@ -56,20 +56,43 @@ public class BillingRedisSubscriberService : BackgroundService
                         var payload = JsonSerializer.Deserialize<RealtimeNotificationMessage>(message.ToString());
                         if (payload == null || string.IsNullOrEmpty(payload.UserId)) return;
 
-                        // Only broadcast billing-related notifications
-                        if (string.IsNullOrEmpty(payload.Type) || !payload.Type.StartsWith(RealtimeConstants.Billing.NotificationTypePrefix, StringComparison.OrdinalIgnoreCase))
-                            return;
+                        // EVERY notification is relayed, not only the billing ones.
+                        //
+                        // This subscribed to the channel every notification passes through and then
+                        // dropped all but `billing.*`. ClientMethods.NewNotification has existed as a
+                        // constant the whole time with nothing sending it, so a meeting reminder could
+                        // be created, persisted and published and still never reach a connected
+                        // client — the bell only filled on the next refetch.
+                        //
+                        // BillingNotification is still emitted for billing types on top, because the
+                        // billing screens listen for that name and this is not the change that should
+                        // break them.
+                        var isBilling =
+                            !string.IsNullOrEmpty(payload.Type)
+                            && payload.Type.StartsWith(RealtimeConstants.Billing.NotificationTypePrefix, StringComparison.OrdinalIgnoreCase);
 
-                        if (payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase) || payload.UserId.Equals("*", StringComparison.OrdinalIgnoreCase))
+                        var isBroadcast =
+                            payload.UserId.Equals("all", StringComparison.OrdinalIgnoreCase)
+                            || payload.UserId.Equals("*", StringComparison.OrdinalIgnoreCase);
+
+                        if (isBroadcast)
                         {
-                            await _hubContext.Clients.All.SendAsync(RealtimeConstants.ClientMethods.BillingNotification, payload, stoppingToken);
-                            _logger.LogDebug(RealtimeConstants.Billing.Logs.BroadcastLogTemplate, RealtimeConstants.ClientMethods.BillingNotification, payload.Type, "ALL clients");
+                            await _hubContext.Clients.All.SendAsync(RealtimeConstants.ClientMethods.NewNotification, payload, stoppingToken);
+                            if (isBilling)
+                            {
+                                await _hubContext.Clients.All.SendAsync(RealtimeConstants.ClientMethods.BillingNotification, payload, stoppingToken);
+                            }
+                            _logger.LogDebug(RealtimeConstants.Billing.Logs.BroadcastLogTemplate, RealtimeConstants.ClientMethods.NewNotification, payload.Type, "ALL clients");
                         }
                         else
                         {
                             var groupName = RealtimeConstants.Groups.User(payload.UserId);
-                            await _hubContext.Clients.Group(groupName).SendAsync(RealtimeConstants.ClientMethods.BillingNotification, payload, stoppingToken);
-                            _logger.LogDebug(RealtimeConstants.Billing.Logs.BroadcastLogTemplate, RealtimeConstants.ClientMethods.BillingNotification, payload.Type, groupName);
+                            await _hubContext.Clients.Group(groupName).SendAsync(RealtimeConstants.ClientMethods.NewNotification, payload, stoppingToken);
+                            if (isBilling)
+                            {
+                                await _hubContext.Clients.Group(groupName).SendAsync(RealtimeConstants.ClientMethods.BillingNotification, payload, stoppingToken);
+                            }
+                            _logger.LogDebug(RealtimeConstants.Billing.Logs.BroadcastLogTemplate, RealtimeConstants.ClientMethods.NewNotification, payload.Type, groupName);
                         }
                     }
                     catch (Exception ex)

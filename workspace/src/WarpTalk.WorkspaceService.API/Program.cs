@@ -37,6 +37,9 @@ builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Appl
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.
 builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();
+// Shows an Owner/Admin what the system has indexed about their workspace. Read-only; the
+// vector store it reads from is reached through IKnowledgeChunkReader in Infrastructure.
+builder.Services.AddScoped<IWorkspaceKnowledgeService, WarpTalk.WorkspaceService.Application.Services.WorkspaceKnowledgeService>();
 
 // --- Infrastructure Layer Services (DbContext, Repositories, Storage, Redis, gRPC Clients, Consumers) ---
 builder.Services.AddInfrastructureServices(builder.Configuration, builder.Environment);

@@ -34,6 +34,7 @@ public static class WorkspaceConstants
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";
         public const string UserNotMember = "User is not a member of this workspace.";
         public const string WorkspaceNotFound = "Workspace not found.";
+        public const string WorkspaceInactive = "This workspace has been deactivated.";
         public const string UnexpectedErrorFetchingWorkspace = "An unexpected error occurred while fetching the workspace.";
         public const string UnexpectedErrorSelectingWorkspace = "An unexpected error occurred while selecting the workspace.";
         public const string UnexpectedError = "An unexpected error occurred.";
@@ -91,7 +92,17 @@ public static class WorkspaceConstants
         public const string InvitationNoLongerValidFormat = "Invitation is no longer valid. Status: {0}";
         public const string InvalidMembershipType = "Invalid membership type specified. Must be Internal or External.";
         public const string CannotInviteInternalWithoutVerifiedDomain = "Cannot invite as an Internal member because the email domain is not verified for this workspace.";
+
+        // Kept apart from CannotInviteInternalWithoutVerifiedDomain on purpose: the two have
+        // different remedies. An unverified company domain can be verified; a public mailbox
+        // domain never can, so telling the inviter to "verify the domain" sends them nowhere.
+        public const string CannotInviteInternalWithPublicDomain = "Cannot invite as an Internal member because public email domains (Gmail, Yahoo, etc.) can never be verified for a workspace. Invite them as External instead.";
         public const string ExternalMemberMustHaveMemberRole = "External members can only be assigned the Member role.";
+
+        // An invitation stores the inviter's intent, not a snapshot of policy. When the workspace
+        // settings in force at acceptance no longer permit that intent, acceptance is refused —
+        // it is never quietly rewritten to something that passes (BR-140-013).
+        public const string InvitationPolicyConflictFormat = "This invitation can no longer be accepted because the workspace's access policy changed since it was sent. {0} Ask an Owner or Admin to revoke it and send a new one.";
         public const string TrialWorkspaceMemberLimitReached = "Enterprise trial workspaces can have up to 5 members. Ask an admin to approve the Enterprise contract before inviting more people.";
 
         // Join Request Errors

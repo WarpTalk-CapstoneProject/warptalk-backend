@@ -171,6 +171,12 @@ public static class TranslationRoomMapper
     /// a caller who never mentions muting could not be told apart from one who asked for it
     /// off, and the type could never seed anything.
     /// </summary>
+    /// <remarks>
+    /// WT-343: a workspace-wide <c>EnforceHostApprovalDefault</c> sat between these two layers for
+    /// one release. Host approval is a per-meeting decision, made on the toggle in the create
+    /// dialog, and a workspace default for it was a second place to set the same thing. The owner
+    /// removed it rather than keep two, so the precedence is back to explicit-then-type.
+    /// </remarks>
     public static TranslationRoomSettings ResolveSettings(string roomType, RoomSettingsRequest? requested)
     {
         var defaults = TranslationRoomTypePolicy.For(roomType);

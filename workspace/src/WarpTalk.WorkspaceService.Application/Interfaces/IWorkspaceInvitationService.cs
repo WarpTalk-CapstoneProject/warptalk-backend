@@ -11,6 +11,7 @@ namespace WarpTalk.WorkspaceService.Application.Interfaces;
 public interface IWorkspaceInvitationService
 {
     Task<Result<InviteMemberResponse>> InviteMemberAsync(Guid workspaceId, InviteMemberRequest request, Guid inviterUserId, CancellationToken ct = default);
+    Task<Result<InvitationPolicyResponse>> GetInvitationPolicyAsync(Guid workspaceId, string? email, Guid userId, CancellationToken ct = default);
     Task<Result<WorkspaceInvitationDto>> RetryDeliveryAsync(Guid workspaceId, Guid invitationId, Guid inviterUserId, CancellationToken ct = default);
     Task<Result<PagedResult<WorkspaceInvitationDto>>> ListInvitationsAsync(Guid workspaceId, GetWorkspacesQuery query, Guid userId, CancellationToken ct = default);
     Task<Result> RevokeInvitationAsync(Guid workspaceId, Guid invitationId, Guid userId, CancellationToken ct = default);

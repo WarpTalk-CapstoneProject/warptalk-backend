@@ -131,6 +131,21 @@ builder.Services.AddScoped<IBreakoutsService, BreakoutsService>();
 // authoritative election path).
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.HostFallbackConsumerWorker>();
 
+// Applies WarpBot's answer to an @mention: reads assistant:chat_results, writes the assistant
+// message, broadcasts it to the room.
+//
+// This was NEVER REGISTERED. The class has existed the whole time — consumer group, retries,
+// dead-letter stream, a guarded XGROUP — and nothing ever started it, so every @WarpBot
+// mention was published to the AI worker, answered by it, and then dropped on the floor. On
+// production the meeting-chat-consumers group sat 41 entries behind with zero pending: not
+// stuck, simply never read.
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.MeetingChatAssistantResultConsumerService>();
+
+// Also never registered, and found by the same test: without it a breakout session's end time
+// is a number in a row nobody acts on, so breakout rooms simply never expire. The worker is a
+// guarded ten-second scan that only touches sessions already past due.
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.BreakoutExpiryWorker>();
+
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
 builder.Services.AddScoped<IMeetingChatTranslationRepository, MeetingChatTranslationRepository>();

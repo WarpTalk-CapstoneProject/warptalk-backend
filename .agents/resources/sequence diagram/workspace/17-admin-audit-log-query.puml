@@ -1,0 +1,72 @@
+@startuml
+title WarpTalk - Platform System Admin Security Audit Log Query
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+actor "System Admin" as Admin
+boundary "AdminDashboardPage" as Web
+control "API Gateway" as Gateway
+
+box "Workspace Service" #LightBlue
+participant ":AdminAuditLogController" as Controller <<boundary>>
+participant ":AdminAuditLogService" as Service <<service>>
+participant ":AdminAuditLogRepository" as Repository <<control>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+== STEP 1: Query Immutable Security Audit Log (WT-210) ==
+
+Admin -> Web : Access System Audit Logs & filter by dates/service/action
+activate Web
+
+Web -> Gateway : GET /api/v1/admin/audit-log\n?serviceName=WorkspaceService&action=WorkspaceSuspended&page=1
+activate Gateway
+
+Gateway -> Gateway : Verify SystemAdmin JWT role claim & policy
+alt Unauthorized / Non-SystemAdmin User
+  Gateway --> Web : 403 Forbidden (SystemAdmin policy authorization failed)
+else SystemAdmin Authorized
+  Gateway -> Controller : Query(queryRequest, cancellationToken)
+  activate Controller
+
+  Controller -> Service : QueryAsync(queryRequest, ct)
+  activate Service
+
+  Service -> Service : Validate query parameters\n(PageSize <= 100, Valid Date Range)
+
+  alt Validation Fails
+    Service --> Controller : Result.Failure("Invalid date range", ValidationError)
+    Controller --> Gateway : 400 Bad Request (ApiErrorResponse)
+    Gateway --> Web : Display validation error
+  else Valid Query Parameters
+    Service -> Repository : QueryAuditLogsAsync(queryRequest)
+    activate Repository
+    Repository -> WorkspaceDb : SELECT FROM AdminAuditLogs\nWHERE ServiceName = 'WorkspaceService'\nORDER BY CreatedAt DESC OFFSET... FETCH...
+    activate WorkspaceDb
+    WorkspaceDb --> Repository : AuditLog records & TotalCount
+    deactivate WorkspaceDb
+    Repository --> Service : PagedList<AdminAuditLogEntry>
+    deactivate Repository
+
+    Service --> Controller : Result.Success(PagedResult<AdminAuditLogDto>)
+    deactivate Service
+    Controller --> Gateway : 200 OK (PagedResult<AdminAuditLogDto>)
+    deactivate Controller
+    Gateway --> Web : Render audit log table with pagination
+  end
+  deactivate Gateway
+  deactivate Web
+end
+
+@enduml

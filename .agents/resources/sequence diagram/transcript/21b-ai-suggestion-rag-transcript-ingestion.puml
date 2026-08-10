@@ -1,0 +1,106 @@
+@startuml
+title WarpTalk - Live Transcript RAG Ingestion & Real-Time AI Suggestion Pipeline
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+queue "Redis Streams" as Redis
+
+box "Suggestion Worker (suggestion_worker)" #LightSalmon
+participant ":SuggestionWorker" as Worker <<boundary>>
+participant ":SuggesterEngine" as Engine <<service>>
+end box
+
+box "Embedding & RAG Service (embedding_worker)" #Lavender
+participant ":SearchWorker" as SearchWorker <<boundary>>
+participant ":VectorStoreManager" as VectorStore <<service>>
+database "Qdrant Vector DB" as QdrantDb
+end box
+
+participant "OpenAI / LLM Service" as LLM <<external system>>
+
+box "SignalR Gateway" #LightGray
+control "API Gateway / Hub" as Gateway <<boundary>>
+end box
+
+boundary "MeetingRoomPage" as Web
+actor "Participant" as User
+
+== STEP 1: Live Transcript Segment Ingestion & Local Heuristics ==
+
+Redis ->> Worker : Consume 'stt:results' { room_id, speaker_id, text, timestamp }
+activate Worker
+
+Worker -> Worker : Append segment to rolling TranscriptTurn window\n(bounded per room)
+
+Worker -> Engine : EvaluateStage0Heuristics(turnWindow)
+activate Engine
+Engine -> Engine : Check trigger rules (action verbs, question patterns, budget & cooldowns)
+
+alt Stage 0 Heuristics fail (No trigger found or budget exhausted)
+  Engine --> Worker : NoSuggestionTriggered
+  Worker -> Redis : XACK stt:results
+else Stage 0 Trigger Met (Potential Action Item or Text Suggestion)
+  Engine --> Worker : TriggerPassed (category: action_item / suggest_text)
+  deactivate Engine
+
+  == STEP 2: RAG Vector Search over Workspace Context ==
+
+  Worker -> SearchWorker : SearchContextAsync(roomId, queryText = turnText, topK = 3)
+  activate SearchWorker
+
+  SearchWorker -> VectorStore : SearchSimilarChunksAsync(queryText, workspaceId)
+  activate VectorStore
+  VectorStore -> QdrantDb : Query vector similarity (cosine) over Workspace Collection
+  activate QdrantDb
+  QdrantDb --> VectorStore : Relevant document chunks & confidence scores
+  deactivate QdrantDb
+  VectorStore --> SearchWorker : ContextChunks[]
+  deactivate VectorStore
+
+  SearchWorker --> Worker : ContextChunks[]
+  deactivate SearchWorker
+
+  == STEP 3: LLM Generation (Action Items & Text Suggestions) ==
+
+  Worker -> Engine : GenerateSuggestionAsync(turnWindow, ContextChunks)
+  activate Engine
+
+  Engine -> LLM : POST /v1/chat/completions\n(Prompt with transcript turn + RAG context chunks)
+  activate LLM
+  LLM --> Engine : Generated suggestion text & action_item payload
+  deactivate LLM
+
+  Engine --> Worker : SuggestionResultMessage { type: "suggestion", action_item, suggest_text }
+  deactivate Engine
+
+  == STEP 4: Real-Time Stream Broadcast & UI Display ==
+
+  Worker -> Redis : XADD ai_assistant:results { room_id, type: "suggestion", payload }
+  activate Redis
+  Redis --> Worker : Message queued
+  deactivate Redis
+  Worker -> Redis : XACK stt:results
+  deactivate Worker
+
+  Redis ->> Gateway : Consume 'ai_assistant:results' (type: "suggestion")
+  activate Gateway
+
+  Gateway -> Web : Push SignalR 'AiSuggestionReceived' event\n{ actionItem, suggestTextHint }
+  activate Web
+  Web --> User : Render inline Suggest Action pill & Suggest Text popup
+  deactivate Web
+  deactivate Gateway
+end
+
+@enduml

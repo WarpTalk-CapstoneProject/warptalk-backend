@@ -215,7 +215,9 @@ public sealed class MeetingChatAssistantResultConsumerService : BackgroundServic
 
         if (resultType is "chunk" or "tool_call_started")
         {
-            if (request.Status == "queued")
+            // "pending" is accepted for the rows already in the database when this shipped:
+            // they were written by the old spelling and would otherwise stay silent forever.
+            if (request.Status is "queued" or "pending")
             {
                 request.Status = "processing";
                 unitOfWork.MeetingChatAssistantRequestRepository.Update(request);

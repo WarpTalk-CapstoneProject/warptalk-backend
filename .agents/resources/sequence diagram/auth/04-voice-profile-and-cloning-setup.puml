@@ -1,0 +1,132 @@
+@startuml
+title WarpTalk - Voice Profile Sample Upload & Preferred Voice Selection
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+actor "Authenticated User" as User
+boundary "UserSettingsPage" as Web
+control "API Gateway" as Gateway
+
+box "Auth Service" #LightPink
+participant ":VoiceProfilesController" as Controller <<boundary>>
+participant ":VoiceProfileService" as Service <<service>>
+participant ":VoiceProfileRepository" as Repository <<control>>
+database "Auth Database" as AuthDb
+end box
+
+box "Storage Service" #LightGray
+participant ":ObjectStorage" as Storage <<boundary>>
+end box
+
+== STEP 1: Voice Sample Upload & Voice Cloning Profile Creation ==
+
+User -> Web : Select audio file & submit voice profile details
+activate Web
+
+Web -> Gateway : POST /api/v1/auth/voice-profiles\n(multipart/form-data: AudioFile, ProfileName)
+activate Gateway
+
+Gateway -> Controller : CreateProfile(request)
+activate Controller
+
+Controller -> Service : CreateProfileAsync(userId, request)
+activate Service
+
+Service -> Service : Validate audio format & duration\n(max 20MB, WAV/MP3)
+
+alt Audio validation fails
+  Service --> Controller : Result.Failure("Invalid audio format")
+  Controller --> Gateway : 400 Bad Request
+  Gateway --> Web : Display error alert
+else Valid audio sample
+  Service -> Storage : SaveVoiceSampleAsync(userId, fileBytes)
+  activate Storage
+  Storage --> Service : return fileUrl
+  deactivate Storage
+
+  Service -> Repository : AddAsync(VoiceProfile entity)
+  activate Repository
+  Repository -> AuthDb : INSERT INTO VoiceProfiles
+  activate AuthDb
+  AuthDb --> Repository : DB record saved
+  deactivate AuthDb
+  Repository --> Service : VoiceProfile entity
+  deactivate Repository
+
+  Service --> Controller : Result.Success(VoiceProfileDto)
+  Controller --> Gateway : 200 OK (VoiceProfileDto)
+  Gateway --> Web : Render updated voice profile list
+end
+deactivate Service
+deactivate Controller
+deactivate Gateway
+deactivate Web
+
+== STEP 2: Preferred Voice Catalog Query & Selection ==
+
+User -> Web : Select preferred TTS voice per target language
+activate Web
+
+Web -> Gateway : GET /api/v1/auth/voice-profiles/catalog?language=vi-VN
+activate Gateway
+
+Gateway -> Controller : GetCatalog("vi-VN")
+activate Controller
+
+Controller -> Service : GetCatalogAsync("vi-VN")
+activate Service
+
+Service -> Repository : GetVoiceCatalogAsync("vi-VN")
+activate Repository
+Repository -> AuthDb : SELECT FROM VoiceCatalog WHERE Language = 'vi-VN'
+activate AuthDb
+AuthDb --> Repository : Catalog list
+deactivate AuthDb
+Repository --> Service : VoiceCatalog list
+deactivate Repository
+
+Service --> Controller : Result.Success(VoiceCatalogDto[])
+deactivate Service
+Controller --> Gateway : 200 OK (VoiceCatalogDto[])
+deactivate Controller
+deactivate Gateway
+
+Web -> Gateway : PUT /api/v1/auth/voice-profiles/preferred-voice\n{ Language: "vi-VN", VoiceId: "vi-VN-Standard-A" }
+activate Gateway
+
+Gateway -> Controller : SetPreferredVoice(request)
+activate Controller
+
+Controller -> Service : SetPreferredVoiceAsync(userId, request)
+activate Service
+
+Service -> Repository : UpsertUserPreferredVoiceAsync(userId, language, voiceId)
+activate Repository
+Repository -> AuthDb : UPDATE/INSERT UserPreferredVoices
+activate AuthDb
+AuthDb --> Repository : Preferred voice saved
+deactivate AuthDb
+Repository --> Service : PreferredVoiceDto
+deactivate Repository
+
+Service --> Controller : Result.Success(PreferredVoiceDto)
+deactivate Service
+Controller --> Gateway : 200 OK (PreferredVoiceDto)
+deactivate Controller
+deactivate Gateway
+
+Gateway --> Web : Update user preference UI
+deactivate Web
+
+@enduml

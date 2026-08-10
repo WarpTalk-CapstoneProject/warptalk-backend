@@ -1,0 +1,50 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Home Page" as WorkspaceHomePage
+rectangle "Rooms Page" as RoomsPage
+rectangle "Room Information Page" as RoomInformationPage
+rectangle "Documents Page" as DocumentsPage
+rectangle "Document Details Page" as DocumentDetailsPage
+rectangle "Members Page" as MembersPage
+rectangle "Billing Page" as BillingPage
+rectangle "Payment Plans Page" as PaymentPlansPage
+rectangle "Payment Success Page" as PaymentSuccessPage
+rectangle "Payment Cancelled Page" as PaymentCancelledPage
+rectangle "Settings Page" as SettingsPage
+rectangle "Advanced Workspace Page" as AdvancedWorkspacePage
+rectangle "Dashboard Page" as DashboardPage
+rectangle "Account Preferences Page" as AccountPreferencesPage
+rectangle "Account Profile Page" as AccountProfilePage
+rectangle "Voice Profiles Page" as VoiceProfilesPage
+
+WorkspaceHomePage --> RoomsPage : Click "Meetings"
+WorkspaceHomePage --> DocumentsPage : Click "Documents"
+WorkspaceHomePage --> MembersPage : Click "Members"
+WorkspaceHomePage --> BillingPage : Click "Billing"
+WorkspaceHomePage --> SettingsPage : Click "Settings"
+WorkspaceHomePage --> DashboardPage : Click "Dashboard"
+WorkspaceHomePage --> VoiceProfilesPage : Click "Voice Profiles"
+WorkspaceHomePage --> AccountPreferencesPage : Click "Preferences"
+WorkspaceHomePage --> AccountProfilePage : Click "Profile"
+
+RoomsPage --> RoomInformationPage : Click Meeting Row
+DocumentsPage --> DocumentDetailsPage : Click Document Row
+
+BillingPage --> PaymentPlansPage : Click "Manage Plan & Credits"
+PaymentPlansPage --> PaymentSuccessPage : Complete Checkout
+PaymentPlansPage --> PaymentCancelledPage : Cancel Checkout
+PaymentSuccessPage --> BillingPage : Click "Go to Billing"
+PaymentCancelledPage --> BillingPage : Click "Back to Billing"
+
+SettingsPage --> AdvancedWorkspacePage : Click "Advanced"
+
+@enduml

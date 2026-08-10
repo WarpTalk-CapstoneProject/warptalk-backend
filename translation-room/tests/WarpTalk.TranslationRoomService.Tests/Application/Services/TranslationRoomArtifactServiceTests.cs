@@ -81,7 +81,8 @@ public sealed class TranslationRoomArtifactServiceTests
         return new TranslationRoomArtifactService(
             unitOfWork.Object,
             NullLogger<TranslationRoomArtifactService>.Instance,
-            signer.Object);
+            signer.Object,
+            new Mock<IRedisStateRepository>().Object);
     }
 
     private static TranslationRoomArtifact CreateArtifact(Guid hostId)

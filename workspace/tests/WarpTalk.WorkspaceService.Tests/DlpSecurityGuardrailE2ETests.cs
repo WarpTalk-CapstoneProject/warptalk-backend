@@ -147,7 +147,6 @@ public class DlpSecurityGuardrailE2ETests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             true,

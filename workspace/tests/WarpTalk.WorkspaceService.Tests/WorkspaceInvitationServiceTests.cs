@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -71,7 +72,7 @@ public class WorkspaceInvitationServiceTests
             _translationRoomClient,
             _emailComposer,
             _billingSubscriptionClient,
-            new WorkspaceInvitationAcceptanceProcessor(_unitOfWork, _billingSubscriptionClient));
+            new WorkspaceInvitationAcceptanceProcessor(_unitOfWork, _billingSubscriptionClient, _authIdentity));
     }
 
     private void StubRoleName(Guid roleId, string roleName)
@@ -90,6 +91,25 @@ public class WorkspaceInvitationServiceTests
     {
         _authIdentity.GetUserByEmailAsync(email, Arg.Any<CancellationToken>())
             .Returns(new User { Id = userId, Email = email, FullName = "Test User" });
+    }
+
+    /// <summary>
+    /// Puts domains in the workspace_verified_domains table — the only place the policy checks
+    /// now read from.
+    /// </summary>
+    private void StubVerifiedDomains(Guid workspaceId, params string[] domains)
+    {
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(domains.Select(d => new WorkspaceVerifiedDomain
+            {
+                WorkspaceId = workspaceId,
+                Domain = d,
+                Status = "verified",
+                VerifiedAt = DateTime.UtcNow
+            }).ToList());
     }
 
     #region InviteMemberAsync Tests
@@ -331,6 +351,172 @@ public class WorkspaceInvitationServiceTests
         Assert.Equal(WorkspaceConstants.Errors.ExternalMemberMustHaveMemberRole, result.Error);
     }
 
+    /// <summary>
+    /// An Owner-led workspace with the verified-domain policy on and one verified domain.
+    /// </summary>
+    private Workspace ArrangeInviter(
+        Guid workspaceId,
+        Guid inviterUserId,
+        Guid roleId,
+        bool requireVerifiedDomainForInternal = true,
+        bool allowExternalCollaboration = true,
+        bool allowSubdomains = false,
+        string roleName = "Member",
+        params string[] verifiedDomains)
+    {
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "WS",
+            Slug = "ws",
+            AllowExternalCollaboration = allowExternalCollaboration,
+            RequireVerifiedDomainForInternal = requireVerifiedDomainForInternal,
+            AllowSubdomains = allowSubdomains
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId(roleName, roleId);
+        StubVerifiedDomains(workspaceId, verifiedDomains);
+
+        return workspace;
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldStoreInternal_ForASubdomainAddress_WhenSubdomainsAreAllowed()
+    {
+        // Bug 1's create half. Accepting the same invitation is covered by
+        // AcceptInvitationByIdAsync_ShouldAdmitASubdomainAddress_WhenSubdomainsAreAllowed — the
+        // pair is the point, since the two paths used to match domains differently and only the
+        // create side honoured AllowSubdomains.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, allowSubdomains: true, verifiedDomains: "company.com");
+
+        var request = new InviteMemberRequest("a@eng.company.com", "Member", "Internal");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceInvitationRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceInvitation>(i => i.MembershipType == MembershipType.Internal.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldStoreExternal_WhenTheInviterPicksItForAVerifiedDomainAddress()
+    {
+        // BR-140-011. The inference would have said Internal here; the inviter's choice wins.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, verifiedDomains: "company.com");
+
+        var request = new InviteMemberRequest("contractor@company.com", "Member", "External");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceInvitationRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceInvitation>(i => i.MembershipType == MembershipType.External.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldRejectInternalPublicDomain_WithItsOwnErrorCode()
+    {
+        // Bug 3. Sharing the unverified-domain message would send the inviter off to verify
+        // gmail.com, which is not a thing that can happen.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, verifiedDomains: "company.com");
+
+        var request = new InviteMemberRequest("someone@gmail.com", "Member", "Internal");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.CannotInviteInternalWithPublicDomain, result.Error);
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldAllowInternalPublicDomain_WhenTheDomainPolicyIsOff()
+    {
+        // BR-140-005. The public-domain rule is a special case of the verified-domain rule, not
+        // a standalone one — with the policy off there is nothing to enforce.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, requireVerifiedDomainForInternal: false);
+
+        var request = new InviteMemberRequest("someone@gmail.com", "Member", "Internal");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+        await _workspaceInvitationRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceInvitation>(i => i.MembershipType == MembershipType.Internal.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldReject_WhenMembershipTypeIsNotRecognised()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        ArrangeInviter(workspaceId, inviterUserId, roleId, verifiedDomains: "company.com");
+
+        var request = new InviteMemberRequest("someone@company.com", "Member", "Contractor");
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.InvalidMembershipType, result.Error);
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldAdmitASubdomainAddress_WhenSubdomainsAreAllowed()
+    {
+        // Bug 1's accept half — this returned CannotInviteInternalWithoutVerifiedDomain before,
+        // leaving an invitation that could be created and never used.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "a@eng.company.com";
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            RequireVerifiedDomainForInternal = true,
+            AllowSubdomains = true
+        };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            RoleId = Guid.NewGuid(),
+            Email = userEmail,
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.Internal.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+
+        _workspaceInvitationRepository.GetByIdAsync(invitation.Id, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+        StubVerifiedDomains(workspaceId, "company.com");
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
+        await _workspaceMemberRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceMember>(m => m.MembershipType == MembershipType.Internal.ToString()),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task InviteMemberAsync_ShouldFail_WhenTrialWorkspaceMemberLimitReached()
     {
@@ -482,10 +668,12 @@ public class WorkspaceInvitationServiceTests
         var userId = Guid.NewGuid();
         var userEmail = "employee@enterprise.com";
 
+        // Enterprise-ness comes off the column, not off a VerifiedDomains list in the settings
+        // JSON — a stale JSON list is not evidence of live policy (WT-179).
         var workspace = new Workspace
         {
             Id = workspaceId,
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"]}"
+            RequireVerifiedDomainForInternal = true
         };
 
         var invitation = new WorkspaceInvitation
@@ -501,12 +689,13 @@ public class WorkspaceInvitationServiceTests
 
         _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        StubVerifiedDomains(workspaceId, "enterprise.com");
 
         // Mock that they already belong to another Enterprise workspace as an internal member
         var otherEnterpriseWorkspace = new Workspace
         {
             Id = Guid.NewGuid(),
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"]}"
+            RequireVerifiedDomainForInternal = true
         };
         var memberships = new List<WorkspaceMember>
         {
@@ -682,10 +871,12 @@ public class WorkspaceInvitationServiceTests
     }
 
     [Fact]
-    public async Task AcceptInvitationByIdAsync_ShouldIgnoreTheStoredMembershipType_AndUseTheDerivedOne()
+    public async Task AcceptInvitationByIdAsync_ShouldHonourTheStoredMembershipType_NotRecomputeIt()
     {
-        // The stored value is stale by construction — acceptance recomputes it. Pinning this
-        // keeps the gate and the recomputation from drifting apart again.
+        // BR-140-013. The stored value is the inviter's decision; acceptance admits it or
+        // refuses, and never rewrites it. This used to assert the opposite — that a stored
+        // External became Internal — which is the same rewrite that let an invitation issued as
+        // Internal/Admin arrive as External/Admin once its domain lost verification.
         var workspaceId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         const string userEmail = "dolar@hotmail.com";
@@ -694,15 +885,19 @@ public class WorkspaceInvitationServiceTests
         var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(MembershipType.Internal.ToString(), invitation.MembershipType);
+        Assert.Equal(MembershipType.External.ToString(), invitation.MembershipType);
+        await _workspaceMemberRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceMember>(m => m.MembershipType == MembershipType.External.ToString()),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task AcceptInvitationByIdAsync_ShouldAdmitAsExternal_WhenThePolicyIsOnAndTheDomainIsNotVerified()
+    public async Task AcceptInvitationByIdAsync_ShouldReject_WhenThePolicyIsOnAndTheDomainIsNotVerified()
     {
-        // With the policy actually on, an unverified domain resolves to External rather than
-        // being refused — which is why the Internal-without-verified-domain rejection is now
-        // unreachable through the derive path and kept only as an invariant guard.
+        // The old behaviour quietly downgraded this invitation to External and admitted it.
+        // Admitting an access class nobody approved is the thing BR-140-013 forbids, so the
+        // stale intent is refused instead — and the invitation is left PENDING so an Owner can
+        // still see it and decide (BR-140-014).
         var workspaceId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         const string userEmail = "dolar@hotmail.com";
@@ -714,20 +909,55 @@ public class WorkspaceInvitationServiceTests
 
         var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(MembershipType.External.ToString(), invitation.MembershipType);
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        // hotmail.com can never be verified, so the invitee is told that rather than being sent
+        // off to verify a domain nobody can verify.
+        Assert.Contains(WorkspaceConstants.Errors.CannotInviteInternalWithPublicDomain, result.Error);
+        Assert.Equal(InvitationStatus.PENDING.ToString(), invitation.Status);
+        Assert.Equal(MembershipType.Internal.ToString(), invitation.MembershipType);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task AcceptInvitationByIdAsync_ShouldFail_WhenThePolicyIsOnAndExternalCollaborationIsDisabled()
+    public async Task AcceptInvitationByIdAsync_ShouldReject_WhenTheVerifiedDomainWasRemovedAfterTheInviteWasSent()
     {
+        // The privilege leak in full: issued Internal + Admin while company.com was verified,
+        // then the domain is revoked. The old code recomputed External, kept RoleId untouched,
+        // and created an External member holding Admin — the exact pairing the create path
+        // refuses. Nothing is created now.
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string userEmail = "employee@company.com";
+        var invitation = ArrangeWt179Repro(
+            workspaceId,
+            userEmail,
+            MembershipType.Internal.ToString(),
+            requireVerifiedDomainForInternal: true);
+        _authIdentity.GetRoleByIdAsync(invitation.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = invitation.RoleId, Name = "Admin" });
+
+        var result = await _workspaceInvitationService.AcceptInvitationByIdAsync(invitation.Id, userId, userEmail);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, result.Error);
+        Assert.Equal(InvitationStatus.PENDING.ToString(), invitation.Status);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AcceptInvitationByIdAsync_ShouldReject_WhenStoredExternalAndExternalCollaborationIsDisabled()
+    {
+        // Loosening or tightening AllowExternalCollaboration after the fact must not admit
+        // someone the current settings would refuse.
         var workspaceId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         const string userEmail = "dolar@hotmail.com";
         var invitation = ArrangeWt179Repro(
             workspaceId,
             userEmail,
-            MembershipType.Internal.ToString(),
+            MembershipType.External.ToString(),
             requireVerifiedDomainForInternal: true,
             allowExternalCollaboration: false);
 
@@ -735,6 +965,8 @@ public class WorkspaceInvitationServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Contains(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, result.Error);
+        Assert.Equal(InvitationStatus.PENDING.ToString(), invitation.Status);
         await _workspaceMemberRepository.DidNotReceive().AddAsync(Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
 
@@ -833,12 +1065,15 @@ public class WorkspaceInvitationServiceTests
             MembershipType = "External"
         };
 
-        var workspaceB = new Workspace { Id = workspaceId, Settings = "{\"VerifiedDomains\":[]}" };
+        // B has to actually permit external collaboration for an External invitation to stand —
+        // the stored intent is checked against B's live settings, not recomputed into one that
+        // happens to pass.
+        var workspaceB = new Workspace { Id = workspaceId, AllowExternalCollaboration = true };
 
         _workspaceInvitationRepository.GetByTokenHashAsync(tokenHash, Arg.Any<CancellationToken>()).Returns(invitation);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspaceB);
 
-        var workspaceA = new Workspace { Id = Guid.NewGuid(), Settings = "{\"VerifiedDomains\":[\"company-a.com\"]}" };
+        var workspaceA = new Workspace { Id = Guid.NewGuid(), RequireVerifiedDomainForInternal = true };
         var existingMembership = new WorkspaceMember { UserId = userId, Workspace = workspaceA, MembershipType = "Internal" };
         _workspaceMemberRepository.FindAsync(
             Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
@@ -877,21 +1112,17 @@ public class WorkspaceInvitationServiceTests
             MembershipType = "Internal"
         };
 
-        var workspaceB = new Workspace { Id = workspaceId, Settings = "{\"VerifiedDomains\":[\"company.com\"]}" };
+        var workspaceB = new Workspace { Id = workspaceId, RequireVerifiedDomainForInternal = true };
 
         _workspaceInvitationRepository.GetByTokenHashAsync(tokenHash, Arg.Any<CancellationToken>()).Returns(invitation);
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspaceB);
+        StubVerifiedDomains(workspaceId, "company.com");
 
-        var workspaceA = new Workspace { Id = Guid.NewGuid(), Settings = "{\"VerifiedDomains\":[\"company.com\"]}" };
+        var workspaceA = new Workspace { Id = Guid.NewGuid(), RequireVerifiedDomainForInternal = true };
         var existingMembership = new WorkspaceMember { UserId = userId, Workspace = workspaceA, MembershipType = "Internal" };
         _workspaceMemberRepository.FindAsync(
             Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "Workspace", Arg.Any<CancellationToken>())
             .Returns(new List<WorkspaceMember> { existingMembership });
-
-        _workspaceVerifiedDomainRepository.AnyAsync(
-            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
-            Arg.Any<CancellationToken>())
-            .Returns(true);
 
         // Act
         var result = await _workspaceInvitationService.AcceptInvitationAsync(request, userId, userEmail);

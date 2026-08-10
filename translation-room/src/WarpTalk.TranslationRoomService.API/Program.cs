@@ -108,6 +108,9 @@ builder.Services.AddSingleton<IArtifactsFinalizationQueue, ArtifactsFinalization
 builder.Services.AddHostedService<ArtifactsFinalizationWorker>();
 builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
+// The other half of a summary rewrite. Without this the request reaches the AI worker and
+// its answer is published to a stream nobody reads.
+builder.Services.AddHostedService<SummaryResultConsumerWorker>();
 // IdleRoomMonitoringWorker supersedes MeetingLifecycleWorker (removed): both scanned
 // on the same 1-min/5-min cadence for the same ghost/idle rooms, but MeetingLifecycleWorker
 // ended rooms via a raw entity update that skipped participant disconnection and the

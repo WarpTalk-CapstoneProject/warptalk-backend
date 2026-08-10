@@ -1,0 +1,43 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam defaultFontName Arial
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor white
+  BorderColor black
+}
+left to right direction
+
+rectangle "Workspace Home Page" as WorkspaceHomePage
+rectangle "Rooms Page" as RoomsPage
+rectangle "Join Translation Room Page" as JoinTranslationRoomPage
+rectangle "Room Information Page" as RoomInformationPage
+rectangle "Waiting Room Page" as WaitingRoomPage
+rectangle "Live Meeting Page" as LiveMeetingPage
+rectangle "Room Artifacts Page" as RoomArtifactsPage
+rectangle "Feedback Page" as FeedbackPage
+rectangle "History Page" as HistoryPage
+rectangle "Documents Page" as DocumentsPage
+rectangle "Document Details Page" as DocumentDetailsPage
+rectangle "Members Page" as MembersPage
+
+WorkspaceHomePage --> RoomsPage : Click "Meetings"
+WorkspaceHomePage --> HistoryPage : Click "History"
+WorkspaceHomePage --> DocumentsPage : Click "Documents"
+WorkspaceHomePage --> MembersPage : Click "Members"
+
+RoomsPage --> JoinTranslationRoomPage : Click "Join via code"
+RoomsPage --> RoomInformationPage : Click Meeting Row
+
+RoomInformationPage --> WaitingRoomPage : Click "Enter waiting room"
+RoomInformationPage --> LiveMeetingPage : Click "Join meeting"
+WaitingRoomPage --> LiveMeetingPage : Host starts meeting
+
+LiveMeetingPage --> RoomArtifactsPage : Click "Leave / End Meeting"
+RoomArtifactsPage --> FeedbackPage : Click "Submit feedback"
+RoomArtifactsPage --> HistoryPage : Click "View history"
+
+DocumentsPage --> DocumentDetailsPage : Click Document Row
+
+@enduml

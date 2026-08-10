@@ -148,21 +148,20 @@ public class WorkspacesControllerTests
     }
 
     [Fact]
-    public async Task GetWorkspaceById_ShouldReturn403Forbidden_WhenUserNotMember()
+    public async Task GetWorkspaceById_ShouldReturn404NotFound_WhenUserNotMember()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
         _workspaceService.GetWorkspaceByIdAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
-            .Returns(Result.Failure<WorkspaceDto>("User is not a member.", ErrorCodes.Forbidden));
+            .Returns(Result.Failure<WorkspaceDto>("Workspace not found.", ErrorCodes.NotFound));
 
         // Act
         var result = await _controller.GetWorkspaceById(workspaceId, CancellationToken.None);
 
         // Assert
-        var forbiddenResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
-        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
-        Assert.Equal(ErrorCodes.Forbidden, value.Code);
+        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
+        var value = Assert.IsType<ApiErrorResponse>(notFoundResult.Value);
+        Assert.Equal(ErrorCodes.NotFound, value.Code);
     }
 
     [Fact]
@@ -185,21 +184,20 @@ public class WorkspacesControllerTests
     }
 
     [Fact]
-    public async Task SelectWorkspace_ShouldReturn403Forbidden_WhenNotMember()
+    public async Task SelectWorkspace_ShouldReturn404NotFound_WhenNotMember()
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
         _workspaceService.SelectWorkspaceAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
-            .Returns(Result.Failure<SelectWorkspaceResponse>("Not a member", ErrorCodes.Forbidden));
+            .Returns(Result.Failure<SelectWorkspaceResponse>("Workspace not found.", ErrorCodes.NotFound));
 
         // Act
         var result = await _controller.SelectWorkspace(workspaceId, CancellationToken.None);
 
         // Assert
-        var forbiddenResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, forbiddenResult.StatusCode);
-        var value = Assert.IsType<ApiErrorResponse>(forbiddenResult.Value);
-        Assert.Equal(ErrorCodes.Forbidden, value.Code);
+        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
+        var value = Assert.IsType<ApiErrorResponse>(notFoundResult.Value);
+        Assert.Equal(ErrorCodes.NotFound, value.Code);
     }
 
     [Fact]
@@ -214,7 +212,6 @@ public class WorkspacesControllerTests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             true,
@@ -245,7 +242,6 @@ public class WorkspacesControllerTests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             true,
@@ -274,7 +270,6 @@ public class WorkspacesControllerTests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             true,
@@ -305,7 +300,6 @@ public class WorkspacesControllerTests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             true,
@@ -344,7 +338,6 @@ public class WorkspacesControllerTests
             true,
             5,
             30,
-            true,
             new List<string> { "company.com" },
             true,
             false,

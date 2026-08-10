@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -23,15 +24,78 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
     private readonly IUnitOfWork _unitOfWork;
     private readonly ILogger<TranslationRoomArtifactService> _logger;
     private readonly IArtifactUrlSigner _urlSigner;
+    private readonly IRedisStateRepository _redisStateRepo;
+
+    // Consumed by warptalk-ai's SummaryTemplateWorker. Renaming either side silently is how
+    // a request ends up with no consumer and no reply.
+    private const string SummaryRequestStream = "assistant:summary_requests";
 
     public TranslationRoomArtifactService(
         IUnitOfWork unitOfWork,
         ILogger<TranslationRoomArtifactService> logger,
-        IArtifactUrlSigner urlSigner)
+        IArtifactUrlSigner urlSigner,
+        IRedisStateRepository redisStateRepo)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _urlSigner = urlSigner;
+        _redisStateRepo = redisStateRepo;
+    }
+
+    public async Task<Result> RegenerateSummaryAsync(
+        Guid roomId,
+        Guid userId,
+        string templateKey,
+        string? bearerToken,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var room = await _unitOfWork.TranslationRoomRepository.FirstOrDefaultAsync(
+                r => r.Id == roomId,
+                "TranslationRoomParticipants,TranslationRoomArtifacts",
+                ct);
+
+            if (room == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // Same two gates as reading the artifacts, for the same reasons: there is nothing
+            // to summarise until the meeting is over, and re-summarising exposes the whole
+            // transcript to whoever asks.
+            if (!TranslationRoomConstants.TerminalStatuses.Contains(room.Status.ToString()))
+                return Result.Failure("A summary can only be rewritten for a finished meeting.", ErrorCodes.InvalidState);
+
+            if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(room, userId))
+                return Result.Failure("Unauthorized to summarise this room.", ErrorCodes.Unauthorized);
+
+            var targetLanguages = LanguageHelper.ParseTargetLanguages(room.TargetLanguages);
+
+            await _redisStateRepo.StreamAddAsync(SummaryRequestStream, new Dictionary<string, string>
+            {
+                ["request_id"] = Guid.NewGuid().ToString(),
+                ["room_id"] = roomId.ToString(),
+                ["workspace_id"] = room.WorkspaceId.ToString(),
+                ["template_key"] = string.IsNullOrWhiteSpace(templateKey) ? "general" : templateKey.Trim().ToLowerInvariant(),
+                // Forwarded so the worker reads the transcript AS THE CALLER, through the
+                // same authenticated endpoint they could already use — never a privileged
+                // bypass that would let a regeneration read more than its requester can.
+                ["bearer_token"] = bearerToken ?? string.Empty,
+                ["target_languages_json"] = JsonSerializer.Serialize(targetLanguages),
+                ["timestamp_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture)
+            });
+
+            _logger.LogInformation(
+                "Queued summary regeneration for room {RoomId} with template {TemplateKey}",
+                roomId,
+                templateKey);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to queue summary regeneration for room {RoomId}", roomId);
+            return Result.Failure("Could not queue the summary rewrite.", ErrorCodes.InternalServerError);
+        }
     }
 
     public async Task<Result<List<RoomArtifactDto>>> GetRoomArtifactsAsync(Guid roomId, Guid userId, CancellationToken ct = default)

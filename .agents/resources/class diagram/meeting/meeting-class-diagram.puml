@@ -9,8 +9,13 @@ skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 60
-skinparam ranksep 85
+skinparam nodesep 35
+skinparam ranksep 45
+skinparam dpi 140
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
@@ -62,10 +67,10 @@ package "API Layer" as ApiLayer {
 
   MeetingsController -[hidden]right- MeetingChatController
   MeetingChatController -[hidden]right- QuestionsController
-  QuestionsController -[hidden]right- PollsController
+  MeetingsController -[hidden]down- PollsController
   PollsController -[hidden]right- BreakoutsController
   BreakoutsController -[hidden]right- LiveKitWebhooksController
-  LiveKitWebhooksController -[hidden]right- MeetingChatHub
+  PollsController -[hidden]down- MeetingChatHub
 }
 
 package "Application Layer" as ApplicationLayer {
@@ -112,10 +117,10 @@ package "Application Layer" as ApplicationLayer {
 
   MeetingRoomService -[hidden]right- MeetingChatService
   MeetingChatService -[hidden]right- QuestionsService
-  QuestionsService -[hidden]right- PollsService
+  MeetingRoomService -[hidden]down- PollsService
   PollsService -[hidden]right- BreakoutsService
   BreakoutsService -[hidden]right- MeetingWebhookService
-  MeetingWebhookService -[hidden]right- MeetingHistoryService
+  PollsService -[hidden]down- MeetingHistoryService
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
@@ -170,13 +175,13 @@ package "Infrastructure Layer" as InfrastructureLayer {
 
   UnitOfWork -[hidden]right- MeetingRoomRepository
   MeetingRoomRepository -[hidden]right- MeetingParticipantRepository
-  MeetingParticipantRepository -[hidden]right- MeetingChatMessageRepository
+  UnitOfWork -[hidden]down- MeetingChatMessageRepository
   MeetingChatMessageRepository -[hidden]right- MeetingTrackRepository
   MeetingTrackRepository -[hidden]right- MeetingChatTranslationRepository
-  MeetingChatTranslationRepository -[hidden]right- LiveKitTokenService
+  MeetingChatMessageRepository -[hidden]down- LiveKitTokenService
   LiveKitTokenService -[hidden]right- LiveKitRoomAdminService
   LiveKitRoomAdminService -[hidden]right- TranslationRoomGrpcService
-  TranslationRoomGrpcService -[hidden]right- RedisService
+  LiveKitTokenService -[hidden]down- RedisService
 
   UnitOfWork o-- MeetingRoomRepository
   UnitOfWork o-- MeetingParticipantRepository
@@ -316,10 +321,10 @@ RedisService ..> RedisServer : publishes events
 ApiLayer -[hidden]down- ApplicationLayer
 ApplicationLayer -[hidden]down- InfrastructureLayer
 InfrastructureLayer -[hidden]down- DomainLayer
-InfrastructureLayer -[hidden]right- ExternalSystems
+DomainLayer -[hidden]down- ExternalSystems
 
 ApiLayer -down..> ApplicationLayer : delegates requests
 ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
 InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -right..> ExternalSystems : integrates APIs
+InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

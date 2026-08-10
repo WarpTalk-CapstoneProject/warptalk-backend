@@ -52,7 +52,31 @@ public interface ITranslationRoomService
         CancellationToken ct = default);
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
-    Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
+    /// <summary>
+    /// WT-341: takes a room live. The caller is no longer required to be the host.
+    ///
+    /// A meeting whose host is busy used to be unstartable by anyone, which made "the host must
+    /// open it" a way to lose the meeting rather than a way to control it. Whether someone other
+    /// than the host may open the room is decided by the room's own <c>RequiresApproval</c>
+    /// setting, which already existed and already means "entry is the host's decision":
+    ///
+    ///  - <c>RequiresApproval = false</c> — anyone who may be in the room may open it. Nobody is
+    ///    waiting on a host decision, so nothing is bypassed by starting without them.
+    ///  - <c>RequiresApproval = true</c> — host only, unchanged. Every non-host lands in the lobby
+    ///    and the host is the one person who can admit them; letting a guest start the room would
+    ///    open a meeting whose door nobody can answer.
+    ///
+    /// <paramref name="callerEmail"/> is required and positional for the same reason it is on
+    /// <see cref="GetTranslationRoomAsync"/>: entitlement is host OR participant OR
+    /// invited-by-email, and a nullable "skip the check" parameter is the shape that lets a call
+    /// site opt out of authorization by accident. Pass null only when the caller genuinely has no
+    /// email claim — that narrows the check to host-or-participant, it never widens it.
+    /// </summary>
+    Task<Result<TranslationRoomDto>> StartTranslationRoomAsync(
+        Guid translationRoomId,
+        Guid callerId,
+        string? callerEmail,
+        CancellationToken ct = default);
     Task<Result> EndTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result<TranslationRoomDto>> CancelTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default);

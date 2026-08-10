@@ -1,0 +1,341 @@
+@startuml
+title 3.4 Translation Room Module Class Diagram
+
+top to bottom direction
+hide circle
+hide empty members
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 20
+skinparam ranksep 22
+skinparam dpi 130
+skinparam classFontSize 14
+skinparam classAttributeFontSize 12
+skinparam packageFontSize 16
+skinparam titleFontSize 18
+skinparam ArrowFontSize 11
+skinparam packageStyle rectangle
+skinparam packageBackgroundColor White
+skinparam packageBorderColor Black
+skinparam classBackgroundColor White
+skinparam classBorderColor Black
+skinparam ArrowColor Black
+
+package "API Layer" as ApiLayer {
+  class TranslationRoomsController <<boundary>> {
+    +CreateTranslationRoom(request)
+    +JoinTranslationRoom(request)
+    +StartTranslationRoom(id)
+    +PauseTranslationRoom(id)
+    +EndTranslationRoom(id)
+  }
+
+  class TranslationRoomParticipantsController <<boundary>> {
+    +GetParticipants(id, request)
+    +AdmitParticipant(id, participantId)
+    +KickParticipant(id, participantId)
+    +LeaveRoom(id)
+  }
+
+  class TranslationRoomAudioRouteController <<boundary>> {
+    +GenerateRoutes(roomId)
+    +UpdateRuntimeContext(roomId, routeId, request)
+    +ToggleVoiceClone(roomId, routeId, request)
+  }
+
+  class TranslationRoomSessionsController <<boundary>> {
+    +StartSession(roomId, request)
+    +UpdateSession(roomId, sessionId, request)
+    +EndSession(roomId, sessionId)
+  }
+
+  class RoomArtifactsController <<boundary>> {
+    +DownloadArtifact(id)
+    +ApproveConsent(id)
+  }
+
+  class TranslationRoomGrpcService <<boundary>> {
+    +GetRoom(request)
+    +ValidateParticipant(request)
+  }
+
+  TranslationRoomsController -[hidden]right- TranslationRoomParticipantsController
+  TranslationRoomParticipantsController -[hidden]right- TranslationRoomAudioRouteController
+  TranslationRoomsController -[hidden]down- TranslationRoomSessionsController
+  TranslationRoomsController -[hidden]down- TranslationRoomSessionsController
+  TranslationRoomSessionsController -[hidden]right- RoomArtifactsController
+  RoomArtifactsController -[hidden]right- TranslationRoomGrpcService
+}
+
+package "Application Layer" as ApplicationLayer {
+  class TranslationRoomService <<control>> {
+    +CreateTranslationRoomAsync(request, hostId)
+    +JoinTranslationRoomAsync(request, userId, email)
+    +StartTranslationRoomAsync(roomId, hostId)
+    +EndTranslationRoomAsync(roomId, hostId)
+  }
+
+  class TranslationRoomParticipantService <<control>> {
+    +GetParticipantsAsync(roomId, request, actorId)
+    +AdmitParticipantAsync(roomId, participantId, actorId)
+    +KickParticipantAsync(roomId, participantId, actorId)
+  }
+
+  class TranslationRoomAudioRouteService <<control>> {
+    +GenerateRoutesAsync(roomId)
+    +UpdateRuntimeContextAsync(roomId, routeId, dto)
+    +ToggleVoiceCloneAsync(roomId, routeId, dto)
+  }
+
+  class TranslationRoomSessionService <<control>> {
+    +StartSessionAsync(roomId, request)
+    +UpdateSessionAsync(roomId, sessionId, request)
+    +EndSessionAsync(roomId, sessionId)
+  }
+
+  class TranslationRoomArtifactService <<control>> {
+    +GetRoomArtifactsAsync(roomId, userId)
+    +GetArtifactDownloadAsync(artifactId, userId)
+    +ApproveArtifactConsentAsync(artifactId, userId)
+  }
+
+  class AudioRouteCacheService <<control>> {
+    +PublishRoutesUpdateAsync(roomId)
+  }
+
+  class TelemetryStateService <<control>> {
+    +UpdateTransportFlagsAndResolvePayloadAsync(roomId, eventType)
+  }
+
+  class RecordingCompletedEventProcessor <<control>> {
+    +ProcessAsync(event)
+  }
+
+  TranslationRoomService -[hidden]right- TranslationRoomParticipantService
+  TranslationRoomParticipantService -[hidden]right- TranslationRoomAudioRouteService
+  TranslationRoomService -[hidden]down- TranslationRoomSessionService
+  TranslationRoomSessionService -[hidden]right- TranslationRoomArtifactService
+  TranslationRoomArtifactService -[hidden]right- AudioRouteCacheService
+  TranslationRoomSessionService -[hidden]down- TelemetryStateService
+  TelemetryStateService -[hidden]right- RecordingCompletedEventProcessor
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class UnitOfWork <<control>> {
+    +SaveChangesAsync()
+    +Repository<T>()
+  }
+
+  class TranslationRoomRepository <<control>> {
+    +GetByIdAsync(roomId)
+    +GetByCodeAsync(code)
+    +Update(room)
+  }
+
+  class TranslationRoomParticipantRepository <<control>> {
+    +GetByRoomIdAsync(roomId)
+    +GetByRoomAndUserAsync(roomId, userId)
+  }
+
+  class TranslationRoomAudioRouteRepository <<control>> {
+    +GetRoutesByRoomIdAsync(roomId)
+    +AddRoutesAsync(routes)
+    +UpdateRoutesAsync(routes)
+  }
+
+  class TranslationRoomSessionRepository <<control>> {
+    +GetSessionsByRoomIdAsync(roomId)
+    +GetActiveSessionByRoomIdAsync(roomId)
+  }
+
+  class TranslationRoomArtifactRepository <<control>> {
+    +GetArtifactsByRoomIdAsync(roomId)
+    +GetArtifactWithRoomAsync(artifactId)
+  }
+
+  class RedisStateRepository <<control>> {
+    +StringSetAsync(key, payload)
+    +PublishAsync(channel, payload)
+  }
+
+  class RedisStreamRepository <<control>> {
+    +AddAsync(stream, fields)
+    +ReadGroupAsync(stream, group)
+  }
+
+  class WorkspaceMemberGrpcDirectory <<control>> {
+    +HasActiveMembershipAsync(workspaceId, userId)
+  }
+
+  class UserSettingsGrpcDirectory <<control>> {
+    +GetDefaultsAsync(userId)
+  }
+
+  UnitOfWork -[hidden]right- TranslationRoomRepository
+  TranslationRoomRepository -[hidden]right- TranslationRoomParticipantRepository
+  UnitOfWork -[hidden]down- TranslationRoomAudioRouteRepository
+  UnitOfWork -[hidden]down- TranslationRoomAudioRouteRepository
+  TranslationRoomAudioRouteRepository -[hidden]right- TranslationRoomSessionRepository
+  TranslationRoomSessionRepository -[hidden]right- TranslationRoomArtifactRepository
+  TranslationRoomAudioRouteRepository -[hidden]down- RedisStateRepository
+  RedisStateRepository -[hidden]right- RedisStreamRepository
+  RedisStateRepository -[hidden]down- WorkspaceMemberGrpcDirectory
+  WorkspaceMemberGrpcDirectory -[hidden]right- UserSettingsGrpcDirectory
+  RedisStateRepository -[hidden]down- UserSettingsGrpcDirectory
+
+  UnitOfWork o-- TranslationRoomRepository
+  UnitOfWork o-- TranslationRoomParticipantRepository
+  UnitOfWork o-- TranslationRoomAudioRouteRepository
+  UnitOfWork o-- TranslationRoomSessionRepository
+  UnitOfWork o-- TranslationRoomArtifactRepository
+}
+
+package "Domain Layer" as DomainLayer {
+  class TranslationRoom <<entity>> {
+    -Id: Guid
+    -WorkspaceId: Guid
+    -RoomCode: String
+    -Status: TranslationRoomStatus
+    -SourceLanguageCode: String
+    -TargetLanguageCode: String
+  }
+
+  class TranslationRoomParticipant <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -UserId: Guid
+    -Role: ParticipantRole
+    -Status: ParticipantStatus
+  }
+
+  class TranslationRoomAudioRoute <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -ParticipantId: Guid
+    -InputLanguageCode: String
+    -OutputLanguageCode: String
+  }
+
+  class TranslationRoomSession <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -StartedAt: DateTime
+    -EndedAt: DateTime
+  }
+
+  class TranslationRoomArtifact <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -ArtifactType: String
+    -StorageKey: String
+  }
+
+  class TranslationRoomInvitation <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -InviteeEmail: String
+    -Status: InvitationStatus
+  }
+
+  class TranslationRoomFeedback <<entity>> {
+    -Id: Guid
+    -TranslationRoomId: Guid
+    -UserId: Guid
+    -Rating: Int
+  }
+
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomParticipant : has participants
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomAudioRoute : routes audio
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomSession : tracks sessions
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomArtifact : produces artifacts
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomInvitation : invites users
+  TranslationRoomParticipant -[hidden]right- TranslationRoomAudioRoute
+  TranslationRoomAudioRoute -[hidden]right- TranslationRoomSession
+  TranslationRoom -[hidden]down- TranslationRoomParticipant
+  TranslationRoomParticipant -[hidden]down- TranslationRoomArtifact
+  TranslationRoomArtifact -[hidden]right- TranslationRoomInvitation
+  TranslationRoomInvitation -[hidden]right- TranslationRoomFeedback
+  TranslationRoom "1" *-- "0..*" TranslationRoomFeedback : collects feedback
+}
+
+package "External Systems" as ExternalSystems {
+  class RedisServer <<external system>> {
+    +Publish(channel, payload)
+    +StoreRouteCache(key, payload)
+  }
+
+  class WorkspaceServiceGrpcServer <<external system>> {
+    +ValidateMembership(userId, workspaceId)
+  }
+
+  class AuthServiceGrpcServer <<external system>> {
+    +GetUserSettings(userId)
+  }
+
+  RedisServer -[hidden]right- WorkspaceServiceGrpcServer
+  WorkspaceServiceGrpcServer -[hidden]right- AuthServiceGrpcServer
+}
+
+TranslationRoomsController --> TranslationRoomService
+TranslationRoomParticipantsController --> TranslationRoomParticipantService
+TranslationRoomAudioRouteController --> TranslationRoomAudioRouteService
+TranslationRoomSessionsController --> TranslationRoomSessionService
+RoomArtifactsController --> TranslationRoomArtifactService
+TranslationRoomGrpcService --> TranslationRoomService
+
+TranslationRoomService ..> UserSettingsGrpcDirectory
+TranslationRoomParticipantService ..> WorkspaceMemberGrpcDirectory
+TranslationRoomAudioRouteService ..> AudioRouteCacheService
+AudioRouteCacheService ..> RedisStateRepository
+TelemetryStateService ..> RedisStateRepository
+RecordingCompletedEventProcessor ..> TranslationRoomArtifactRepository
+
+TranslationRoomRepository ..> TranslationRoom : persists
+TranslationRoomParticipantRepository ..> TranslationRoomParticipant : persists
+TranslationRoomAudioRouteRepository ..> TranslationRoomAudioRoute : persists
+TranslationRoomSessionRepository ..> TranslationRoomSession : persists
+TranslationRoomArtifactRepository ..> TranslationRoomArtifact : persists
+
+RedisStateRepository ..> RedisServer : caches state
+RedisStreamRepository ..> RedisServer : consumes streams
+WorkspaceMemberGrpcDirectory ..> WorkspaceServiceGrpcServer : validates membership
+UserSettingsGrpcDirectory ..> AuthServiceGrpcServer : reads settings
+
+ApiLayer -[hidden]down- ApplicationLayer
+ApplicationLayer -[hidden]down- InfrastructureLayer
+InfrastructureLayer -[hidden]down- DomainLayer
+DomainLayer -[hidden]down- ExternalSystems
+@enduml
