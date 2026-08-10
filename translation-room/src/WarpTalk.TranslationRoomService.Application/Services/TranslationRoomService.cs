@@ -718,6 +718,11 @@ public class TranslationRoomService : ITranslationRoomService
                     // S8: the routes just created are PENDING, and PENDING is what the client
                     // renders as "Waiting". The room is already running, so they are ready the
                     // moment they exist. Idempotent for every route already broadcasting.
+                    //
+                    // WT-339: "the room is running" is not "translation is running". A late joiner
+                    // arriving before the host presses Start gets configured routes that wait with
+                    // everyone else's; PublishRouteReadinessAsync draws that line itself, so this
+                    // call needs no condition of its own.
                     await PublishRouteReadinessAsync(translationRoom.Id, ct);
                 }
             }
@@ -759,10 +764,34 @@ public class TranslationRoomService : ITranslationRoomService
     /// by the room's own lifecycle, so it needs no telemetry payload, no timer, and no
     /// heartbeat — a few seconds of silence at the start of a demo can no longer leave the
     /// status stuck.
+    ///
+    /// WT-339 — but READY IS AS FAR AS OPENING A ROOM GOES. The two events answer two different
+    /// questions and were being emitted as one pair from every caller, which is how opening a
+    /// room came to switch translation on:
+    ///
+    ///   config_ready   — "these routes are configured". True the moment GenerateRoutesAsync
+    ///                    returns, whoever asked and whatever the room is doing.
+    ///   session_starts — "translation is running on them". True only while a TranslationSession
+    ///                    is open, which now happens solely when the host presses Start
+    ///                    Translation (ResumeTranslationRoomAsync).
+    ///
+    /// BROADCASTING is not cosmetic here: AudioRouteEventProcessor publishes AUDIO_ROUTES_UPDATED
+    /// on session_starts, and that is the signal livekit_ingress_worker uses to tell a published
+    /// meeting microphone apart from translation being active. Emitting it at room open is what
+    /// made the AI start transcribing — and billing — before anybody asked it to.
+    ///
+    /// So the session is looked up rather than assumed. Every caller may still call this
+    /// unconditionally: a room open emits config_ready alone, a late join into a room where
+    /// translation IS running emits both, and replaying either over a live route is the same
+    /// no-op it always was.
     /// </summary>
     private async Task PublishRouteReadinessAsync(Guid translationRoomId, CancellationToken ct)
     {
         await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.config_ready.ToString(), "{}", ct);
+
+        var activeSession = await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(translationRoomId, ct);
+        if (activeSession == null) return;
+
         await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.session_starts.ToString(), "{}", ct);
     }
 
@@ -878,8 +907,12 @@ public class TranslationRoomService : ITranslationRoomService
             // the repository has ever emitted — so every route sat at PENDING for the whole
             // meeting and the client rendered "Waiting" regardless of whether anyone spoke.
             // Start is where the routes genuinely become configured, so it is where the event
-            // belongs. Resume publishes the same pair; both are invalid transitions on a live
-            // route, so replay is a no-op.
+            // belongs.
+            //
+            // WT-339: configured, and no further. This call used to take the routes all the way to
+            // BROADCASTING, which is why merely opening a room started translation. There is no
+            // TranslationSession at this point in the method — nothing above creates one any more —
+            // so PublishRouteReadinessAsync stops at READY of its own accord.
             await PublishRouteReadinessAsync(translationRoomId, ct);
 
             // WT-341: ring the bell for everyone who was invited. Deliberately here and not in the
@@ -1190,14 +1223,27 @@ public class TranslationRoomService : ITranslationRoomService
 
     public async Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
     {
+        var transactionStarted = false;
         try
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
+            // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
+            // because opening the room no longer starts translation with it — an open, never-yet-
+            // translated room is exactly the state the host presses the button from. Starting and
+            // resuming really are the same act on the same room; the transcript tells them apart
+            // by session number, not by which endpoint was called.
             if (translationRoom.Status != "PAUSED" && translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToInProgress, ErrorCodes.InvalidState);
+
+            await _unitOfWork.BeginTransactionAsync(ct);
+            transactionStarted = true;
+
+            // Double-clicks and retries may arrive at different service instances. Serialize the
+            // check-and-create section in PostgreSQL so they cannot both observe "no session".
+            await _translationRoomSessionRepository.AcquireSessionStartLockAsync(translationRoomId, ct);
 
             translationRoom.Status = "IN_PROGRESS";
             translationRoom.UpdatedAt = DateTime.UtcNow;
@@ -1208,7 +1254,20 @@ public class TranslationRoomService : ITranslationRoomService
             await StartNewTranslationSessionAsync(translationRoom, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
+            await _unitOfWork.CommitTransactionAsync(ct);
+            transactionStarted = false;
             await PublishRoomStartedAsync(translationRoom, ct);
+
+            // WT-339: the routes are only now allowed to broadcast. Emitted AFTER SaveChangesAsync
+            // so the session this method just opened is readable — PublishRouteReadinessAsync
+            // looks it up rather than taking anyone's word for it, and would otherwise stop at
+            // READY on the very call that is meant to start translation.
+            //
+            // Covers the START case (routes sitting at READY since the room was opened: config_ready
+            // is a no-op, session_starts takes them to BROADCASTING). room_resume below covers the
+            // RESUME case (routes PAUSED), where the readiness pair is the no-op instead. Each is
+            // an invalid transition in the other's state, so both are safe to send every time.
+            await PublishRouteReadinessAsync(translationRoomId, ct);
 
             // WT-67: Trigger Audio Routing State Machine to Resume
             await _audioRouteEventProcessor.ProcessEventAsync(translationRoomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", ct);
@@ -1217,6 +1276,18 @@ public class TranslationRoomService : ITranslationRoomService
         }
         catch (Exception ex)
         {
+            if (transactionStarted)
+            {
+                try
+                {
+                    await _unitOfWork.RollbackTransactionAsync(ct);
+                }
+                catch (Exception rollbackException)
+                {
+                    _logger.LogError(rollbackException, "Error rolling back translation start. RoomId: {RoomId}", translationRoomId);
+                }
+            }
+
             _logger.LogError(ex, "Error resuming translation room. RoomId: {RoomId}", translationRoomId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
@@ -1830,6 +1901,9 @@ public class TranslationRoomService : ITranslationRoomService
 
     private async Task StartNewTranslationSessionAsync(TranslationRoom translationRoom, CancellationToken ct)
     {
+        var activeSession = await _translationRoomSessionRepository.GetActiveSessionByRoomIdAsync(translationRoom.Id, ct);
+        if (activeSession != null) return;
+
         var now = DateTime.UtcNow;
         await _translationRoomSessionRepository.AddAsync(new TranslationRoomSession
         {

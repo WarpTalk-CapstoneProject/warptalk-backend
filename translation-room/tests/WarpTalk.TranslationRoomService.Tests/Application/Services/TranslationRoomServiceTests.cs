@@ -1228,13 +1228,52 @@ public class TranslationRoomServiceTests
     }
 
     [Fact]
-    public async Task StartTranslationRoomAsync_EmitsConfigReadyBeforeSessionStarts()
+    public async Task StartTranslationRoomAsync_AlreadyInProgressWithoutAnActiveSession_DoesNotBroadcastRoutes()
+    {
+        // WT-339: an idempotent re-Start of an OPEN room must keep respecting the same split as
+        // the first Start. IN_PROGRESS can now mean "room open, translation not yet started", so
+        // the repair path still only configures routes unless a numbered TranslationSession exists.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "IN_PROGRESS",
+            TranslationRoomType = "INSTANT",
+            SourceLanguage = "en",
+            TargetLanguages = "[\"vi\"]",
+            Settings = "{\"requires_approval\":false}"
+        });
+        _mockSessionRepo.Setup(s => s.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomSession?)null);
+
+        var emitted = new List<string>();
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(roomId, null, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        emitted.Should().Equal(AudioRoutingEventType.config_ready.ToString());
+    }
+
+    [Fact]
+    public async Task StartTranslationRoomAsync_ConfiguresRoutesButDoesNotBroadcastThem()
     {
         // S8. GenerateRoutesAsync creates every route at PENDING, and the ONLY transition out of
         // PENDING is config_ready — which nothing in this repository ever emitted. session_starts
         // is only accepted from READY, so it was rejected on every freshly generated route and
         // the route sat at PENDING (rendered as "Waiting") for the whole meeting, spoken in or
         // not. Start is the point at which routes really are configured, so it is the producer.
+        //
+        // WT-339: and it is the producer of config_ready ONLY. This assertion used to require
+        // session_starts here too, which is the inversion that matters: emitting it made opening
+        // a room start translation — routes went BROADCASTING, AUDIO_ROUTES_UPDATED went out, and
+        // livekit_ingress_worker began transcribing a room whose host had not pressed anything.
+        // Opening a room leaves the routes READY and waiting.
         var roomId = Guid.NewGuid();
         var hostId = Guid.NewGuid();
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(new TranslationRoom
@@ -1259,13 +1298,104 @@ public class TranslationRoomServiceTests
         var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeTrue(result.Error);
-        emitted.Should().Equal(
-            AudioRoutingEventType.config_ready.ToString(),
-            AudioRoutingEventType.session_starts.ToString());
+        emitted.Should().Equal(AudioRoutingEventType.config_ready.ToString());
     }
 
     [Fact]
-    public async Task JoinTranslationRoomAsync_MarksTheNewRoutesReady_WhenTheRoomIsAlreadyRunning()
+    public async Task StartTranslationRoomAsync_DoesNotOpenATranslationSession()
+    {
+        // WT-339, the other half of the same rule and the reason the routes have nothing to
+        // broadcast on: opening a room puts a LiveKit call on the air and stops there. The
+        // numbered TranslationSession — what the transcript labels "Translation 1" — belongs to
+        // the host's Start Translation press, not to the room being opened.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(new TranslationRoom
+        {
+            Id = roomId,
+            HostId = hostId,
+            Status = "WAITING",
+            TranslationRoomType = "INSTANT",
+            SourceLanguage = "en",
+            TargetLanguages = "[\"vi\"]",
+            Settings = "{\"requires_approval\":false}"
+        });
+
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockSessionRepo.Verify(
+            s => s.AddAsync(It.IsAny<TranslationRoomSession>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_OpensASessionAndTakesTheRoutesToBroadcasting()
+    {
+        // WT-339: pressing Start Translation on an OPEN room. The room is already IN_PROGRESS and
+        // its routes have been sitting at READY since it was opened, so room_resume (a PAUSED-only
+        // transition) cannot move them — the readiness pair is what does, and it may only do so
+        // because this method opened a session first. Both are still sent: whichever one is not
+        // the applicable transition is a no-op.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockSessionRepo.SetupSequence(s => s.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomSession?)null)
+            .ReturnsAsync(new TranslationRoomSession { Id = Guid.NewGuid(), TranslationRoomId = roomId });
+
+        var emitted = new List<string>();
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(roomId, null, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
+            .ReturnsAsync(Result.Success());
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockSessionRepo.Verify(
+            s => s.AcquireSessionStartLockAsync(roomId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockSessionRepo.Verify(
+            s => s.AddAsync(It.IsAny<TranslationRoomSession>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        emitted.Should().Equal(
+            AudioRoutingEventType.config_ready.ToString(),
+            AudioRoutingEventType.session_starts.ToString(),
+            AudioRoutingEventType.room_resume.ToString());
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_AlreadyHasActiveSession_DoesNotOpenDuplicateSession()
+    {
+        // WT-339: accepting IN_PROGRESS makes the Start Translation endpoint retry-safe for the
+        // newly split room-open/translation-start lifecycle. It must not create a second active
+        // TranslationSession when the host double-clicks or the client retries.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockSessionRepo.Setup(s => s.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomSession { Id = Guid.NewGuid(), TranslationRoomId = roomId });
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockSessionRepo.Verify(
+            s => s.AcquireSessionStartLockAsync(roomId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        _mockSessionRepo.Verify(
+            s => s.AddAsync(It.IsAny<TranslationRoomSession>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoomAsync_MarksTheNewRoutesReady_WhenTranslationIsAlreadyRunning()
     {
         // A late joiner's routes are created PENDING in a room that is already broadcasting, so
         // they need the same readiness pair or they render as "Waiting" for that participant.
@@ -1273,6 +1403,8 @@ public class TranslationRoomServiceTests
         var userId = Guid.NewGuid();
         _mockParticipantRepo.Setup(p => p.GetByRoomAndUserAsync(room.Id, userId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((TranslationRoomParticipant?)null);
+        _mockSessionRepo.Setup(s => s.GetActiveSessionByRoomIdAsync(room.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomSession { Id = Guid.NewGuid(), TranslationRoomId = room.Id });
 
         var emitted = new List<string>();
         _mockAudioRouteEventProcessor
@@ -1286,5 +1418,31 @@ public class TranslationRoomServiceTests
         emitted.Should().Equal(
             AudioRoutingEventType.config_ready.ToString(),
             AudioRoutingEventType.session_starts.ToString());
+    }
+
+    [Fact]
+    public async Task JoinTranslationRoomAsync_DoesNotBroadcast_WhenTranslationHasNotStarted()
+    {
+        // WT-339: the room being open is not translation being on. Somebody who joins between
+        // "host opened the room" and "host pressed Start Translation" gets configured routes that
+        // wait with everyone else's — this path used to switch the whole room's routes to
+        // BROADCASTING on their behalf, so a guest arriving early started the AI.
+        var room = ArrangeJoinableRoom("IN_PROGRESS", "xyz-defg-hik");
+        var userId = Guid.NewGuid();
+        _mockParticipantRepo.Setup(p => p.GetByRoomAndUserAsync(room.Id, userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomParticipant?)null);
+        _mockSessionRepo.Setup(s => s.GetActiveSessionByRoomIdAsync(room.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomSession?)null);
+
+        var emitted = new List<string>();
+        _mockAudioRouteEventProcessor
+            .Setup(a => a.ProcessEventAsync(room.Id, null, It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
+            .ReturnsAsync(Result.Success());
+
+        await _service.JoinTranslationRoomAsync(
+            new JoinTranslationRoomRequest(room.TranslationRoomCode, "Early Joiner", "vi", "vi"), userId);
+
+        emitted.Should().Equal(AudioRoutingEventType.config_ready.ToString());
     }
 }
