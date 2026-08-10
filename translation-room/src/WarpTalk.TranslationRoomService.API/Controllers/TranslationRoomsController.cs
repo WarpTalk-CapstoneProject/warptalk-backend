@@ -262,6 +262,34 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    /// <summary>
+    /// WT-333 — UC 25. The caller's own meetings in one workspace, past and upcoming together.
+    ///
+    /// Separate action rather than a <c>?scope=mine</c> flag on <c>history</c> because the two
+    /// answer different questions and default differently (this one carries no status filter and
+    /// orders by the booked slot). A <c>scope</c> sent to this route is ignored — the service pins
+    /// it — so no caller can widen a personal read back to the whole tenant by guessing a value.
+    /// </summary>
+    [HttpGet("my-meetings")]
+    public async Task<IActionResult> GetMyMeetings([FromQuery] GetTranslationRoomsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetMyMeetingsAsync(request, userId.Value, User.GetEmail(), ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
     [HttpGet("{id}/artifacts")]
     public async Task<IActionResult> GetTranslationRoomArtifacts(Guid id, CancellationToken ct)
     {

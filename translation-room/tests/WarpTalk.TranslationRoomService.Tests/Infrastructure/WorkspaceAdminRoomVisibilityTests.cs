@@ -110,14 +110,19 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
         await _dbContainer.DisposeAsync();
     }
 
-    private async Task<TranslationRoom> SeedRoomAsync(Guid workspaceId, string status)
+    private async Task<TranslationRoom> SeedRoomAsync(
+        Guid workspaceId,
+        string status,
+        Guid? hostId = null,
+        DateTime? scheduledAt = null,
+        DateTime? endedAt = null)
     {
         var now = DateTime.UtcNow;
         var room = new TranslationRoom
         {
             Id = Guid.CreateVersion7(),
             WorkspaceId = workspaceId,
-            HostId = HostId,
+            HostId = hostId ?? HostId,
             Title = $"Room {status}",
             TranslationRoomCode = Guid.NewGuid().ToString("N")[..12],
             Status = status,
@@ -129,13 +134,68 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
-            EndedAt = status == "ENDED" ? now : null
+            ScheduledAt = scheduledAt,
+            EndedAt = endedAt ?? (status == "ENDED" ? now : null)
         };
 
         _dbContext.Set<TranslationRoom>().Add(room);
         await _dbContext.SaveChangesAsync();
         _dbContext.ChangeTracker.Clear();
         return room;
+    }
+
+    private async Task SeedParticipantAsync(Guid roomId, Guid userId)
+    {
+        var now = DateTime.UtcNow;
+        _dbContext.Set<TranslationRoomParticipant>().Add(new TranslationRoomParticipant
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            UserId = userId,
+            DisplayName = "Participant",
+            Role = "PARTICIPANT",
+            ListenLanguage = "en",
+            SpeakLanguage = "vi",
+            Status = "CONNECTED",
+            ConnectionType = "webrtc",
+            JoinedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+    }
+
+    private async Task SeedInvitationAsync(Guid roomId, string email)
+    {
+        var now = DateTime.UtcNow;
+        _dbContext.Set<TranslationRoomInvitation>().Add(new TranslationRoomInvitation
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            Email = email,
+            Status = "PENDING",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+    }
+
+    private async Task SeedArtifactAsync(Guid roomId, string content)
+    {
+        _dbContext.Set<TranslationRoomArtifact>().Add(new TranslationRoomArtifact
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            ArtifactType = "SUMMARY_EXPORT",
+            FileFormat = "md",
+            Content = content,
+            Status = "COMPLETED",
+            CreatedAt = DateTime.UtcNow
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
     }
 
     private Task<WarpTalk.Shared.Result<TranslationRoomListResponse>> ListAsync(Guid userId) =>
@@ -225,5 +285,149 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
 
         result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Rooms.Should().BeEmpty();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // WT-333 — My Meetings (UC 25).
+    //
+    // The widening the tests above pin is correct for the workspace archive and wrong for a
+    // personal timeline: it runs BEFORE every filter, so an Owner/Admin asking "what are MY
+    // meetings" had no request that could mean it. These tests pin the narrowed read, and they
+    // live beside the widening on purpose — the two are the same decision seen from both sides,
+    // and separating them is how one gets changed without the other.
+    // ---------------------------------------------------------------------------------------
+
+    private Task<WarpTalk.Shared.Result<TranslationRoomHistoryResponse>> MyMeetingsAsync(Guid userId) =>
+        _service.GetMyMeetingsAsync(
+            new GetTranslationRoomsRequest(WorkspaceId: WorkspaceId, PageSize: 100),
+            userId,
+            $"{userId}@example.test");
+
+    /// <summary>
+    /// The bug this feature exists for. The same Admin the widening was built for must NOT get the
+    /// whole workspace back here — only what she is actually part of.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_ExcludesWorkspaceRooms_TheAdminIsNoPartOf()
+    {
+        await SeedRoomAsync(WorkspaceId, "ENDED");
+        var ownRoom = await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == ownRoom.Id);
+        result.Value.Total.Should().Be(1);
+    }
+
+    /// <summary>
+    /// The half of the timeline the archive cannot show. A meeting somebody was invited to but has
+    /// not attended — and which has not happened — is exactly what a personal timeline is for, and
+    /// it is filtered out of history twice over: by status and by never having ended.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_IncludesAnUpcomingRoom_ForAnInviteeWhoHasNotJoined()
+    {
+        var upcoming = await SeedRoomAsync(
+            WorkspaceId, "SCHEDULED", scheduledAt: DateTime.UtcNow.AddDays(1));
+        await SeedInvitationAsync(upcoming.Id, $"{OutsiderId}@example.test");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == upcoming.Id);
+    }
+
+    /// <summary>
+    /// Widening WHICH ROOMS a caller sees must not widen WHAT IS IN THEM. A room whose ArtifactAccess
+    /// is HOST_ONLY — which "{}" settings resolve to — keeps its AI summary from a participant here,
+    /// exactly as the download endpoint does. This is the WT-304 drift, pinned on the new route
+    /// before it can happen a fourth time.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_WithholdsArtifactContent_FromAParticipantOfAHostOnlyRoom()
+    {
+        var room = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedParticipantAsync(room.Id, PlainMemberId);
+        await SeedArtifactAsync(room.Id, "secret summary");
+
+        var result = await MyMeetingsAsync(PlainMemberId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var artifacts = result.Value!.Rooms.Single(r => r.Room.Id == room.Id).Artifacts;
+        artifacts.Should().ContainSingle();
+        artifacts[0].Content.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The host of that same room does get it, so the test above is pinning the policy rather than a
+    /// projection that simply never fills the field in.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_ReturnsArtifactContent_ToTheHost()
+    {
+        var room = await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+        await SeedArtifactAsync(room.Id, "secret summary");
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        var artifacts = result.Value!.Rooms.Single(r => r.Room.Id == room.Id).Artifacts;
+        artifacts.Should().ContainSingle();
+        artifacts[0].Content.Should().Be("secret summary");
+    }
+
+    /// <summary>
+    /// The ordering trap. A future room has neither EndedAt nor StartedAt, so the archive's ordering
+    /// falls through to CreatedAt and would place a meeting by the day somebody booked it. Seeded so
+    /// that CreatedAt ordering gives the WRONG answer: both rows are created now, and the upcoming
+    /// room is created FIRST, so only ScheduledAt can put it on top.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_OrdersByTheDayAMeetingHappens_NotTheDayItWasBooked()
+    {
+        var upcoming = await SeedRoomAsync(
+            WorkspaceId, "SCHEDULED", hostId: WorkspaceAdminId, scheduledAt: DateTime.UtcNow.AddDays(1));
+        var past = await SeedRoomAsync(
+            WorkspaceId, "ENDED", hostId: WorkspaceAdminId, endedAt: DateTime.UtcNow.AddDays(-1));
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Select(r => r.Room.Id).Should().ContainInOrder(upcoming.Id, past.Id);
+    }
+
+    /// <summary>
+    /// The tenant boundary the cross-workspace variant of this feature was dropped to preserve.
+    /// Narrowing to "mine" must not become "mine everywhere".
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_DoesNotLeakTheCallersOwnRoomsFromAnotherWorkspace()
+    {
+        var otherWorkspaceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        await SeedRoomAsync(otherWorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+        var ownRoom = await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == ownRoom.Id);
+    }
+
+    /// <summary>
+    /// WorkspaceId stays required. Left unpinned, "personal timeline" is one forgotten query
+    /// parameter away from being a cross-tenant read.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_IsRejected_WithoutAWorkspaceId()
+    {
+        await SeedRoomAsync(WorkspaceId, "ENDED", hostId: WorkspaceAdminId);
+
+        var result = await _service.GetMyMeetingsAsync(
+            new GetTranslationRoomsRequest(PageSize: 100),
+            WorkspaceAdminId,
+            $"{WorkspaceAdminId}@example.test");
+
+        result.IsSuccess.Should().BeFalse();
     }
 }
