@@ -21,7 +21,8 @@ Tài liệu này mô tả mối liên hệ chuẩn xác giữa **room lifecycle 
 | `DRAFT` | `PENDING` | Room mới ở mức bản nháp, chưa có phiên runtime thực tế. |
 | `SCHEDULED` | `PENDING` | Room đã được lên lịch nhưng chưa mở phiên chờ. |
 | `WAITING` | `PENDING` hoặc `READY` | Nếu chưa đủ participants / language preferences / routing policy thì vẫn `PENDING`. Khi đã sẵn sàng kết nối pipeline thì chuyển `READY`. |
-| `IN_PROGRESS` | `BROADCASTING` | Phiên họp hoạt động bình thường, tất cả các khâu (STT, Translate, TTS, Voice Clone) chạy mượt mà dưới ngưỡng độ trễ quy định. |
+| `IN_PROGRESS` | `READY` | Room đã mở và routes đã nhận `config_ready`, nhưng chưa có active `TranslationRoomSession`; translation chưa chạy. |
+| `IN_PROGRESS` | `BROADCASTING` | Start Translation / Resume đã tạo hoặc tái sử dụng active `TranslationRoomSession`; routes đang xử lý translation audio. |
 | `IN_PROGRESS` | `SPEECH_DELAYED` | Phiên họp hoạt động nhưng STT (Whisper) latency EMA vượt quá `3000ms`. |
 | `IN_PROGRESS` | `TRANSLATION_DELAYED` | Phiên họp hoạt động nhưng NMT Translation latency EMA vượt quá `2500ms`. |
 | `IN_PROGRESS` | `VOICE_DELAYED` | Phiên họp hoạt động nhưng Speech Synthesis latency EMA vượt quá `6000ms`. |
