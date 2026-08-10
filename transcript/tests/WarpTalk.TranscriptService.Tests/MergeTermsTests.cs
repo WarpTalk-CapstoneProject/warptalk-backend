@@ -226,4 +226,47 @@ public class MergeTermsTests
     {
         Assert.Equal(expected, GlossaryStartedEventConsumer.NormalizeKey(input));
     }
+
+    [Theory]
+    // Long enough to be a specific hint rather than a fragment of ordinary speech.
+    [InlineData("Codex", true)]
+    [InlineData("Kubernetes", true)]
+    [InlineData("cơ sở dữ liệu", true)]
+    // Acronyms are short by nature and are exactly what is worth biasing.
+    [InlineData("AI", true)]
+    [InlineData("QA", true)]
+    [InlineData("gRPC", true)]
+    [InlineData("iOS", true)]
+    // Short, capital-less strings match fragments of ordinary speech constantly and
+    // cost accuracy on every word NOT in the bias list.
+    [InlineData("và", false)]
+    [InlineData("là", false)]
+    [InlineData("of", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    public void IsUsefulSttKeyword_RejectsShortNonAcronyms(string value, bool expected)
+    {
+        Assert.Equal(expected, GlossaryStartedEventConsumer.IsUsefulSttKeyword(value));
+    }
+
+    [Fact]
+    public void BuildSttKeywords_DropsShortTermsSoProperNounsKeepTheBudget()
+    {
+        // The budget is small and both sides of every pair compete for it, so a couple of
+        // two-letter targets used to be able to push out the proper nouns the list exists
+        // for — "Codex", the term whose absence produced "cô đích" in a real rehearsal.
+        var terms = new List<PromptTerm>
+        {
+            new("of", "và", 10),
+            new("Codex", "Codex", 5),
+            new("AI", "AI", 4),
+        };
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(terms, maxKeywords: 4);
+
+        Assert.Contains("Codex", keywords);
+        Assert.Contains("AI", keywords);
+        Assert.DoesNotContain("of", keywords);
+        Assert.DoesNotContain("và", keywords);
+    }
 }
