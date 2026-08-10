@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Domain.Enums;
+using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
 namespace WarpTalk.TranslationRoomService.Tests.Integration;
 
@@ -116,5 +119,45 @@ public class RoomFlowIntegrationTests : BaseIntegrationTest
         // Assert
         var body = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.NotFound, body);
+    }
+
+    [Fact]
+    public async Task StartTranslation_ConcurrentRetries_CreateOneActiveSession()
+    {
+        var hostId = Guid.NewGuid();
+        Client.DefaultRequestHeaders.Add(TestAuthHandler.UserIdHeader, hostId.ToString());
+
+        var createResponse = await Client.PostAsJsonAsync("/api/v1/translation-rooms", new CreateTranslationRoomRequest(
+            WorkspaceId: Guid.NewGuid(),
+            Title: "Concurrent translation start",
+            Description: "WT-339 regression",
+            TranslationRoomType: "INSTANT",
+            MaxParticipants: 10,
+            SourceLanguage: "en",
+            TargetLanguages: new List<string> { "vi" },
+            Settings: null,
+            ScheduledAt: null,
+            InvitedEmails: null));
+        var createBody = await createResponse.Content.ReadAsStringAsync();
+        createResponse.StatusCode.Should().Be(HttpStatusCode.Created, createBody);
+        var room = await createResponse.Content.ReadFromJsonAsync<TranslationRoomDto>();
+        room.Should().NotBeNull();
+
+        var openResponse = await Client.PostAsync($"/api/v1/translation-rooms/{room!.Id}/start", null);
+        var openBody = await openResponse.Content.ReadAsStringAsync();
+        openResponse.StatusCode.Should().Be(HttpStatusCode.OK, openBody);
+
+        var starts = await Task.WhenAll(
+            Client.PostAsync($"/api/v1/translation-rooms/{room.Id}/resume", null),
+            Client.PostAsync($"/api/v1/translation-rooms/{room.Id}/resume", null));
+
+        starts.Should().OnlyContain(response => response.StatusCode == HttpStatusCode.NoContent);
+
+        using var scope = CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+        var activeSessionCount = await db.TranslationRoomSessions.CountAsync(session =>
+            session.TranslationRoomId == room.Id &&
+            session.Status == TranslationRoomSessionStatus.ACTIVE.ToString());
+        activeSessionCount.Should().Be(1);
     }
 }

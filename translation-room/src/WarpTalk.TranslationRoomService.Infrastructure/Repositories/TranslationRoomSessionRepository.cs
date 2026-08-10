@@ -33,4 +33,13 @@ public class TranslationRoomSessionRepository : GenericRepository<TranslationRoo
             .OrderByDescending(s => s.CreatedAt)
             .FirstOrDefaultAsync(ct);
     }
+
+    public async Task AcquireSessionStartLockAsync(Guid roomId, CancellationToken ct = default)
+    {
+        // The transaction-scoped lock serializes Start Translation across service instances.
+        // hashtextextended gives every room a stable PostgreSQL bigint advisory-lock key.
+        await _context.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock(hashtextextended({roomId.ToString()}, 0));",
+            ct);
+    }
 }

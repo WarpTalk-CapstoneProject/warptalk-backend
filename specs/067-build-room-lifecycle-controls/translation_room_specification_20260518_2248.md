@@ -18,14 +18,15 @@ stateDiagram-v2
     SCHEDULED --> CANCELLED   : cancel (Host)
     SCHEDULED --> EXPIRED     : system_expire (ScheduledAt overdue)
 
-    WAITING --> IN_PROGRESS   : start_room (Host)
+    WAITING --> IN_PROGRESS   : start_room / open_room (Host)
     WAITING --> CANCELLED     : cancel (Host)
     WAITING --> EXPIRED       : system_expire
 
     IN_PROGRESS --> PAUSED    : pause_room (Host)
     IN_PROGRESS --> ENDED     : end_room (Host)
 
-    PAUSED --> IN_PROGRESS    : resume_room (Host)
+    IN_PROGRESS --> IN_PROGRESS : start_translation (Host)
+    PAUSED --> IN_PROGRESS    : resume_room / start_translation (Host)
     PAUSED --> ENDED          : end_room (Host)
 
     ENDED     --> [*]
@@ -33,7 +34,9 @@ stateDiagram-v2
     EXPIRED   --> [*]
 ```
 
-> **Lưu ý quan trọng:** Khi Room chuyển sang `IN_PROGRESS` / `PAUSED` / `ENDED`, hệ thống tự động phát sự kiện tương ứng tới **Audio Routing State Machine** để đồng bộ trạng thái luồng âm thanh.
+> **Tinh chỉnh vòng đời WT-339:** `StartRoom` / `open_room` chuyển phòng sang `IN_PROGRESS` và chỉ cấu hình audio routes tới READY. Start Translation / `resume_room` tạo hoặc tái sử dụng active `TranslationRoomSession` và là hành động đưa routes liên quan sang `BROADCASTING`.
+
+> **Lưu ý quan trọng:** Khi Room chuyển sang `IN_PROGRESS`, hệ thống chỉ cấu hình route sang READY; Start Translation / Resume mới phát sự kiện đưa route sang `BROADCASTING`. `PAUSED` / `ENDED` vẫn phát sự kiện tương ứng tới **Audio Routing State Machine** để đồng bộ trạng thái luồng âm thanh.
 
 ---
 
@@ -92,10 +95,10 @@ stateDiagram-v2
 - **Settings Lock:** Settings **vẫn có thể chỉnh sửa** ở trạng thái này. Sau khi chuyển sang `IN_PROGRESS`, settings bị khoá (`ErrorSettingsLocked`).
 
 ### 3. `IN_PROGRESS`
-- **Mô tả:** Phiên dịch thuật đang diễn ra trực tiếp. Âm thanh đang được xử lý qua AI Pipeline.
-- **PostgreSQL:** Status = `IN_PROGRESS`. `StartedAt` được ghi nhận lần đầu tiên khi chuyển vào trạng thái này.
-- **Audio Routing:** Tự động phát sự kiện `session_starts` → các Audio Routes chuyển từ `READY` sang `BROADCASTING`.
-- **Hành vi:** AI Workers (STT, NMT, TTS) bắt đầu xử lý luồng âm thanh thời gian thực.
+- **Mô tả:** Phòng họp đang mở; translation có thể chưa chạy cho đến khi host bấm Start Translation.
+- **PostgreSQL:** Status = `IN_PROGRESS`. `StartedAt` được ghi nhận khi phòng được mở.
+- **Audio Routing:** `StartRoom` / `open_room` phát `config_ready` để routes chuyển từ `PENDING` sang READY. Start Translation / `resume_room` tạo hoặc tái sử dụng active `TranslationRoomSession` và phát `session_starts` để routes chuyển từ `READY` sang `BROADCASTING`.
+- **Hành vi:** AI Workers (STT, NMT, TTS) chỉ xử lý luồng âm thanh thời gian thực khi có active `TranslationRoomSession` và routes đã `BROADCASTING`.
 
 ### 4. `PAUSED`
 - **Mô tả:** Host tạm dừng phiên họp. AI pipeline ngừng xử lý để tiết kiệm GPU.
@@ -164,9 +167,10 @@ stateDiagram-v2
 | `CreateRoom` (scheduledAt) | — | `SCHEDULED` | Host | — |
 | `CreateRoom` (instant) | — | `WAITING` | Host | — |
 | `OpenWaitingRoom` | `SCHEDULED` | `WAITING` | Host | — |
-| `StartRoom` | `WAITING` | `IN_PROGRESS` | Host | `session_starts` |
+| `StartRoom` / `OpenRoom` | `WAITING` | `IN_PROGRESS` | Host | `config_ready`; routes chuyển sang READY |
+| `StartTranslation` | `IN_PROGRESS` | `IN_PROGRESS` | Host | Tạo/tái sử dụng active `TranslationRoomSession`; `session_starts` đưa READY routes sang `BROADCASTING` |
 | `PauseRoom` | `IN_PROGRESS` | `PAUSED` | Host | `room_pause` |
-| `ResumeRoom` | `PAUSED` | `IN_PROGRESS` | Host | `room_resume` |
+| `ResumeRoom` | `PAUSED` | `IN_PROGRESS` | Host | Tạo/tái sử dụng active `TranslationRoomSession`; `room_resume` đưa PAUSED routes sang `BROADCASTING` |
 | `EndRoom` | `IN_PROGRESS` / `PAUSED` | `ENDED` | Host | `session_ends` |
 | `CancelRoom` | `SCHEDULED` / `WAITING` | `CANCELLED` | Host | — |
 | `ExpireRoom` | `SCHEDULED` / `WAITING` | `EXPIRED` | System Scheduler | — |
@@ -202,11 +206,12 @@ Ngôn ngữ bị validation engine từ chối **KHÔNG BAO GIỜ** được lư
 ### D. Dual Source for Language Defaults
 Nếu request join/create không cung cấp ngôn ngữ, hệ thống tự động lấy từ **User Settings** của tài khoản (`DefaultSpeakLanguage`, `DefaultListenLanguage`). Nếu User Settings cũng trống, validation sẽ fail với lỗi bắt buộc cung cấp ngôn ngữ.
 
-### E. Audio Routing Coupling Rule (WT-67)
+### E. Audio Routing Coupling Rule (WT-67, refined by WT-339)
 Vòng đời phòng được gắn kết chặt với Audio Routing State Machine:
-- `StartRoom` → `session_starts` → tất cả routes: `READY` → `BROADCASTING`
+- `StartRoom` / `OpenRoom` → `config_ready` → routes: `PENDING` → `READY`; không có active `TranslationRoomSession`, không `BROADCASTING`
+- `StartTranslation` → tạo/tái sử dụng active `TranslationRoomSession` + `session_starts` → routes liên quan: `READY` → `BROADCASTING`
 - `PauseRoom` → `room_pause` → tất cả routes: bất kỳ streaming state → `PAUSED`
-- `ResumeRoom` → `room_resume` → tất cả routes: `PAUSED` → `BROADCASTING`
+- `ResumeRoom` → tạo/tái sử dụng active `TranslationRoomSession` + `room_resume` → routes: `PAUSED` → `BROADCASTING`
 - `EndRoom` → `session_ends` → tất cả routes: bất kỳ state → `ENDING` → finalization chain
 
 ---
@@ -219,8 +224,9 @@ Vòng đời phòng được gắn kết chặt với Audio Routing State Machin
 3. Participant join bằng room code:
    - Nếu `requiresApproval = false` → vào thẳng `CONNECTED`.
    - Nếu `requiresApproval = true` → vào `WAITING`, Host nhận thông báo duyệt.
-4. Host bấm Start → Phòng chuyển sang `IN_PROGRESS`. Audio Routing tự động nhận sự kiện `session_starts`.
-5. AI Workers bắt đầu xử lý luồng âm thanh thời gian thực.
+4. Host bấm Open/Start Room → Phòng chuyển sang `IN_PROGRESS`; Audio Routing nhận `config_ready` và routes ở READY.
+5. Host bấm Start Translation → Backend tạo hoặc tái sử dụng active `TranslationRoomSession`; Audio Routing nhận `session_starts`; routes chuyển sang `BROADCASTING`.
+6. AI Workers bắt đầu xử lý luồng âm thanh thời gian thực.
 
 ### Kịch Bản 2: Tạo Phòng Lên Lịch (Scheduled Room)
 1. Host tạo phòng với `scheduledAt` trong tương lai → Phòng vào `SCHEDULED`.
@@ -232,7 +238,7 @@ Vòng đời phòng được gắn kết chặt với Audio Routing State Machin
 1. Phòng đang `IN_PROGRESS`. Host cần ngắt quãng.
 2. Host bấm Pause → Phòng chuyển sang `PAUSED`. Audio Routing phát `room_pause` → tất cả routes sang `PAUSED`. **Update Protection** kích hoạt.
 3. AI Workers ngừng xử lý gói âm thanh. GPU được giải phóng.
-4. Host bấm Resume → Phòng quay lại `IN_PROGRESS`. Audio Routing phát `room_resume` → routes trở về `BROADCASTING`.
+4. Host bấm Resume / Start Translation → Phòng quay lại `IN_PROGRESS`; Backend tạo hoặc tái sử dụng active `TranslationRoomSession`; Audio Routing phát `room_resume` → routes trở về `BROADCASTING`.
 
 ### Kịch Bản 4: Participant Bị Mất Kết Nối Và Rejoin
 1. Participant đang `CONNECTED` bị mất mạng → Hệ thống WebRTC phát hiện ngắt kết nối → Status chuyển sang `DISCONNECTED`.
