@@ -91,22 +91,39 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidEmailFormat, ErrorCodes.ValidationError);
             }
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                _unitOfWork,
-                emailAddress.Value,
-                workspace,
-                ct);
 
-            if (membershipTypeEnum == MembershipType.External)
+            // The inviter decides the access class; the domain only decides which choices are
+            // legal. Inferring it from the email instead made External unreachable through this
+            // endpoint whenever the invitee's domain happened to be verified — and unreachable
+            // outright while RequireVerifiedDomainForInternal was off, since the inference
+            // returns Internal for every address in that case (BR-140-011).
+            //
+            // An omitted MembershipType still falls back to the inference so older clients that
+            // never sent the field keep working.
+            MembershipType membershipTypeEnum;
+            if (string.IsNullOrWhiteSpace(request.MembershipType))
             {
-                if (!config.AllowExternalCollaboration)
-                {
-                    return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
-                }
-                if (!request.RoleName.IsMember())
-                {
-                    return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.ExternalMemberMustHaveMemberRole, ErrorCodes.ValidationError);
-                }
+                membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
+                    _unitOfWork,
+                    emailAddress.Value,
+                    workspace,
+                    ct);
+            }
+            else if (!Enum.TryParse(request.MembershipType, ignoreCase: true, out membershipTypeEnum))
+            {
+                return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
+            }
+
+            var policyResult = await WorkspaceInvitationPolicy.ValidateAsync(
+                _unitOfWork,
+                workspace,
+                emailAddress.Value,
+                membershipTypeEnum,
+                request.RoleName,
+                ct);
+            if (!policyResult.IsSuccess)
+            {
+                return Result.Failure<InviteMemberResponse>(policyResult.Error!, policyResult.ErrorCode);
             }
 
             var finalRoleName = request.RoleName.IsAdmin()
@@ -209,6 +226,51 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         {
             _logger.LogError(ex, "Error occurred while inviting member. WorkspaceId: {WorkspaceId}", workspaceId);
             return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<InvitationPolicyResponse>> GetInvitationPolicyAsync(Guid workspaceId, string? email, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null)
+            {
+                return Result.Failure<InvitationPolicyResponse>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // Same gate as inviting. The response describes who this workspace is willing to
+            // admit and on what terms, which is not something a plain member needs to read.
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<InvitationPolicyResponse>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            if (!roleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure<InvitationPolicyResponse>(WorkspaceConstants.Errors.OnlyOwnerAdminCanInvite, ErrorCodes.Forbidden);
+            }
+
+            var evaluation = await WorkspaceInvitationPolicy.EvaluateAsync(_unitOfWork, workspace, email, ct);
+
+            return Result.Success(new InvitationPolicyResponse(
+                evaluation.SuggestedMembershipType.ToString(),
+                evaluation.AllowedMembershipTypes,
+                evaluation.RequireVerifiedDomainForInternal,
+                evaluation.AllowExternalCollaboration,
+                evaluation.AllowSubdomains,
+                evaluation.IsEmailDomainVerified,
+                evaluation.IsPublicEmailDomain,
+                evaluation.InternalDisabledReason,
+                evaluation.ExternalDisabledReason));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error evaluating invitation policy for workspace {WorkspaceId}", workspaceId);
+            return Result.Failure<InvitationPolicyResponse>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }
 

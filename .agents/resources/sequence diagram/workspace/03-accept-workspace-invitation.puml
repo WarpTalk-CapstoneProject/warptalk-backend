@@ -34,6 +34,7 @@ end box
 box "Workspace Service" #LightBlue
 participant ":WorkspaceGrpcService" as WorkspaceGrpcService <<boundary>>
 participant ":WorkspaceInvitationService" as WorkspaceInvitationService <<service>>
+participant ":WorkspaceInvitationPolicy" as WorkspaceInvitationPolicy <<service>>
 participant ":WorkspaceInvitationRepository" as WorkspaceInvitationRepository <<control>>
 participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
 database "Workspace Database" as WorkspaceDb
@@ -130,7 +131,38 @@ WorkspaceInvitationGrpcClient -> WorkspaceGrpcService : gRPC: AcceptInvitation(T
 activate WorkspaceGrpcService
 WorkspaceGrpcService -> WorkspaceInvitationService : AcceptInvitationAsync(token, userId, email)
 activate WorkspaceInvitationService
-WorkspaceInvitationService -> WorkspaceMemberRepository : AddAsync(new WorkspaceMember with Active=true)
+
+' FR-140-021 — phase 2 of two-phase validation. Phase 1 ran when the invitation was
+' created; the settings may have changed since, so the stored intent is re-checked here.
+WorkspaceInvitationService -> WorkspaceInvitationPolicy : ValidateAsync(workspace, email,\ninvitation.MembershipType, roleName)
+activate WorkspaceInvitationPolicy
+WorkspaceInvitationPolicy -> WorkspaceDb : SELECT * FROM workspace_verified_domains WHERE WorkspaceId = ...
+activate WorkspaceDb
+WorkspaceDb --> WorkspaceInvitationPolicy : Active verified domains
+deactivate WorkspaceDb
+
+alt Stored intent still permitted by current settings
+  WorkspaceInvitationPolicy --> WorkspaceInvitationService : Result.Success()
+else Settings changed and now refuse it
+  WorkspaceInvitationPolicy --> WorkspaceInvitationService : Result.Failure(reason naming the changed setting)
+  deactivate WorkspaceInvitationPolicy
+  note right of WorkspaceInvitationService
+    BR-140-013 — reject, never reclassify. The membership type is NOT
+    recomputed into one that would pass: doing so hands the invitee an
+    access class nobody approved, and left the invitation's role
+    untouched, which is how an External member ended up holding Admin.
+    BR-140-014 — the invitation stays PENDING so an Owner still sees it.
+  end note
+  WorkspaceInvitationService --> WorkspaceGrpcService : Result.Failure (invitation stays PENDING)
+  WorkspaceGrpcService --> WorkspaceInvitationGrpcClient : Failure
+  WorkspaceInvitationGrpcClient --> AuthService : Failure
+  AuthService --> AuthController : 400/403 with the changed-setting reason
+  AuthController --> Gateway : Error
+  Gateway --> Register : Error
+  Register --> User : Show "this invitation can no longer be accepted" + the setting that changed
+end
+
+WorkspaceInvitationService -> WorkspaceMemberRepository : AddAsync(new WorkspaceMember with Active=true,\nMembershipType = invitation.MembershipType unchanged)
 activate WorkspaceMemberRepository
 WorkspaceMemberRepository --> WorkspaceInvitationService : Done
 deactivate WorkspaceMemberRepository

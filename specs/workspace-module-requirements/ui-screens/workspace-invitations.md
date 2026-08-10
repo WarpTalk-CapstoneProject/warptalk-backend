@@ -47,8 +47,9 @@ flowchart TD
 
 | Action | UI behavior |
 |---|---|
+| Pick access type | Invite form shows an **Access type** dropdown (`Internal` / `External`) next to Role. It is pre-selected from `GET /workspaces/{id}/invitations/policy?email=…` but the inviter may change it — the form never assigns the access class on its own. |
 | Create internal invite | Validate verified domain, role Admin/Member only. |
-| Create external invite | Require external collaboration enabled; role must be Member. |
+| Create external invite | Require external collaboration enabled; role forced to Member — the Role dropdown drops `Admin` and locks to `Member` as soon as `External` is picked. |
 | Preview invite | Show safe workspace/inviter/role metadata; never show token hash. |
 | Accept invite | Require authenticated email exact match; show email mismatch error clearly. |
 | Revoke invite | Confirmation dialog; status becomes Revoked. |
@@ -57,5 +58,8 @@ flowchart TD
 ## Requirement baseline behavior
 
 - Add domain policy hint in invite form: verified, unverified, public domain rejected, duplicate enterprise domain.
+- A disabled Access type option must state its reason inline, taken from the policy endpoint (`internalDisabledReason` / `externalDisabledReason`) rather than composed client-side: `External` is disabled with a reason when `AllowExternalCollaboration = false`; `Internal` is disabled with a reason when the address is on an unverified domain, and with a **different** reason when it is on a public mailbox domain that can never be verified.
+- The form must not re-implement domain matching (verified list, `AllowSubdomains`, public domains). It asks the server about the address being typed, so the client and the server can never hold two versions of the rules.
+- Sending an invitation still passes `membershipType` explicitly; the server re-validates and is the decision-maker. The old copy "Internal or External access is assigned automatically from the workspace's verified domains" no longer describes the behaviour and must be removed.
 - Add admin-review copy for external collaborator approval when policy requires manual approval.
 - Internal invite accept must surface the Internal Home Workspace conflict when the invited account is already `Internal` in another domain-verified Enterprise Workspace; the same account may still accept an external invitation when policy allows it.

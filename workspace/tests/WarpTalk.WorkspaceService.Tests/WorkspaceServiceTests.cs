@@ -127,11 +127,13 @@ public class WorkspaceServiceTests
         var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
         StubRoleByName("Owner", ownerRole);
 
-        // Mock that they already belong to another Enterprise workspace as an internal member
+        // Mock that they already belong to another Enterprise workspace as an internal member.
+        // The column is what makes it Enterprise; GetWorkspaceConfig mirrors it over whatever the
+        // settings JSON claims, so setting it only in the JSON would prove nothing.
         var otherEnterpriseWorkspace = new Workspace
         {
             Id = Guid.NewGuid(),
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"RequireVerifiedDomainForInternal\":true}"
+            RequireVerifiedDomainForInternal = true
         };
         var memberships = new List<WorkspaceMember>
         {
@@ -381,7 +383,7 @@ public class WorkspaceServiceTests
         var otherEnterpriseWorkspace = new Workspace
         {
             Id = Guid.NewGuid(),
-            Settings = "{\"VerifiedDomains\":[\"enterprise.com\"],\"RequireVerifiedDomainForInternal\":true}"
+            RequireVerifiedDomainForInternal = true
         };
         _workspaceMemberRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),

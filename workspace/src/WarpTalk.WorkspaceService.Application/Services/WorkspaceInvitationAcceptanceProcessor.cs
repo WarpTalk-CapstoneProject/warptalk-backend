@@ -18,13 +18,16 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IBillingSubscriptionClient _billingSubscriptionClient;
+    private readonly IAuthIdentityClient _authIdentity;
 
     public WorkspaceInvitationAcceptanceProcessor(
         IUnitOfWork unitOfWork,
-        IBillingSubscriptionClient billingSubscriptionClient)
+        IBillingSubscriptionClient billingSubscriptionClient,
+        IAuthIdentityClient authIdentity)
     {
         _unitOfWork = unitOfWork;
         _billingSubscriptionClient = billingSubscriptionClient;
+        _authIdentity = authIdentity;
     }
 
     public async Task<Result> ValidateAcceptanceAsync(
@@ -62,51 +65,44 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
             return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
         }
 
-        var userDomain = emailAddress.Domain;
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLower();
-        var isDomainVerified = await _unitOfWork.WorkspaceVerifiedDomainRepository.AnyAsync(
-            vd => vd.WorkspaceId == invitation.WorkspaceId
-                  && vd.Domain.ToLower() == userDomain.ToLower()
-                  && vd.Status == verifiedStatus
-                  && vd.VerifiedAt != null
-                  && vd.RevokedAt == null,
-            ct);
 
-        // WT-179: gate on the membership type acceptance will ACTUALLY use, not the one stored
-        // on the invitation. ProcessAcceptInvitationAsync calls this same helper right after
-        // this method returns and overwrites invitation.MembershipType with the result, so the
-        // stored value has no bearing on the outcome — gating on it could only ever reject
-        // someone the very next line would have admitted.
+        // The stored value IS the decision. Acceptance re-checks the inviter's intent against
+        // the settings in force right now and may only admit it unchanged or refuse it — it may
+        // not recompute a membership type that passes (BR-140-013). Recomputing was how an
+        // invitation issued as Internal/Admin, whose domain later lost verification, still let
+        // the invitee in as an External member holding Admin.
         //
-        // The two also disagreed on the rule itself. DetermineMembershipTypeAsync decides "does
-        // this workspace separate internal from external?" from the policy flags alone, while this
-        // gate also treated a non-empty config.VerifiedDomains as if the policy were on. A
-        // workspace with RequireVerifiedDomainForInternal = false but a leftover
-        // VerifiedDomains entry in its settings JSON therefore stored every invitee as
-        // Internal (flags off ⇒ Internal) and then refused every one of them at acceptance
-        // whose domain was not verified — with no workaround. That is exactly what happened to
-        // `testworkspace` on production: three pending invitations, all unacceptable.
-        // GetWorkspaceConfig already states the rule this restores — the dedicated columns are
-        // the authorization source of truth, and stale settings JSON must not change policy.
-        var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(_unitOfWork, userEmail, workspace, ct);
+        // WT-179 is not re-created by this. That incident came from treating a leftover
+        // config.VerifiedDomains entry in the settings JSON as proof the policy was on while
+        // RequireVerifiedDomainForInternal was off; the checks below read the flags and the
+        // workspace_verified_domains table only, so a workspace with the policy off admits its
+        // pending invitations exactly as it did before.
+        var membershipType = ResolveStoredMembershipType(invitation);
+        var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
 
-        if (membershipType == MembershipType.Internal)
+        var policyResult = await WorkspaceInvitationPolicy.ValidateAsync(
+            _unitOfWork,
+            workspace,
+            userEmail,
+            membershipType,
+            roleName,
+            ct);
+        if (!policyResult.IsSuccess)
         {
-            var requiresVerifiedDomain = workspace.RequireVerifiedDomainForInternal || config.RequireVerifiedDomainForInternal;
-            if (requiresVerifiedDomain && !isDomainVerified)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.CannotInviteInternalWithoutVerifiedDomain, ErrorCodes.ValidationError);
-            }
+            // Left PENDING deliberately. An Owner still needs to see it in the list to decide
+            // between revoking and re-issuing (BR-140-014).
+            return Result.Failure(
+                string.Format(WorkspaceConstants.Errors.InvitationPolicyConflictFormat, policyResult.Error),
+                policyResult.ErrorCode);
+        }
 
-            var isEnterpriseWorkspace = requiresVerifiedDomain || config.VerifiedDomains.Any();
-            if (isEnterpriseWorkspace)
+        if (membershipType == MembershipType.Internal && config.RequireVerifiedDomainForInternal)
+        {
+            var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
+            if (isInternalElsewhere)
             {
-                var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
-                if (isInternalElsewhere)
-                {
-                    return Result.Failure(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.Forbidden);
-                }
+                return Result.Failure(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.Forbidden);
             }
         }
 
@@ -133,35 +129,20 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
             return validationResult;
         }
 
-        var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(invitation.WorkspaceId, ct);
-        if (workspace == null)
-        {
-            return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
-        }
-
-        var membershipType = await WorkspaceHelper.DetermineMembershipTypeAsync(
-            _unitOfWork,
-            userEmail,
-            workspace,
-            ct);
-        var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-        if (membershipType == MembershipType.External && !config.AllowExternalCollaboration)
-        {
-            return Result.Failure(WorkspaceConstants.Errors.ExternalCollaborationNotAllowed, ErrorCodes.Forbidden);
-        }
-
         var capacityCheck = await EnsureTrialAcceptCapacityAsync(invitation.WorkspaceId, ct);
         if (!capacityCheck.IsSuccess)
         {
             return capacityCheck;
         }
 
-        invitation.MembershipType = membershipType.ToString();
+        // No overwrite here. ValidateAcceptanceAsync has already confirmed the stored intent is
+        // still permitted, and the member is created with exactly the access class and role the
+        // inviter chose.
         var newMember = WorkspaceMemberMapper.CreateInvitationMember(
             invitation.WorkspaceId,
             userId,
             invitation.RoleId,
-            invitation.MembershipType);
+            ResolveStoredMembershipType(invitation).ToString());
 
         invitation.Status = InvitationStatus.ACCEPTED.ToString();
         invitation.AcceptedAt = DateTime.UtcNow;
@@ -171,6 +152,21 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
         await _unitOfWork.SaveChangesAsync(ct);
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// The access class the inviter chose, read back off the row.
+    /// </summary>
+    /// <remarks>
+    /// Rows written before MembershipType was mandatory can hold null or an unrecognised string.
+    /// Those fall back to External, the lesser grant — an unreadable intent must never be read as
+    /// the more privileged one.
+    /// </remarks>
+    private static MembershipType ResolveStoredMembershipType(WorkspaceInvitation invitation)
+    {
+        return Enum.TryParse<MembershipType>(invitation.MembershipType, ignoreCase: true, out var stored)
+            ? stored
+            : MembershipType.External;
     }
 
     private async Task<Result> EnsureTrialAcceptCapacityAsync(

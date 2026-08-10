@@ -37,6 +37,21 @@ public class WorkspaceInvitationsController : ControllerBase
         return Created(string.Empty, result.Value);
     }
 
+    /// <summary>
+    /// Tells the invite form what the workspace currently permits for one candidate address, so
+    /// it can pre-select and disable the Access type options instead of guessing at the rules.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{workspaceId:guid}/invitations/policy")]
+    public async Task<IActionResult> GetInvitationPolicy(Guid workspaceId, [FromQuery] string? email, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _workspaceInvitationService.GetInvitationPolicyAsync(workspaceId, email, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
     [Authorize]
     [HttpPost("{workspaceId:guid}/invitations/{invitationId:guid}/retry-delivery")]
     public async Task<IActionResult> RetryDelivery(Guid workspaceId, Guid invitationId, CancellationToken ct)

@@ -50,12 +50,14 @@ public static class WorkspaceHelper
             "Workspace",
             ct);
 
+        // "Enterprise" is the RequireVerifiedDomainForInternal column and nothing else. A
+        // VerifiedDomains list left behind in the settings JSON used to count too, which made
+        // workspaces that had switched the policy off still behave as if it were on — the
+        // WT-179 incident. Stale JSON is not evidence of live policy.
         return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
             && m.Workspace != null
-            && (m.Workspace.RequireVerifiedDomainForInternal
-                || GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal
-                || GetWorkspaceConfig(m.Workspace).VerifiedDomains.Any()));
+            && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 
     public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, string userEmail, CancellationToken ct)
