@@ -2090,7 +2090,33 @@ public class TranslationRoomService : ITranslationRoomService
     {
         if (scope == RoomTimelineScope.Mine)
         {
-            return BuildAccessibleRoomsQuery(userId, userEmail);
+            var email = RoomReadAccess.NormalizeEmail(userEmail);
+
+            // WT-333 / My Meetings boundary:
+            // - hosts and participants keep seeing the room across its whole lifecycle
+            // - invitation-only visibility stops once the meeting is in the past
+            if (email is null)
+            {
+                return _unitOfWork.TranslationRoomRepository
+                    .Query()
+                    .Where(room =>
+                        room.HostId == userId
+                        || room.TranslationRoomParticipants.Any(p => p.UserId == userId));
+            }
+
+            return _unitOfWork.TranslationRoomRepository
+                .Query()
+                .Where(room =>
+                    room.HostId == userId
+                    || room.TranslationRoomParticipants.Any(p => p.UserId == userId)
+                    || (
+                        (room.Status == "SCHEDULED"
+                         || room.Status == "WAITING"
+                         || room.Status == "IN_PROGRESS"
+                         || room.Status == "PAUSED")
+                        && room.TranslationRoomInvitations.Any(i =>
+                            i.Email == email
+                            && RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))));
         }
 
         if (workspaceId.HasValue

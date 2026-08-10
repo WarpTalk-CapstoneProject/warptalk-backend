@@ -339,6 +339,39 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Once a meeting is in the past, an email invitation alone no longer keeps it on the caller's
+    /// personal timeline. Past is for rooms they actually joined.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_ExcludesAPastRoom_ForAnInviteeWhoNeverJoined()
+    {
+        var past = await SeedRoomAsync(WorkspaceId, "ENDED");
+        await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().BeEmpty();
+        result.Value.Total.Should().Be(0);
+    }
+
+    /// <summary>
+    /// Live keeps the invitation path: the caller has not joined yet, but the row is precisely the
+    /// shortcut that lets them do so.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_IncludesALiveRoom_ForAnInviteeWhoHasNotJoined()
+    {
+        var live = await SeedRoomAsync(WorkspaceId, "WAITING");
+        await SeedInvitationAsync(live.Id, $"{OutsiderId}@example.test");
+
+        var result = await MyMeetingsAsync(OutsiderId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == live.Id);
+    }
+
+    /// <summary>
     /// Widening WHICH ROOMS a caller sees must not widen WHAT IS IN THEM. A room whose ArtifactAccess
     /// is HOST_ONLY — which "{}" settings resolve to — keeps its AI summary from a participant here,
     /// exactly as the download endpoint does. This is the WT-304 drift, pinned on the new route
