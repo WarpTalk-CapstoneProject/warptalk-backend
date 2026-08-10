@@ -91,4 +91,31 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
             ? Result.Success()
             : Result.Failure(SuspendedMessage, ErrorCodes.Forbidden);
     }
+
+    /// <inheritdoc />
+    public async Task<bool?> GetHostApprovalDefaultAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            return response.EnforceHostApprovalDefault;
+        }
+        catch (Exception ex)
+        {
+            // Null, not false. Returning false here would let a WorkspaceService outage silently
+            // strip host approval from every meeting created during it — a security decision made
+            // by a network error. Null hands the answer back to the meeting type, which is exactly
+            // what decided it before this call existed.
+            _logger.LogWarning(
+                ex,
+                "Could not read the workspace host-approval default; the meeting type's own default stands. WorkspaceId: {WorkspaceId}",
+                workspaceId);
+            return null;
+        }
+    }
 }
