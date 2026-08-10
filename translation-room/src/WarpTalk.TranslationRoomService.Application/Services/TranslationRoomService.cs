@@ -40,6 +40,10 @@ public class TranslationRoomService : ITranslationRoomService
     private readonly IRedisStateRepository? _redisStateRepository;
     private readonly ILogger<TranslationRoomService> _logger;
     private readonly string _frontendBaseUrl;
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
+    private readonly WarpTalk.Shared.Protos.UserService.UserServiceClient? _userClient;
+
+    private const string MeetingInvitedNotificationType = "MEETING_INVITED";
 
     /// <summary>
     /// Cross-process relay every room event already travels on. The SignalR hub lives in the
@@ -85,8 +89,15 @@ public class TranslationRoomService : ITranslationRoomService
         WarpTalk.Shared.Interfaces.IEmailService emailService,
         ILogger<TranslationRoomService> logger,
         IOptions<AppSettings>? appSettings = null,
-        IRedisStateRepository? redisStateRepository = null)
+        IRedisStateRepository? redisStateRepository = null,
+        // Optional so every existing construction site — and the whole test suite — keeps
+        // working. A room service that cannot reach the notification mesh still creates
+        // rooms and still sends the invitation email; it just cannot ring the bell.
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null,
+        WarpTalk.Shared.Protos.UserService.UserServiceClient? userClient = null)
     {
+        _notificationClient = notificationClient;
+        _userClient = userClient;
         _unitOfWork = unitOfWork;
         _languagePolicy = languagePolicy;
         _audioRouteEventProcessor = audioRouteEventProcessor;
@@ -113,6 +124,70 @@ public class TranslationRoomService : ITranslationRoomService
     /// Never throws — an unnotified client is stale, but the invitations are already persisted
     /// and the invitation emails already sent, so failing the caller here would be worse.
     /// </summary>
+    /// <summary>
+    /// Rings the bell for someone who was just invited.
+    ///
+    /// MeetingInvited already goes out on the meeting-events channel, but that is a
+    /// workspace-scoped "your room list changed" nudge, not a notification — its own doc says
+    /// so. Nothing addressed the invitee, so an invitation existed as an email and a row and
+    /// never as anything the app could show them.
+    ///
+    /// Invitations are keyed by EMAIL and notifications by USER ID, which is the whole reason
+    /// this needs a lookup: an invitee who has no account yet has nowhere to receive a
+    /// notification, and the email is correctly the only channel for them. That is a silent
+    /// skip, not a failure.
+    ///
+    /// Never throws. The invitation is already persisted and the email already sent by the
+    /// time this runs; failing the caller over the bell would trade the thing that matters
+    /// for the thing that is nice to have.
+    /// </summary>
+    private async Task NotifyInvitedUserAsync(
+        string email,
+        TranslationRoom room,
+        string meetingLink,
+        CancellationToken ct)
+    {
+        if (_notificationClient is null || _userClient is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var user = await _userClient.GetUserByEmailAsync(
+                new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email },
+                cancellationToken: ct);
+
+            if (string.IsNullOrWhiteSpace(user?.Id))
+            {
+                // No account yet. The invitation email is their only channel, by design.
+                return;
+            }
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = user.Id,
+                Type = MeetingInvitedNotificationType,
+                Title = $"You were invited to \"{room.Title}\"",
+                Body = room.ScheduledAt.HasValue
+                    ? $"\"{room.Title}\" is scheduled for {room.ScheduledAt.Value:f}."
+                    : $"You were invited to join \"{room.Title}\".",
+                ActionUrl = meetingLink,
+            };
+            request.Metadata.Add("room_id", room.Id.ToString());
+            request.Metadata.Add("room_title", room.Title);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to send the meeting-invite notification for RoomId {RoomId}. The invitation and its email are unaffected.",
+                room.Id);
+        }
+    }
+
     private async Task PublishRoomInvitationsChangedAsync(TranslationRoom room)
     {
         if (_redisStateRepository is null)
@@ -1286,6 +1361,7 @@ public class TranslationRoomService : ITranslationRoomService
                         }, ct);
 
                         await _emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, translationRoom.Title, scheduledTime, ct);
+                        await NotifyInvitedUserAsync(email, translationRoom, meetingLink, ct);
                         invitationsAdded = true;
                     }
                 }
