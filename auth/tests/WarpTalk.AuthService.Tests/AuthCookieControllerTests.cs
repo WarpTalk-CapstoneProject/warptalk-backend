@@ -217,6 +217,75 @@ public class AuthCookieControllerTests
         Assert.Contains("expires=", setCookie, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// WT-344 — the bug that logged real users out of production during our own deploys.
+    ///
+    /// RefreshTokenAsync's catch-all returns InternalServerError when the database is
+    /// unreachable, and this endpoint used to answer EVERY failure with 400 plus a cookie
+    /// wipe. So a few seconds of DB unavailability told every open browser "your refresh
+    /// token is invalid" — and the web client, correctly, reads a 4xx from this endpoint as a
+    /// dead session and signs the user out. A rolling deploy did this about sixty seconds in.
+    ///
+    /// Both halves are asserted because either one alone still loses the session: 503 keeps
+    /// the client from concluding anything (it already treats 5xx as transient), and NOT
+    /// clearing the cookies keeps the refresh token that is, as far as anyone knows, still
+    /// perfectly good.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_ServiceFault_Returns503AndKeepsTheSessionCookies()
+    {
+        var tokenService = Substitute.For<ITokenService>();
+        tokenService.RefreshTokenAsync(Arg.Any<RefreshTokenRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Failure<AuthResponse>(
+                "An unexpected error occurred while refreshing the token.",
+                ErrorCodes.InternalServerError));
+        var context = new DefaultHttpContext();
+        context.Request.Headers.Cookie = "warptalk_refresh=perfectly-good-refresh-token";
+        var controller = new TokenController(tokenService)
+        {
+            ControllerContext = new ControllerContext { HttpContext = context }
+        };
+
+        var action = await controller.Refresh(
+            new RefreshTokenRequest(string.Empty, null, null),
+            CancellationToken.None);
+
+        var status = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, status.StatusCode);
+        // Nothing may be deleted here. An empty Set-Cookie is the assertion: the browser keeps
+        // what it had.
+        Assert.Empty(controller.Response.Headers.SetCookie.ToString());
+    }
+
+    /// <summary>
+    /// The other side of the same rule: a token this service actually looked at and refused
+    /// still ends the session, cookies and all. Losing this would leave a genuinely dead
+    /// session retrying forever instead of landing on the login screen.
+    /// </summary>
+    [Fact]
+    public async Task Refresh_ServiceUnavailable_IsAlsoTreatedAsTransient()
+    {
+        var tokenService = Substitute.For<ITokenService>();
+        tokenService.RefreshTokenAsync(Arg.Any<RefreshTokenRequest>(), Arg.Any<CancellationToken>())
+            .Returns(Result.Failure<AuthResponse>(
+                "Could not reach the account directory.",
+                ErrorCodes.ServiceUnavailable));
+        var context = new DefaultHttpContext();
+        context.Request.Headers.Cookie = "warptalk_refresh=perfectly-good-refresh-token";
+        var controller = new TokenController(tokenService)
+        {
+            ControllerContext = new ControllerContext { HttpContext = context }
+        };
+
+        var action = await controller.Refresh(
+            new RefreshTokenRequest(string.Empty, null, null),
+            CancellationToken.None);
+
+        var status = Assert.IsType<ObjectResult>(action);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, status.StatusCode);
+        Assert.Empty(controller.Response.Headers.SetCookie.ToString());
+    }
+
     [Fact]
     public async Task Logout_UsesRefreshCookieAndClearsSessionCookies()
     {
