@@ -104,6 +104,20 @@ alt TXT Record Verified Successfully
   deactivate Gateway
   Web --> Owner : Display "Domain Verified" badge & enable auto-join policy
   deactivate Web
+
+  note over Owner, WorkspaceDb
+    BR-140-013/014/015 — this table is the ONLY source of truth for verified
+    domains; a VerifiedDomains array in the workspace settings JSON must not
+    take part in any policy decision (WT-179).
+
+    Changing this list changes who may be admitted, but never rewrites anyone.
+    Verifying a domain does NOT retroactively upgrade existing External members
+    or pending External invitations to Internal. Revoking one does NOT downgrade
+    anybody either: pending invitations the new settings would refuse stay
+    PENDING and fail at accept time with a reason naming the setting that
+    changed, so the Owner can revoke or re-issue them deliberately. The settings
+    screen shows the affected count and addresses before saving.
+  end note
 else DNS TXT Record Not Found / Invalid
   VerifiedDomainService --> DomainsController : Result.Failure("DNS TXT record missing or invalid", ErrorCodes.ValidationError)
   DomainsController --> Gateway : 400 Bad Request (DNS verification failed)
