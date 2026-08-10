@@ -47,28 +47,4 @@ public interface IWorkspaceMeetingPolicy
     Task<Result> EnsureWorkspaceCanHostMeetingsAsync(
         Guid workspaceId,
         CancellationToken ct = default);
-
-    /// <summary>
-    /// WT-342 — the workspace's default answer to "must the host approve people joining?", or
-    /// <c>null</c> when the workspace has no usable opinion.
-    ///
-    /// <c>EnforceHostApprovalDefault</c> has had a working toggle on the workspace settings page,
-    /// a field on the DTO, and a value in the settings blob for as long as that page has existed —
-    /// and until now NOTHING read it. An admin could turn it on, watch it save, reload the page and
-    /// see it on, and every meeting created afterwards ignored it completely.
-    ///
-    /// Deliberately <c>bool?</c> rather than <c>bool</c>. This is a DEFAULT, and "we could not ask"
-    /// has to stay distinguishable from "the workspace said false" — otherwise a WorkspaceService
-    /// outage would quietly strip approval from every meeting created during it, which is a
-    /// security decision made by a network error. Null means the meeting type's own default stands,
-    /// exactly as it did before this method existed.
-    ///
-    /// Fails OPEN into that null for the same reason
-    /// <see cref="EnsureWorkspaceCanHostMeetingsAsync"/> does: room creation carried no dependency
-    /// on this before, and turning a WorkspaceService blip into "nobody can create a meeting" is a
-    /// far worse outcome than one room falling back to its type's default.
-    /// </summary>
-    Task<bool?> GetHostApprovalDefaultAsync(
-        Guid workspaceId,
-        CancellationToken ct = default);
 }
