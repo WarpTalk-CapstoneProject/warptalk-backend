@@ -34,6 +34,7 @@ public static class WorkspaceConstants
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";
         public const string UserNotMember = "User is not a member of this workspace.";
         public const string WorkspaceNotFound = "Workspace not found.";
+        public const string WorkspaceInactive = "This workspace has been deactivated.";
         public const string UnexpectedErrorFetchingWorkspace = "An unexpected error occurred while fetching the workspace.";
         public const string UnexpectedErrorSelectingWorkspace = "An unexpected error occurred while selecting the workspace.";
         public const string UnexpectedError = "An unexpected error occurred.";

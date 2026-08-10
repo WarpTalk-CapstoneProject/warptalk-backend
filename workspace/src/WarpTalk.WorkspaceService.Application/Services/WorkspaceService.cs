@@ -240,15 +240,19 @@ public class WorkspaceService : IWorkspaceService
     {
         try
         {
+            var activeMemberStatus = WorkspaceMemberStatus.Active.ToStorageValue();
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null,
+                m => m.WorkspaceId == workspaceId
+                     && m.UserId == userId
+                     && m.RemovedAt == null
+                     && m.Status.ToLower() == activeMemberStatus,
                 "",
                 ct
             );
 
             if (member == null)
             {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
@@ -290,24 +294,41 @@ public class WorkspaceService : IWorkspaceService
     {
         try
         {
+            var activeMemberStatus = WorkspaceMemberStatus.Active.ToStorageValue();
             var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+                m => m.WorkspaceId == workspaceId
+                     && m.UserId == userId
+                     && m.RemovedAt == null
+                     && m.Status.ToLower() == activeMemberStatus,
+                "",
+                ct);
 
             if (member == null)
-            {
-                return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
-            }
-
-            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null)
             {
                 return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
-            var user = await _authIdentity.GetUserByIdAsync(userId, ct);
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+
+            // `GetByIdAsync` is a raw `FindAsync`; it has no soft-delete or IsActive filter, so a
+            // membership row alone is not proof the workspace is still usable. Membership survives
+            // both deletion and deactivation, which means without these two checks a stale tab or a
+            // hand-typed URL could pin a dead workspace into the user's Redis active context and
+            // keep every later request scoped to it.
+            if (workspace == null || workspace.DeletedAt != null)
+            {
+                return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            // Deactivated is distinct from deleted for the person reading the message, but both are
+            // 404 on the wire: the workspace is not selectable and the client treats them the same.
+            if (!workspace.IsActive)
+            {
+                return Result.Failure<SelectWorkspaceResponse>(WorkspaceConstants.Errors.WorkspaceInactive, ErrorCodes.NotFound);
+            }
+
             var role = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            var membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(_unitOfWork, user?.Email, workspace, ct);
-            var membershipType = membershipTypeEnum.ToString();
+            var membershipType = member.MembershipType;
 
             await _workspaceCache.SetActiveWorkspaceDetailsAsync(userId, workspaceId, role, membershipType, ct);
 
