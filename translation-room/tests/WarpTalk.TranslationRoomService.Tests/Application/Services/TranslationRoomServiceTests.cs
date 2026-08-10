@@ -351,7 +351,7 @@ public class TranslationRoomServiceTests
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
@@ -381,7 +381,7 @@ public class TranslationRoomServiceTests
 
         _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeFalse(result.Error);
         result.Error.Should().Be(TranslationRoomConstants.ErrorInvalidTransitionToStart);
@@ -417,7 +417,7 @@ public class TranslationRoomServiceTests
         _mockAudioRouteRepo.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<TranslationRoomAudioRoute>());
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         room.Status.Should().Be("IN_PROGRESS");
@@ -1221,7 +1221,7 @@ public class TranslationRoomServiceTests
             Settings = "{\"requires_approval\":false}"
         });
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         _mockAudioRouteService.Verify(s => s.GenerateRoutesAsync(roomId, It.IsAny<CancellationToken>()), Times.Once);
@@ -1256,7 +1256,7 @@ public class TranslationRoomServiceTests
             .Callback<Guid, Guid?, string, string, CancellationToken>((_, _, eventType, _, _) => emitted.Add(eventType))
             .ReturnsAsync(Result.Success());
 
-        var result = await _service.StartTranslationRoomAsync(roomId, hostId);
+        var result = await _service.StartTranslationRoomAsync(roomId, hostId, null);
 
         result.IsSuccess.Should().BeTrue(result.Error);
         emitted.Should().Equal(
