@@ -25,10 +25,20 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
 
     public async Task<(List<Workspace> Items, int TotalCount)> GetWorkspacesForUserAsync(Guid userId, int page, int pageSize, string? search = null, CancellationToken ct = default)
     {
+        var activeMemberStatus = WorkspaceMemberStatus.Active.ToStorageValue();
         var query = _context.Workspaces
             .AsNoTracking()
-            .Include(w => w.WorkspaceMembers.Where(m => m.UserId == userId && m.RemovedAt == null))
-            .Where(w => w.WorkspaceMembers.Any(m => m.UserId == userId && m.RemovedAt == null));
+            .Include(w => w.WorkspaceMembers.Where(m =>
+                m.UserId == userId
+                && m.RemovedAt == null
+                && m.Status.ToLower() == activeMemberStatus))
+            .Where(w =>
+                w.DeletedAt == null
+                && w.IsActive
+                && w.WorkspaceMembers.Any(m =>
+                    m.UserId == userId
+                    && m.RemovedAt == null
+                    && m.Status.ToLower() == activeMemberStatus));
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -195,4 +205,3 @@ public class WorkspaceRepository : GenericRepository<Workspace>, IWorkspaceRepos
         return true;
     }
 }
-
