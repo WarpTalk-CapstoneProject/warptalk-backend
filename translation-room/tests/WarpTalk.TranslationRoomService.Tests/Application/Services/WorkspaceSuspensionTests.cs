@@ -252,7 +252,7 @@ public class WorkspaceSuspensionTests
         var room = ArrangeRoom(hostId, status: "SCHEDULED");
         ArrangeWorkspaceIsSuspended();
 
-        var result = await _service.StartTranslationRoomAsync(room.Id, hostId);
+        var result = await _service.StartTranslationRoomAsync(room.Id, hostId, null);
 
         result.IsSuccess.Should().BeFalse();
         result.ErrorCode.Should().Be(ErrorCodes.Forbidden);
@@ -268,7 +268,7 @@ public class WorkspaceSuspensionTests
         var hostId = Guid.NewGuid();
         var room = ArrangeRoom(hostId, status: "WAITING");
 
-        var result = await _service.StartTranslationRoomAsync(room.Id, hostId);
+        var result = await _service.StartTranslationRoomAsync(room.Id, hostId, null);
 
         result.IsSuccess.Should().BeTrue();
         room.Status.Should().Be("IN_PROGRESS");
@@ -292,7 +292,7 @@ public class WorkspaceSuspensionTests
         var room = ArrangeRoom(hostId, status: "IN_PROGRESS");
         ArrangeWorkspaceIsSuspended();
 
-        var result = await _service.StartTranslationRoomAsync(room.Id, hostId);
+        var result = await _service.StartTranslationRoomAsync(room.Id, hostId, null);
 
         result.IsSuccess.Should().BeTrue();
         room.Status.Should().Be("IN_PROGRESS");
