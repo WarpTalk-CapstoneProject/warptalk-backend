@@ -99,6 +99,34 @@ public static class DependencyInjection
         services.AddScoped<IDocumentTextChunker, DocumentTextChunker>();
         services.AddScoped<IAiPolicyResolver, AiPolicyResolver>();
         services.AddScoped<IEmbeddingIndexPublisher, RedisEmbeddingIndexPublisher>();
+
+        // Reading indexed chunks back out. Indexing is fire-and-forget over Redis; this is a
+        // synchronous read a user is waiting on, so it goes to the store directly. A typed
+        // client keeps the base address and timeout in one place and out of the adapter.
+        var vectorDbUrl = configuration["VectorDb:Url"];
+        if (string.IsNullOrWhiteSpace(vectorDbUrl))
+        {
+            if (!environment.IsDevelopment())
+            {
+                throw new InvalidOperationException(
+                    "VectorDb:Url is required outside Development.");
+            }
+
+            vectorDbUrl = "http://localhost:6333";
+        }
+        services.AddHttpClient<IKnowledgeChunkReader, QdrantKnowledgeChunkReader>(client =>
+        {
+            // A trailing slash keeps the relative request path from replacing the last
+            // segment of the base address.
+            client.BaseAddress = new Uri(vectorDbUrl.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(10);
+
+            var vectorDbApiKey = configuration["VectorDb:ApiKey"];
+            if (!string.IsNullOrWhiteSpace(vectorDbApiKey))
+            {
+                client.DefaultRequestHeaders.Add("api-key", vectorDbApiKey);
+            }
+        });
         services.AddScoped<IDocumentEmbeddingResultProcessor, DocumentEmbeddingResultProcessor>();
         services.AddScoped<WorkspaceOutboxWriter>();
         services.AddScoped<WorkspaceOutboxDelivery>();
