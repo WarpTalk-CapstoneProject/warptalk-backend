@@ -821,6 +821,7 @@ public class WorkspaceServiceTests
             Name = "DeepMind",
             Slug = "deepmind",
             LogoUrl = "logo.png",
+            IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
 

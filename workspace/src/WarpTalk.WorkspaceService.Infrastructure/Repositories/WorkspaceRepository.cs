@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
+using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
 using WarpTalk.WorkspaceService.Domain.ReadModels;
 using WarpTalk.WorkspaceService.Domain.Settings;
