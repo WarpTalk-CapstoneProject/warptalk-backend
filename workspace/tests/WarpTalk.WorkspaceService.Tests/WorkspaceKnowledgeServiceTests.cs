@@ -182,6 +182,82 @@ public class WorkspaceKnowledgeServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("meeting_summary")]
+    [InlineData("glossary")]
+    [InlineData("workspace_context")]
+    public async Task GetKnowledgeAsync_AcceptsEverySourceTypeThisListingIsAbout(string sourceType)
+    {
+        GivenMemberWithRole("Owner");
+        GivenChunks();
+
+        var result = await _service.GetKnowledgeAsync(
+            _workspaceId, new GetWorkspaceKnowledgeQuery { SourceType = sourceType }, _userId);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public async Task GetKnowledgeAsync_ExpandsGlossaryToBothProducersThatWriteIt()
+    {
+        // A workspace's own glossary (glossary_term) and the platform's (global_glossary_term)
+        // are separate producers. Asking for one would return half a glossary with no sign
+        // that the other half exists.
+        GivenMemberWithRole("Owner");
+        GivenChunks();
+
+        await _service.GetKnowledgeAsync(
+            _workspaceId, new GetWorkspaceKnowledgeQuery { SourceType = "glossary" }, _userId);
+
+        await _chunkReader.Received(1).ScrollAsync(
+            Arg.Any<Guid>(),
+            Arg.Is<KnowledgeChunkFilter>(filter =>
+                filter.SourceTypes != null &&
+                filter.SourceTypes.Contains("glossary_term") &&
+                filter.SourceTypes.Contains("global_glossary_term")),
+            Arg.Any<int>(),
+            Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetKnowledgeAsync_RejectsTranscriptAsAFilterBecauseItIsNeverListed()
+    {
+        // Transcript segments are excluded from this view (see ExcludedSourceTypes). Accepting
+        // "transcript" as a filter would return an empty page and read as "this workspace has
+        // no meetings" rather than "that is not what this page shows".
+        GivenMemberWithRole("Owner");
+
+        var result = await _service.GetKnowledgeAsync(
+            _workspaceId,
+            new GetWorkspaceKnowledgeQuery { SourceType = "transcript" },
+            _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetKnowledgeAsync_AlwaysExcludesRawTranscriptSegments()
+    {
+        // The exclusion has to reach the store. Filtering after paging would turn a page of 50
+        // into however few non-transcript rows it happened to contain, and a meeting-heavy
+        // workspace would page through empty screens to find one document.
+        GivenMemberWithRole("Owner");
+        GivenChunks();
+
+        await _service.GetKnowledgeAsync(_workspaceId, new GetWorkspaceKnowledgeQuery(), _userId);
+
+        await _chunkReader.Received(1).ScrollAsync(
+            Arg.Any<Guid>(),
+            Arg.Is<KnowledgeChunkFilter>(filter =>
+                filter.ExcludedSourceTypes != null &&
+                filter.ExcludedSourceTypes.Contains("transcript")),
+            Arg.Any<int>(),
+            Arg.Any<string?>(),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task GetKnowledgeAsync_ClampsAnOversizedPageAndFillsInAnAbsentOne()
     {

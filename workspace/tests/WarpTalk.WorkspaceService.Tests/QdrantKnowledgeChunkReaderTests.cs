@@ -74,7 +74,7 @@ public class QdrantKnowledgeChunkReaderTests
         var (reader, handler) = Build(HttpStatusCode.OK, EmptyResult);
 
         await reader.ScrollAsync(
-            _workspaceId, new KnowledgeChunkFilter("document", "risk"), 50, null);
+            _workspaceId, new KnowledgeChunkFilter(["document"], "risk"), 50, null);
 
         using var sent = JsonDocument.Parse(handler.LastRequestBody!);
         var keys = sent.RootElement.GetProperty("filter").GetProperty("must")
@@ -93,6 +93,96 @@ public class QdrantKnowledgeChunkReaderTests
             .Select(condition => condition.GetProperty("key").GetString())
             .ToList();
         Assert.Equal(new[] { "workspace_id" }, plainKeys);
+    }
+
+    [Fact]
+    public async Task ScrollAsync_MatchesAnyWhenOneCategoryCoversSeveralStoredTypes()
+    {
+        // "Glossary" is two producers — GlossaryService and GlobalGlossaryService — writing
+        // different source types. Sent as two separate musts they would AND together and match
+        // nothing at all, so the tab would look like an empty glossary.
+        var (reader, handler) = Build(HttpStatusCode.OK, EmptyResult);
+
+        await reader.ScrollAsync(
+            _workspaceId,
+            new KnowledgeChunkFilter(["glossary_term", "global_glossary_term"], null),
+            50,
+            null);
+
+        using var sent = JsonDocument.Parse(handler.LastRequestBody!);
+        var sourceType = sent.RootElement.GetProperty("filter").GetProperty("must")
+            .EnumerateArray()
+            .Single(condition => condition.GetProperty("key").GetString() == "source_type");
+        var any = sourceType.GetProperty("match").GetProperty("any")
+            .EnumerateArray()
+            .Select(value => value.GetString())
+            .ToList();
+        Assert.Equal(new[] { "glossary_term", "global_glossary_term" }, any);
+    }
+
+    [Fact]
+    public async Task ScrollAsync_NamesAGlossaryRowAfterItsTerm()
+    {
+        // Glossary producers predate `source_title` and write `source_term`. Without the
+        // fallback every glossary row would render as the generic word "Glossary term".
+        var (reader, _) = Build(HttpStatusCode.OK, """
+        {
+          "result": {
+            "points": [
+              {
+                "id": "3f",
+                "payload": {
+                  "chunk_id": "3f",
+                  "source_type": "glossary_term",
+                  "text": "warp → dịch: real-time translation",
+                  "source_term": "warp",
+                  "retention_state": "active",
+                  "ai_retrieval": true
+                }
+              }
+            ],
+            "next_page_offset": null
+          }
+        }
+        """);
+
+        var page = await reader.ScrollAsync(
+            _workspaceId, new KnowledgeChunkFilter(null, null), 50, null);
+
+        Assert.Equal("warp", Assert.Single(page.Items).SourceTitle);
+    }
+
+    [Fact]
+    public async Task ScrollAsync_ExcludesSourceTypesTheCallerRefused()
+    {
+        var (reader, handler) = Build(HttpStatusCode.OK, EmptyResult);
+
+        await reader.ScrollAsync(
+            _workspaceId, new KnowledgeChunkFilter(null, null, ["transcript"]), 50, null);
+
+        using var sent = JsonDocument.Parse(handler.LastRequestBody!);
+        var mustNot = sent.RootElement.GetProperty("filter").GetProperty("must_not")
+            .EnumerateArray()
+            .Select(condition => (
+                condition.GetProperty("key").GetString(),
+                condition.GetProperty("match").GetProperty("value").GetString()))
+            .ToList();
+        Assert.Equal([("source_type", "transcript")], mustNot);
+    }
+
+    [Fact]
+    public async Task ScrollAsync_OmitsMustNotEntirelyWhenNothingIsExcluded()
+    {
+        // Qdrant is lenient about an empty must_not, but sending one makes every request read
+        // as though an exclusion were in play — the next person debugging a missing row would
+        // start with the wrong suspect.
+        var (reader, handler) = Build(HttpStatusCode.OK, EmptyResult);
+
+        await reader.ScrollAsync(_workspaceId, new KnowledgeChunkFilter(null, null), 50, null);
+
+        using var sent = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.False(
+            sent.RootElement.GetProperty("filter").TryGetProperty("must_not", out _));
     }
 
     [Fact]

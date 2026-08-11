@@ -7,6 +7,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using WarpTalk.TranslationRoomService.Application.Helpers;
+using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
@@ -141,10 +143,50 @@ public class SummaryResultConsumerWorker : BackgroundService
         unitOfWork.TranslationRoomArtifactRepository.Update(summary);
         await unitOfWork.SaveChangesAsync(ct);
 
+        // The indexed copy has to follow the artifact. A rewrite that only updated the
+        // artifact would leave the Knowledge page and WarpBot answering from the summary this
+        // room no longer has — the chunk ids are derived from the room, so this overwrites the
+        // previous points rather than adding a second version alongside them.
+        await ReindexSummaryAsync(scope, roomId, content, ct);
+
         _logger.LogInformation(
             "Rewrote the summary for room {RoomId} using template {TemplateKey}",
             roomId,
             fields.GetValueOrDefault("template_key", "general"));
+    }
+
+    /// <summary>
+    /// Re-publishes the rewritten summary to the workspace knowledge index.
+    ///
+    /// Isolated in its own try/catch: the rewrite the user asked for has already been saved,
+    /// and failing to re-index it must not turn a successful rewrite into a logged failure.
+    /// </summary>
+    private async Task ReindexSummaryAsync(
+        IServiceScope scope, Guid roomId, string content, CancellationToken ct)
+    {
+        try
+        {
+            var text = MeetingSummaryKnowledgeText.Build(content);
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var room = await unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+            if (room == null || room.WorkspaceId == Guid.Empty) return;
+
+            var publisher = scope.ServiceProvider.GetRequiredService<IKnowledgeFactRequestPublisher>();
+            await publisher.PublishAsync(
+                room.WorkspaceId,
+                "meeting_summary",
+                roomId,
+                room.Title,
+                text,
+                indexSourceText: true,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not re-index the rewritten summary for room {RoomId}", roomId);
+        }
     }
 
     private async Task<bool> EnsureConsumerGroupAsync(IDatabase db, CancellationToken ct)
