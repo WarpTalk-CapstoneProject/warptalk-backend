@@ -8,6 +8,17 @@ public enum AudioRoutingEventType
     // Modern diagram-aligned events
     config_ready,
     session_starts,
+
+    /// <summary>
+    /// Translation was stopped while the MEETING carries on — the routes go back to READY and can
+    /// be started again, and nothing about the room's own lifecycle changes.
+    ///
+    /// Distinct from <see cref="room_pause"/> on purpose. A pause means "stop listening": the AI
+    /// workers treat a PAUSED room as one whose microphone must be ignored, so it also stops the
+    /// transcript. Stopping translation must not, because transcription and translation are
+    /// separate features and a room can legitimately run with only the first.
+    /// </summary>
+    translation_stopped,
     room_pause,
     room_resume,
     session_ends,

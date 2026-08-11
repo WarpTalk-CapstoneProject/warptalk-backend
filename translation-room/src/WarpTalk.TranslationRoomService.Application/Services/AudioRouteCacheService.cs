@@ -16,15 +16,18 @@ public class AudioRouteCacheService : IAudioRouteCacheService
 {
     private readonly ITranslationRoomAudioRouteRepository _routeRepository;
     private readonly ITranslationRoomRepository _roomRepository;
+    private readonly ITranslationRoomSessionRepository _sessionRepository;
     private readonly IRedisStateRepository _redisStateRepo;
 
     public AudioRouteCacheService(
         ITranslationRoomAudioRouteRepository routeRepository,
         ITranslationRoomRepository roomRepository,
+        ITranslationRoomSessionRepository sessionRepository,
         IRedisStateRepository redisStateRepo)
     {
         _routeRepository = routeRepository;
         _roomRepository = roomRepository;
+        _sessionRepository = sessionRepository;
         _redisStateRepo = redisStateRepo;
     }
 
@@ -37,12 +40,27 @@ public class AudioRouteCacheService : IAudioRouteCacheService
             .ToList();
 
         var room = await _roomRepository.GetByIdAsync(roomId, ct);
+
+        // Whether TRANSLATION is running, as opposed to whether the meeting is open.
+        //
+        // room_status cannot answer that and was being read as if it could: the AI workers took
+        // IN_PROGRESS to mean translation was active, but a room is IN_PROGRESS from the moment
+        // somebody opens it, and since WT-339 opening a room deliberately does not start
+        // translation. So the pipeline had no way to tell "live meeting, transcript only" from
+        // "live meeting, translating", and the two features could not be separated at all.
+        //
+        // An ACTIVE TranslationRoomSession is the fact itself — it is created by Start Translation
+        // and ended by Stop — and it is the same signal the web client reads, so the two cannot
+        // drift into disagreeing about whether translation is on.
+        var activeSession = await _sessionRepository.GetActiveSessionByRoomIdAsync(roomId, ct);
+
         var payload = new
         {
             routes = activeOrPendingRoutes,
             version = DateTime.UtcNow.Ticks,
             generated_at = DateTime.UtcNow,
-            room_status = room?.Status.ToString() ?? string.Empty
+            room_status = room?.Status.ToString() ?? string.Empty,
+            translation_active = activeSession != null
         };
 
         var jsonPayload = JsonSerializer.Serialize(payload);

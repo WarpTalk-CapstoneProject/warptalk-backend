@@ -179,9 +179,16 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
             // JoinMeetingAsync, then stayed connected indefinitely and kept billing LiveKit
             // connection minutes. Worse, the bot being present is what stops LiveKit's own
             // empty_timeout from ever collecting the room.
+            //
+            // translation_stopped is here for the same reason: the flag that tells the AI workers
+            // translation is over rides on this publish, and a room with no cross-language routes
+            // has nothing in routesToUpdate to trigger one — so without this, stopping translation
+            // in a same-language room would be announced to nobody and the pipeline would keep
+            // translating.
             var isLifecycleEvent =
                 originalEventType == AudioRoutingEventType.session_starts ||
                 originalEventType == AudioRoutingEventType.session_ends ||
+                originalEventType == AudioRoutingEventType.translation_stopped ||
                 originalEventType == AudioRoutingEventType.room_pause ||
                 originalEventType == AudioRoutingEventType.room_resume;
             if (routesToUpdate.Any() || isLifecycleEvent)
