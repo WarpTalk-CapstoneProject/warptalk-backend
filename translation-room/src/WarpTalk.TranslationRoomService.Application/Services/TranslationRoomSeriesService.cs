@@ -12,6 +12,7 @@ using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
@@ -82,7 +83,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             plan.Type, plan.Interval, plan.StartDate, plan.EndDate,
             alreadyMaterializedThrough: null,
             horizonThrough: plan.EndDate,
-            maxCount: RecurrenceLimits.MaxDurationDays + 1);
+            maxCount: RecurrenceLimits.MaxDurationDays + 1,
+            plan.ByWeekdays, plan.ByMonthDay);
 
         if (allDates.Count == 0)
             return Result.Failure<CreateRecurringRoomResponse>(
@@ -96,15 +98,21 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             plan.Type, plan.Interval, plan.StartDate, plan.EndDate,
             alreadyMaterializedThrough: null,
             horizonThrough: horizonThrough,
-            maxCount: RecurrenceLimits.MaxOccurrencesPerPass);
+            maxCount: RecurrenceLimits.MaxOccurrencesPerPass,
+            plan.ByWeekdays, plan.ByMonthDay);
 
         if (initialDates.Count == 0)
         {
-            // The whole series sits beyond the horizon. Rather than return a response with no
-            // room in it — the client needs a room code to show — refuse; today's UI cannot
-            // produce this because it always starts the series at the next occurrence.
-            return Result.Failure<CreateRecurringRoomResponse>(
-                RecurrenceMessages.StartTooFarAhead, ErrorCodes.ValidationError);
+            // The whole series sits beyond the 14-day horizon, which MONTHLY reaches routinely:
+            // book "the 1st of every month" on the 5th and the first meeting is 27 days out.
+            //
+            // The first occurrence is therefore materialised whatever the horizon says. It is not
+            // a horizon violation so much as the horizon's purpose — keeping a rolling window
+            // full — not applying to the one room the caller is owed: the response carries a room
+            // code the user shares, and a booking whose room does not exist for another month is
+            // a booking they cannot invite anyone to. The worker picks up the rest normally,
+            // because the watermark lands on this date and it only ever looks past it.
+            initialDates = new[] { allDates[0] };
         }
 
         var series = BuildSeriesEntity(request, plan, hostId);
@@ -167,13 +175,150 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
     // Read
     // ─────────────────────────────────────────────────────────────────────────
 
-    public async Task<Result<RecurrenceSummaryResponse>> GetSeriesAsync(Guid seriesId, Guid userId, CancellationToken ct = default)
+    public async Task<Result<SeriesDetailResponse>> GetSeriesAsync(
+        Guid seriesId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
     {
         var series = await _seriesRepository.GetByIdAsync(seriesId, ct);
         if (series is null)
-            return Result.Failure<RecurrenceSummaryResponse>(RecurrenceMessages.SeriesNotFound, ErrorCodes.NotFound);
+            return Result.Failure<SeriesDetailResponse>(RecurrenceMessages.SeriesNotFound, ErrorCodes.NotFound);
 
-        return Result.Success(ToSummary(series));
+        var occurrences = await _translationRoomService.GetSeriesOccurrencesAsync(seriesId, userId, userEmail, ct);
+        if (!occurrences.IsSuccess)
+            return Result.Failure<SeriesDetailResponse>(occurrences.Error!, occurrences.ErrorCode);
+
+        var visible = occurrences.Value!;
+
+        // Authorization, and the whole reason this read takes a caller: the host always, and
+        // anyone else only if they can see at least one of its meetings. Same not-found as a
+        // series that does not exist — distinguishing the two would confirm the id to a prober,
+        // which is most of the value of the id.
+        if (series.HostId != userId && visible.Count == 0)
+            return Result.Failure<SeriesDetailResponse>(RecurrenceMessages.SeriesNotFound, ErrorCodes.NotFound);
+
+        return Result.Success(new SeriesDetailResponse(
+            ToSummary(series),
+            series.HostId,
+            series.Title,
+            series.Description,
+            series.TranslationRoomType,
+            series.SourceLanguage,
+            LanguageHelper.ParseTargetLanguages(series.TargetLanguages),
+            ReadInvitedEmails(series.InvitedEmails) ?? new List<string>(),
+            visible,
+            ResolveCurrentOccurrenceId(visible)));
+    }
+
+    /// <summary>
+    /// The occurrence a "join this booking" action should land on.
+    ///
+    /// Live first — a meeting happening right now is the one the user means, even when the next
+    /// scheduled slot is nearer on the clock than the one that overran. Otherwise the next one
+    /// due. Null when the whole series is behind them, which is what turns a stable series link
+    /// into an honest "nothing to join" rather than dropping someone into a finished meeting.
+    /// </summary>
+    private static Guid? ResolveCurrentOccurrenceId(List<TranslationRoomListItemDto> occurrences)
+    {
+        var live = occurrences.FirstOrDefault(o =>
+            o.Status is RoomStatus.IN_PROGRESS or RoomStatus.PAUSED or RoomStatus.WAITING);
+        if (live is not null) return live.Id;
+
+        var now = DateTime.UtcNow;
+        var next = occurrences
+            .Where(o => o.Status == RoomStatus.SCHEDULED && (o.ScheduledAt ?? o.CreatedAt) >= now)
+            .OrderBy(o => o.ScheduledAt ?? o.CreatedAt)
+            .FirstOrDefault();
+
+        return next?.Id;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Editing the booking
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public async Task<Result<UpdateSeriesResult>> UpdateSeriesAsync(
+        Guid seriesId,
+        Guid hostId,
+        UpdateSeriesRequest request,
+        CancellationToken ct = default)
+    {
+        var series = await _seriesRepository.GetByIdAsync(seriesId, ct);
+        if (series is null)
+            return Result.Failure<UpdateSeriesResult>(RecurrenceMessages.SeriesNotFound, ErrorCodes.NotFound);
+
+        if (series.HostId != hostId)
+            return Result.Failure<UpdateSeriesResult>(RecurrenceMessages.OnlyHostMayEdit, ErrorCodes.Forbidden);
+
+        if (series.Status == RecurrenceSeriesStatuses.Cancelled)
+            return Result.Failure<UpdateSeriesResult>(RecurrenceMessages.SeriesAlreadyCancelled, ErrorCodes.InvalidState);
+
+        var now = _utcNow();
+
+        // The template first, so occurrences the worker has not created yet are stamped from the
+        // edited booking. Null means "leave it alone" on every field — a client that knows about
+        // one of them cannot blank the rest.
+        if (request.Title is { Length: > 0 }) series.Title = request.Title;
+        if (request.Description is not null) series.Description = request.Description;
+        if (request.MaxParticipants is > 0) series.MaxParticipants = request.MaxParticipants.Value;
+        if (request.SourceLanguage is { Length: > 0 }) series.SourceLanguage = request.SourceLanguage;
+        if (request.TargetLanguages is not null)
+            series.TargetLanguages = LanguageHelper.SerializeTargetLanguages(request.TargetLanguages);
+        if (request.Settings is not null) series.Settings = JsonSerializer.Serialize(request.Settings);
+        if (request.InvitedEmails is not null) series.InvitedEmails = JsonSerializer.Serialize(request.InvitedEmails);
+
+        series.UpdatedAt = now;
+        series.UpdatedBy = hostId;
+        _seriesRepository.Update(series);
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        // Then the rooms that already exist and have not run yet. Same query the series cancel
+        // uses — "future occurrences in a status that still accepts changes" is the same set for
+        // both, and deriving it twice is how the two would come to disagree about what "future"
+        // means.
+        var futureOccurrences = await _seriesRepository.GetCancellableOccurrencesAsync(seriesId, now, ct);
+
+        var updated = 0;
+        foreach (var occurrence in futureOccurrences)
+        {
+            // Routed through the room service's own update so an occurrence is edited by exactly
+            // the rules a one-off room is: language validation, the invited-email diff and its
+            // notifications, and the target-language publish the AI pipeline reads. ScheduledAt is
+            // deliberately never passed — the rule owns every occurrence's time.
+            var result = await _translationRoomService.UpdateTranslationRoomSettingsAsync(
+                occurrence.Id,
+                hostId,
+                new UpdateRoomSettingsRequest(
+                    Title: request.Title,
+                    Description: request.Description,
+                    MaxParticipants: request.MaxParticipants,
+                    ScheduledAt: null,
+                    InvitedEmails: request.InvitedEmails,
+                    Settings: request.Settings,
+                    SourceLanguage: request.SourceLanguage,
+                    TargetLanguages: request.TargetLanguages),
+                ct);
+
+            if (result.IsSuccess)
+            {
+                updated++;
+            }
+            else
+            {
+                // One occurrence that refuses the edit must not roll back a booking that is now
+                // correct for every occurrence still to be created.
+                _logger.LogWarning(
+                    "WT-327: occurrence {RoomId} of series {SeriesId} could not be updated ({Error}); the booking itself was still changed.",
+                    occurrence.Id, seriesId, result.Error);
+            }
+        }
+
+        _logger.LogInformation(
+            "WT-327: series {SeriesId} edited by host {HostId}; {Count} future occurrence(s) updated with it.",
+            seriesId, hostId, updated);
+
+        return Result.Success(new UpdateSeriesResult(seriesId, updated));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -297,6 +442,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         var horizonThrough = RecurrenceScheduleCalculator.LocalDateOf(now, timeZone)
             .AddDays(RecurrenceLimits.HorizonDays);
 
+        var byWeekdays = RecurrenceRuleJson.ReadWeekdays(series.RecurrenceByWeekdays);
+
         var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
             series.RecurrenceType,
             series.RecurrenceInterval,
@@ -304,7 +451,9 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             series.EndsOnLocalDate,
             series.MaterializedThroughLocalDate,
             horizonThrough,
-            RecurrenceLimits.MaxOccurrencesPerPass);
+            RecurrenceLimits.MaxOccurrencesPerPass,
+            byWeekdays,
+            series.RecurrenceByMonthDay);
 
         if (dates.Count == 0)
         {
@@ -322,7 +471,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
 
         var plan = new RecurrencePlan(
             series.RecurrenceType, series.RecurrenceInterval, series.StartTimeLocal,
-            timeZone, series.StartsOnLocalDate, series.EndsOnLocalDate);
+            timeZone, series.StartsOnLocalDate, series.EndsOnLocalDate,
+            byWeekdays, series.RecurrenceByMonthDay);
 
         var invitedEmails = ReadInvitedEmails(series.InvitedEmails);
         var created = 0;
@@ -423,8 +573,11 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             HostId = hostId,
             RecurrenceType = plan.Type,
             RecurrenceInterval = plan.Interval,
-            RecurrenceByWeekdays = null,
-            RecurrenceByMonthDay = null,
+            // The planner has already resolved these to exactly one shape per cadence — weekdays
+            // for WEEKLY, a day of the month for MONTHLY, neither for DAILY — so what is stored is
+            // never "whatever the client happened to send".
+            RecurrenceByWeekdays = RecurrenceRuleJson.WriteWeekdays(plan.ByWeekdays),
+            RecurrenceByMonthDay = plan.ByMonthDay,
             StartTimeLocal = plan.StartTimeLocal,
             TimeZone = plan.TimeZone.Id,
             StartsOnLocalDate = plan.StartDate,
@@ -489,5 +642,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             series.TimeZone,
             series.StartsOnLocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             series.EndsOnLocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            series.Status);
+            series.Status,
+            series.RecurrenceInterval,
+            RecurrenceRuleJson.ReadWeekdays(series.RecurrenceByWeekdays)?.ToList(),
+            series.RecurrenceByMonthDay);
 }

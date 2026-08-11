@@ -119,17 +119,96 @@ public class RecurrencePlannerTests
     }
 
     [Theory]
+    [InlineData("DAILY")]
     [InlineData("WEEKLY")]
     [InlineData("MONTHLY")]
-    public void Weekly_and_monthly_are_refused_out_loud(string type)
+    public void Every_cadence_the_schema_stores_is_now_planned(string type)
     {
-        // The database will store them and the enumerator knows the names, but nothing
-        // materialises them yet — so accepting one would recreate the exact failure this
-        // feature removed: a control that looks like it worked and did nothing.
         var plan = RecurrencePlanner.Plan(new RecurrenceRequest(type, "08:00", Hcm), TenAmLocal);
 
+        plan.IsSuccess.Should().BeTrue();
+        plan.Value!.Type.Should().Be(type);
+    }
+
+    [Fact]
+    public void A_weekly_rule_with_no_weekdays_defaults_to_the_start_dates_own_weekday()
+    {
+        // Never left null: the planner is where "the client named none" turns into a concrete
+        // rule, so that no materialiser downstream has to decide what an empty list means.
+        var plan = RecurrencePlanner.Plan(
+            new RecurrenceRequest("WEEKLY", "08:00", Hcm, StartDateLocal: "2026-08-12"), TenAmLocal);
+
+        plan.IsSuccess.Should().BeTrue();
+        plan.Value!.ByWeekdays.Should().Equal(3); // 2026-08-12 is a Wednesday
+        plan.Value!.ByMonthDay.Should().BeNull();
+    }
+
+    [Fact]
+    public void Weekdays_are_de_duplicated_and_sorted()
+    {
+        var plan = RecurrencePlanner.Plan(
+            new RecurrenceRequest("WEEKLY", "08:00", Hcm, ByWeekdays: new List<int> { 5, 1, 5, 3 }),
+            TenAmLocal);
+
+        plan.IsSuccess.Should().BeTrue();
+        plan.Value!.ByWeekdays.Should().Equal(1, 3, 5);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(8)]
+    [InlineData(-1)]
+    public void A_weekday_outside_Monday_to_Sunday_is_refused_rather_than_filtered_out(int weekday)
+    {
+        // Silently booking the days a client got right hides the off-by-one until somebody
+        // misses the day it got wrong.
+        var plan = RecurrencePlanner.Plan(
+            new RecurrenceRequest("WEEKLY", "08:00", Hcm, ByWeekdays: new List<int> { 1, weekday }),
+            TenAmLocal);
+
         plan.IsSuccess.Should().BeFalse();
-        plan.Error.Should().Contain("not available yet");
+        plan.Error.Should().Be(RecurrenceMessages.WeekdayOutOfRange);
+    }
+
+    [Fact]
+    public void A_monthly_rule_with_no_day_defaults_to_the_start_dates_own_day()
+    {
+        var plan = RecurrencePlanner.Plan(
+            new RecurrenceRequest("MONTHLY", "08:00", Hcm, StartDateLocal: "2026-08-15"), TenAmLocal);
+
+        plan.IsSuccess.Should().BeTrue();
+        plan.Value!.ByMonthDay.Should().Be(15);
+        plan.Value!.ByWeekdays.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(32)]
+    public void A_day_of_the_month_outside_one_to_thirty_one_is_refused(int day)
+    {
+        var plan = RecurrencePlanner.Plan(
+            new RecurrenceRequest("MONTHLY", "08:00", Hcm, ByMonthDay: day), TenAmLocal);
+
+        plan.IsSuccess.Should().BeFalse();
+        plan.Error.Should().Be(RecurrenceMessages.MonthDayOutOfRange);
+    }
+
+    [Fact]
+    public void A_rule_field_belonging_to_another_cadence_is_refused_not_ignored()
+    {
+        // The rule on the user's screen and the rule the materialiser follows have to be the same
+        // rule. Quietly dropping half of one is how they stop being.
+        RecurrencePlanner.Plan(
+            new RecurrenceRequest("DAILY", "08:00", Hcm, ByWeekdays: new List<int> { 1 }), TenAmLocal)
+            .Error.Should().Be(RecurrenceMessages.WeekdaysNotApplicable);
+
+        RecurrencePlanner.Plan(
+            new RecurrenceRequest("MONTHLY", "08:00", Hcm, ByWeekdays: new List<int> { 1 }), TenAmLocal)
+            .Error.Should().Be(RecurrenceMessages.WeekdaysNotApplicable);
+
+        RecurrencePlanner.Plan(
+            new RecurrenceRequest("WEEKLY", "08:00", Hcm, ByMonthDay: 15), TenAmLocal)
+            .Error.Should().Be(RecurrenceMessages.MonthDayNotApplicable);
     }
 
     [Fact]
