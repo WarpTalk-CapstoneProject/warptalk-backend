@@ -85,6 +85,23 @@ public interface ITranslationRoomService
     Task<Result> OpenWaitingRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> PauseTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ResumeTranslationRoomAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stops TRANSLATION and leaves the meeting running.
+    ///
+    /// This is the other half of the split <see cref="ResumeTranslationRoomAsync"/> begins: that
+    /// method is Start Translation, and this is Stop. The room stays IN_PROGRESS throughout, so
+    /// transcription continues — the meeting is still open, people are still talking, and the
+    /// transcript is what a meeting produces whether or not anyone is translating it.
+    ///
+    /// Deliberately NOT <see cref="PauseTranslationRoomAsync"/>, which is what Stop used to call.
+    /// Pause moves the room to PAUSED, and the AI workers read PAUSED as "ignore this room's
+    /// microphone" — correct for a pause, but it meant stopping translation also stopped the
+    /// transcript, so "transcript only" was unreachable from a room that had ever translated.
+    ///
+    /// Idempotent: stopping a room that is not translating succeeds and does nothing.
+    /// </summary>
+    Task<Result> StopTranslationAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default);
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
 
     Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);

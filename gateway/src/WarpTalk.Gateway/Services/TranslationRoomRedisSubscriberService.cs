@@ -73,6 +73,21 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("TranslationRoomStarted", payload.State, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted TranslationRoomStarted to room {RoomId}", payload.RoomId);
                 }
+                // The other half of the Start/Stop switch. TranslationRoomService publishes this
+                // from StopTranslationAsync, which ends the room's translation session and leaves
+                // the meeting — and its transcript — running.
+                //
+                // Start and Stop are room-wide, so this has to reach every participant and not
+                // only the host who pressed it: each client re-reads the room's session list on
+                // this event, which is what decides whether it prefers an interpreter dub over the
+                // raw microphones. Without it the others kept preferring a dub nothing was
+                // producing any more, until their own poll happened to notice.
+                else if (payload.Command == "TranslationStopped" && !string.IsNullOrEmpty(payload.RoomId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync("TranslationStopped", payload.RoomId, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted TranslationStopped to room {RoomId}", payload.RoomId);
+                }
                 // The waiting-room counterpart of RoomStarted/RoomEnded above.
                 // TranslationRoomParticipantService publishes this from AdmitParticipantAsync —
                 // the host approves over REST, so TranslationRoomHub.AdmitWaitingParticipant never
