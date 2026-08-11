@@ -49,13 +49,30 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
         {
             new { key = "workspace_id", match = new { value = workspaceId.ToString() } },
         };
-        if (filter.SourceType != null)
+        // One clause either way. `match.any` is Qdrant's match-one-of, so a category that maps
+        // to several stored types (glossary) stays a single condition rather than a nested
+        // should-block that would have to be combined with the other musts by hand.
+        var sourceTypes = filter.SourceTypes ?? Array.Empty<string>();
+        if (sourceTypes.Count == 1)
         {
-            must.Add(new { key = "source_type", match = new { value = filter.SourceType } });
+            must.Add(new { key = "source_type", match = new { value = sourceTypes[0] } });
+        }
+        else if (sourceTypes.Count > 1)
+        {
+            must.Add(new { key = "source_type", match = new { any = sourceTypes } });
         }
         if (filter.FactCategory != null)
         {
             must.Add(new { key = "fact_category", match = new { value = filter.FactCategory } });
+        }
+
+        // Exclusion is a separate Qdrant clause, not "every other source type in a should" —
+        // an allow-list built here would silently drop any source type added later by a
+        // producer this adapter has never heard of.
+        var mustNot = new List<object>();
+        foreach (var excluded in filter.ExcludedSourceTypes ?? Array.Empty<string>())
+        {
+            mustNot.Add(new { key = "source_type", match = new { value = excluded } });
         }
 
         var request = new
@@ -63,7 +80,9 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
             limit,
             with_payload = true,
             with_vector = false,
-            filter = new { must },
+            filter = mustNot.Count == 0
+                ? (object)new { must }
+                : new { must, must_not = mustNot },
             offset = cursor,
         };
 
@@ -105,7 +124,12 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
                 StartMs: ReadLong(payload, "start_ms"),
                 RetentionState: ReadString(payload, "retention_state"),
                 DeletionState: ReadString(payload, "deletion_state"),
-                AiRetrieval: ReadBool(payload, "ai_retrieval")));
+                AiRetrieval: ReadBool(payload, "ai_retrieval"),
+                // Glossary producers predate `source_title` and write `source_term` instead.
+                // Falling back keeps their rows named after the term rather than the generic
+                // "Glossary term" the UI would otherwise have to show.
+                SourceTitle: ReadString(payload, "source_title")
+                    ?? ReadString(payload, "source_term")));
         }
 
         // next_page_offset is null on the last page; Qdrant ids may be numeric or uuid, and

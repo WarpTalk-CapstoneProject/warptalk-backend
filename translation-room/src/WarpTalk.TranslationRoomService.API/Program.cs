@@ -8,6 +8,7 @@ using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 using WarpTalk.TranslationRoomService.Infrastructure.Repositories;
 using WarpTalk.TranslationRoomService.Infrastructure.Clients;
+using WarpTalk.TranslationRoomService.Infrastructure.Adapters;
 using WarpTalk.Shared.Protos;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -101,6 +102,10 @@ builder.Services.AddScoped<IAudioRouteEventProcessor, AudioRouteEventProcessor>(
 builder.Services.AddScoped<ITelemetryStateService, TelemetryStateService>();
 builder.Services.AddScoped<ITelemetryProcessor, TelemetryProcessor>();
 builder.Services.AddScoped<IArtifactsFinalizer, ArtifactsFinalizer>();
+// Hands a finished meeting summary to warptalk-ai's KnowledgeFactWorker so it reaches the
+// workspace knowledge index. Scoped because it resolves the workspace's AI policy over gRPC
+// per call rather than caching it.
+builder.Services.AddScoped<IKnowledgeFactRequestPublisher, RedisKnowledgeFactRequestPublisher>();
 builder.Services.AddScoped<IRedisStateRepository, RedisStateRepository>();
 builder.Services.AddSingleton<IRedisStreamRepository, RedisStreamRepository>();
 builder.Services.AddScoped<ITranscriptCacheService, TranscriptCacheService>();

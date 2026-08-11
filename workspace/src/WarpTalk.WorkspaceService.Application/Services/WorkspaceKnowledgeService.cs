@@ -17,7 +17,8 @@ namespace WarpTalk.WorkspaceService.Application.Services;
 public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
 {
     /// <summary>
-    /// The same closed set the extractor writes (embedding_worker/facts.py). Kept closed on
+    /// The same closed set the extractor writes
+    /// (warptalk-ai/ai_assistant_worker/knowledge_facts.py FACT_CATEGORIES). Kept closed on
     /// this side too so an unknown value is rejected as a bad request rather than quietly
     /// matching nothing and looking like an empty workspace.
     /// </summary>
@@ -26,7 +27,36 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
         "decision", "requirement", "definition", "commitment", "risk", "reference",
     ];
 
-    private static readonly string[] SourceTypes = ["document", "transcript"];
+    /// <summary>
+    /// What this listing is about — durable knowledge a person would recognise as theirs —
+    /// mapped from the name they use to the source types actually stored under it.
+    ///
+    /// The indirection exists because "glossary" is two producers, not one: GlossaryService
+    /// writes <c>glossary_term</c> for a workspace's own glossary and GlobalGlossaryService
+    /// writes <c>global_glossary_term</c> for the platform's. Exposing the stored names
+    /// instead would make a caller ask for both to see their glossary, and asking for one
+    /// would quietly return half of it.
+    /// </summary>
+    private static readonly Dictionary<string, string[]> SourceTypes = new(StringComparer.Ordinal)
+    {
+        ["document"] = ["document"],
+        ["meeting_summary"] = ["meeting_summary"],
+        ["glossary"] = ["glossary_term", "global_glossary_term"],
+        ["workspace_context"] = ["workspace_context"],
+    };
+
+    /// <summary>
+    /// Raw transcript segments are indexed one Qdrant point per sentence spoken
+    /// (TranscriptRedisConsumerService publishes per segment, because no "transcript
+    /// finalized" event exists to batch on). They are excellent retrieval material and
+    /// terrible reading material: a one-hour meeting contributes hundreds of rows that say
+    /// nothing on their own and bury every document the workspace uploaded.
+    ///
+    /// They stay indexed and stay searchable by WarpBot. They are excluded from THIS view
+    /// only, and the exclusion is applied in the store rather than after paging — filtering
+    /// a page of 50 down to the 2 non-transcript rows would make paging meaningless.
+    /// </summary>
+    private static readonly string[] ExcludedSourceTypes = ["transcript"];
 
     private const int MaxPageSize = 100;
     private const int DefaultPageSize = 50;
@@ -88,10 +118,11 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
         CancellationToken ct)
     {
         var sourceType = Normalize(query.SourceType);
-        if (sourceType != null && !SourceTypes.Contains(sourceType, StringComparer.Ordinal))
+        string[]? sourceTypes = null;
+        if (sourceType != null && !SourceTypes.TryGetValue(sourceType, out sourceTypes))
         {
             return Result.Failure<WorkspaceKnowledgePageDto>(
-                $"Unknown sourceType. Expected one of: {string.Join(", ", SourceTypes)}.",
+                $"Unknown sourceType. Expected one of: {string.Join(", ", SourceTypes.Keys)}.",
                 ErrorCodes.ValidationError);
         }
 
@@ -109,7 +140,7 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
         {
             var page = await _chunkReader.ScrollAsync(
                 workspaceId,
-                new KnowledgeChunkFilter(sourceType, factCategory),
+                new KnowledgeChunkFilter(sourceTypes, factCategory, ExcludedSourceTypes),
                 pageSize,
                 string.IsNullOrWhiteSpace(query.Cursor) ? null : query.Cursor,
                 ct);
@@ -127,7 +158,8 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
                 record.StartMs,
                 record.RetentionState,
                 record.DeletionState,
-                record.AiRetrieval)).ToList();
+                record.AiRetrieval,
+                record.SourceTitle)).ToList();
 
             return Result.Success(new WorkspaceKnowledgePageDto(items, page.NextCursor));
         }
