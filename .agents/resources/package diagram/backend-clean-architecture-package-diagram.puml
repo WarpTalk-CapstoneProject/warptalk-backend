@@ -1,5 +1,4 @@
 @startuml
-title Backend Clean Architecture Package Diagram
 
 left to right direction
 hide circle
@@ -16,46 +15,48 @@ skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
 skinparam ArrowColor Black
 
-package "API (Presentation Layer)" as API {
-  package Controllers
-  package GrpcServices
-  package Middlewares
-  package Validators
-  package Extensions
-}
+package "warptalk-backend" as BackendRoot {
+  package "API (Presentation Layer)" as API {
+    package Controllers
+    package GrpcServices
+    package Middlewares
+    package Validators
+    package Extensions
+  }
 
-package "Application Layer" as Application {
-  package Services
-  package Interfaces
-  package DTOs
-  package Mappers
-  package Helpers
-}
+  package "Application Layer" as Application {
+    package Services
+    package "Interfaces <<abstract>>"
+    package DTOs
+    package Mappers
+    package Helpers
+  }
 
-package "Domain Layer (Core)" as Domain {
-  package Entities
-  package Enums
-  package ValueObjects
-  package Interfaces as DomainInterfaces
-  package Constants
-  package Settings
-}
+  package "Domain Layer (Core)" as Domain {
+    package Entities
+    package Enums
+    package ValueObjects
+    package "Interfaces <<abstract>>"
+    package Constants
+    package Settings
+  }
 
-package "Infrastructure Layer" as Infrastructure {
-  package Repositories
-  package Persistence
-  package BackgroundServices
-  package Messaging
-  package Security
-  package Clients
-}
+  package "Infrastructure Layer" as Infrastructure {
+    package Repositories
+    package Persistence
+    package BackgroundServices
+    package Messaging
+    package Security
+    package Clients
+  }
 
-' -------------------------------------------------------------
-' Clean Architecture Dependency Rules (Dependency Inversion)
-' -------------------------------------------------------------
-API ..> Application : depends on
-Application ..> Domain : depends on
-Infrastructure ..> Application : implements interfaces
-Infrastructure ..> Domain : depends on
+  ' -------------------------------------------------------------
+  ' Clean Architecture Dependency Rules (Dependency Inversion)
+  ' -------------------------------------------------------------
+  API ..> Application : depends on
+  Application ..> Domain : depends on
+  Infrastructure ..> Application : implements interfaces
+  Infrastructure ..> Domain : depends on
+}
 
 @enduml

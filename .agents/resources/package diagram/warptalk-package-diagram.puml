@@ -1,97 +1,106 @@
 @startuml
-title 1.2 WarpTalk System-Level Package Diagram
 
-left to right direction
+top to bottom direction
 hide circle
 hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam linetype ortho
-skinparam nodesep 55
-skinparam ranksep 75
+skinparam nodesep 30
+skinparam ranksep 40
 skinparam ArrowFontSize 11
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
 skinparam ArrowColor Black
 
-package "Client Repositories" as ClientRepos {
-  package "warptalk-web" as Web
-  package "warptalk-desktop" as Desktop
+package "WarpTalk System" as WarpTalkSystem {
+  package "Client Repositories" as ClientRepos {
+    package "warptalk-web"
+    package "warptalk-desktop"
 
-  Web -[hidden]down- Desktop
+    "warptalk-web" -[hidden]right- "warptalk-desktop"
+  }
+
+  package "warptalk-backend" as Backend {
+    package "gateway"
+    package "auth"
+    package "workspace"
+    package "meeting"
+    package "translation-room"
+    package "transcript"
+    package "assistant"
+    package "billing"
+    package "notification"
+    package "shared <<abstract>>"
+    package "contracts <<abstract>>"
+
+    ' Grid 3-column layout inside Backend for compact height
+    "gateway" -[hidden]right- "auth"
+    "auth" -[hidden]right- "workspace"
+    "workspace" -[hidden]right- "meeting"
+
+    "gateway" -[hidden]down- "translation-room"
+    "translation-room" -[hidden]right- "transcript"
+    "transcript" -[hidden]right- "assistant"
+    "assistant" -[hidden]right- "billing"
+
+    "translation-room" -[hidden]down- "notification"
+    "notification" -[hidden]right- "shared <<abstract>>"
+    "shared <<abstract>>" -[hidden]right- "contracts <<abstract>>"
+  }
+
+  package "warptalk-ai" as AIRuntime {
+    package "livekit_ingress_worker"
+    package "stt_worker"
+    package "translation_worker"
+    package "tts_worker"
+    package "ai_assistant_worker"
+    package "embedding_worker"
+    package "suggestion_worker"
+    package "security_worker"
+    package "billing_worker"
+    package "metrics_exporter"
+    package "AI shared <<abstract>>"
+
+    ' Grid 3-column layout inside AI Runtime
+    "livekit_ingress_worker" -[hidden]right- "stt_worker"
+    "stt_worker" -[hidden]right- "translation_worker"
+
+    "livekit_ingress_worker" -[hidden]down- "tts_worker"
+    "tts_worker" -[hidden]right- "ai_assistant_worker"
+    "ai_assistant_worker" -[hidden]right- "embedding_worker"
+
+    "tts_worker" -[hidden]down- "suggestion_worker"
+    "suggestion_worker" -[hidden]right- "security_worker"
+    "security_worker" -[hidden]right- "billing_worker"
+    "billing_worker" -[hidden]right- "metrics_exporter"
+    "metrics_exporter" -[hidden]right- "AI shared <<abstract>>"
+  }
+
+  package "warptalk-infrastructure" as Infrastructure {
+    package "terraform"
+    package "deploy"
+    package "observability"
+    package "pgbouncer"
+    package "coturn"
+
+    "terraform" -[hidden]right- "deploy"
+    "deploy" -[hidden]right- "observability"
+    "observability" -[hidden]right- "pgbouncer"
+    "pgbouncer" -[hidden]right- "coturn"
+  }
+
 }
 
-package "warptalk-backend" as Backend {
-  package "gateway" as Gateway
-  package "auth" as Auth
-  package "workspace" as Workspace
-  package "meeting" as Meeting
-  package "translation-room" as TranslationRoom
-  package "transcript" as Transcript
-  package "assistant" as Assistant
-  package "billing" as Billing
-  package "notification" as Notification
-  package "payment" as Payment
-  package "shared <<abstract>>" as BackendShared
-  package "contracts <<abstract>>" as BackendContracts
-
-  Gateway -[hidden]down- Auth
-  Auth -[hidden]down- Workspace
-  Workspace -[hidden]down- Meeting
-  Meeting -[hidden]down- TranslationRoom
-  TranslationRoom -[hidden]down- Transcript
-  Transcript -[hidden]down- Assistant
-  Assistant -[hidden]down- Billing
-  Billing -[hidden]down- Notification
-  Notification -[hidden]down- Payment
-  Payment -[hidden]down- BackendShared
-  BackendShared -[hidden]down- BackendContracts
-}
-
-package "warptalk-ai" as AIRuntime {
-  package "livekit_ingress_worker" as IngressWorker
-  package "stt_worker" as SttWorker
-  package "translation_worker" as TranslationWorker
-  package "tts_worker" as TtsWorker
-  package "ai_assistant_worker" as AssistantWorker
-  package "embedding_worker" as EmbeddingWorker
-  package "security_worker" as SecurityWorker
-  package "billing_worker" as BillingWorker
-  package "metrics_exporter" as MetricsExporter
-  package "shared <<abstract>>" as AIShared
-
-  IngressWorker -[hidden]down- SttWorker
-  SttWorker -[hidden]down- TranslationWorker
-  TranslationWorker -[hidden]down- TtsWorker
-  TtsWorker -[hidden]down- AssistantWorker
-  AssistantWorker -[hidden]down- EmbeddingWorker
-  EmbeddingWorker -[hidden]down- SecurityWorker
-  SecurityWorker -[hidden]down- BillingWorker
-  BillingWorker -[hidden]down- MetricsExporter
-  MetricsExporter -[hidden]down- AIShared
-}
-
-package "warptalk-infrastructure" as Infrastructure {
-  package "terraform" as Terraform
-  package "deploy" as Deploy
-  package "observability" as Observability
-  package "pgbouncer" as Pgbouncer
-  package "coturn" as Coturn
-
-  Terraform -[hidden]down- Deploy
-  Deploy -[hidden]down- Observability
-  Observability -[hidden]down- Pgbouncer
-  Pgbouncer -[hidden]down- Coturn
-}
-
+' System dependency alignment
 ClientRepos ..> Backend
 Backend ..> AIRuntime
-Infrastructure ..> Backend
-Infrastructure ..> AIRuntime
 
 ClientRepos -[hidden]right- Backend
-Backend -[hidden]right- AIRuntime
+ClientRepos -[hidden]down- AIRuntime
+Backend -[hidden]down- Infrastructure
 AIRuntime -[hidden]right- Infrastructure
+
 @enduml

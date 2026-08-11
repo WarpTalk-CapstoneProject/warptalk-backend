@@ -1,5 +1,4 @@
 @startuml
-title Frontend Package Diagram (warptalk-web/src)
 
 left to right direction
 hide circle
@@ -16,72 +15,67 @@ skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
 skinparam ArrowColor Black
 
-package "app" as AppPkg {
-  package "(auth)" as AuthRoute
-  package "(app)" as AppRoute
-  package "(internal)" as InternalRoute
-  package "workspace" as WorkspaceRoute
-  package "api" as ApiRoute
-  package "invitations" as InvitationsRoute
-}
+package "warptalk-web" as WebRoot {
+  package "app" as AppPkg {
+    package "(auth)" as AuthRoute
+    package "(app)" as AppRoute
+    package "(internal)" as InternalRoute
+    package "workspace" as WorkspaceRoute
+    package "api" as ApiRoute
+    package "invitations" as InvitationsRoute
+  }
 
-package "components" as CompPkg {
-  package ui
-  package layout
-  package rooms
-  package auth
-  package documents
-  package workspace as compWorkspace
-  package voice
-  package notifications
-  package providers
-  package admin
-  package landing
-  package legal
-  package errors
-  package features as compFeatures
-  package language
-  package presence as compPresence
-  package visuals
-}
+  package "components" as CompPkg {
+    package ui
+    package layout
+    package rooms
+    package auth
+    package documents
+    package workspace as compWorkspace
+    package voice
+    package notifications
+    package providers
+    package admin
+    package landing
+    package legal
+    package errors
+    package features as compFeatures
+    package language
+    package presence as compPresence
+    package visuals
+  }
 
-package "lib" as LibPkg {
-  package api as libApi
-  package auth as libAuth
-  package format
-  package meeting
-  package realtime
-  package transcript
-}
+  package "lib" as LibPkg {
+    package api as libApi
+    package auth as libAuth
+    package format
+    package meeting
+    package realtime
+    package transcript
+  }
 
-package "hooks" as HooksPkg {
-}
+  package "hooks"
 
-package "stores" as StoresPkg {
-}
+  package "stores"
 
-package "services" as ServicesPkg {
-}
+  package "services"
 
-package "types <<abstract>>" as TypesPkg {
-}
+  package "types <<abstract>>"
 
-package "constants <<abstract>>" as ConstantsPkg {
-}
+  package "constants <<abstract>>"
 
-package "emails" as EmailsPkg {
-}
+  package "emails"
 
-' -------------------------------------------------------------
-' Dependency Rules
-' -------------------------------------------------------------
-AppPkg ..> CompPkg
-CompPkg ..> HooksPkg
-CompPkg ..> ServicesPkg
-HooksPkg ..> StoresPkg
-StoresPkg ..> ServicesPkg
-ServicesPkg ..> LibPkg
-LibPkg ..> TypesPkg
-TypesPkg ..> ConstantsPkg
+  ' -------------------------------------------------------------
+  ' Dependency Rules
+  ' -------------------------------------------------------------
+  AppPkg ..> CompPkg
+  CompPkg ..> "hooks"
+  CompPkg ..> "services"
+  "hooks" ..> "stores"
+  "stores" ..> "services"
+  "services" ..> LibPkg
+  LibPkg ..> "types <<abstract>>"
+}
 
 @enduml

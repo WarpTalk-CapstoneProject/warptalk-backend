@@ -1,5 +1,4 @@
 @startuml
-title AI Workers Package Diagram (warptalk-ai)
 
 left to right direction
 hide circle
@@ -16,43 +15,29 @@ skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
 skinparam ArrowColor Black
 
-package "livekit_ingress_worker" as livekit
-package "stt_worker" as stt
-package "translation_worker" as translation
-package "tts_worker" as tts
+package "warptalk-ai" as AIRoot {
+  package "livekit_ingress_worker"
+  package "stt_worker"
+  package "translation_worker"
+  package "tts_worker"
 
-package "ai_assistant_worker" as assistant
-package "embedding_worker" as embedding
-package "security_worker" as security
-package "billing_worker" as billing
+  package "ai_assistant_worker"
+  package "embedding_worker"
+  package "suggestion_worker"
+  package "security_worker"
+  package "billing_worker"
 
-package "metrics_exporter" as metrics
-package "tools" as tools
-package "benchmarks" as benchmarks
-package "tests" as tests
+  package "metrics_exporter"
+  package "tools"
+  package "benchmarks"
+  package "tests"
 
-package "shared <<abstract>>" as shared
+  package "shared <<abstract>>" as SharedPkg
 
-' -------------------------------------------------------------
-' Dependency Rules
-' -------------------------------------------------------------
-livekit ..> stt
-stt ..> translation
-translation ..> tts
-
-livekit ..> shared
-stt ..> shared
-translation ..> shared
-tts ..> shared
-
-assistant ..> shared
-embedding ..> shared
-security ..> shared
-billing ..> shared
-
-metrics ..> shared
-tools ..> shared
-benchmarks ..> shared
-tests ..> shared
+  ' -------------------------------------------------------------
+  ' Shared Foundation Dependency Rule (grouped)
+  ' -------------------------------------------------------------
+  AIRoot ..> SharedPkg
+}
 
 @enduml
