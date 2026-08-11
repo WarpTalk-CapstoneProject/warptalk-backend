@@ -25,7 +25,7 @@ As a workspace user, I want to load my own meetings in one workspace, including 
 * **FR-333-004**: The endpoint MUST return only rooms readable by the caller through the translation-room database facts: host, participant, or active invitation by email.
 * **FR-333-005**: Workspace Owner/Admin widening MUST NOT apply to the personal timeline.
 * **FR-333-006**: The endpoint MUST still apply the requested workspace boundary and MUST NOT leak the caller's own rooms from another workspace.
-* **FR-333-007**: When no status filter is supplied, the endpoint MUST include both past and upcoming active rooms instead of defaulting to history-only ended/cancelled statuses.
+* **FR-333-007**: When no status filter is supplied, the endpoint MUST include the statuses the My Meetings UI buckets into upcoming (`SCHEDULED`), live (`WAITING`, `IN_PROGRESS`, `PAUSED`), and past (`ENDED`, `CANCELLED`, `EXPIRED`, `FAILED`) instead of defaulting to history-only ended/cancelled statuses.
 * **FR-333-008**: Returned rooms MUST be ordered by the implemented personal timeline order: newest scheduled/booked slot first, falling back to started, ended, then created timestamps.
 * **FR-333-009**: The response shape MUST match `TranslationRoomHistoryResponse`, including room list item, participants, artifacts, pagination metadata, and total count.
 * **FR-333-010**: Artifact content MUST remain governed by per-room `ArtifactAccess`; listing a room MUST NOT widen artifact body visibility.
@@ -38,7 +38,7 @@ As a workspace user, I want to load my own meetings in one workspace, including 
 2. Given a user is invited by email to an upcoming scheduled room and has not joined, when the user calls My Meetings for that workspace, then the upcoming room is returned.
 3. Given a participant can list a host-only artifact room, when My Meetings returns the room, then artifact metadata is present but artifact content is withheld.
 4. Given the host calls My Meetings for the same host-only artifact room, then artifact content is included.
-5. Given an upcoming scheduled room and a past ended room both involve the caller, when My Meetings is loaded, then the upcoming room is ordered ahead according to descending scheduled timeline order.
+5. Given upcoming, live, and past rooms involve the caller, when My Meetings is loaded without an explicit status filter, then all three buckets are represented and ordered by descending scheduled timeline order.
 6. Given the caller owns rooms in another workspace, when My Meetings is loaded for the selected workspace, then other-workspace rooms are not returned.
 7. Given no WorkspaceId is supplied, when My Meetings is called, then the service returns validation failure.
 8. Given a workspace Owner/Admin loads the existing active list or room history, when there are rooms they do not personally participate in, then workspace-wide admin visibility remains intact.

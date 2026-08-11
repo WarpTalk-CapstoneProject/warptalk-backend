@@ -339,11 +339,11 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Once a meeting is in the past, an email invitation alone no longer keeps it on the caller's
-    /// personal timeline. Past is for rooms they actually joined.
+    /// Invitation visibility is resolved by RoomReadAccess for the personal timeline too. Keeping
+    /// the past invitation case here prevents My Meetings from drifting into a second read policy.
     /// </summary>
     [Fact]
-    public async Task MyMeetings_ExcludesAPastRoom_ForAnInviteeWhoNeverJoined()
+    public async Task MyMeetings_IncludesAPastRoom_ForAnInviteeByEmail()
     {
         var past = await SeedRoomAsync(WorkspaceId, "ENDED");
         await SeedInvitationAsync(past.Id, $"{OutsiderId}@example.test");
@@ -351,8 +351,8 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
         var result = await MyMeetingsAsync(OutsiderId);
 
         result.IsSuccess.Should().BeTrue(result.Error);
-        result.Value!.Rooms.Should().BeEmpty();
-        result.Value.Total.Should().Be(0);
+        result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == past.Id);
+        result.Value.Total.Should().Be(1);
     }
 
     /// <summary>
@@ -369,6 +369,30 @@ public class WorkspaceAdminRoomVisibilityTests : IAsyncLifetime
 
         result.IsSuccess.Should().BeTrue(result.Error);
         result.Value!.Rooms.Should().ContainSingle(r => r.Room.Id == live.Id);
+    }
+
+    /// <summary>
+    /// Backend defaults My Meetings to every declared room status. That keeps the API's default
+    /// window tied to the domain enum, while still excluding database values the enum does not know.
+    /// </summary>
+    [Fact]
+    public async Task MyMeetings_DefaultStatusWindow_UsesEveryDeclaredRoomStatus()
+    {
+        var expectedStatuses = Enum.GetNames<RoomStatus>();
+
+        foreach (var status in expectedStatuses)
+        {
+            await SeedRoomAsync(WorkspaceId, status, hostId: WorkspaceAdminId);
+        }
+
+        await SeedRoomAsync(WorkspaceId, "ARCHIVED", hostId: WorkspaceAdminId);
+
+        var result = await MyMeetingsAsync(WorkspaceAdminId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        result.Value!.Rooms.Select(r => r.Room.Status.ToString())
+            .Should()
+            .BeEquivalentTo(expectedStatuses);
     }
 
     /// <summary>

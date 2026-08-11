@@ -28,7 +28,7 @@
 * [x] Add private `RoomTimelineScope` to distinguish workspace-admin archive from personal timeline.
 * [x] Force My Meetings to use host/participant/invitation read boundary.
 * [x] Keep history default statuses as `ENDED,CANCELLED`.
-* [x] Leave My Meetings status unfiltered by default.
+* [x] Default My Meetings statuses from the declared `RoomStatus` enum so frontend `upcoming`, `live`, and `past` buckets stay aligned with the backend lifecycle set.
 * [x] Use descending scheduled timeline order and document it consistently.
 
 ## Phase 3: API Layer

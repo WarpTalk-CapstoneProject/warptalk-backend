@@ -30,7 +30,7 @@
 2. Add `GetMyMeetingsAsync` to `ITranslationRoomService`.
 3. Extract shared timeline projection for room, participant, occupancy, artifact metadata/content filtering, pagination, and ordering.
 4. Add private timeline scope enum so personal timeline can force the non-admin-widened `BuildAccessibleRoomsQuery` path.
-5. Preserve history default status filter as ended/cancelled; leave My Meetings unfiltered unless caller supplies status.
+5. Preserve history default status filter as ended/cancelled; default My Meetings to every declared `RoomStatus` value (which the frontend currently buckets into `upcoming`, `live`, and `past`) unless caller supplies status.
 6. Add Testcontainers-backed regression tests for admin narrowing, invited upcoming rooms, artifact content policy, ordering, tenant boundary, missing workspace validation, and existing admin list/history behavior.
 7. Add index migration on `translation_room.translation_room_participants(user_id)`.
 8. Rebuild and runtime-verify Docker `translation-room-service` from `C:\Users\Admin\wt333-backend` after spec approval.

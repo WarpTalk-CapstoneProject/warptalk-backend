@@ -1711,10 +1711,9 @@ public class TranslationRoomService : ITranslationRoomService
     /// <see cref="BuildListableRoomsQueryAsync"/> happens before any filter runs, so there was no
     /// request an Owner could send that meant "only mine".
     ///
-    /// STATUS — left unfiltered when the caller does not ask. A meeting somebody has been invited to
-    /// but which has not happened yet is the half of their timeline the archive cannot show, and an
-    /// explicit allow-list would silently drop any status added to <c>RoomStatus</c> later. The room
-    /// still has to survive <c>DeletedAt == null &amp;&amp; IsActive</c> like everywhere else.
+    /// STATUS — defaults to the lifecycle states the My Meetings page buckets into upcoming, live,
+    /// and past. The room still has to survive <c>DeletedAt == null &amp;&amp; IsActive</c> like everywhere
+    /// else.
     ///
     /// ORDER — by ScheduledAt first. A future room has neither EndedAt nor StartedAt, so the
     /// archive's ordering falls through to CreatedAt and sorts upcoming meetings by the day somebody
@@ -1734,8 +1733,10 @@ public class TranslationRoomService : ITranslationRoomService
 
         try
         {
+            var timelineRequest = request with { Status = request.Status ?? BuildMyMeetingsDefaultStatusFilter() };
+
             return Result.Success(await BuildRoomTimelinePageAsync(
-                request, userId, userEmail, RoomTimelineOrder.ScheduledFirst, RoomTimelineScope.Mine, ct));
+                timelineRequest, userId, userEmail, RoomTimelineOrder.ScheduledFirst, RoomTimelineScope.Mine, ct));
         }
         catch (Exception ex)
         {
@@ -1743,6 +1744,9 @@ public class TranslationRoomService : ITranslationRoomService
             return Result.Failure<TranslationRoomHistoryResponse>("An unexpected error occurred while loading your meetings.", ErrorCodes.InternalServerError);
         }
     }
+
+    private static string BuildMyMeetingsDefaultStatusFilter()
+        => string.Join(',', Enum.GetNames<RoomStatus>());
 
     /// <summary>
     /// The reading order of a page of rooms. Each value exists because one of the two callers has a
@@ -2090,33 +2094,7 @@ public class TranslationRoomService : ITranslationRoomService
     {
         if (scope == RoomTimelineScope.Mine)
         {
-            var email = RoomReadAccess.NormalizeEmail(userEmail);
-
-            // WT-333 / My Meetings boundary:
-            // - hosts and participants keep seeing the room across its whole lifecycle
-            // - invitation-only visibility stops once the meeting is in the past
-            if (email is null)
-            {
-                return _unitOfWork.TranslationRoomRepository
-                    .Query()
-                    .Where(room =>
-                        room.HostId == userId
-                        || room.TranslationRoomParticipants.Any(p => p.UserId == userId));
-            }
-
-            return _unitOfWork.TranslationRoomRepository
-                .Query()
-                .Where(room =>
-                    room.HostId == userId
-                    || room.TranslationRoomParticipants.Any(p => p.UserId == userId)
-                    || (
-                        (room.Status == "SCHEDULED"
-                         || room.Status == "WAITING"
-                         || room.Status == "IN_PROGRESS"
-                         || room.Status == "PAUSED")
-                        && room.TranslationRoomInvitations.Any(i =>
-                            i.Email == email
-                            && RoomReadAccess.InvitationStatusesGrantingRead.Contains(i.Status))));
+            return BuildAccessibleRoomsQuery(userId, userEmail);
         }
 
         if (workspaceId.HasValue
