@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.DTOs;
@@ -7,13 +8,21 @@ using WarpTalk.TranslationRoomService.Domain.Constants;
 namespace WarpTalk.TranslationRoomService.Application.Helpers;
 
 /// <summary>WT-327: a validated, defaulted, guaranteed-to-terminate recurrence rule.</summary>
+/// <param name="ByWeekdays">
+/// WEEKLY only, ISO weekdays (Monday 1 … Sunday 7), ascending and de-duplicated. Never null for a
+/// weekly plan and always null otherwise — the planner resolves the default here so that no
+/// downstream caller has to decide what an absent weekday list means.
+/// </param>
+/// <param name="ByMonthDay">MONTHLY only, 1–31. Never null for a monthly plan, always null otherwise.</param>
 public sealed record RecurrencePlan(
     string Type,
     int Interval,
     TimeOnly StartTimeLocal,
     TimeZoneInfo TimeZone,
     DateOnly StartDate,
-    DateOnly EndDate);
+    DateOnly EndDate,
+    IReadOnlyList<int>? ByWeekdays = null,
+    int? ByMonthDay = null);
 
 /// <summary>
 /// WT-327: turns what a client asked for into a rule the materialiser can trust.
@@ -98,9 +107,79 @@ public static class RecurrencePlanner
                 string.Format(CultureInfo.InvariantCulture, RecurrenceMessages.EndDateTooFar, RecurrenceLimits.MaxDurationDays),
                 ErrorCodes.ValidationError);
 
-        // Interval is fixed at 1 because the only rule the UI can express is "every day". The
-        // column accepts other values so a future "every 2 days" is application code, not a
-        // migration.
-        return Result.Success(new RecurrencePlan(type, 1, startTime, timeZone, startDate, endDate));
+        var shape = ResolveShape(type, request, startDate);
+        if (!shape.IsSuccess)
+            return Result.Failure<RecurrencePlan>(shape.Error!, shape.ErrorCode);
+
+        // Interval is fixed at 1 because the rules the UI can express are "every day", "every
+        // week on these days" and "every month on this date". The column accepts other values so
+        // a future "every 2 weeks" is application code, not a migration.
+        return Result.Success(new RecurrencePlan(
+            type, 1, startTime, timeZone, startDate, endDate,
+            shape.Value!.ByWeekdays, shape.Value!.ByMonthDay));
     }
+
+    /// <summary>
+    /// The cadence-specific half of the rule: which weekdays, or which day of the month.
+    ///
+    /// Two rules, both deliberate:
+    ///  - A field belonging to another cadence is REFUSED, never ignored. Weekdays on a monthly
+    ///    repeat means the client and the server disagree about what was booked, and the one thing
+    ///    worse than telling the user is not telling them.
+    ///  - An ABSENT field for the cadence's own shape is defaulted from the start date, because
+    ///    "weekly from Tuesday the 12th" has exactly one sane reading and refusing it would make
+    ///    the client send back a value it just derived itself.
+    /// </summary>
+    private static Result<RecurrenceShape> ResolveShape(string type, RecurrenceRequest request, DateOnly startDate)
+    {
+        var weekdaysGiven = request.ByWeekdays is { Count: > 0 };
+        var monthDayGiven = request.ByMonthDay.HasValue;
+
+        if (type != RecurrenceTypes.Weekly && weekdaysGiven)
+            return Result.Failure<RecurrenceShape>(RecurrenceMessages.WeekdaysNotApplicable, ErrorCodes.ValidationError);
+
+        if (type != RecurrenceTypes.Monthly && monthDayGiven)
+            return Result.Failure<RecurrenceShape>(RecurrenceMessages.MonthDayNotApplicable, ErrorCodes.ValidationError);
+
+        switch (type)
+        {
+            case RecurrenceTypes.Weekly:
+            {
+                if (!weekdaysGiven)
+                    return Result.Success(new RecurrenceShape(new[] { IsoWeekdays.Of(startDate) }, null));
+
+                // Out-of-range values are refused rather than filtered out: a client that sent 0
+                // or 8 has an off-by-one somewhere, and silently booking the days it got right
+                // hides it until somebody misses the day it got wrong.
+                foreach (var weekday in request.ByWeekdays!)
+                {
+                    if (!IsoWeekdays.IsValid(weekday))
+                        return Result.Failure<RecurrenceShape>(RecurrenceMessages.WeekdayOutOfRange, ErrorCodes.ValidationError);
+                }
+
+                var normalized = RecurrenceScheduleCalculator.NormalizeWeekdays(request.ByWeekdays);
+                if (normalized is null)
+                    return Result.Failure<RecurrenceShape>(RecurrenceMessages.WeekdayOutOfRange, ErrorCodes.ValidationError);
+
+                return Result.Success(new RecurrenceShape(normalized, null));
+            }
+
+            case RecurrenceTypes.Monthly:
+            {
+                if (!monthDayGiven)
+                    return Result.Success(new RecurrenceShape(null, startDate.Day));
+
+                var dayOfMonth = request.ByMonthDay!.Value;
+                if (dayOfMonth < 1 || dayOfMonth > 31)
+                    return Result.Failure<RecurrenceShape>(RecurrenceMessages.MonthDayOutOfRange, ErrorCodes.ValidationError);
+
+                return Result.Success(new RecurrenceShape(null, dayOfMonth));
+            }
+
+            default:
+                return Result.Success(new RecurrenceShape(null, null));
+        }
+    }
+
+    private sealed record RecurrenceShape(IReadOnlyList<int>? ByWeekdays, int? ByMonthDay);
 }

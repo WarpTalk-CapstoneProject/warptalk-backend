@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Globalization;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -529,6 +530,18 @@ public class TranslationRoomService : ITranslationRoomService
             var activeRequest = request with { Status = request.Status ?? "SCHEDULED,WAITING,IN_PROGRESS,PAUSED" };
             query = ApplyRoomFilters(query, activeRequest);
 
+            // WT-327: one row per BOOKING, not per occurrence. Resolved before the count so that
+            // "14 meetings" does not appear next to a single collapsed row.
+            var seriesRows = request.GroupBySeries
+                ? await ResolveSeriesRepresentativesAsync(query, ct)
+                : null;
+
+            if (seriesRows is not null)
+            {
+                var representativeIds = seriesRows.Values.Select(s => s.RepresentativeRoomId).ToList();
+                query = query.Where(r => r.SeriesId == null || representativeIds.Contains(r.Id));
+            }
+
             var total = await query.CountAsync(ct);
             var roomEntities = await query
                 .OrderByDescending(r => r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt)
@@ -545,8 +558,17 @@ public class TranslationRoomService : ITranslationRoomService
                 roomEntities.Select(r => r.Id).ToList(),
                 ct);
 
+            // The rule behind each collapsed row, read once for the page rather than per row.
+            var summaries = seriesRows is null
+                ? null
+                : await BuildSeriesSummariesAsync(roomEntities, seriesRows, ct);
+
             var rooms = roomEntities
-                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .Select(r => ToListItemDto(
+                    r,
+                    userId,
+                    occupancyByRoom.GetValueOrDefault(r.Id),
+                    r.SeriesId is Guid seriesId ? summaries?.GetValueOrDefault(seriesId) : null))
                 .ToList();
 
             return Result.Success(new TranslationRoomListResponse(rooms, total, page, pageSize));
@@ -555,6 +577,39 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while listing translation rooms for UserId: {UserId}", userId);
             return Result.Failure<TranslationRoomListResponse>("An unexpected error occurred while listing rooms.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<List<TranslationRoomListItemDto>>> GetSeriesOccurrencesAsync(
+        Guid seriesId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            // Deliberately NOT filtered by IsActive or by status, unlike the active list: the
+            // point of a series view is the whole timeline, so an occurrence that already ended
+            // or was skipped has to be visible as ended or skipped. Soft-deleted rows stay out.
+            var rooms = await (await BuildListableRoomsQueryAsync(userId, userEmail, workspaceId: null, ct))
+                .Where(r => r.DeletedAt == null && r.SeriesId == seriesId)
+                .OrderBy(r => r.ScheduledAt ?? r.CreatedAt)
+                .ToListAsync(ct);
+
+            if (rooms.Count == 0) return Result.Success(new List<TranslationRoomListItemDto>());
+
+            var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
+                rooms.Select(r => r.Id).ToList(), ct);
+
+            return Result.Success(rooms
+                .Select(r => ToListItemDto(r, userId, occupancyByRoom.GetValueOrDefault(r.Id)))
+                .ToList());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while listing occurrences of series {SeriesId}.", seriesId);
+            return Result.Failure<List<TranslationRoomListItemDto>>(
+                "An unexpected error occurred while reading the repeating schedule.", ErrorCodes.InternalServerError);
         }
     }
 
@@ -2156,7 +2211,104 @@ public class TranslationRoomService : ITranslationRoomService
     /// still in the lobby), and — since no list query Includes that navigation — it silently returned
     /// 0, which is how a room with a CONNECTED host rendered as "0/100".
     /// </summary>
-    private static TranslationRoomListItemDto ToListItemDto(TranslationRoom room, Guid userId, int seatsTaken)
+    /// <summary>
+    /// WT-327: which single room stands in for each series in a grouped list, how many occurrences
+    /// it stands for, and when the next one is.
+    ///
+    /// The representative is the occurrence a user would act on: the next one at or after now, or
+    /// the most recent one when the whole series is behind them. Picking the first row by date
+    /// would show a standup that started three weeks ago; picking the last would show one a month
+    /// out while today's is live.
+    ///
+    /// Resolved by pulling two scalars per occurrence and grouping in memory, rather than as a
+    /// correlated subquery. The set is already narrowed by the caller's own visibility filters and
+    /// the status filter, and this keeps the pick — "next, else last" — in code that can be read,
+    /// instead of in an ORDER BY whose EF translation is one provider upgrade from silently
+    /// changing which room the meetings list points at.
+    /// </summary>
+    private static async Task<Dictionary<Guid, SeriesGrouping>> ResolveSeriesRepresentativesAsync(
+        IQueryable<TranslationRoom> query,
+        CancellationToken ct)
+    {
+        var occurrences = await query
+            .Where(r => r.SeriesId != null)
+            .Select(r => new
+            {
+                r.Id,
+                SeriesId = r.SeriesId!.Value,
+                r.ScheduledAt,
+                r.StartedAt,
+                r.CreatedAt
+            })
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var grouped = new Dictionary<Guid, SeriesGrouping>();
+
+        foreach (var series in occurrences.GroupBy(o => o.SeriesId))
+        {
+            // Same fallback chain the list's own ORDER BY uses, so the row the user sees first and
+            // the row the group collapses to are ordered by the same clock.
+            var ordered = series
+                .Select(o => new { o.Id, When = o.ScheduledAt ?? o.StartedAt ?? o.CreatedAt })
+                .OrderBy(o => o.When)
+                .ToList();
+
+            var upcoming = ordered.FirstOrDefault(o => o.When >= now);
+            var representative = upcoming ?? ordered[^1];
+
+            grouped[series.Key] = new SeriesGrouping(representative.Id, ordered.Count, upcoming?.When);
+        }
+
+        return grouped;
+    }
+
+    /// <summary>
+    /// The rule behind each collapsed row on this page, read in one query rather than one per row.
+    /// </summary>
+    private async Task<Dictionary<Guid, SeriesListSummaryDto>> BuildSeriesSummariesAsync(
+        List<TranslationRoom> pageRooms,
+        Dictionary<Guid, SeriesGrouping> grouping,
+        CancellationToken ct)
+    {
+        var seriesIds = pageRooms
+            .Where(r => r.SeriesId.HasValue)
+            .Select(r => r.SeriesId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (seriesIds.Count == 0) return new Dictionary<Guid, SeriesListSummaryDto>();
+
+        var series = await _unitOfWork.TranslationRoomSeriesRepository
+            .FindAsync(s => seriesIds.Contains(s.Id), ct: ct);
+
+        return series.ToDictionary(
+            s => s.Id,
+            s =>
+            {
+                var counts = grouping.GetValueOrDefault(s.Id);
+                return new SeriesListSummaryDto(
+                    s.Id,
+                    s.RecurrenceType,
+                    s.RecurrenceInterval,
+                    RecurrenceRuleJson.ReadWeekdays(s.RecurrenceByWeekdays)?.ToList(),
+                    s.RecurrenceByMonthDay,
+                    s.StartTimeLocal.ToString("HH:mm", CultureInfo.InvariantCulture),
+                    s.TimeZone,
+                    s.Status,
+                    counts?.OccurrenceCount ?? 0,
+                    counts?.NextOccurrenceAt);
+            });
+    }
+
+    /// <summary>WT-327: one series' place in a grouped list.</summary>
+    private sealed record SeriesGrouping(Guid RepresentativeRoomId, int OccurrenceCount, DateTime? NextOccurrenceAt);
+
+    private static TranslationRoomListItemDto ToListItemDto(
+        TranslationRoom room,
+        Guid userId,
+        int seatsTaken,
+        SeriesListSummaryDto? series = null)
     {
         // Same reader the detail endpoints use — the list used to deserialize the snake_case
         // blob straight into the PascalCase response record (without even
@@ -2184,7 +2336,8 @@ public class TranslationRoomService : ITranslationRoomService
             settings,
             seatsTaken,
             room.HostId == userId,
-            room.SeriesId
+            room.SeriesId,
+            series
         );
     }
 

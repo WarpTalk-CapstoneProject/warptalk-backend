@@ -50,6 +50,23 @@ public interface ITranslationRoomService
         Guid userId,
         string? userEmail,
         CancellationToken ct = default);
+    /// <summary>
+    /// WT-327: every occurrence of one series that this caller may see, oldest first.
+    ///
+    /// Lives here, not on the series service, because "which rooms may this user see" is this
+    /// service's question and it is already answered once, by the same query the meetings list
+    /// uses. A series-side reimplementation would be a second copy of the visibility rules, and
+    /// the copy that drifts is always the one guarding the read nobody tested.
+    ///
+    /// An empty list is a real answer — a series in a workspace this user has no part of — and is
+    /// what lets the series read return not-found without a second authorization check.
+    /// </summary>
+    Task<Result<List<TranslationRoomListItemDto>>> GetSeriesOccurrencesAsync(
+        Guid seriesId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
+
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 
 namespace WarpTalk.TranslationRoomService.Application.Helpers;
@@ -102,21 +103,36 @@ public static class RecurrenceScheduleCalculator
     }
 
     /// <summary>
-    /// The local dates a DAILY series should have rooms for, in order.
+    /// The local dates a series should have rooms for, in order, for any of the three cadences.
     ///
     /// <paramref name="alreadyMaterializedThrough"/> is the watermark: generation resumes
     /// strictly AFTER it, never at or before. That one rule is what makes the sweep safe to run
     /// repeatedly and what makes cancelling a single occurrence stick — the sweep can never
     /// revisit a date it has already passed, so a cancelled Tuesday does not come back on
     /// Wednesday's pass.
+    ///
+    /// Every cadence is generated from <paramref name="startsOn"/> forward and then filtered
+    /// against the watermark, rather than each one growing its own resume arithmetic. The old
+    /// DAILY-only code snapped a cursor onto the interval grid to survive an off-grid watermark;
+    /// generating from the anchor gives that property to WEEKLY and MONTHLY for free, because the
+    /// grid is never derived from the watermark in the first place.
     /// </summary>
-    /// <param name="recurrenceType">Only <see cref="RecurrenceTypes.Daily"/> yields dates today.</param>
-    /// <param name="interval">Every N days. 1 for everything the UI can create.</param>
-    /// <param name="startsOn">First candidate date, inclusive.</param>
+    /// <param name="recurrenceType">One of <see cref="RecurrenceTypes"/>.</param>
+    /// <param name="interval">Every N days/weeks/months. 1 for everything the UI can create.</param>
+    /// <param name="startsOn">First candidate date, inclusive. Also the anchor of the interval grid.</param>
     /// <param name="endsOn">Last candidate date, inclusive. A series always has one.</param>
     /// <param name="alreadyMaterializedThrough">Watermark, exclusive. Null means nothing generated yet.</param>
     /// <param name="horizonThrough">Do not generate past this local date, inclusive.</param>
     /// <param name="maxCount">Hard cap for one pass.</param>
+    /// <param name="byWeekdays">
+    /// WEEKLY only: ISO weekdays (Monday 1 … Sunday 7). Null or empty falls back to the weekday
+    /// <paramref name="startsOn"/> itself lands on, which is the rule a user who picked a start
+    /// date and nothing else means. It is never a silent no-op.
+    /// </param>
+    /// <param name="byMonthDay">
+    /// MONTHLY only: day of the month 1–31. Null falls back to <paramref name="startsOn"/>'s own
+    /// day, for the same reason.
+    /// </param>
     public static IReadOnlyList<DateOnly> EnumerateOccurrenceDates(
         string recurrenceType,
         int interval,
@@ -124,43 +140,119 @@ public static class RecurrenceScheduleCalculator
         DateOnly endsOn,
         DateOnly? alreadyMaterializedThrough,
         DateOnly horizonThrough,
-        int maxCount)
+        int maxCount,
+        IReadOnlyList<int>? byWeekdays = null,
+        int? byMonthDay = null)
     {
         var dates = new List<DateOnly>();
 
-        // WEEKLY/MONTHLY are storable but not materialisable yet. Returning nothing — rather
-        // than falling through to daily behaviour — is deliberate: a series that quietly
-        // produced the wrong cadence would be worse than one that produces none.
+        // A cadence the schema stores but this build does not materialise yields nothing, rather
+        // than falling through to daily behaviour: a series that quietly produced the wrong
+        // cadence would be worse than one that produces none.
         if (!RecurrenceTypes.IsSupported(recurrenceType)) return dates;
         if (interval < 1) return dates;
         if (maxCount <= 0) return dates;
         if (endsOn < startsOn) return dates;
 
         var last = horizonThrough < endsOn ? horizonThrough : endsOn;
+        if (last < startsOn) return dates;
 
-        // Resume strictly after the watermark, and never before the series' own start.
-        var cursor = startsOn;
-        if (alreadyMaterializedThrough is DateOnly watermark)
+        foreach (var candidate in EnumerateCandidates(recurrenceType, interval, startsOn, last, byWeekdays, byMonthDay))
         {
-            var resume = watermark.AddDays(1);
-            if (resume > cursor)
-            {
-                // Snap forward to the next date ON the interval grid anchored at startsOn, so a
-                // watermark that landed off-grid (an interval change, a manual fix) cannot shift
-                // the whole series by a day.
-                var offset = resume.DayNumber - startsOn.DayNumber;
-                var steps = (offset + interval - 1) / interval;
-                cursor = startsOn.AddDays(steps * interval);
-            }
-        }
+            if (alreadyMaterializedThrough is DateOnly watermark && candidate <= watermark) continue;
 
-        while (cursor <= last && dates.Count < maxCount)
-        {
-            dates.Add(cursor);
-            cursor = cursor.AddDays(interval);
+            dates.Add(candidate);
+            if (dates.Count >= maxCount) break;
         }
 
         return dates;
+    }
+
+    /// <summary>
+    /// Every date the rule produces between <paramref name="startsOn"/> and <paramref name="last"/>
+    /// inclusive, ascending, ignoring the watermark. Lazy, so a caller that wants three dates out
+    /// of a year-long series does three iterations' worth of work past the watermark.
+    /// </summary>
+    private static IEnumerable<DateOnly> EnumerateCandidates(
+        string recurrenceType,
+        int interval,
+        DateOnly startsOn,
+        DateOnly last,
+        IReadOnlyList<int>? byWeekdays,
+        int? byMonthDay)
+    {
+        switch (recurrenceType)
+        {
+            case RecurrenceTypes.Daily:
+                for (var date = startsOn; date <= last; date = date.AddDays(interval))
+                {
+                    yield return date;
+                }
+                break;
+
+            case RecurrenceTypes.Weekly:
+            {
+                var weekdays = NormalizeWeekdays(byWeekdays) ?? new[] { IsoWeekdays.Of(startsOn) };
+
+                // Anchored on the MONDAY of the week containing startsOn, not on startsOn itself.
+                // "Every 2 weeks on Mon and Fri" has to mean the same two weeks whichever of the
+                // two days the series happens to begin on; anchoring on the start date would make
+                // the fortnight boundary depend on which weekday the user clicked first.
+                var anchorMonday = startsOn.AddDays(-(IsoWeekdays.Of(startsOn) - 1));
+
+                for (var weekStart = anchorMonday; weekStart <= last; weekStart = weekStart.AddDays(7 * interval))
+                {
+                    foreach (var weekday in weekdays)
+                    {
+                        var date = weekStart.AddDays(weekday - 1);
+                        if (date < startsOn || date > last) continue;
+                        yield return date;
+                    }
+                }
+                break;
+            }
+
+            case RecurrenceTypes.Monthly:
+            {
+                var dayOfMonth = byMonthDay ?? startsOn.Day;
+
+                // A month too short for the chosen day is SKIPPED, not clamped to its last day.
+                // "The 31st" in February means no February meeting, the way Google Calendar reads
+                // it; clamping would silently move the meeting to the 28th and, worse, would move
+                // it to a different day in each short month.
+                var monthStart = new DateOnly(startsOn.Year, startsOn.Month, 1);
+                while (monthStart <= last)
+                {
+                    if (dayOfMonth <= DateTime.DaysInMonth(monthStart.Year, monthStart.Month))
+                    {
+                        var date = new DateOnly(monthStart.Year, monthStart.Month, dayOfMonth);
+                        if (date >= startsOn && date <= last) yield return date;
+                    }
+
+                    monthStart = monthStart.AddMonths(interval);
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// ISO weekdays, de-duplicated and ascending, or null when the caller named none usable.
+    /// Ascending matters: the weekly walk emits a week at a time, so unsorted input would emit
+    /// dates out of order and the watermark — which is a single "through this date" line — would
+    /// then skip whatever it happened to pass.
+    /// </summary>
+    public static int[]? NormalizeWeekdays(IReadOnlyList<int>? weekdays)
+    {
+        if (weekdays is null || weekdays.Count == 0) return null;
+
+        var normalized = new SortedSet<int>();
+        foreach (var weekday in weekdays)
+        {
+            if (IsoWeekdays.IsValid(weekday)) normalized.Add(weekday);
+        }
+
+        return normalized.Count == 0 ? null : normalized.ToArray();
     }
 
     /// <summary>
