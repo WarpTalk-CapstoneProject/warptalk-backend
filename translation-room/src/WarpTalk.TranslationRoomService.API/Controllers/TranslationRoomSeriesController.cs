@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Models;
+using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Controllers;
@@ -29,15 +30,50 @@ public class TranslationRoomSeriesController : ControllerBase
         _seriesService = seriesService;
     }
 
+    /// <summary>
+    /// The booking, its rule, and the occurrences this caller may see.
+    ///
+    /// Always NotFound on a refusal — the service returns the same not-found Result for "no such
+    /// series" and "not yours" deliberately, so this mapping stays one branch and cannot grow a
+    /// 403 that re-confirms the id to whoever guessed it.
+    /// </summary>
     [HttpGet("{id}")]
     public async Task<IActionResult> GetSeries(Guid id, CancellationToken ct)
     {
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _seriesService.GetSeriesAsync(id, userId.Value, ct);
+        var result = await _seriesService.GetSeriesAsync(id, userId.Value, User.GetEmail(), ct);
         if (!result.IsSuccess)
             return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+        return Ok(result.Value!);
+    }
+
+    /// <summary>
+    /// Edits the booking and every occurrence still ahead of it.
+    ///
+    /// Cancelling ONE occurrence remains the per-room cancel
+    /// (POST /api/v1/translation-rooms/{id}/cancel): it skips a single day, the watermark keeps
+    /// the sweep from regenerating it, and the series carries on.
+    /// </summary>
+    [HttpPatch("{id}")]
+    public async Task<IActionResult> UpdateSeries(Guid id, [FromBody] UpdateSeriesRequest request, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _seriesService.UpdateSeriesAsync(id, hostId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return result.ErrorCode switch
+            {
+                ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+                ErrorCodes.Forbidden => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+                ErrorCodes.InvalidState => Conflict(new ApiErrorResponse(result.Error, result.ErrorCode)),
+                _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            };
+        }
 
         return Ok(result.Value!);
     }

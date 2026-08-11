@@ -182,18 +182,186 @@ public class RecurrenceScheduleCalculatorTests
     }
 
     [Fact]
-    public void Weekly_and_monthly_are_storable_but_produce_nothing_yet()
+    public void A_cadence_this_build_cannot_materialise_produces_nothing_rather_than_daily_dates()
     {
-        // Falling through to daily behaviour would be far worse than producing nothing: a series
-        // that quietly ran at the wrong cadence is a bug nobody would report as one.
-        foreach (var type in new[] { RecurrenceTypes.Weekly, RecurrenceTypes.Monthly })
-        {
-            RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
-                type, 1,
-                new DateOnly(2026, 8, 10), new DateOnly(2026, 9, 9),
-                null, new DateOnly(2026, 8, 24), 32)
-                .Should().BeEmpty(because: $"{type} is not materialised yet");
-        }
+        // The guard that used to keep WEEKLY and MONTHLY inert still has to hold for whatever
+        // cadence is added to the schema next: falling through to daily behaviour is far worse
+        // than producing nothing, because a series quietly running at the wrong cadence is a bug
+        // nobody would report as one.
+        RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            "FORTNIGHTLY", 1,
+            new DateOnly(2026, 8, 10), new DateOnly(2026, 9, 9),
+            null, new DateOnly(2026, 8, 24), 32)
+            .Should().BeEmpty();
+    }
+
+    // ── WEEKLY ────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Weekly_yields_every_selected_weekday_in_order()
+    {
+        // 2026-08-10 is a Monday. Mon(1) + Wed(3) + Fri(5) over two weeks.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Weekly, 1,
+            startsOn: new DateOnly(2026, 8, 10),
+            endsOn: new DateOnly(2026, 8, 23),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 8, 23),
+            maxCount: 32,
+            byWeekdays: new[] { 5, 1, 3 }); // deliberately unsorted
+
+        dates.Should().Equal(
+            new DateOnly(2026, 8, 10), new DateOnly(2026, 8, 12), new DateOnly(2026, 8, 14),
+            new DateOnly(2026, 8, 17), new DateOnly(2026, 8, 19), new DateOnly(2026, 8, 21));
+    }
+
+    [Fact]
+    public void Weekly_with_no_weekdays_named_repeats_the_start_dates_own_weekday()
+    {
+        // "Weekly from Tuesday the 11th" has exactly one sane reading, and refusing it would make
+        // the client send back a value it just derived itself.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Weekly, 1,
+            startsOn: new DateOnly(2026, 8, 11), // a Tuesday
+            endsOn: new DateOnly(2026, 9, 1),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 9, 1),
+            maxCount: 32);
+
+        dates.Should().Equal(
+            new DateOnly(2026, 8, 11), new DateOnly(2026, 8, 18),
+            new DateOnly(2026, 8, 25), new DateOnly(2026, 9, 1));
+    }
+
+    [Fact]
+    public void Weekly_never_yields_a_selected_day_that_falls_before_the_series_starts()
+    {
+        // Booking "Mondays and Fridays" on a Wednesday must not produce that same week's Monday,
+        // which is in the past.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Weekly, 1,
+            startsOn: new DateOnly(2026, 8, 12), // Wednesday
+            endsOn: new DateOnly(2026, 8, 21),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 8, 21),
+            maxCount: 32,
+            byWeekdays: new[] { 1, 5 });
+
+        dates.Should().Equal(
+            new DateOnly(2026, 8, 14),  // that week's Friday
+            new DateOnly(2026, 8, 17),  // next Monday
+            new DateOnly(2026, 8, 21)); // next Friday
+    }
+
+    [Fact]
+    public void A_fortnightly_grid_is_anchored_on_the_week_not_on_the_start_day()
+    {
+        // Every 2 weeks on Mon+Fri, starting on a Friday. Anchoring the fortnight on the start
+        // DAY would put the following Monday in an "off" week and drop it; the correct reading is
+        // that the whole week the series starts in is an "on" week.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Weekly, interval: 2,
+            startsOn: new DateOnly(2026, 8, 14), // Friday
+            endsOn: new DateOnly(2026, 9, 30),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 9, 30),
+            maxCount: 32,
+            byWeekdays: new[] { 1, 5 });
+
+        dates.Should().Equal(
+            new DateOnly(2026, 8, 14),  // week of Aug 10
+            new DateOnly(2026, 8, 24), new DateOnly(2026, 8, 28),  // week of Aug 24
+            new DateOnly(2026, 9, 7), new DateOnly(2026, 9, 11),   // week of Sep 7
+            new DateOnly(2026, 9, 21), new DateOnly(2026, 9, 25)); // week of Sep 21
+    }
+
+    [Fact]
+    public void A_weekly_watermark_resumes_after_it_without_shifting_the_grid()
+    {
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Weekly, 1,
+            startsOn: new DateOnly(2026, 8, 10),
+            endsOn: new DateOnly(2026, 8, 31),
+            alreadyMaterializedThrough: new DateOnly(2026, 8, 17),
+            horizonThrough: new DateOnly(2026, 8, 31),
+            maxCount: 32,
+            byWeekdays: new[] { 1 });
+
+        dates.Should().Equal(new DateOnly(2026, 8, 24), new DateOnly(2026, 8, 31));
+    }
+
+    // ── MONTHLY ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Monthly_repeats_on_the_same_day_of_each_month()
+    {
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Monthly, 1,
+            startsOn: new DateOnly(2026, 8, 15),
+            endsOn: new DateOnly(2026, 11, 30),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 11, 30),
+            maxCount: 32);
+
+        dates.Should().Equal(
+            new DateOnly(2026, 8, 15), new DateOnly(2026, 9, 15),
+            new DateOnly(2026, 10, 15), new DateOnly(2026, 11, 15));
+    }
+
+    [Fact]
+    public void A_month_too_short_for_the_chosen_day_is_skipped_not_clamped()
+    {
+        // "The 31st" in February means no February meeting. Clamping to the 28th would silently
+        // move the meeting, and to a different day in each short month.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Monthly, 1,
+            startsOn: new DateOnly(2026, 12, 31),
+            endsOn: new DateOnly(2027, 4, 30),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2027, 4, 30),
+            maxCount: 32,
+            byMonthDay: 31);
+
+        dates.Should().Equal(
+            new DateOnly(2026, 12, 31),
+            new DateOnly(2027, 1, 31),
+            // no February, no April — neither month has a 31st
+            new DateOnly(2027, 3, 31));
+    }
+
+    [Fact]
+    public void A_monthly_day_earlier_than_the_start_date_begins_the_following_month()
+    {
+        // Booking "the 1st of every month" on the 5th: the first occurrence is next month's 1st,
+        // not a date in the past.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Monthly, 1,
+            startsOn: new DateOnly(2026, 8, 5),
+            endsOn: new DateOnly(2026, 11, 30),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 11, 30),
+            maxCount: 32,
+            byMonthDay: 1);
+
+        dates.Should().Equal(
+            new DateOnly(2026, 9, 1), new DateOnly(2026, 10, 1), new DateOnly(2026, 11, 1));
+    }
+
+    [Fact]
+    public void A_monthly_series_yields_nothing_inside_a_two_week_horizon_it_does_not_reach()
+    {
+        // The case that forced CreateSeriesAsync to materialise its first occurrence regardless
+        // of the horizon: nothing here is wrong, there simply is no occurrence for two weeks.
+        var dates = RecurrenceScheduleCalculator.EnumerateOccurrenceDates(
+            RecurrenceTypes.Monthly, 1,
+            startsOn: new DateOnly(2026, 8, 5),
+            endsOn: new DateOnly(2027, 8, 5),
+            alreadyMaterializedThrough: null,
+            horizonThrough: new DateOnly(2026, 8, 19),
+            maxCount: 32,
+            byMonthDay: 1);
+
+        dates.Should().BeEmpty();
     }
 
     [Fact]

@@ -320,19 +320,237 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_weekly_request_is_refused_rather_than_stored_as_an_inert_series()
+    public async Task A_weekly_series_materialises_only_the_weekdays_it_names()
     {
+        // Booked 2026-08-06 (a Thursday) at 10:00 local, so the rule starts tomorrow, the 7th.
+        // Mondays and Wednesdays through 2026-09-05: Aug 10, 12, 17, 19, 24, 26, 31 and Sep 2.
         SetCaller(Guid.NewGuid());
         var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", BuildRequest(
-            Guid.NewGuid(), new RecurrenceRequest(RecurrenceTypes.Weekly, "08:00", Hcm)));
+            Guid.NewGuid(),
+            new RecurrenceRequest(
+                RecurrenceTypes.Weekly, "08:00", Hcm,
+                StartDateLocal: null,
+                EndDateLocal: "2026-09-05",
+                ByWeekdays: new List<int> { 1, 3 })));
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("not available yet");
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+        var created = (await response.Content.ReadFromJsonAsync<CreateRecurringRoomResponse>())!;
 
-        using var scope = _factory.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
-        (await db.TranslationRoomSeries.CountAsync(s => s.RecurrenceType == RecurrenceTypes.Weekly))
-            .Should().Be(0);
+        created.Series.Type.Should().Be(RecurrenceTypes.Weekly);
+        created.Series.ByWeekdays.Should().Equal(1, 3);
+        created.Series.ByMonthDay.Should().BeNull();
+        created.TotalOccurrenceCount.Should().Be(8);
+
+        // The 14-day horizon reaches Aug 20, so only the first four exist yet — and, unlike a
+        // daily series, "14 days" does NOT mean "14 rooms".
+        created.MaterializedOccurrenceCount.Should().Be(4);
+
+        var rooms = await OccurrencesOfAsync(created.Series.SeriesId);
+        rooms.Select(r => r.ScheduledAt!.Value).Should().Equal(
+            new DateTime(2026, 8, 10, 1, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 8, 12, 1, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 8, 17, 1, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 8, 19, 1, 0, 0, DateTimeKind.Utc));
+
+        // Never Tuesday. The failure this pins is a weekly series drifting into daily behaviour.
+        rooms.Should().OnlyContain(r =>
+            r.SeriesOccurrenceLocalDate!.Value.DayOfWeek == DayOfWeek.Monday ||
+            r.SeriesOccurrenceLocalDate!.Value.DayOfWeek == DayOfWeek.Wednesday);
+    }
+
+    [Fact]
+    public async Task A_monthly_series_whose_first_meeting_is_past_the_horizon_still_gets_its_room()
+    {
+        // "The 1st of every month", booked on the 6th: the first occurrence is 26 days out, well
+        // past the 14-day horizon. The booking must still come back with a room the host can
+        // share — a booking nobody can be invited to is not a booking — so the first occurrence
+        // is materialised whatever the horizon says.
+        SetCaller(Guid.NewGuid());
+        var response = await _client.PostAsJsonAsync("/api/v1/translation-rooms", BuildRequest(
+            Guid.NewGuid(),
+            new RecurrenceRequest(
+                RecurrenceTypes.Monthly, "08:00", Hcm,
+                StartDateLocal: null,
+                EndDateLocal: "2026-11-30",
+                ByMonthDay: 1)));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+        var created = (await response.Content.ReadFromJsonAsync<CreateRecurringRoomResponse>())!;
+
+        created.Series.Type.Should().Be(RecurrenceTypes.Monthly);
+        created.Series.ByMonthDay.Should().Be(1);
+        created.TotalOccurrenceCount.Should().Be(3); // Sep 1, Oct 1, Nov 1
+        created.MaterializedOccurrenceCount.Should().Be(1);
+        created.FirstOccurrence.ScheduledAt.Should().Be(new DateTime(2026, 9, 1, 1, 0, 0, DateTimeKind.Utc));
+
+        // August has a 1st, but it is in the past — the rule must not reach backwards for it.
+        var rooms = await OccurrencesOfAsync(created.Series.SeriesId);
+        rooms.Should().HaveCount(1);
+
+        // And the sweep resumes from that date rather than re-creating it.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(0);
+        }
+
+        (await OccurrencesOfAsync(created.Series.SeriesId)).Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task A_grouped_list_shows_one_booking_where_an_ungrouped_one_shows_every_occurrence()
+    {
+        // The defect this feature exists to fix: a daily standup filled the meetings list with
+        // fourteen rows that were, to the person who booked it, one meeting.
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+        response.MaterializedOccurrenceCount.Should().Be(14);
+
+        var grouped = await ListAsync(groupBySeries: true);
+        grouped.Rooms.Should().HaveCount(1);
+        grouped.Total.Should().Be(1, "the count beside a collapsed row must count bookings, not occurrences");
+
+        var row = grouped.Rooms[0];
+        row.SeriesId.Should().Be(response.Series.SeriesId);
+        row.Series.Should().NotBeNull();
+        row.Series!.Type.Should().Be(RecurrenceTypes.Daily);
+        row.Series.StartTimeLocal.Should().Be("08:00");
+        row.Series.TimeZone.Should().Be(Hcm);
+        row.Series.OccurrenceCount.Should().Be(14);
+
+        // The row stands for the meeting the user would act on, and says so consistently: the
+        // room it points at is the one its own "next" field names.
+        row.Series.NextOccurrenceAt.Should().Be(row.ScheduledAt);
+        row.ScheduledAt.Should().NotBeNull();
+
+        // The home day panel asks the same endpoint without grouping, and still gets every day —
+        // collapsing there would empty every date but one.
+        var ungrouped = await ListAsync(groupBySeries: false);
+        ungrouped.Rooms.Should().HaveCount(14);
+        ungrouped.Total.Should().Be(14);
+        ungrouped.Rooms.Should().OnlyContain(r => r.SeriesId == response.Series.SeriesId);
+        ungrouped.Rooms.Should().OnlyContain(r => r.Series == null,
+            "an ungrouped row is one occurrence and must not claim to be the whole booking");
+    }
+
+    [Fact]
+    public async Task A_one_off_meeting_is_never_collapsed_by_grouping()
+    {
+        var hostId = Guid.NewGuid();
+        await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(hostId);
+        var oneOff = await _client.PostAsJsonAsync("/api/v1/translation-rooms", new CreateTranslationRoomRequest(
+            WorkspaceId: Guid.NewGuid(),
+            Title: "One-off review",
+            Description: null,
+            TranslationRoomType: "EVENT",
+            MaxParticipants: null,
+            SourceLanguage: "en-US",
+            TargetLanguages: new List<string> { "en-US", "vi-VN" },
+            Settings: null,
+            // Real UtcNow, not the injected clock: only the series service reads the injected one,
+            // and a one-off room's "must be in the future" check is against the real wall clock.
+            ScheduledAt: DateTime.UtcNow.AddDays(1),
+            InvitedEmails: null,
+            Recurrence: null));
+        oneOff.StatusCode.Should().Be(HttpStatusCode.Created, await oneOff.Content.ReadAsStringAsync());
+
+        var grouped = await ListAsync(groupBySeries: true);
+        grouped.Rooms.Should().HaveCount(2, "the booking collapses to one row; the one-off is untouched");
+        grouped.Rooms.Should().ContainSingle(r => r.SeriesId == null && r.Series == null);
+    }
+
+    [Fact]
+    public async Task The_booking_read_returns_its_rule_its_occurrences_and_the_one_to_join()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(hostId);
+        var read = await _client.GetAsync($"/api/v1/translation-room-series/{response.Series.SeriesId}");
+        read.StatusCode.Should().Be(HttpStatusCode.OK, await read.Content.ReadAsStringAsync());
+
+        var detail = (await read.Content.ReadFromJsonAsync<SeriesDetailResponse>())!;
+        detail.Series.SeriesId.Should().Be(response.Series.SeriesId);
+        detail.HostId.Should().Be(hostId);
+        detail.Title.Should().Be("Daily standup");
+        detail.Occurrences.Should().HaveCount(14);
+        detail.Occurrences.Select(o => o.ScheduledAt).Should().BeInAscendingOrder();
+
+        // The stable target a "join this booking" link resolves to.
+        detail.CurrentOccurrenceId.Should().NotBeNull();
+        detail.Occurrences.Should().Contain(o => o.Id == detail.CurrentOccurrenceId);
+    }
+
+    [Fact]
+    public async Task A_stranger_cannot_read_a_booking_by_guessing_its_id()
+    {
+        // Before this read took a caller at all, [Authorize] was the entire check: any signed-in
+        // user could read any workspace's schedule, title and host from an id.
+        var response = await CreateDailyAsync(Guid.NewGuid(), "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(Guid.NewGuid());
+        var read = await _client.GetAsync($"/api/v1/translation-room-series/{response.Series.SeriesId}");
+
+        read.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            "a refusal and a missing series must be indistinguishable, or the 403 confirms the id");
+    }
+
+    [Fact]
+    public async Task Editing_the_booking_rewrites_the_meetings_still_to_come()
+    {
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(hostId);
+        var edit = await _client.PatchAsJsonAsync(
+            $"/api/v1/translation-room-series/{response.Series.SeriesId}",
+            new UpdateSeriesRequest(Title: "Standup (renamed)", Description: "Now with an agenda"));
+
+        edit.StatusCode.Should().Be(HttpStatusCode.OK, await edit.Content.ReadAsStringAsync());
+        var result = (await edit.Content.ReadFromJsonAsync<UpdateSeriesResult>())!;
+        result.UpdatedOccurrenceCount.Should().Be(14);
+
+        // The template, so occurrences the worker has not created yet are stamped from the edit...
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<TranslationRoomDbContext>();
+            var series = await db.TranslationRoomSeries.AsNoTracking()
+                .FirstAsync(s => s.Id == response.Series.SeriesId);
+            series.Title.Should().Be("Standup (renamed)");
+        }
+
+        // ...and the rooms that already exist.
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        rooms.Should().OnlyContain(r => r.Title == "Standup (renamed)");
+
+        // A later occurrence inherits the edited template rather than the original one.
+        _now = _now.AddDays(2);
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var series = scope.ServiceProvider.GetRequiredService<ITranslationRoomSeriesService>();
+            (await series.MaterializeDueOccurrencesAsync()).Should().Be(2);
+        }
+
+        (await OccurrencesOfAsync(response.Series.SeriesId))
+            .Should().OnlyContain(r => r.Title == "Standup (renamed)");
+    }
+
+    [Fact]
+    public async Task Only_the_host_can_edit_a_booking()
+    {
+        var response = await CreateDailyAsync(Guid.NewGuid(), "08:00", endDateLocal: "2026-09-05");
+
+        SetCaller(Guid.NewGuid());
+        var edit = await _client.PatchAsJsonAsync(
+            $"/api/v1/translation-room-series/{response.Series.SeriesId}",
+            new UpdateSeriesRequest(Title: "Hijacked"));
+
+        edit.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        (await OccurrencesOfAsync(response.Series.SeriesId))
+            .Should().OnlyContain(r => r.Title == "Daily standup");
     }
 
     [Fact]
@@ -394,6 +612,15 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
         response.StatusCode.Should().Be(HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
 
         return (await response.Content.ReadFromJsonAsync<CreateRecurringRoomResponse>())!;
+    }
+
+    private async Task<TranslationRoomListResponse> ListAsync(bool groupBySeries)
+    {
+        var response = await _client.GetAsync(
+            $"/api/v1/translation-rooms?pageSize=100&groupBySeries={groupBySeries.ToString().ToLowerInvariant()}");
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+
+        return (await response.Content.ReadFromJsonAsync<TranslationRoomListResponse>())!;
     }
 
     private async Task<List<TranslationRoom>> OccurrencesOfAsync(Guid seriesId)

@@ -5,10 +5,12 @@ namespace WarpTalk.TranslationRoomService.Domain.Constants;
 /// <summary>
 /// WT-327: the vocabulary of a recurring room series.
 ///
-/// Only DAILY is implemented. WEEKLY and MONTHLY are named here — and accepted by the
-/// database CHECK constraint the migration installs — precisely so that adding them later is
-/// application code plus a UI control, not a second schema migration. Nothing outside this
-/// file may invent a recurrence type: <see cref="Normalize"/> is the single door.
+/// All three cadences are implemented. WEEKLY and MONTHLY were named here from the start — and
+/// accepted by the database CHECK constraint migration 052 installs, along with the
+/// by_weekdays/by_month_day columns they need — so switching them on was application code plus a
+/// UI control, exactly as intended, and not a second migration against a table that now holds
+/// production rows. Nothing outside this file may invent a recurrence type:
+/// <see cref="Normalize"/> is the single door.
 /// </summary>
 public static class RecurrenceTypes
 {
@@ -20,12 +22,12 @@ public static class RecurrenceTypes
     public static readonly string[] All = { Daily, Weekly, Monthly };
 
     /// <summary>
-    /// What the API will actually act on today. A request for WEEKLY/MONTHLY is refused with a
-    /// "not supported yet" message rather than silently stored as a series no worker will ever
-    /// materialise — a stored-but-inert series is exactly the dead-switch failure this feature
-    /// exists to remove.
+    /// What the API will actually act on. Kept as its own array rather than folded into
+    /// <see cref="All"/> now that the two coincide: it is the seam a future cadence is added
+    /// behind (stored by the schema before the materialiser understands it), and collapsing it
+    /// would mean re-deriving that seam under time pressure.
     /// </summary>
-    public static readonly string[] Supported = { Daily };
+    public static readonly string[] Supported = { Daily, Weekly, Monthly };
 
     public static string? Normalize(string? value)
     {
@@ -36,6 +38,24 @@ public static class RecurrenceTypes
 
     public static bool IsSupported(string? normalizedType) =>
         normalizedType is not null && Array.IndexOf(Supported, normalizedType) >= 0;
+}
+
+/// <summary>
+/// WT-327: ISO-8601 weekday numbering — Monday is 1, Sunday is 7 — which is what
+/// <c>recurrence_by_weekdays</c> stores and what the API accepts.
+///
+/// Deliberately NOT .NET's <see cref="DayOfWeek"/>, where Sunday is 0. The two disagree about
+/// every day of the week, and a weekly series that fires a day early is the kind of bug that is
+/// only noticed by the people who missed the meeting. One conversion, in one place.
+/// </summary>
+public static class IsoWeekdays
+{
+    public const int Monday = 1;
+    public const int Sunday = 7;
+
+    public static int Of(DateOnly date) => ((int)date.DayOfWeek + 6) % 7 + 1;
+
+    public static bool IsValid(int weekday) => weekday >= Monday && weekday <= Sunday;
 }
 
 /// <summary>WT-327: lifecycle of the series row itself, distinct from any one room's status.</summary>
@@ -103,19 +123,37 @@ public static class RecurrenceMessages
 {
     public const string RecurrenceRequired = "This request has no recurrence rule.";
     public const string TypeUnrecognised = "Unrecognised repeat option.";
-    public const string TypeNotSupportedYet = "{0} repeats are not available yet. Only daily repeats can be scheduled.";
-    public const string TimeMalformed = "Enter the daily time as HH:mm, for example 08:00.";
-    public const string TimeZoneUnknown = "Unrecognised time zone for the daily schedule.";
+    public const string TypeNotSupportedYet = "{0} repeats are not available yet.";
+    public const string TimeMalformed = "Enter the time as HH:mm, for example 08:00.";
+    public const string TimeZoneUnknown = "Unrecognised time zone for the repeating schedule.";
     public const string StartDateMalformed = "Enter the first date as YYYY-MM-DD.";
     public const string EndDateMalformed = "Enter the last date as YYYY-MM-DD.";
     public const string StartDateInPast = "A repeating meeting cannot start before today.";
     public const string EndDateBeforeStart = "The last date must be on or after the first date.";
     public const string EndDateTooFar = "A repeating meeting can run for at most {0} days.";
     public const string NoOccurrences = "That schedule produces no meetings.";
-    public const string StartTooFarAhead = "The first meeting is too far ahead to schedule yet.";
     public const string CreateFailed = "An unexpected error occurred while scheduling the repeating meeting.";
     public const string SeriesNotFound = "Repeating schedule not found.";
     public const string OnlyHostMayCancel = "Only the host can cancel a repeating schedule.";
+    public const string OnlyHostMayEdit = "Only the host can change a repeating schedule.";
+    public const string SeriesAlreadyCancelled = "This repeating schedule has already been cancelled.";
+    public const string OccurrenceNotInSeries = "That meeting is not part of this repeating schedule.";
+    public const string NoUpcomingOccurrence = "This repeating schedule has no upcoming meeting.";
+
+    // ── Weekly / monthly rule shape ───────────────────────────────────────────
+
+    public const string WeekdayOutOfRange = "Pick weekdays between Monday (1) and Sunday (7).";
+
+    /// <summary>
+    /// Sent when a rule field belongs to a different cadence — weekdays on a monthly repeat, a
+    /// day-of-month on a weekly one. Refused rather than ignored: the rule the user sees on their
+    /// screen and the rule the materialiser follows have to be the same rule, and quietly dropping
+    /// half of one is how they stop being.
+    /// </summary>
+    public const string WeekdaysNotApplicable = "Weekdays apply to a weekly repeat only.";
+
+    public const string MonthDayOutOfRange = "Enter the day of the month as a number from 1 to 31.";
+    public const string MonthDayNotApplicable = "A day of the month applies to a monthly repeat only.";
 
     /// <summary>
     /// A single request cannot carry both a one-off time and a repeat rule: the rule owns every
@@ -123,5 +161,5 @@ public static class RecurrenceMessages
     /// and a silently discarded field on this dialog is precisely the bug WT-327 removed.
     /// </summary>
     public const string ScheduledAtWithRecurrence =
-        "Pick either a one-off date and time or a daily repeat, not both.";
+        "Pick either a one-off date and time or a repeat rule, not both.";
 }

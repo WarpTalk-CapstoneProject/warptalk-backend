@@ -25,7 +25,35 @@ public interface ITranslationRoomSeriesService
         Guid hostId,
         CancellationToken ct = default);
 
-    Task<Result<RecurrenceSummaryResponse>> GetSeriesAsync(Guid seriesId, Guid userId, CancellationToken ct = default);
+    /// <summary>
+    /// The booking, its rule, and every occurrence the caller may see.
+    ///
+    /// <paramref name="userEmail"/> is required and positional for the same reason it is on
+    /// <see cref="ITranslationRoomService.GetTranslationRoomAsync"/>: entitlement to an occurrence
+    /// is host OR participant OR invited-by-email. Until this took a caller at all, <c>[Authorize]</c>
+    /// was the entire check and any authenticated user could read any workspace's series — its
+    /// title, description, schedule and host — by guessing an id.
+    ///
+    /// A caller who may see nothing gets the same not-found as a series that does not exist.
+    /// </summary>
+    Task<Result<SeriesDetailResponse>> GetSeriesAsync(
+        Guid seriesId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Edits the BOOKING: the template, and every occurrence still ahead of it.
+    ///
+    /// Occurrences that already started keep what they ran with — rewriting a meeting that
+    /// happened is not an edit. The rule itself (cadence, time of day, date range) is out of
+    /// scope here; see <see cref="UpdateSeriesRequest"/>.
+    /// </summary>
+    Task<Result<UpdateSeriesResult>> UpdateSeriesAsync(
+        Guid seriesId,
+        Guid hostId,
+        UpdateSeriesRequest request,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Stops the series and cancels its FUTURE occurrences. Occurrences that already started,
