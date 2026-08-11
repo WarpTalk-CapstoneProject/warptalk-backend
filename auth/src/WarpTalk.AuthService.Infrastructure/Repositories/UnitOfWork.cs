@@ -16,7 +16,8 @@ public class UnitOfWork : IUnitOfWork
         IUserSettingRepository userSettingRepository,
         IRefreshTokenRepository refreshTokenRepository,
         IVoiceProfileRepository voiceProfileRepository,
-        IVoiceSampleRepository voiceSampleRepository)
+        IVoiceSampleRepository voiceSampleRepository,
+        IVoiceConsentRepository voiceConsentRepository)
     {
         _context = context;
         UserRepository = userRepository;
@@ -27,6 +28,7 @@ public class UnitOfWork : IUnitOfWork
         RefreshTokenRepository = refreshTokenRepository;
         VoiceProfileRepository = voiceProfileRepository;
         VoiceSampleRepository = voiceSampleRepository;
+        VoiceConsentRepository = voiceConsentRepository;
     }
 
     public IUserRepository UserRepository { get; }
@@ -37,6 +39,7 @@ public class UnitOfWork : IUnitOfWork
     public IRefreshTokenRepository RefreshTokenRepository { get; }
     public IVoiceProfileRepository VoiceProfileRepository { get; }
     public IVoiceSampleRepository VoiceSampleRepository { get; }
+    public IVoiceConsentRepository VoiceConsentRepository { get; }
 
 
     private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;

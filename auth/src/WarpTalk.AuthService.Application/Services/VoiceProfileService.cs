@@ -172,7 +172,12 @@ public class VoiceProfileService : IVoiceProfileService
         }
     }
 
-    public async Task<Result<VoiceProfileDto>> CreateProfileAsync(Guid userId, CreateVoiceProfileRequest request, CancellationToken ct = default)
+    public async Task<Result<VoiceProfileDto>> CreateProfileAsync(
+        Guid userId,
+        CreateVoiceProfileRequest request,
+        CancellationToken ct = default,
+        string? ipAddress = null,
+        string? userAgent = null)
     {
         if (string.IsNullOrWhiteSpace(request.DisplayName))
         {
@@ -207,6 +212,13 @@ public class VoiceProfileService : IVoiceProfileService
             }
         }
 
+        if (!HasRequiredVoiceProfileConsent(request))
+        {
+            return Result.Failure<VoiceProfileDto>(
+                "Voice consent is required before saving this voice profile.",
+                ErrorCodes.ValidationError);
+        }
+
         try
         {
             var profile = new VoiceProfile
@@ -222,7 +234,9 @@ public class VoiceProfileService : IVoiceProfileService
             };
 
             VoiceSample? sample = null;
+            VoiceConsent? consent = null;
             string? storageKey = null;
+            var now = DateTime.UtcNow;
 
             if (request.Sample != null)
             {
@@ -243,6 +257,26 @@ public class VoiceProfileService : IVoiceProfileService
                     Language = request.Language,
                     ContainsRawAudio = true,
                 };
+
+                consent = new VoiceConsent
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    VoiceProfileId = profile.Id,
+                    ConsentType = VoiceProfileConsentContract.UploadConsentType,
+                    ConsentStatus = VoiceProfileConsentContract.GrantedStatus,
+                    ConsentTextVersion = VoiceProfileConsentContract.Version,
+                    GrantedAt = now,
+                    IpAddress = NullIfWhiteSpace(ipAddress, 45),
+                    UserAgent = NullIfWhiteSpace(userAgent, 500),
+                    ContractSnapshot = VoiceProfileConsentContract.Snapshot,
+                    ContractHash = VoiceProfileConsentContract.SnapshotHash(),
+                    OwnVoiceConfirmed = request.OwnVoiceConfirmed,
+                    AiUseConfirmed = request.AiUseConfirmed,
+                    SyntheticVoiceAcknowledged = request.SyntheticVoiceAcknowledged,
+                    NoImpersonationConfirmed = request.NoImpersonationConfirmed,
+                    RetentionAcknowledged = request.RetentionAcknowledged,
+                };
             }
 
             try
@@ -251,6 +285,10 @@ public class VoiceProfileService : IVoiceProfileService
                 if (sample != null)
                 {
                     await _unitOfWork.VoiceSampleRepository.AddAsync(sample, ct);
+                }
+                if (consent != null)
+                {
+                    await _unitOfWork.VoiceConsentRepository.AddAsync(consent, ct);
                 }
                 await _unitOfWork.SaveChangesAsync(ct);
             }
@@ -264,6 +302,7 @@ public class VoiceProfileService : IVoiceProfileService
             }
 
             profile.VoiceSamples = sample != null ? new List<VoiceSample> { sample } : new List<VoiceSample>();
+            profile.VoiceConsents = consent != null ? new List<VoiceConsent> { consent } : new List<VoiceConsent>();
             return Result.Success(VoiceProfileMapper.ToDto(profile));
         }
         catch (Exception ex)
@@ -271,6 +310,24 @@ public class VoiceProfileService : IVoiceProfileService
             _logger.LogError(ex, "Error occurred while creating voice profile. UserId: {UserId}", userId);
             return Result.Failure<VoiceProfileDto>("An unexpected error occurred while creating the voice profile.", ErrorCodes.InternalServerError);
         }
+    }
+
+    private static bool HasRequiredVoiceProfileConsent(CreateVoiceProfileRequest request)
+        => request.OwnVoiceConfirmed
+           && request.AiUseConfirmed
+           && request.SyntheticVoiceAcknowledged
+           && request.NoImpersonationConfirmed
+           && request.RetentionAcknowledged;
+
+    private static string? NullIfWhiteSpace(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
 
     public async Task<Result> DeleteProfileAsync(Guid userId, Guid profileId, CancellationToken ct = default)

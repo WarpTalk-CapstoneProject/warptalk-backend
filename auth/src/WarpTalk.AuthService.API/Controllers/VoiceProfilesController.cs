@@ -45,7 +45,12 @@ public class VoiceProfilesController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized();
 
-        var result = await _voiceProfileService.CreateProfileAsync(userId.Value, request, ct);
+        var result = await _voiceProfileService.CreateProfileAsync(
+            userId.Value,
+            request,
+            ct,
+            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            Request.Headers["User-Agent"].ToString());
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));

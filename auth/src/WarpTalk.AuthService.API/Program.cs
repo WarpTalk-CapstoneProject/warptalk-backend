@@ -54,6 +54,7 @@ builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
 builder.Services.AddScoped<IVoiceSampleRepository, VoiceSampleRepository>();
+builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 
 // Application Services & Memory Cache

@@ -21,6 +21,7 @@ public class VoiceProfileRepository : GenericRepository<VoiceProfile>, IVoicePro
         return await _dbSet
             .Where(p => p.UserId == userId && p.DeletedAt == null)
             .Include(p => p.VoiceSamples.Where(s => s.DeletedAt == null))
+            .Include(p => p.VoiceConsents)
             .OrderByDescending(p => p.CreatedAt)
             .ToListAsync(ct);
     }
@@ -29,6 +30,7 @@ public class VoiceProfileRepository : GenericRepository<VoiceProfile>, IVoicePro
     {
         return await _dbSet
             .Include(p => p.VoiceSamples.Where(s => s.DeletedAt == null))
+            .Include(p => p.VoiceConsents)
             .FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId && p.DeletedAt == null, ct);
     }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -29,6 +30,7 @@ public class VoiceProfileServiceTests
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IVoiceProfileRepository _profiles = Substitute.For<IVoiceProfileRepository>();
     private readonly IVoiceSampleRepository _samples = Substitute.For<IVoiceSampleRepository>();
+    private readonly IVoiceConsentRepository _consents = Substitute.For<IVoiceConsentRepository>();
     private readonly IVoiceSampleStorage _storage = Substitute.For<IVoiceSampleStorage>();
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
     private readonly VoiceProfileService _service;
@@ -37,8 +39,11 @@ public class VoiceProfileServiceTests
     {
         _unitOfWork.VoiceProfileRepository.Returns(_profiles);
         _unitOfWork.VoiceSampleRepository.Returns(_samples);
+        _unitOfWork.VoiceConsentRepository.Returns(_consents);
         _profiles.GetByUserIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(Array.Empty<VoiceProfile>());
+        _storage.SaveAsync(Arg.Any<string>(), Arg.Any<System.IO.Stream>(), Arg.Any<CancellationToken>())
+            .Returns(c => (string)c[0]);
         StubCatalog(
             new VoiceCatalogItemDto(LinhVoiceId, "Linh - Soft Presence", "feminine"),
             new VoiceCatalogItemDto(MinhVoiceId, "Minh - Conversational Partner", "masculine"));
@@ -61,6 +66,17 @@ public class VoiceProfileServiceTests
         Status = "active",
         IsActive = true,
         VoiceSamples = new List<VoiceSample>(),
+    };
+
+    private static FormFile ValidVoiceSample() => new(
+        new System.IO.MemoryStream(new byte[] { 1, 2, 3 }),
+        0,
+        3,
+        "sample",
+        "voice.wav")
+    {
+        Headers = new HeaderDictionary(),
+        ContentType = "audio/wav",
     };
 
     [Fact]
@@ -226,6 +242,88 @@ public class VoiceProfileServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Contains("sample", result.Error!, StringComparison.OrdinalIgnoreCase);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRejectUploadedSample_WhenConsentIsIncomplete()
+    {
+        var userId = Guid.NewGuid();
+        var sample = ValidVoiceSample();
+
+        var result = await _service.CreateProfileAsync(
+            userId,
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = sample,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = false,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains("consent", result.Error!, StringComparison.OrdinalIgnoreCase);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+        await _samples.DidNotReceive().AddAsync(Arg.Any<VoiceSample>(), Arg.Any<CancellationToken>());
+        await _storage.DidNotReceive().SaveAsync(Arg.Any<string>(), Arg.Any<System.IO.Stream>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldStoreConsentContract_WhenUploadedSampleConsentIsComplete()
+    {
+        var userId = Guid.NewGuid();
+        VoiceProfile? addedProfile = null;
+        VoiceConsent? addedConsent = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => addedProfile = c.Arg<VoiceProfile>());
+        _consents
+            .When(r => r.AddAsync(Arg.Any<VoiceConsent>(), Arg.Any<CancellationToken>()))
+            .Do(c => addedConsent = c.Arg<VoiceConsent>());
+
+        var result = await _service.CreateProfileAsync(
+            userId,
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = ValidVoiceSample(),
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            },
+            ipAddress: "203.0.113.10",
+            userAgent: "WarpTalkTest/1.0");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        var dto = result.Value!;
+        Assert.NotNull(addedProfile);
+        Assert.NotNull(addedConsent);
+        Assert.Equal(userId, addedConsent!.UserId);
+        Assert.Equal(addedProfile!.Id, addedConsent.VoiceProfileId);
+        Assert.Equal("voice_profile_upload", addedConsent.ConsentType);
+        Assert.Equal("GRANTED", addedConsent.ConsentStatus);
+        Assert.Equal("voice-profile-upload-v1", addedConsent.ConsentTextVersion);
+        Assert.NotNull(addedConsent.GrantedAt);
+        Assert.Equal("203.0.113.10", addedConsent.IpAddress);
+        Assert.Equal("WarpTalkTest/1.0", addedConsent.UserAgent);
+        Assert.NotNull(addedConsent.ContractSnapshot);
+        Assert.NotNull(addedConsent.ContractHash);
+        Assert.Equal(64, addedConsent.ContractHash!.Length);
+        Assert.True(addedConsent.OwnVoiceConfirmed);
+        Assert.True(addedConsent.AiUseConfirmed);
+        Assert.True(addedConsent.SyntheticVoiceAcknowledged);
+        Assert.True(addedConsent.NoImpersonationConfirmed);
+        Assert.True(addedConsent.RetentionAcknowledged);
+        Assert.Equal("granted", dto.ConsentStatus);
+        Assert.Equal("voice-profile-upload-v1", dto.ConsentTextVersion);
+        Assert.NotNull(dto.ConsentGrantedAt);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
     private VoiceProfile ProfileWithSamples(Guid userId, params string[] fileUrls)

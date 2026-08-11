@@ -27,6 +27,8 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<UserSetting> UserSettings { get; set; }
 
+    public virtual DbSet<VoiceConsent> VoiceConsents { get; set; }
+
     public virtual DbSet<VoiceProfile> VoiceProfiles { get; set; }
 
     public virtual DbSet<VoiceSample> VoiceSamples { get; set; }
@@ -421,6 +423,58 @@ public partial class AuthDbContext : DbContext
                 .HasForeignKey<UserSetting>(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("user_settings_user_id_fkey");
+        });
+
+        modelBuilder.Entity<VoiceConsent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_consents_pkey");
+
+            entity.ToTable("voice_consents", "voice");
+
+            entity.HasIndex(e => new { e.UserId, e.ConsentType, e.CreatedAt }, "voice_consents_user_type_created_at_idx").IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.VoiceProfileId, e.ConsentStatus }, "voice_consents_voice_profile_id_status_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.AiUseConfirmed).HasColumnName("ai_use_confirmed");
+            entity.Property(e => e.UserId)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("user_id");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.ConsentType)
+                .HasMaxLength(50)
+                .HasColumnName("consent_type");
+            entity.Property(e => e.ConsentStatus)
+                .HasColumnType("consent_status")
+                .HasColumnName("consent_status");
+            entity.Property(e => e.ConsentTextVersion)
+                .HasMaxLength(50)
+                .HasColumnName("consent_text_version");
+            entity.Property(e => e.ContractHash)
+                .HasMaxLength(64)
+                .HasColumnName("contract_hash");
+            entity.Property(e => e.ContractSnapshot).HasColumnName("contract_snapshot");
+            entity.Property(e => e.GrantedAt).HasColumnName("granted_at");
+            entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
+            entity.Property(e => e.IpAddress)
+                .HasMaxLength(45)
+                .HasColumnName("ip_address");
+            entity.Property(e => e.NoImpersonationConfirmed).HasColumnName("no_impersonation_confirmed");
+            entity.Property(e => e.OwnVoiceConfirmed).HasColumnName("own_voice_confirmed");
+            entity.Property(e => e.RetentionAcknowledged).HasColumnName("retention_acknowledged");
+            entity.Property(e => e.SyntheticVoiceAcknowledged).HasColumnName("synthetic_voice_acknowledged");
+            entity.Property(e => e.UserAgent)
+                .HasMaxLength(500)
+                .HasColumnName("user_agent");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.HasOne(d => d.VoiceProfile).WithMany(p => p.VoiceConsents)
+                .HasForeignKey(d => d.VoiceProfileId)
+                .HasConstraintName("voice_consents_voice_profile_id_fkey");
         });
 
         modelBuilder.Entity<VoiceProfile>(entity =>

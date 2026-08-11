@@ -25,7 +25,10 @@ public record VoiceProfileDto(
     // round-trips into TranslationRoomHub.SetVoicePreference — the client needs it back out,
     // which is why these are exposed rather than kept internal.
     string? Provider = null,
-    string? ProviderVoiceId = null
+    string? ProviderVoiceId = null,
+    string? ConsentStatus = null,
+    string? ConsentTextVersion = null,
+    DateTime? ConsentGrantedAt = null
 );
 
 /// <summary>One selectable voice from the provider's public library.</summary>
@@ -49,4 +52,9 @@ public class CreateVoiceProfileRequest
     public string DisplayName { get; set; } = null!;
     public string Language { get; set; } = null!;
     public IFormFile? Sample { get; set; }
+    public bool OwnVoiceConfirmed { get; set; }
+    public bool AiUseConfirmed { get; set; }
+    public bool SyntheticVoiceAcknowledged { get; set; }
+    public bool NoImpersonationConfirmed { get; set; }
+    public bool RetentionAcknowledged { get; set; }
 }
