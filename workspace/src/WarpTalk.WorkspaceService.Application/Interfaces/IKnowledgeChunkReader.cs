@@ -33,8 +33,24 @@ public interface IKnowledgeChunkReader
         CancellationToken ct = default);
 }
 
-/// <summary>Store-agnostic filter. Null members mean "no constraint".</summary>
-public record KnowledgeChunkFilter(string? SourceType, string? FactCategory);
+/// <summary>
+/// Store-agnostic filter. Null/empty members mean "no constraint".
+///
+/// <paramref name="SourceTypes"/> is a list rather than one value because a single thing a
+/// person names is not always one stored type: "glossary" is <c>glossary_term</c> AND
+/// <c>global_glossary_term</c>, which are separate producers writing separate payloads. A
+/// single-valued filter would force the caller to pick one and silently hide the other half.
+///
+/// <paramref name="ExcludedSourceTypes"/> is the inverse: source types the caller never wants
+/// back, whatever else it asked for. It exists because raw meeting transcripts are indexed per
+/// STT segment — one point per sentence spoken — and a workspace's whole indexed corpus is
+/// otherwise dominated by them. They stay in the store (WarpBot answers detail questions from
+/// them); they are simply not what "what does this workspace know" means to a person.
+/// </summary>
+public record KnowledgeChunkFilter(
+    IReadOnlyList<string>? SourceTypes,
+    string? FactCategory,
+    IReadOnlyList<string>? ExcludedSourceTypes = null);
 
 /// <summary>One page of raw chunk records. <paramref name="NextCursor"/> is null on the last page.</summary>
 public record KnowledgeChunkPage(IReadOnlyList<KnowledgeChunkRecord> Items, string? NextCursor);
@@ -56,4 +72,10 @@ public record KnowledgeChunkRecord(
     long? StartMs,
     string? RetentionState,
     string? DeletionState,
-    bool AiRetrieval);
+    bool AiRetrieval,
+    /// <summary>
+    /// Human-readable provenance for source types that are neither a document nor a
+    /// transcript — a meeting's name on its summary, the term on a glossary entry. Trailing
+    /// and defaulted so the positional construction in existing callers still compiles.
+    /// </summary>
+    string? SourceTitle = null);

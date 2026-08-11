@@ -30,6 +30,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     private readonly TranscriptService.TranscriptServiceClient _transcriptClient;
     private readonly ArtifactFinalizationSettings _settings;
     private readonly ITranscriptCacheService _transcriptCacheService;
+    private readonly IKnowledgeFactRequestPublisher _knowledgeFactPublisher;
 
     public ArtifactsFinalizer(
         IUnitOfWork unitOfWork,
@@ -38,7 +39,8 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         ILogger<ArtifactsFinalizer> logger,
         TranscriptService.TranscriptServiceClient transcriptClient,
         IOptions<ArtifactFinalizationSettings> options,
-        ITranscriptCacheService transcriptCacheService)
+        ITranscriptCacheService transcriptCacheService,
+        IKnowledgeFactRequestPublisher knowledgeFactPublisher)
     {
         _unitOfWork = unitOfWork;
         _redisStateRepo = redisStateRepo;
@@ -47,6 +49,7 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         _transcriptClient = transcriptClient;
         _settings = options.Value;
         _transcriptCacheService = transcriptCacheService;
+        _knowledgeFactPublisher = knowledgeFactPublisher;
     }
 
     public async Task ProcessRoomFinalizationAsync(Guid roomId, CancellationToken ct = default)
@@ -147,6 +150,10 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 await artifactRepo.AddAsync(summary, ct);
 
                 await _unitOfWork.SaveChangesAsync(ct);
+
+                // Only now, with the summary durably stored, is it worth indexing. Publishing
+                // before the save would index a summary a later rollback erased.
+                await PublishSummaryToKnowledgeAsync(roomId, summary.Content, ct);
 
                 _logger.LogInformation("Artifacts successfully saved to database. Triggering event transcript_recording_summary_linked");
 
@@ -329,6 +336,43 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 false,
                 content: BuildStructuredSummaryContent(null, null, null))
                 .ToEntity();
+        }
+    }
+
+    /// <summary>
+    /// Hands the finished summary to the workspace knowledge index.
+    ///
+    /// Until this existed, a meeting's summary was written as an artifact and indexed by
+    /// nobody, while every transcript segment was indexed individually — so the workspace
+    /// Knowledge page could show hundreds of one-sentence rows from a meeting and not the one
+    /// paragraph that actually described it.
+    ///
+    /// Wrapped in its own try/catch, and awaited rather than fired and forgotten: an
+    /// unobserved task here would surface as an unhandled exception long after this scope's
+    /// DbContext was disposed.
+    /// </summary>
+    private async Task PublishSummaryToKnowledgeAsync(Guid roomId, string? content, CancellationToken ct)
+    {
+        try
+        {
+            var text = MeetingSummaryKnowledgeText.Build(content);
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            var room = await _unitOfWork.TranslationRoomRepository.GetByIdAsync(roomId, ct);
+            if (room == null || room.WorkspaceId == Guid.Empty) return;
+
+            await _knowledgeFactPublisher.PublishAsync(
+                room.WorkspaceId,
+                "meeting_summary",
+                roomId,
+                room.Title,
+                text,
+                indexSourceText: true,
+                ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not index the summary for room {RoomId}", roomId);
         }
     }
 

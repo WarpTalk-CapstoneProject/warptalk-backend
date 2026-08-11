@@ -25,7 +25,12 @@ public record WorkspaceKnowledgeChunkDto(
     long? StartMs,
     string? RetentionState,
     string? DeletionState,
-    bool AiRetrieval
+    bool AiRetrieval,
+    /// <summary>
+    /// The meeting's name on a summary row, the term on a glossary row. Null for documents,
+    /// which carry <see cref="DocumentName"/> instead.
+    /// </summary>
+    string? SourceTitle
 );
 
 /// <summary>

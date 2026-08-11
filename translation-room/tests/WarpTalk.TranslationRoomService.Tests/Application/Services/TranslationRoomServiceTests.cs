@@ -89,6 +89,74 @@ public class TranslationRoomServiceTests
             redisStateRepository: _mockRedisStateRepository.Object);
     }
 
+    /// <summary>
+    /// Stop Translation must leave the MEETING alone. Pausing the room was the old implementation
+    /// and it took the transcript down with the translation, because the AI workers read a PAUSED
+    /// room as one whose microphone to ignore.
+    /// </summary>
+    [Fact]
+    public async Task StopTranslationAsync_EndsTheSession_AndLeavesTheRoomInProgress()
+    {
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = hostId, Status = "IN_PROGRESS" };
+        var session = new TranslationRoomSession
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Status = TranslationRoomSessionStatus.ACTIVE.ToString()
+        };
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+        _mockSessionRepo.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(session);
+
+        var result = await _service.StopTranslationAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue();
+        room.Status.Should().Be("IN_PROGRESS");
+        session.Status.Should().Be(TranslationRoomSessionStatus.ENDED.ToString());
+        session.EndedAt.Should().NotBeNull();
+
+        _mockAudioRouteEventProcessor.Verify(p => p.ProcessEventAsync(
+            roomId,
+            null,
+            AudioRoutingEventType.translation_stopped.ToString(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+
+        // The event that would have stopped transcription too.
+        _mockAudioRouteEventProcessor.Verify(p => p.ProcessEventAsync(
+            It.IsAny<Guid>(),
+            It.IsAny<Guid?>(),
+            AudioRoutingEventType.room_pause.ToString(),
+            It.IsAny<string>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+
+        // Start and Stop are room-wide, so everyone in the meeting is told — not just the host
+        // who pressed it, and not only whenever each client's own poll next comes round.
+        _mockRedisStateRepository.Verify(r => r.PublishAsync(
+            "warptalk:translation-room:commands",
+            It.Is<string>(payload => payload.Contains("TranslationStopped") && payload.Contains(roomId.ToString()))),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task StopTranslationAsync_RejectsANonHost()
+    {
+        var roomId = Guid.NewGuid();
+        var room = new TranslationRoom { Id = roomId, HostId = Guid.NewGuid(), Status = "IN_PROGRESS" };
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>())).ReturnsAsync(room);
+
+        var result = await _service.StopTranslationAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+        _mockAudioRouteEventProcessor.Verify(p => p.ProcessEventAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid?>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task GetTranslationRoomHistoryAsync_ShouldReject_WhenWorkspaceIdIsMissing()
     {

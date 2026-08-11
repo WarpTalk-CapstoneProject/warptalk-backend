@@ -68,6 +68,20 @@ public class TranslationRoomService : ITranslationRoomService
     private const string RoomStartedCommand = "RoomStarted";
 
     /// <summary>
+    /// The counterpart of <see cref="RoomStartedCommand"/> for the other half of the switch:
+    /// translation stopped, the meeting did not.
+    ///
+    /// Start and Stop are room-wide — one switch over the whole meeting's transcript — so every
+    /// participant has to learn about them, not just the person who pressed the button. Without
+    /// this the only signal was each client's own session poll, so for a few seconds after Stop
+    /// the others still preferred an interpreter dub that had stopped being produced.
+    ///
+    /// Carries no state: "translation is off for this room" is the entire message, and the
+    /// clients re-read the session list rather than trusting a payload.
+    /// </summary>
+    private const string TranslationStoppedCommand = "TranslationStopped";
+
+    /// <summary>
     /// WT-187: the channel NotificationRedisSubscriberService relays to the
     /// "workspace:{workspaceId}" SignalR group, which the web client's
     /// RealtimeNotificationProvider joins via SubscribeWorkspace. Anything published here
@@ -1168,6 +1182,38 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <summary>
+    /// Tells everyone in the room that translation is off now.
+    ///
+    /// Never throws. Translation is already stopped and persisted by the time this runs, and the
+    /// clients poll the session list anyway — an undelivered broadcast costs a few seconds of
+    /// staleness, whereas failing the host's Stop over it would leave translation running.
+    /// </summary>
+    private async Task PublishTranslationStoppedAsync(TranslationRoom room, CancellationToken ct)
+    {
+        if (_redisStateRepository is null)
+            return;
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = TranslationStoppedCommand,
+                RoomId = room.Id.ToString()
+            });
+
+            await _redisStateRepository.PublishAsync(GatewayCommandsChannel, payload);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to publish {Command} for RoomId: {RoomId}. Translation is stopped; participants' clients will notice on their next session poll.",
+                TranslationStoppedCommand,
+                room.Id);
+        }
+    }
+
     private async Task PublishRoomTargetLanguagesAsync(TranslationRoom room, CancellationToken ct)
     {
         if (_redisStateRepository is null)
@@ -1289,6 +1335,48 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             _logger.LogError(ex, "Error resuming translation room. RoomId: {RoomId}", translationRoomId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> StopTranslationAsync(Guid translationRoomId, Guid hostId, CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+            if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+
+            // Only a live room can stop translating. A PAUSED room is not translating either, but
+            // resuming it is a different act with a different endpoint, and quietly accepting the
+            // stop here would leave the caller believing the room was still live.
+            if (translationRoom.Status != "IN_PROGRESS")
+                return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
+
+            // The room's status is deliberately untouched. IN_PROGRESS means the MEETING is open,
+            // which it still is — that is the whole point of stopping translation rather than
+            // pausing the room, and it is what keeps the transcript running.
+            await EndActiveTranslationSessionAsync(translationRoomId, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Emitted after the save so the routes-update this triggers reads the session as ended
+            // — translation_active is computed from that row, and publishing first would announce
+            // translation as still running.
+            await _audioRouteEventProcessor.ProcessEventAsync(
+                translationRoomId,
+                null,
+                AudioRoutingEventType.translation_stopped.ToString(),
+                "{}",
+                ct);
+
+            await PublishTranslationStoppedAsync(translationRoom, ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error stopping translation. RoomId: {RoomId}", translationRoomId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
         }
     }

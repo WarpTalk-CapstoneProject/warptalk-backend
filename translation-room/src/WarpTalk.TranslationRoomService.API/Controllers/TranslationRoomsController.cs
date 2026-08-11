@@ -171,6 +171,28 @@ public class TranslationRoomsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Stop translating; keep the meeting (and therefore the transcript) running. The counterpart
+    /// to <see cref="ResumeTranslationRoom"/>, which is Start Translation.
+    /// </summary>
+    [HttpPost("{id}/translation/stop")]
+    public async Task<IActionResult> StopTranslation(Guid id, CancellationToken ct)
+    {
+        var hostId = User.GetUserId();
+        if (hostId == null) return Unauthorized();
+
+        var result = await _translationRoomService.StopTranslationAsync(id, hostId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return NoContent();
+    }
+
     [HttpPost("{id}/resume")]
     public async Task<IActionResult> ResumeTranslationRoom(Guid id, CancellationToken ct)
     {

@@ -53,6 +53,25 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
             }
         }
 
+        // 3b. Stopping translation returns the mesh to READY, from wherever it had got to.
+        //
+        // Handled here rather than as a row per streaming state because "stop" has to mean stop
+        // from a degraded route too — one route sitting in TRANSLATION_DELAYED must not survive
+        // the stop and keep broadcasting. READY, not PAUSED: PAUSED is the AI workers' signal to
+        // ignore the room's microphone altogether, which would take the transcript down with the
+        // translation. READY is exactly where a room that has never translated sits, and
+        // session_starts brings it back — so Start after Stop is the same transition as the first
+        // Start, not a special case.
+        if (eventType == AudioRoutingEventType.translation_stopped)
+        {
+            if (IsStreamingState(currentState)
+                || currentState == AudioRouteStatus.PAUSED
+                || currentState == AudioRouteStatus.READY)
+            {
+                return Result.Success(AudioRouteStatus.READY);
+            }
+        }
+
         // 4. State Machine Transition Table
         var transitionResult = currentState switch
         {

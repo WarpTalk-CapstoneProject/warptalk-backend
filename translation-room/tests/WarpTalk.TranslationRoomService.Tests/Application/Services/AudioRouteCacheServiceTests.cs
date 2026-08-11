@@ -19,6 +19,7 @@ public class AudioRouteCacheServiceTests
 {
     private readonly Mock<ITranslationRoomAudioRouteRepository> _mockRouteRepository;
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepository;
+    private readonly Mock<ITranslationRoomSessionRepository> _mockSessionRepository;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepo;
     private readonly AudioRouteCacheService _service;
 
@@ -26,11 +27,67 @@ public class AudioRouteCacheServiceTests
     {
         _mockRouteRepository = new Mock<ITranslationRoomAudioRouteRepository>();
         _mockRoomRepository = new Mock<ITranslationRoomRepository>();
+        _mockSessionRepository = new Mock<ITranslationRoomSessionRepository>();
         _mockRedisStateRepo = new Mock<IRedisStateRepository>();
         _service = new AudioRouteCacheService(
             _mockRouteRepository.Object,
             _mockRoomRepository.Object,
+            _mockSessionRepository.Object,
             _mockRedisStateRepo.Object);
+    }
+
+    /// <summary>
+    /// The AI workers read this flag to decide whether to translate, and it must not be inferable
+    /// from the room's status: a room is IN_PROGRESS from the moment it is opened, which is
+    /// exactly the state in which nobody has started translation yet.
+    /// </summary>
+    [Fact]
+    public async Task PublishRoutesUpdateAsync_ReportsTranslationInactive_ForALiveRoomWithNoSession()
+    {
+        var roomId = Guid.NewGuid();
+        _mockRouteRepository.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomAudioRoute>());
+        _mockRoomRepository.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoom { Id = roomId, Status = "IN_PROGRESS" });
+        _mockSessionRepository.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TranslationRoomSession?)null);
+
+        string? published = null;
+        _mockRedisStateRepo
+            .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .Callback<string, string>((_, payload) => published = payload)
+            .ReturnsAsync(1L);
+
+        await _service.PublishRoutesUpdateAsync(roomId, CancellationToken.None);
+
+        using var document = JsonDocument.Parse(published!);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("room_status").GetString().Should().Be("IN_PROGRESS");
+        data.GetProperty("translation_active").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PublishRoutesUpdateAsync_ReportsTranslationActive_WhileASessionIsOpen()
+    {
+        var roomId = Guid.NewGuid();
+        _mockRouteRepository.Setup(r => r.GetRoutesByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<TranslationRoomAudioRoute>());
+        _mockRoomRepository.Setup(r => r.GetByIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoom { Id = roomId, Status = "IN_PROGRESS" });
+        _mockSessionRepository.Setup(r => r.GetActiveSessionByRoomIdAsync(roomId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranslationRoomSession { Id = Guid.NewGuid(), TranslationRoomId = roomId });
+
+        string? published = null;
+        _mockRedisStateRepo
+            .Setup(r => r.PublishAsync(It.IsAny<string>(), It.IsAny<string>()))
+            .Callback<string, string>((_, payload) => published = payload)
+            .ReturnsAsync(1L);
+
+        await _service.PublishRoutesUpdateAsync(roomId, CancellationToken.None);
+
+        using var document = JsonDocument.Parse(published!);
+        document.RootElement.GetProperty("data").GetProperty("translation_active").GetBoolean()
+            .Should().BeTrue();
     }
 
     [Fact]

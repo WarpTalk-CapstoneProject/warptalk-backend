@@ -31,6 +31,7 @@ public class AssistantSkillsController : ControllerBase
         new("get_meeting_summary", "Meeting summary", "Get the AI summary and action items for a past meeting."),
         new("get_room_detail", "Room details", "Get full details for a specific translation room — status, languages, host, schedule."),
         new("get_transcript", "Meeting transcript", "Get the transcribed segments for a specific meeting."),
+        new("search_documents", "Find documents", "Find workspace documents by name, or list what documents exist."),
         new("get_document", "Document details", "Get metadata and a text excerpt for a specific workspace document."),
     };
 
