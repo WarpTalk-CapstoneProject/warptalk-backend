@@ -447,7 +447,7 @@ public partial class AuthDbContext : DbContext
                 .HasMaxLength(50)
                 .HasColumnName("consent_type");
             entity.Property(e => e.ConsentStatus)
-                .HasColumnType("consent_status")
+                .HasMaxLength(20)
                 .HasColumnName("consent_status");
             entity.Property(e => e.ConsentTextVersion)
                 .HasMaxLength(50)

@@ -10,7 +10,6 @@ using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Entities;
-using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
 using Xunit;
@@ -308,7 +307,7 @@ public class VoiceProfileServiceTests
         Assert.Equal(userId, addedConsent!.UserId);
         Assert.Equal(addedProfile!.Id, addedConsent.VoiceProfileId);
         Assert.Equal("voice_profile_upload", addedConsent.ConsentType);
-        Assert.Equal(ConsentStatus.GRANTED, addedConsent.ConsentStatus);
+        Assert.Equal("GRANTED", addedConsent.ConsentStatus);
         Assert.Equal("voice-profile-upload-v1", addedConsent.ConsentTextVersion);
         Assert.NotNull(addedConsent.GrantedAt);
         Assert.Equal("203.0.113.10", addedConsent.IpAddress);

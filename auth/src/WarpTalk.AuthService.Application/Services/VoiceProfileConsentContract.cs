@@ -8,7 +8,7 @@ namespace WarpTalk.AuthService.Application.Services;
 internal static class VoiceProfileConsentContract
 {
     public const string UploadConsentType = "voice_profile_upload";
-    public const ConsentStatus GrantedStatus = ConsentStatus.GRANTED;
+    public const string GrantedStatus = nameof(ConsentStatus.GRANTED);
     public const string Version = "voice-profile-upload-v1";
 
     public const string Snapshot =
@@ -22,6 +22,11 @@ internal static class VoiceProfileConsentContract
     public static string SnapshotHash()
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Snapshot))).ToLowerInvariant();
 
-    public static string PublicStatus(ConsentStatus status)
-        => status.ToString().ToLowerInvariant();
+    public static bool IsGranted(string? status)
+        => string.Equals(status, GrantedStatus, StringComparison.OrdinalIgnoreCase);
+
+    public static string PublicStatus(string status)
+        => Enum.TryParse<ConsentStatus>(status, true, out var parsed)
+            ? parsed.ToString().ToLowerInvariant()
+            : status.ToLowerInvariant();
 }

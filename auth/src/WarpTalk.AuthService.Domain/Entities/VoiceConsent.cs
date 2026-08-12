@@ -1,5 +1,4 @@
 using System;
-using WarpTalk.AuthService.Domain.Enums;
 
 namespace WarpTalk.AuthService.Domain.Entities;
 
@@ -16,7 +15,7 @@ public partial class VoiceConsent
 
     public string ConsentType { get; set; } = null!;
 
-    public ConsentStatus ConsentStatus { get; set; }
+    public string ConsentStatus { get; set; } = null!;
 
     public string ConsentTextVersion { get; set; } = null!;
 
