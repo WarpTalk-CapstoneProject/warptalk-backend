@@ -44,7 +44,13 @@ public static class MeetingChatMapper
             WorkspaceId = workspaceId,
             SenderUserId = userId,
             ParticipantId = participant?.Id,
-            SenderDisplayName = participant?.ProviderIdentity ?? "Unknown User",
+            // WT-356: DisplayName, not ProviderIdentity. ProviderIdentity is the LiveKit identity
+            // and MeetingRoomService sets it to the user id, so this column — named for a display
+            // name — carried a bare uuid onto every message. It surfaced whenever the frontend's
+            // participant lookup missed, which is precisely the case the fallback exists for:
+            // somebody who has left the room keeps their name on what they wrote. Null only for
+            // participants who joined before display_name existed.
+            SenderDisplayName = participant?.DisplayName ?? "Unknown User",
             SenderType = "user",
             MessageType = request.MessageType,
             OriginalLanguage = request.OriginalLanguage,
@@ -74,7 +80,13 @@ public static class MeetingChatMapper
             WorkspaceId = workspaceId,
             SenderUserId = userId,
             ParticipantId = participant?.Id,
-            SenderDisplayName = participant?.ProviderIdentity ?? "Unknown User",
+            // WT-356: DisplayName, not ProviderIdentity. ProviderIdentity is the LiveKit identity
+            // and MeetingRoomService sets it to the user id, so this column — named for a display
+            // name — carried a bare uuid onto every message. It surfaced whenever the frontend's
+            // participant lookup missed, which is precisely the case the fallback exists for:
+            // somebody who has left the room keeps their name on what they wrote. Null only for
+            // participants who joined before display_name existed.
+            SenderDisplayName = participant?.DisplayName ?? "Unknown User",
             SenderType = "user",
             MessageType = "file",
             OriginalLanguage = "en", // not applicable to file messages; original_language is NOT NULL

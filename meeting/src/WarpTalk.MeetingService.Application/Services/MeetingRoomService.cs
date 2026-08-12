@@ -322,6 +322,22 @@ public class MeetingRoomService : IMeetingRoomService
                 }
             }
 
+            // WT-356: keep the name we just resolved. It was being handed to LiveKit and then
+            // dropped, so the only thing this service retained about a participant was
+            // ProviderIdentity — a user id — which MeetingChatMapper then wrote into a column
+            // called sender_display_name. The tile above someone's video and the name beside
+            // their chat message came from two different places, and only one of them was a name.
+            //
+            // Stored even when it is the "Participant" fallback: whatever LiveKit is told is what
+            // chat should say, and a disagreement between the two is the defect being fixed.
+            if (!string.IsNullOrWhiteSpace(participantName) && participant.DisplayName != participantName)
+            {
+                participant.DisplayName = participantName;
+                participant.UpdatedAt = DateTime.UtcNow;
+                _unitOfWork.MeetingParticipantRepository.Update(participant);
+                await _unitOfWork.SaveChangesAsync();
+            }
+
             var tokenResult = _tokenService.GenerateToken(
                 roomName: meetingRoom.ProviderRoomName,
                 participantIdentity: providerIdentity,

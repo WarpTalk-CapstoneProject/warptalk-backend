@@ -351,6 +351,71 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
     }
 
     /// <summary>
+    /// WT-354. A dropped socket is not a departure, and until now it was recorded as one:
+    /// ParticipantOfflineConsumerWorker called <see cref="LeaveRoomAsync"/>, which writes the
+    /// TERMINAL status LEFT. The People panel hides LEFT rows (people-panel.tsx), so a
+    /// backgrounded tab, a laptop going to sleep, a network blip or the one-device kick in
+    /// TranslationRoomHub.JoinTranslationRoom deleted a participant from everyone's roster while
+    /// they were still in the LiveKit call, speaking — and they never came back to it.
+    /// Production carried 182 LEFT rows against 29 DISCONNECTED, which is the shape of a
+    /// distinction the write path did not make.
+    ///
+    /// DISCONNECTED already exists for exactly this and already means "recoverable, distinct from
+    /// leaving" on both sides of the wire (see room-occupancy.ts). It releases the seat like LEFT
+    /// does, so capacity accounting is unchanged; it simply stops claiming the person went away.
+    /// </summary>
+    public async Task<Result> MarkParticipantDisconnectedAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default)
+    {
+        try
+        {
+            var participant = await _participantRepository.GetByRoomAndUserAsync(translationRoomId, requestedByUserId, ct);
+            if (participant == null)
+                return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
+
+            // Only a participant who was IN the room can drop out of it. The guard matters most
+            // for the ordinary leave: pressing Leave writes LEFT and then closes the socket, so
+            // this runs immediately afterwards on every clean departure. Without the guard it
+            // would rewrite that LEFT to DISCONNECTED and resurrect the person on the roster —
+            // turning the fix into a worse version of the bug.
+            //
+            // WAITING keeps its existing behaviour on purpose. A lobby row holds no seat and the
+            // host is looking at it as a queue; a closed tab should clear it, and marking it
+            // DISCONNECTED would leave a phantom request nobody can act on.
+            if (participant.Status == TranslationRoomParticipantStatuses.Connected)
+            {
+                participant.Status = TranslationRoomParticipantStatuses.Disconnected;
+                participant.UpdatedAt = DateTime.UtcNow;
+                // LeftAt is deliberately untouched: it records a departure, and this is not one.
+                // A participant who reconnects goes back to CONNECTED through
+                // TranslationRoomService.JoinTranslationRoomAsync, which re-acquires the seat.
+            }
+            else if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
+            {
+                var leftAt = DateTime.UtcNow;
+                participant.Status = TranslationRoomParticipantStatuses.Left;
+                participant.LeftAt = leftAt;
+                participant.UpdatedAt = leftAt;
+            }
+            else
+            {
+                // Terminal (LEFT / KICKED / REJECTED) or never arrived (INVITED). Nothing a lost
+                // socket can say changes any of those.
+                return Result.Success();
+            }
+
+            _participantRepository.Update(participant);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while marking participant disconnected. RoomId: {RoomId}, UserId: {UserId}", translationRoomId, requestedByUserId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedLeaveRoom, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
     /// WT-313. The one answer to "does this caller hold host-level authority over this room?":
     /// the room's own host, or an Owner/Admin of the workspace the room belongs to.
     /// </summary>

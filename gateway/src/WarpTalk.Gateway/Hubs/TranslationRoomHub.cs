@@ -31,6 +31,24 @@ public class TranslationRoomHub : Hub
     // Track user active connection in a room: (RoomId_UserId) -> ConnectionId
     private static readonly ConcurrentDictionary<string, string> _roomUserToConnection = new();
 
+    /// <summary>
+    /// WT-354: the live roster, per room, in Redis rather than in this process.
+    ///
+    /// The hub only ever announced arrivals — `ParticipantJoined` to OthersInGroup — and never
+    /// told a joiner who was already there. A roster built purely from events therefore contains
+    /// only the people who arrive AFTER you, which is why a host joining a room in progress saw
+    /// nobody but themselves.
+    ///
+    /// Redis and not <see cref="_connectionToRoom"/> because those dictionaries are static state
+    /// inside one gateway process: with more than one replica, an in-memory roster would answer
+    /// with whichever fraction of the room happened to be connected to the same instance. The
+    /// other per-room hashes beside it (languages, speak_languages, voice_preferences) are kept
+    /// the same way and cleaned up in the same three places.
+    /// </summary>
+    private static string ParticipantsKey(string roomId) => $"translationRoom:{roomId}:participants";
+
+    private static readonly JsonSerializerOptions RosterJsonOptions = new(JsonSerializerDefaults.Web);
+
     public TranslationRoomHub(
         IConnectionManager connectionManager,
         IPresenceNotifier presence,
@@ -125,6 +143,10 @@ public class TranslationRoomHub : Hub
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:speak_languages", userId);
             await db.HashDeleteAsync($"translationRoom:{roomIdStr}:voice_preferences", userId);
+            // WT-354: the roster is live presence, so a dropped socket leaves it. Membership is
+            // the database's answer, and MarkParticipantDisconnectedAsync keeps that row visible
+            // as DISCONNECTED — the two are deliberately different questions.
+            await db.HashDeleteAsync(ParticipantsKey(roomIdStr), userId);
 
             var groupName = TranslationRoomGroupName(Guid.Parse(roomIdStr));
             await Clients.OthersInGroup(groupName).SendAsync("ParticipantLeft", userId);
@@ -194,6 +216,47 @@ public class TranslationRoomHub : Hub
 
         // Set target language for AI Translation Worker
         var db = _redis.GetDatabase();
+
+        // WT-354: hand the joiner the room as it already is, before recording their own arrival.
+        //
+        // "ParticipantJoined" tells everyone ELSE about this arrival, which is the whole of what
+        // the hub used to say. Nobody was ever told what they had walked into, so a late joiner's
+        // roster started empty and stayed that way for everyone already present — the host in the
+        // WT-354 report saw a People panel containing one person, themselves, while the meeting
+        // went on around them.
+        //
+        // Sent even when empty: "the room is empty" is an answer, and a client that receives it
+        // can stop showing a loading state. Own entry is filtered rather than read-before-write,
+        // so a stale entry left by a previous connection of the same user cannot come back as a
+        // ghost of the person reading it.
+        var storedRoster = await db.HashGetAllAsync(ParticipantsKey(roomIdStr));
+        var roster = new List<ParticipantInfoDto>(storedRoster.Length);
+        foreach (var entry in storedRoster)
+        {
+            if (entry.Name == userId) continue;
+            try
+            {
+                // ToString() rather than the implicit conversion: RedisValue converts to both
+                // string and ReadOnlySpan<byte>, so the call is ambiguous without it.
+                var known = JsonSerializer.Deserialize<ParticipantInfoDto>(entry.Value.ToString(), RosterJsonOptions);
+                if (known != null) roster.Add(known);
+            }
+            catch (JsonException ex)
+            {
+                // One unreadable entry must not cost the joiner the whole roster — that would
+                // reinstate the bug for every remaining participant.
+                _logger.LogWarning(ex,
+                    "TranslationRoomHub: dropping unreadable roster entry for {UserId} in room {TranslationRoomId}",
+                    entry.Name, translationRoomId);
+            }
+        }
+
+        await Clients.Caller.SendAsync("ParticipantRoster", roster);
+
+        await db.HashSetAsync(
+            ParticipantsKey(roomIdStr),
+            userId,
+            JsonSerializer.Serialize(participantInfo, RosterJsonOptions));
         await db.HashSetAsync(
             $"translationRoom:{translationRoomId}:languages",
             userId,
@@ -252,6 +315,7 @@ public class TranslationRoomHub : Hub
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:languages", userId);
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:speak_languages", userId);
         await db.HashDeleteAsync($"translationRoom:{translationRoomId}:voice_preferences", userId);
+        await db.HashDeleteAsync(ParticipantsKey(roomIdStr), userId);
 
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} left translationRoom {TranslationRoomId}",
@@ -268,6 +332,36 @@ public class TranslationRoomHub : Hub
 
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantMuteChanged", userId, isMuted);
+
+        // WT-354: keep the stored roster honest about it. Mute used to be broadcast and never
+        // recorded, which was harmless while the only way to learn the roster was to watch every
+        // event from the beginning. Now that a joiner is handed a snapshot, an unrecorded mute
+        // would show a muted participant as live on the newcomer's screen — and only theirs.
+        var db = _redis.GetDatabase();
+        var roomIdStr = translationRoomId.ToString();
+        var stored = await db.HashGetAsync(ParticipantsKey(roomIdStr), userId);
+        if (stored.HasValue)
+        {
+            try
+            {
+                var known = JsonSerializer.Deserialize<ParticipantInfoDto>(stored.ToString(), RosterJsonOptions);
+                if (known != null)
+                {
+                    await db.HashSetAsync(
+                        ParticipantsKey(roomIdStr),
+                        userId,
+                        JsonSerializer.Serialize(known with { IsMuted = isMuted }, RosterJsonOptions));
+                }
+            }
+            catch (JsonException ex)
+            {
+                // The broadcast above already reached everyone in the room; failing the call over
+                // a snapshot detail would turn a working mute into an error toast.
+                _logger.LogWarning(ex,
+                    "TranslationRoomHub: could not record mute state for {UserId} in room {TranslationRoomId}",
+                    userId, translationRoomId);
+            }
+        }
     }
 
     /// <summary>
