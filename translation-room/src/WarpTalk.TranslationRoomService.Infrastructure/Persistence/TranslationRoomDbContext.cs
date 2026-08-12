@@ -129,7 +129,15 @@ public partial class TranslationRoomDbContext : DbContext
 
             entity.HasIndex(e => new { e.Status, e.ScheduledAt }, "translation_rooms_status_scheduled_at_idx");
 
-            entity.HasIndex(e => e.TranslationRoomCode, "translation_rooms_translation_room_code_key").IsUnique();
+            // WT-327: unique for ONE-OFF rooms only. Every occurrence of a recurring booking
+            // shares one code on purpose — one meeting, one link — so a table-wide unique index
+            // would reject the second occurrence. The filter keeps the collision backstop exactly
+            // where collisions can happen: RoomCodeGenerator mints at random for one-off rooms.
+            // Occurrences are bounded instead by translation_rooms_series_id_occurrence_date_key.
+            // Mirrored by migration 20260812090000_share_one_room_code_per_series.sql.
+            entity.HasIndex(e => e.TranslationRoomCode, "translation_rooms_one_off_code_key")
+                .IsUnique()
+                .HasFilter("series_id IS NULL");
 
             entity.HasIndex(e => new { e.WorkspaceId, e.CreatedAt }, "translation_rooms_workspace_id_created_at_idx");
 

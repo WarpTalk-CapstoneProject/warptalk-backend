@@ -352,14 +352,31 @@ public class TranslationRoomService : ITranslationRoomService
             // 1. Determine initial status
             var status = request.ScheduledAt.HasValue ? "SCHEDULED" : "WAITING";
 
-            // 2. Generate unique 12-char alphanumeric TranslationRoomCode
+            // 2. The room code.
+            //
+            // Every occurrence of a recurring booking SHARES one code. A daily standup is one
+            // meeting to the person who booked it, and it has to be one thing to share: thirty
+            // codes for one standup meant the invite you sent on Monday opened Monday's room
+            // forever. GetByCodeAsync resolves a shared code to the occurrence that is live now,
+            // or the next one due — so the same link lands on today's meeting every day.
+            //
+            // The code is carried on the occurrence context rather than stored on the series row,
+            // so this needed no migration: the materialiser reads it off an occurrence that
+            // already exists and hands it to the next one.
             string roomCode;
-            bool exists;
-            do
+            if (occurrence?.SharedRoomCode is { Length: > 0 } sharedCode)
             {
-                roomCode = RoomCodeGenerator.GenerateCode();
-                exists = await _translationRoomRepository.ExistsByCodeAsync(roomCode, TranslationRoomConstants.TerminalStatuses, ct);
-            } while (exists);
+                roomCode = sharedCode;
+            }
+            else
+            {
+                bool exists;
+                do
+                {
+                    roomCode = RoomCodeGenerator.GenerateCode();
+                    exists = await _translationRoomRepository.ExistsByCodeAsync(roomCode, TranslationRoomConstants.TerminalStatuses, ct);
+                } while (exists);
+            }
 
             // 3. Create entity
             var room = request.ToEntity(hostId, roomCode, status, sourceLang, targetLangs);

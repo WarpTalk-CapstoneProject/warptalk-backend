@@ -142,4 +142,13 @@ public interface ITranslationRoomService
 /// but only one email goes out, because thirty identical "you're invited" emails for one daily
 /// booking is spam, not a feature.
 /// </param>
-public record SeriesOccurrenceContext(Guid SeriesId, DateOnly LocalDate, bool SendInvitationEmails);
+/// <param name="SharedRoomCode">
+/// The code every occurrence of this series answers to, or null for the first one — which mints
+/// it. One booking is one thing to share; a code per day meant Monday's invite opened Monday's
+/// room for the rest of the month.
+/// </param>
+public record SeriesOccurrenceContext(
+    Guid SeriesId,
+    DateOnly LocalDate,
+    bool SendInvitationEmails,
+    string? SharedRoomCode = null);
