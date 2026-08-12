@@ -96,7 +96,10 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
             .Include(r => r.TranslationRoomParticipants)
             .Include(r => r.TranslationRoomArtifacts)
             .Where(r => (r.Status == "ENDED" || r.Status == "CANCELLED" || r.Status == "EXPIRED") && r.DeletedAt == null &&
-                        (r.HostId == userId || r.TranslationRoomParticipants.Any(p => p.UserId == userId)))
+                        (r.HostId == userId
+                            // WT-359: a transferred-to host must still find the room in their list.
+                            || r.ActiveHostId == userId
+                            || r.TranslationRoomParticipants.Any(p => p.UserId == userId)))
             .OrderByDescending(r => r.CreatedAt)
             .Skip(offset)
             .Take(limit);

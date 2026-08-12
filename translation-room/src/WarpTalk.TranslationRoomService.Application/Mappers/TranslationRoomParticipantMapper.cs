@@ -67,13 +67,24 @@ public static class TranslationRoomParticipantMapper
                 : TranslationRoomParticipantStatuses.Connected;
         }
 
-        // BR-004: Host check overrides approval
+        // BR-004: the host never waits in their own lobby, and never loses the room by
+        // reconnecting. `isHost` is now the EFFECTIVE host (TranslationRoom.IsHostedBy), so this
+        // follows a Transfer Host instead of forever naming whoever booked the room.
         if (isHost)
         {
             participant.Role = nameof(TranslationRoomParticipantRole.HOST);
             participant.Status = TranslationRoomParticipantStatuses.Connected;
         }
-        
+        else if (participant.Role == nameof(TranslationRoomParticipantRole.HOST))
+        {
+            // WT-359: the other half of BR-004, which never existed. Rejoining is the moment a
+            // stale HOST row is visible and cheap to correct — the transfer itself demotes the
+            // outgoing host, so reaching here means their row predates that fix or was written by
+            // a path that bypassed it. Without this the old host walks back in still labelled HOST.
+            participant.Role = nameof(TranslationRoomParticipantRole.PARTICIPANT);
+        }
+
+
         participant.UpdatedAt = DateTime.UtcNow;
     }
 

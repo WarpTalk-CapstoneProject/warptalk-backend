@@ -58,15 +58,22 @@ public static class RoomReadAccess
     {
         var email = NormalizeEmail(userEmail);
 
+        // WT-359: BOTH host columns, deliberately — this is a read predicate, so it only ever
+        // widens. The booker keeps access to a room they handed over (they were there, it is
+        // theirs, and the transcript is about them); the transferee gets it in their own right
+        // rather than incidentally via their participant row. IsHostedBy is not used here because
+        // this is an expression tree EF has to translate to SQL, and a method call would not.
         if (email is null)
         {
             return room =>
                 room.HostId == userId
+                || room.ActiveHostId == userId
                 || room.TranslationRoomParticipants.Any(p => p.UserId == userId);
         }
 
         return room =>
             room.HostId == userId
+            || room.ActiveHostId == userId
             || room.TranslationRoomParticipants.Any(p => p.UserId == userId)
             || room.TranslationRoomInvitations.Any(i =>
                 i.Email == email

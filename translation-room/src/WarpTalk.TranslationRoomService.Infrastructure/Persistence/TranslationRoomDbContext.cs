@@ -160,6 +160,15 @@ public partial class TranslationRoomDbContext : DbContext
             entity.Property(e => e.HostId)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("host_id");
+            // WT-359: the handover, kept off host_id so a Transfer Host during one meeting does
+            // not also move the booking, the series and the usage attribution.
+            entity.Property(e => e.ActiveHostId)
+                .HasComment("WT-359: who is running this meeting now, after any Transfer Host. NULL means the booker (host_id) still is. Effective host = COALESCE(active_host_id, host_id).")
+                .HasColumnName("active_host_id");
+            entity.HasIndex(e => e.ActiveHostId, "translation_rooms_active_host_id_idx")
+                .HasFilter("active_host_id IS NOT NULL");
+            // Computed from the two columns above; they are the stored state, this is the answer.
+            entity.Ignore(e => e.EffectiveHostId);
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
