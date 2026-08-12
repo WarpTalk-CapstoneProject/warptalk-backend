@@ -700,7 +700,11 @@ public class TranslationRoomService : ITranslationRoomService
                 requiresApproval = settings?.RequiresApproval ?? true;
             }
 
-            var isHost = translationRoom.HostId == userId;
+            // WT-359: the EFFECTIVE host, not the booker. Reading HostId here was the whole bug:
+            // after a Transfer Host, the original host rejoining still matched, and BR-004 in
+            // TranslationRoomParticipantMapper.UpdateFrom then re-stamped their role back to HOST —
+            // silently undoing the transfer every time they left and came back.
+            var isHost = translationRoom.IsHostedBy(userId);
 
             // WT-262: enforce the room's own capacity. MaxParticipants is stamped at creation from
             // TranslationRoomTypePolicy but was never read by anything, so a VIRTUAL_APPOINTMENT
@@ -887,7 +891,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status != "SCHEDULED")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToWaiting, ErrorCodes.InvalidState);
@@ -1050,7 +1054,7 @@ public class TranslationRoomService : ITranslationRoomService
         string? callerEmail,
         CancellationToken ct)
     {
-        if (room.HostId == callerId)
+        if (room.IsHostedBy(callerId))
             return Result.Success();
 
         // ReadSettings, not a raw Deserialize: it is case-insensitive and falls back to defaults on
@@ -1311,7 +1315,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status != "IN_PROGRESS")
                 return Result.Failure(TranslationRoomConstants.ErrorInvalidTransitionToPaused, ErrorCodes.InvalidState);
@@ -1346,7 +1350,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
             // because opening the room no longer starts translation with it — an open, never-yet-
@@ -1418,7 +1422,7 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (translationRoom.HostId != hostId) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             // Only a live room can stop translating. A PAUSED room is not translating either, but
             // resuming it is a different act with a different endpoint, and quietly accepting the
@@ -1462,7 +1466,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure<TranslationRoomDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
+            if (!translationRoom.IsHostedBy(hostId))
                 return Result.Failure<TranslationRoomDto>("Only the host can cancel the room.", ErrorCodes.Forbidden);
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -1707,7 +1711,7 @@ public class TranslationRoomService : ITranslationRoomService
             if (translationRoom == null)
                 return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
 
-            if (translationRoom.HostId != hostId)
+            if (!translationRoom.IsHostedBy(hostId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
 
             if (translationRoom.Status != "SCHEDULED" && translationRoom.Status != "WAITING")
@@ -2352,7 +2356,9 @@ public class TranslationRoomService : ITranslationRoomService
             room.CreatedAt,
             settings,
             seatsTaken,
-            room.HostId == userId,
+            // WT-353: the effective host. The list said "you are the host" to whoever booked the
+            // room, so after a transfer the old host still saw host controls and the new one did not.
+            room.IsHostedBy(userId),
             room.SeriesId,
             series
         );

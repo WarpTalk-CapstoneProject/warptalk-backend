@@ -163,7 +163,7 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             // the toggle and gets this 403: the same UI/backend mismatch WT-313 is about, one
             // endpoint over. Resolve it by a product decision (widen the endpoint, or hide the
             // control for non-hosts) in its own ticket — do not widen it silently here.
-            if (room.HostId != requestedByUserId)
+            if (!room.IsHostedBy(requestedByUserId))
                 return Result.Failure(TranslationRoomConstants.ErrorOnlyHostCanManageAudio, ErrorCodes.Forbidden);
 
             var participant = await _participantRepository.GetByIdAsync(participantId, ct);
@@ -297,14 +297,17 @@ public class TranslationRoomParticipantService : ITranslationRoomParticipantServ
             // service's LiveKit kick (useKickMeetingParticipant), not this endpoint. This endpoint
             // has no caller in warptalk-web at all, so widening it would be widening authorization
             // on a path nobody is blocked on.
-            if (room.HostId != requestedByUserId)
+            if (!room.IsHostedBy(requestedByUserId))
                 return Result.Failure(TranslationRoomConstants.ErrorOnlyHostCanKick, ErrorCodes.Forbidden);
 
             var participant = await _participantRepository.GetByIdAsync(participantId, ct);
             if (participant == null || participant.TranslationRoomId != translationRoomId)
                 return Result.Failure(TranslationRoomConstants.ErrorParticipantNotFound, ErrorCodes.NotFound);
 
-            if (participant.UserId == room.HostId)
+            // WT-359: protect whoever holds the room NOW. Against room.HostId this shielded a
+            // transferred-away host who is an ordinary participant again, while leaving the actual
+            // host kickable.
+            if (participant.UserId is { } participantUserId && room.IsHostedBy(participantUserId))
                 return Result.Failure(TranslationRoomConstants.ErrorCannotKickHost, ErrorCodes.ValidationError);
 
             participant.Status = TranslationRoomParticipantStatuses.Kicked;

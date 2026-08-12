@@ -32,6 +32,13 @@ public class TranslationRoomDirectoryServiceRoomReadTests
 {
     private readonly Mock<ITranslationRoomRepository> _roomRepository = new();
     private readonly Mock<ITranslationRoomParticipantRepository> _participantRepository = new();
+
+    /// <summary>
+    /// WT-359 gave this service its first write (TransferHostAsync), so it now takes a unit of
+    /// work. These are read tests and never reach it — it is here to satisfy the constructor.
+    /// </summary>
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
+
     private readonly TranslationRoomDirectoryService _sut;
 
     private static readonly Guid RoomId = Guid.NewGuid();
@@ -45,7 +52,8 @@ public class TranslationRoomDirectoryServiceRoomReadTests
 
         _sut = new TranslationRoomDirectoryService(
             _roomRepository.Object,
-            _participantRepository.Object);
+            _participantRepository.Object,
+            _unitOfWork.Object);
     }
 
     /// <summary>

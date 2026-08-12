@@ -8,6 +8,7 @@ using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.Application.Services;
@@ -17,12 +18,17 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     private readonly ITranslationRoomRepository _translationRoomRepository;
     private readonly ITranslationRoomParticipantRepository _participantRepository;
 
+    /// <summary>WT-359: this interface acquired its first write, and a write needs a commit.</summary>
+    private readonly IUnitOfWork _unitOfWork;
+
     public TranslationRoomDirectoryService(
         ITranslationRoomRepository translationRoomRepository,
-        ITranslationRoomParticipantRepository participantRepository)
+        ITranslationRoomParticipantRepository participantRepository,
+        IUnitOfWork unitOfWork)
     {
         _translationRoomRepository = translationRoomRepository;
         _participantRepository = participantRepository;
+        _unitOfWork = unitOfWork;
     }
 
     /// <inheritdoc />
@@ -68,5 +74,72 @@ public class TranslationRoomDirectoryService : ITranslationRoomDirectoryService
     {
         var count = await _translationRoomRepository.CountActiveByWorkspaceAsync(workspaceId, ct);
         return Result.Success(count);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<Guid>> TransferHostAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid newHostUserId,
+        CancellationToken ct = default)
+    {
+        var room = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (room == null)
+            return Result.Failure<Guid>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+        // The effective host, and ONLY them. The booker is refused once they have handed the room
+        // over — which is the behaviour WT-359 asks for in as many words: the outgoing host gets it
+        // back if and only if the incoming host transfers it back. Allowing the booker here would
+        // reinstate the bug through the front door.
+        if (!room.IsHostedBy(requestedByUserId))
+            return Result.Failure<Guid>(
+                "Only the current host can transfer this room.", ErrorCodes.Forbidden);
+
+        var previousHostId = room.EffectiveHostId;
+
+        // Idempotent. MeetingService retries, and the Gateway's host-offline election can race a
+        // deliberate transfer to the same person; neither should be an error, and neither should
+        // record a handover from someone to themselves.
+        if (previousHostId == newHostUserId)
+            return Result.Success(previousHostId);
+
+        var newHostParticipant = await _participantRepository.GetByRoomAndUserAsync(
+            translationRoomId, newHostUserId, ct);
+
+        // The roster is this service's own record of who is in the room, and host authority that
+        // points at somebody with no participant row would be unreachable by every host-gated
+        // operation here. MeetingService checks its own live-participant table before calling; this
+        // is the same question asked of the table that will actually be read afterwards.
+        if (newHostParticipant == null)
+            return Result.Failure<Guid>(
+                "The new host is not a participant of this room.", ErrorCodes.ValidationError);
+
+        var now = DateTime.UtcNow;
+
+        // Null when handing the room back to the booker, so the column keeps meaning "somebody
+        // other than the booker is running this" rather than accumulating a no-op value.
+        room.ActiveHostId = newHostUserId == room.HostId ? null : newHostUserId;
+        room.UpdatedAt = now;
+        _translationRoomRepository.Update(room);
+
+        newHostParticipant.Role = nameof(TranslationRoomParticipantRole.HOST);
+        newHostParticipant.UpdatedAt = now;
+        _participantRepository.Update(newHostParticipant);
+
+        // Demote the outgoing host. Their row may legitimately be absent — the host can transfer
+        // on their way out, and HandleHostOfflineAsync elects a successor for someone who has
+        // already gone — so a missing row is not a failure, it is the normal departing case.
+        var previousHostParticipant = await _participantRepository.GetByRoomAndUserAsync(
+            translationRoomId, previousHostId, ct);
+        if (previousHostParticipant != null)
+        {
+            previousHostParticipant.Role = nameof(TranslationRoomParticipantRole.PARTICIPANT);
+            previousHostParticipant.UpdatedAt = now;
+            _participantRepository.Update(previousHostParticipant);
+        }
+
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        return Result.Success(previousHostId);
     }
 }

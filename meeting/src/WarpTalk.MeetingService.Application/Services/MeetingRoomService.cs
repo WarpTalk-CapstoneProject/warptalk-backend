@@ -580,6 +580,36 @@ public class MeetingRoomService : IMeetingRoomService
             return Result.Failure<bool>("The new host must be an active participant in the meeting.", ErrorCodes.ValidationError);
         }
 
+        // WT-359: move host authority where it is actually READ before recording it here.
+        //
+        // This service's active_host_id governs the live LiveKit session. It does NOT govern who
+        // may join as host, start, pause, stop, end or reconfigure the meeting — all of that is
+        // decided in the translation-room service against its own columns. Transferring only the
+        // local one produced a room with two hosts by different definitions: the old host walked
+        // back in as HOST on rejoin (BR-004 re-stamped the role), while the new host could not end
+        // the meeting.
+        //
+        // Ordered remote-first deliberately. If the remote write fails, nothing has changed
+        // anywhere and the caller gets an error; if it were second, a local success plus a remote
+        // failure would leave exactly the split this fixes, silently.
+        var remoteTransfer = await _grpcService.TransferRoomHostAsync(
+            translationRoomId, currentHostUserId, newHostUserId);
+        if (!remoteTransfer.IsSuccess)
+        {
+            return Result.Failure<bool>(
+                remoteTransfer.Error ?? "Could not transfer host.",
+                remoteTransfer.ErrorCode switch
+                {
+                    "ROOM_NOT_FOUND" => ErrorCodes.NotFound,
+                    // The room service is the authority on who may transfer, and it said no. The
+                    // local check above is the fast path, not the verdict.
+                    "TRANSFER_FORBIDDEN" => ErrorCodes.Forbidden,
+                    _ => ErrorCodes.ValidationError
+                });
+        }
+
+        var previousHostUserId = remoteTransfer.Value;
+
         meetingRoom.ActiveHostId = newHostUserId;
         _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
         await _unitOfWork.SaveChangesAsync();
@@ -588,8 +618,18 @@ public class MeetingRoomService : IMeetingRoomService
         // that tells the room. The broadcast used to hang off the automatic election, which
         // meant the deliberate path left every client showing stale host controls until its
         // next full room refetch.
+        //
+        // WT-358: it now names BOTH sides. With only the new host's id, a client could promote one
+        // row but had no way to demote the other — the presence payload carries no role — so the
+        // People panel showed two hosts until a manual reload. Two ids is the whole fix.
         await PublishGatewayCommandAsync(
-            "HostChanged", translationRoomId, new { NewHostUserId = newHostUserId.ToString() });
+            "HostChanged",
+            translationRoomId,
+            new
+            {
+                NewHostUserId = newHostUserId.ToString(),
+                PreviousHostUserId = previousHostUserId == Guid.Empty ? null : previousHostUserId.ToString()
+            });
 
         return Result.Success(true);
     }

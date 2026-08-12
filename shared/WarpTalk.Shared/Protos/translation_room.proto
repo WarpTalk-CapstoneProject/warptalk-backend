@@ -9,6 +9,12 @@ service TranslationRoomService {
   rpc GetTranslationRoomByCode (GetTranslationRoomByCodeRequest) returns (GetTranslationRoomResponse);
   rpc GetParticipantsByRoomId (GetParticipantsByRoomIdRequest) returns (GetParticipantsByRoomIdResponse);
   rpc GetActiveRoomCountByWorkspace (GetActiveRoomCountByWorkspaceRequest) returns (GetActiveRoomCountByWorkspaceResponse);
+
+  // WT-359: the ONE write on this service. MeetingService owns the Transfer Host action and
+  // authorizes it, but host authority is read out of this service's tables on every join and every
+  // host-gated operation — so a transfer that does not reach here is a transfer that silently
+  // undoes itself the next time the old host rejoins.
+  rpc TransferRoomHost (TransferRoomHostRequest) returns (TransferRoomHostResponse);
 }
 
 message GetTranslationRoomRequest {
@@ -30,6 +36,25 @@ message GetTranslationRoomResponse {
   string scheduled_start_time = 8;
   bool is_profanity_filter_enabled = 9;
   string description = 10;
+}
+
+// WT-359. Carries the requester because THIS service decides whether they may transfer: host
+// authority is its data, and an authorization rule evaluated anywhere else is a copy that drifts.
+// MeetingService's own check governs the live session; this one governs the room.
+//
+// The rule is "the effective host, and only them" — deliberately excluding the booker once they
+// have handed the room over. WT-359's expected behaviour is explicit that the outgoing host gets
+// the room back only if the incoming host transfers it back.
+message TransferRoomHostRequest {
+  string room_id = 1;
+  string new_host_user_id = 2;
+  string requested_by_user_id = 3;
+}
+
+message TransferRoomHostResponse {
+  // The host this replaced, so the caller can name both sides in the realtime event without a
+  // second read. Empty when the room had never been transferred and the booker was still running it.
+  string previous_host_user_id = 1;
 }
 
 message GetParticipantsByRoomIdRequest {
