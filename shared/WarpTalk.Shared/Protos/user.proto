@@ -10,6 +10,13 @@ service UserService {
   rpc GetUserSettings (GetUserRequest) returns (GetUserSettingsResponse);
   rpc GetRoleByName (GetRoleByNameRequest) returns (GetRoleResponse);
   rpc GetRoleById (GetRoleByIdRequest) returns (GetRoleResponse);
+
+  // Whether this person has an active grant to have their voice cloned.
+  //
+  // A bool and not the consent record: the caller (TranslationRoomService, deciding whether an
+  // audio route may enable voice cloning) has no business with the audit fields, and a narrow
+  // answer is one that cannot start being used for something else.
+  rpc HasVoiceCloneConsent (GetUserRequest) returns (HasVoiceCloneConsentResponse);
 }
 
 message GetUserRequest {
@@ -46,4 +53,10 @@ message GetRoleResponse {
   string id = 1;
   string name = 2;
   string description = 3;
+}
+
+message HasVoiceCloneConsentResponse {
+  // False whenever the answer is not a live grant — never asked, withdrawn, or expired. The
+  // caller must treat any failure to reach this service the same way.
+  bool granted = 1;
 }

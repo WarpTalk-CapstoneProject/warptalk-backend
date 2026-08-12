@@ -55,6 +55,9 @@ public class LateJoinerAudioRouteTests
             _cache.Object,
             new Mock<IAudioRouteEventProcessor>().Object,
             languagePolicy.Object,
+            // Granted by default: this file is about routing a late joiner, not about permission.
+            // The gate itself is pinned in VoiceCloneConsentGateTests.
+            GrantedConsent(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
 
         _rooms.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
@@ -256,5 +259,13 @@ public class LateJoinerAudioRouteTests
 
         result.IsSuccess.Should().BeFalse();
         _routes.Verify(r => r.AddRoutesAsync(It.IsAny<IEnumerable<TranslationRoomAudioRoute>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private static IVoiceConsentDirectory GrantedConsent()
+    {
+        var mock = new Mock<IVoiceConsentDirectory>();
+        mock.Setup(d => d.HasVoiceCloneConsentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        return mock.Object;
     }
 }

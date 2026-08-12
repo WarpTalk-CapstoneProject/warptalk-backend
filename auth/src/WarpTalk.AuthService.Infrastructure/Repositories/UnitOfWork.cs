@@ -16,6 +16,7 @@ public class UnitOfWork : IUnitOfWork
         IUserSettingRepository userSettingRepository,
         IRefreshTokenRepository refreshTokenRepository,
         IVoiceProfileRepository voiceProfileRepository,
+        IVoiceConsentRepository voiceConsentRepository,
         IVoiceSampleRepository voiceSampleRepository)
     {
         _context = context;
@@ -26,6 +27,7 @@ public class UnitOfWork : IUnitOfWork
         UserSettingRepository = userSettingRepository;
         RefreshTokenRepository = refreshTokenRepository;
         VoiceProfileRepository = voiceProfileRepository;
+        VoiceConsentRepository = voiceConsentRepository;
         VoiceSampleRepository = voiceSampleRepository;
     }
 
@@ -36,6 +38,7 @@ public class UnitOfWork : IUnitOfWork
     public IUserSettingRepository UserSettingRepository { get; }
     public IRefreshTokenRepository RefreshTokenRepository { get; }
     public IVoiceProfileRepository VoiceProfileRepository { get; }
+    public IVoiceConsentRepository VoiceConsentRepository { get; }
     public IVoiceSampleRepository VoiceSampleRepository { get; }
 
 
