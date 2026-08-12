@@ -357,6 +357,34 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         }
 
         var now = _utcNow();
+
+        // The booking is stopped FIRST, before any occurrence is touched.
+        //
+        // This used to be the last write in the method, after a loop that cancels every future
+        // occurrence one at a time. Each of those does its own SaveChanges and its own Redis
+        // publish, so they commit as they go — and the controller hands this method the REQUEST's
+        // CancellationToken, which fires when the client disconnects. A host who closed the tab,
+        // navigated away, or met a gateway timeout partway through therefore left production in a
+        // state the code has no name for:
+        //
+        //     series      019ff440 "Daily meeting test"   ACTIVE
+        //     occurrences 14 of 14                        CANCELLED, all within 80ms
+        //
+        // A booking that says it is running, every meeting of which is cancelled. Nothing reads
+        // that state and nothing repairs it.
+        //
+        // Ordering fixes it rather than a transaction, because a transaction would be the wrong
+        // promise: an occurrence that started a second ago legitimately refuses to cancel (see the
+        // loop below), and rolling the whole stop back because one meeting is already running
+        // would mean a host cannot stop a series while it is in use — the moment they most want
+        // to. Stopping the series is the thing that was asked for and the thing that must not be
+        // lost; the occurrences follow it, best-effort, exactly as before.
+        series.Status = RecurrenceSeriesStatuses.Cancelled;
+        series.UpdatedAt = now;
+        series.UpdatedBy = hostId;
+        _seriesRepository.Update(series);
+        await _unitOfWork.SaveChangesAsync(ct);
+
         var futureOccurrences = await _seriesRepository.GetCancellableOccurrencesAsync(seriesId, now, ct);
 
         var cancelled = 0;
@@ -382,15 +410,9 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             }
         }
 
-        series.Status = RecurrenceSeriesStatuses.Cancelled;
-        series.UpdatedAt = now;
-        series.UpdatedBy = hostId;
-        _seriesRepository.Update(series);
-        await _unitOfWork.SaveChangesAsync(ct);
-
         _logger.LogInformation(
-            "WT-327: series {SeriesId} cancelled by host {HostId}; {Count} future occurrences cancelled with it.",
-            seriesId, hostId, cancelled);
+            "WT-327: series {SeriesId} cancelled by host {HostId}; {Count} of {Total} future occurrences cancelled with it.",
+            seriesId, hostId, cancelled, futureOccurrences.Count);
 
         return Result.Success(new CancelSeriesResult(seriesId, cancelled));
     }
