@@ -131,6 +131,7 @@ builder.Services.AddHostedService<RecurringSeriesMaterializationWorker>();
 builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
+builder.Services.AddScoped<IVoiceConsentDirectory, VoiceConsentGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMeetingPolicy, WorkspaceMeetingPolicyGrpcClient>();
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.AppSettings>(builder.Configuration.GetSection("App"));
