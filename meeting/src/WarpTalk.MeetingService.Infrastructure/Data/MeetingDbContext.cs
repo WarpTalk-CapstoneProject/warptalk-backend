@@ -201,7 +201,7 @@ public partial class MeetingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("meeting_invitations_pkey");
 
-            entity.ToTable("meeting_invitations", "meeting");
+            entity.ToTable("rtc_session_revocations", "meeting");
 
             entity.HasIndex(e => e.MeetingRoomId, "idx_meeting_invitations_meeting_room_id");
 
@@ -235,7 +235,7 @@ public partial class MeetingDbContext : DbContext
         {
             entity.HasKey(e => e.Id).HasName("meeting_participants_pkey");
 
-            entity.ToTable("meeting_participants", "meeting");
+            entity.ToTable("rtc_stream_participants", "meeting");
 
             entity.HasIndex(e => e.MeetingRoomId, "idx_meeting_participants_meeting_room_id");
 
