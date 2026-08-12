@@ -238,7 +238,7 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
 
             if (artifact == null) return Result.Failure(TranslationRoomConstants.ErrorArtifactNotFound, ErrorCodes.NotFound);
 
-            if (artifact.TranslationRoom.HostId != userId)
+            if (!artifact.TranslationRoom.IsHostedBy(userId))
                 return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedConsentArtifact, ErrorCodes.Unauthorized);
 
             artifact.ConsentRequired = false;

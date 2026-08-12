@@ -29,9 +29,37 @@ public partial class TranslationRoom
     public Guid WorkspaceId { get; set; }
 
     /// <summary>
-    /// External AuthService user id. No physical FK.
+    /// Who BOOKED this room. External AuthService user id. No physical FK.
+    ///
+    /// Stamped once at creation and never moved — a host handover is recorded on
+    /// <see cref="ActiveHostId"/>, not here. This column is what the meeting list filters by,
+    /// what a recurring series belongs to, and what usage is attributed to, so moving it would
+    /// hand all of that to whoever happened to be handed the microphone.
     /// </summary>
     public Guid HostId { get; set; }
+
+    /// <summary>
+    /// WT-359: who is RUNNING this room now, after a Transfer Host. Null means nobody took it
+    /// over and <see cref="HostId"/> is still running it — true of every room created before this
+    /// column, which is why it needed no backfill.
+    ///
+    /// Always ask <see cref="EffectiveHostId"/> or <see cref="IsHostedBy"/> rather than reading
+    /// this directly; a bare <c>HostId == userId</c> is the bug this column exists to fix.
+    /// </summary>
+    public Guid? ActiveHostId { get; set; }
+
+    /// <summary>
+    /// The user who holds host authority right now: the transferee if there has been a handover,
+    /// otherwise the booker.
+    /// </summary>
+    public Guid EffectiveHostId => ActiveHostId ?? HostId;
+
+    /// <summary>
+    /// Whether <paramref name="userId"/> holds host authority over this room right now. Every
+    /// host-gated operation asks this — start, pause, resume, stop, end, cancel, settings and the
+    /// join-time role assignment — so that a transfer moves all of them together or none of them.
+    /// </summary>
+    public bool IsHostedBy(Guid userId) => EffectiveHostId == userId;
 
     public string Title { get; set; } = null!;
 

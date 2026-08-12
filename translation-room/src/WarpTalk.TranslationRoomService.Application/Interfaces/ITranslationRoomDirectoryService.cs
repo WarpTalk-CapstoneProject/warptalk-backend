@@ -44,4 +44,28 @@ public interface ITranslationRoomDirectoryService
     Task<Result<int>> CountActiveRoomsByWorkspaceAsync(
         Guid workspaceId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-359: record a host handover that MeetingService has already authorized.
+    ///
+    /// This is the only WRITE on an interface otherwise made of lookups. Unlike the reads it DOES
+    /// authorize, because host authority is this service's own data: the caller must be the
+    /// effective host (<see cref="Domain.Entities.TranslationRoom.IsHostedBy"/>). The booker is
+    /// refused once they have handed the room over — WT-359 requires that they get it back only if
+    /// the incoming host transfers it back.
+    ///
+    /// What it writes, in one transaction:
+    ///   - <c>translation_rooms.active_host_id</c> — host authority for every subsequent join and
+    ///     every host-gated operation in this service.
+    ///   - the incoming host's participant row to HOST, the outgoing host's to PARTICIPANT — so
+    ///     the People panel is correct on its next read even if the realtime event is missed.
+    ///
+    /// Returns the host it replaced, so the caller can announce both sides without a second read.
+    /// Idempotent: transferring to the user who already holds the room succeeds and changes nothing.
+    /// </summary>
+    Task<Result<Guid>> TransferHostAsync(
+        Guid translationRoomId,
+        Guid requestedByUserId,
+        Guid newHostUserId,
+        CancellationToken ct = default);
 }

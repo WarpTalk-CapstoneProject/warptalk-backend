@@ -31,7 +31,8 @@ public static class RoomHostAccess
         IWorkspaceMemberDirectory workspaceMemberDirectory,
         CancellationToken ct = default)
     {
-        if (room.HostId == requestedByUserId)
+        // WT-359: effective host — the transferee once a handover has happened, the booker otherwise.
+        if (room.IsHostedBy(requestedByUserId))
             return true;
 
         return await workspaceMemberDirectory.IsOwnerOrAdminAsync(room.WorkspaceId, requestedByUserId, ct);
