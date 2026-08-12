@@ -11,8 +11,7 @@ public static class VoiceProfileMapper
     {
         var activeConsent = profile.VoiceConsents
             .Where(consent =>
-                consent.RevokedAt == null
-                && consent.ConsentType == VoiceProfileConsentContract.UploadConsentType
+                consent.ConsentType == VoiceProfileConsentContract.UploadConsentType
                 && consent.ConsentStatus == VoiceProfileConsentContract.GrantedStatus)
             .OrderByDescending(consent => consent.GrantedAt ?? consent.CreatedAt)
             .FirstOrDefault();
