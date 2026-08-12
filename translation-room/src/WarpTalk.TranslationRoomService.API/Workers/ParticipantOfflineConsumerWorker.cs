@@ -78,10 +78,15 @@ public class ParticipantOfflineConsumerWorker : BackgroundService
             using var scope = _serviceProvider.CreateScope();
             var participantService = scope.ServiceProvider.GetRequiredService<ITranslationRoomParticipantService>();
 
-            var result = await participantService.LeaveRoomAsync(roomId, userId, stoppingToken);
+            // WT-354: this channel carries "the socket dropped", not "the participant left".
+            // Calling LeaveRoomAsync here wrote the terminal status LEFT, which the roster hides,
+            // so a backgrounded tab removed a live participant from everyone's People panel for
+            // the rest of the meeting. MarkParticipantDisconnectedAsync records what actually
+            // happened and stays reversible when they reconnect.
+            var result = await participantService.MarkParticipantDisconnectedAsync(roomId, userId, stoppingToken);
             if (!result.IsSuccess)
             {
-                _logger.LogWarning("Failed to process LeaveRoom for {UserId} in {RoomId}: {Error}", userId, roomId, result.Error);
+                _logger.LogWarning("Failed to mark {UserId} disconnected in {RoomId}: {Error}", userId, roomId, result.Error);
             }
         }
         catch (Exception ex)

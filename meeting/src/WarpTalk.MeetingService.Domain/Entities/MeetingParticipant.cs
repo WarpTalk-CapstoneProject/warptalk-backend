@@ -11,7 +11,14 @@ public partial class MeetingParticipant
 
     public Guid? UserId { get; set; }
 
+    /// <summary>The LiveKit identity. This is the user id — it is NOT a name (WT-356).</summary>
     public string ProviderIdentity { get; set; } = null!;
+
+    /// <summary>
+    /// WT-356: the participant's human-readable name, resolved once at join and stored so chat
+    /// and the video tile agree. Null for rows written before this column existed.
+    /// </summary>
+    public string? DisplayName { get; set; }
 
     public bool IsActive { get; set; }
 

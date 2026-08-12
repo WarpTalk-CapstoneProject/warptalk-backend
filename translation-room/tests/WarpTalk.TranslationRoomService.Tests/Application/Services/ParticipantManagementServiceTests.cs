@@ -458,6 +458,75 @@ public class ParticipantManagementServiceTests
         _participantRepositoryMock.Verify(repo => repo.Update(participant), Times.Once);
         _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
+    /// <summary>
+    /// WT-354. A dropped socket used to be recorded by calling LeaveRoomAsync, which writes the
+    /// terminal status LEFT — and the People panel hides LEFT rows. A backgrounded tab, a sleeping
+    /// laptop or a moment of bad wifi therefore deleted a participant from every roster in the
+    /// room while they were still in the call. Production held 182 LEFT rows against 29
+    /// DISCONNECTED, which is what a distinction the write path never made looks like from the
+    /// outside.
+    /// </summary>
+    [Fact]
+    public async Task MarkParticipantDisconnectedAsync_ShouldSetDisconnected_NotLeft_WhenSocketDrops()
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var participant = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            TranslationRoomId = roomId,
+            Status = "CONNECTED"
+        };
+
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participant);
+
+        var result = await _sut.MarkParticipantDisconnectedAsync(roomId, userId);
+
+        result.IsSuccess.Should().BeTrue();
+        participant.Status.Should().Be("DISCONNECTED");
+        // Not a departure, so nothing may claim they departed.
+        participant.LeftAt.Should().BeNull();
+        _participantRepositoryMock.Verify(repo => repo.Update(participant), Times.Once);
+    }
+
+    /// <summary>
+    /// The ordering hazard the guard exists for, and the reason this fix is not a one-line swap:
+    /// pressing Leave writes LEFT and THEN closes the socket, so the offline event arrives
+    /// immediately afterwards on every clean departure. Without the guard it would rewrite that
+    /// LEFT to DISCONNECTED and put the person who just left back on everyone's roster — a worse
+    /// bug than the one being fixed, and one that would look like a ghost rather than a mistake.
+    /// </summary>
+    [Fact]
+    public async Task MarkParticipantDisconnectedAsync_ShouldLeaveTerminalStatusAlone_WhenTheSocketClosesAfterLeaving()
+    {
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var leftAt = DateTime.UtcNow.AddSeconds(-1);
+
+        var participant = new TranslationRoomParticipant
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            TranslationRoomId = roomId,
+            Status = "LEFT",
+            LeftAt = leftAt
+        };
+
+        _participantRepositoryMock.Setup(repo => repo.GetByRoomAndUserAsync(roomId, userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(participant);
+
+        var result = await _sut.MarkParticipantDisconnectedAsync(roomId, userId);
+
+        result.IsSuccess.Should().BeTrue();
+        participant.Status.Should().Be("LEFT");
+        participant.LeftAt.Should().Be(leftAt);
+        _participantRepositoryMock.Verify(repo => repo.Update(It.IsAny<TranslationRoomParticipant>()), Times.Never);
+        _unitOfWorkMock.Verify(uow => uow.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task GetParticipantsAsync_ShouldFilterAndSortParticipants()
     {

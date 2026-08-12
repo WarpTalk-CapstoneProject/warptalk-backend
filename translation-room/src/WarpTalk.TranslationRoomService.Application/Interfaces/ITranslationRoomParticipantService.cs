@@ -14,4 +14,11 @@ public interface ITranslationRoomParticipantService
     Task<Result> AdmitParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default);
     Task<Result> KickParticipantAsync(Guid translationRoomId, Guid participantId, Guid requestedByUserId, CancellationToken ct = default);
     Task<Result> LeaveRoomAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-354: the participant's socket dropped. This is NOT the same event as leaving, and the
+    /// two must not share <see cref="LeaveRoomAsync"/> — LEFT is terminal and the roster hides it,
+    /// so a backgrounded tab or a network blip erased someone who was still in the call.
+    /// </summary>
+    Task<Result> MarkParticipantDisconnectedAsync(Guid translationRoomId, Guid requestedByUserId, CancellationToken ct = default);
 }
