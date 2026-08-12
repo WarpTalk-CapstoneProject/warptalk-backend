@@ -31,6 +31,8 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<VoiceSample> VoiceSamples { get; set; }
 
+    public virtual DbSet<VoiceConsent> VoiceConsents { get; set; }
+
 
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -421,6 +423,55 @@ public partial class AuthDbContext : DbContext
                 .HasForeignKey<UserSetting>(d => d.UserId)
                 .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("user_settings_user_id_fkey");
+        });
+
+        modelBuilder.Entity<VoiceConsent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("voice_consents_pkey");
+
+            entity.ToTable("voice_consents", "voice");
+
+            // The one query this table exists to answer: "what did this person last decide about
+            // this kind of consent". Without the index that is a scan of everyone's history.
+            entity.HasIndex(e => new { e.UserId, e.ConsentType, e.CreatedAt },
+                "voice_consents_user_id_type_created_at_idx");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuidv7()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId)
+                .HasComment("External AuthService user id. No physical FK.")
+                .HasColumnName("user_id");
+            entity.Property(e => e.VoiceProfileId).HasColumnName("voice_profile_id");
+            entity.Property(e => e.ConsentType)
+                .HasMaxLength(50)
+                .HasColumnName("consent_type");
+            // consent_status is a Postgres enum, already declared in HasPostgresEnum above. It is
+            // mapped as text rather than a C# enum so the vocabulary lives in exactly one place —
+            // the database — instead of in two type systems that can drift apart.
+            entity.Property(e => e.ConsentStatus)
+                .HasColumnType("consent_status")
+                .HasColumnName("consent_status");
+            entity.Property(e => e.ConsentTextVersion)
+                .HasMaxLength(50)
+                .HasComment("Which wording the person agreed to. An old row keeps its own version.")
+                .HasColumnName("consent_text_version");
+            entity.Property(e => e.GrantedAt).HasColumnName("granted_at");
+            entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
+            entity.Property(e => e.IpAddress)
+                .HasMaxLength(45)
+                .HasComment("Evidence of where the decision came from. Never used to identify.")
+                .HasColumnName("ip_address");
+            entity.Property(e => e.UserAgent)
+                .HasMaxLength(500)
+                .HasColumnName("user_agent");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("now()")
+                .HasColumnName("created_at");
+
+            entity.HasOne(d => d.VoiceProfile).WithMany()
+                .HasForeignKey(d => d.VoiceProfileId)
+                .HasConstraintName("voice_consents_voice_profile_id_fkey");
         });
 
         modelBuilder.Entity<VoiceProfile>(entity =>

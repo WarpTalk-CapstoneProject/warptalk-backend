@@ -12,6 +12,7 @@ public interface IUnitOfWork : IDisposable
     IRefreshTokenRepository RefreshTokenRepository { get; }
     IVoiceProfileRepository VoiceProfileRepository { get; }
     IVoiceSampleRepository VoiceSampleRepository { get; }
+    IVoiceConsentRepository VoiceConsentRepository { get; }
     Task<int> SaveChangesAsync(CancellationToken ct = default);
     Task BeginTransactionAsync(CancellationToken ct = default);
     Task CommitTransactionAsync(CancellationToken ct = default);
