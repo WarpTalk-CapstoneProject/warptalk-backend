@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-expected='FROM mcr.microsoft.com/dotnet/aspnet:10.0.10@sha256:f1126d438ccc359f51cc6d4701a8deae513856cf10f5fe645d29ea6403dcac6b AS final'
+# The one runtime base every production image is allowed to sit on, pinned by digest so a
+# floating tag cannot move it underneath us.
+#
+# Bumping this line is the WHOLE point of the check: the nine Dockerfiles and this value move
+# together, in one commit, or CI fails. That is what stops one service quietly running an
+# unpatched runtime while the others are fixed.
+#
+# 10.0.10 -> 10.0.11 on 2026-08-12 for CVE-2026-62901 (.NET denial of service, HIGH), which the
+# release's own Trivy gate caught. Verified before pinning: Trivy reports 0 HIGH / 0 CRITICAL
+# against this digest.
+expected='FROM mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:207cc51496778557731c81ff670333d8ade4a4fec22768fd1be8e78474a84ecf AS final'
 status=0
 
 while IFS= read -r dockerfile; do
