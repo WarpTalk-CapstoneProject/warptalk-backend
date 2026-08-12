@@ -1,13 +1,14 @@
 using System;
 using System.Security.Cryptography;
 using System.Text;
+using WarpTalk.AuthService.Domain.Enums;
 
 namespace WarpTalk.AuthService.Application.Services;
 
 internal static class VoiceProfileConsentContract
 {
     public const string UploadConsentType = "voice_profile_upload";
-    public const string GrantedStatus = "GRANTED";
+    public const ConsentStatus GrantedStatus = ConsentStatus.GRANTED;
     public const string Version = "voice-profile-upload-v1";
 
     public const string Snapshot =
@@ -21,6 +22,6 @@ internal static class VoiceProfileConsentContract
     public static string SnapshotHash()
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Snapshot))).ToLowerInvariant();
 
-    public static string PublicStatus(string status)
-        => status.ToLowerInvariant();
+    public static string PublicStatus(ConsentStatus status)
+        => status.ToString().ToLowerInvariant();
 }

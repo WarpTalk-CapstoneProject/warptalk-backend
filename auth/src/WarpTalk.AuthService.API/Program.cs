@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using FluentValidation;
 using FluentValidation.AspNetCore;
+using Npgsql.NameTranslation;
 using StackExchange.Redis;
 using WarpTalk.AuthService.API.Extensions;
 using WarpTalk.AuthService.API.GrpcServices;
@@ -11,6 +12,7 @@ using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Interfaces.Security;
 using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Interfaces;
+using WarpTalk.AuthService.Domain.Enums;
 using WarpTalk.AuthService.Domain.Settings;
 using WarpTalk.AuthService.Infrastructure.Clients;
 using WarpTalk.AuthService.Infrastructure.Persistence;
@@ -38,7 +40,11 @@ builder.WebHost.ConfigureKestrel(options =>
 
 // DbContext
 builder.Services.AddDbContext<AuthDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("AuthDb")));
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("AuthDb"),
+        npgsqlOptions => npgsqlOptions.MapEnum<ConsentStatus>(
+            "consent_status",
+            nameTranslator: new NpgsqlNullNameTranslator())));
 builder.Services.AddWarpTalkServiceHealthChecks<AuthDbContext>("auth-database");
 
 // Configuration Options
