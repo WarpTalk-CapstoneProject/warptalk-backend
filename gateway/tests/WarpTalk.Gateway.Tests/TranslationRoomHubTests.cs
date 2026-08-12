@@ -3,7 +3,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
 using System;
+using System.Collections.Generic;
 using System.Security.Claims;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.Gateway.Hubs;
@@ -69,6 +71,10 @@ public class TranslationRoomHubTests
 
         mockClients.Setup(c => c.Client(It.IsAny<string>())).Returns(mockSingleClientProxy.Object);
         mockClients.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(mockClientProxy.Object);
+        // Its own proxy, not the one Client(connectionId) returns: this test counts the messages
+        // sent to the OLD connection, and folding the caller into the same mock would let the
+        // roster this join sends to itself be counted as a ForceDisconnected.
+        mockClients.Setup(c => c.Caller).Returns(new Mock<ISingleClientProxy>().Object);
         hub.Clients = mockClients.Object;
 
         // Mock Groups
@@ -110,6 +116,93 @@ public class TranslationRoomHubTests
                 userId,
                 "vi",
                 When.Always,
+                CommandFlags.None),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// WT-354. The hub only ever announced arrivals to everyone ELSE, so a client's roster could
+    /// only contain people who joined after it did. A host entering a meeting already in progress
+    /// was shown a People panel holding one person: themselves.
+    ///
+    /// Two halves, and the second is the one that makes the first useful: the joiner must be sent
+    /// the people already in the room, and must not be sent a copy of themselves — a stale entry
+    /// from an earlier connection of the same user would otherwise come back as a ghost standing
+    /// beside them.
+    /// </summary>
+    [Fact]
+    public async Task JoinTranslationRoom_ShouldSendExistingRosterToCallerWithoutTheirOwnEntry()
+    {
+        var (hub, dbMock, clientsMock, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var joiningUserId = Guid.NewGuid().ToString();
+        var alreadyPresentUserId = Guid.NewGuid();
+
+        var callerProxyMock = new Mock<ISingleClientProxy>();
+        clientsMock.Setup(c => c.Caller).Returns(callerProxyMock.Object);
+
+        var present = new ParticipantInfoDto(
+            UserId: alreadyPresentUserId,
+            DisplayName: "Hanh Nhi",
+            SpeakLanguage: "vi",
+            ListenLanguage: "en",
+            IsMuted: true,
+            JoinedAt: DateTime.UtcNow.AddMinutes(-5));
+        var staleSelf = present with { UserId = Guid.Parse(joiningUserId), DisplayName = "Ghost" };
+
+        dbMock.Setup(db => db.HashGetAllAsync($"translationRoom:{roomId}:participants", CommandFlags.None))
+            .ReturnsAsync(new[]
+            {
+                new HashEntry(alreadyPresentUserId.ToString(), JsonSerializer.Serialize(present, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
+                new HashEntry(joiningUserId, JsonSerializer.Serialize(staleSelf, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
+            });
+
+        hub.Context = CreateContext(joiningUserId, "conn-late-host");
+
+        await hub.JoinTranslationRoom(roomId, "Tu", "vi", "en");
+
+        callerProxyMock.Verify(
+            proxy => proxy.SendCoreAsync(
+                "ParticipantRoster",
+                It.Is<object[]>(args =>
+                    ((List<ParticipantInfoDto>)args[0]!).Count == 1 &&
+                    ((List<ParticipantInfoDto>)args[0]!)[0].UserId == alreadyPresentUserId &&
+                    ((List<ParticipantInfoDto>)args[0]!)[0].DisplayName == "Hanh Nhi" &&
+                    ((List<ParticipantInfoDto>)args[0]!)[0].IsMuted),
+                default),
+            Times.Once);
+
+        // And the joiner is recorded, or the next person to arrive inherits the same blind spot.
+        dbMock.Verify(
+            db => db.HashSetAsync(
+                $"translationRoom:{roomId}:participants",
+                joiningUserId,
+                It.IsAny<RedisValue>(),
+                When.Always,
+                CommandFlags.None),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// WT-354: a dropped socket must take the participant out of the LIVE roster. The database row
+    /// is a separate question — ParticipantOfflineConsumerWorker marks it DISCONNECTED, which the
+    /// People panel still shows — but presence is presence.
+    /// </summary>
+    [Fact]
+    public async Task OnDisconnectedAsync_ShouldRemoveTheParticipantFromTheStoredRoster()
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-dropping");
+
+        await hub.JoinTranslationRoom(roomId, "Tu", "vi", "en");
+        await hub.OnDisconnectedAsync(null);
+
+        dbMock.Verify(
+            db => db.HashDeleteAsync(
+                $"translationRoom:{roomId}:participants",
+                userId,
                 CommandFlags.None),
             Times.Once);
     }
@@ -395,6 +488,8 @@ public class TranslationRoomHubTests
         var clientsMock = new Mock<IHubCallerClients>();
         var clientProxyMock = new Mock<IClientProxy>();
         clientsMock.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(clientProxyMock.Object);
+        // WT-354: the join below now hands the caller the room's roster.
+        clientsMock.Setup(c => c.Caller).Returns(new Mock<ISingleClientProxy>().Object);
         hub.Clients = clientsMock.Object;
         hub.Groups = new Mock<IGroupManager>().Object;
 
@@ -450,6 +545,11 @@ public class TranslationRoomHubTests
         clientsMock.Setup(c => c.Client(It.IsAny<string>())).Returns(singleClientProxyMock.Object);
         clientsMock.Setup(c => c.OthersInGroup(It.IsAny<string>())).Returns(clientProxyMock.Object);
         clientsMock.Setup(c => c.Group(It.IsAny<string>())).Returns(groupClientProxyMock.Object);
+        // WT-354: JoinTranslationRoom now answers the caller directly with the room's current
+        // roster. Without this the fake returns null for Caller and every join test dies inside
+        // SignalR's own extension method, reporting a NullReferenceException instead of whatever
+        // it was actually asserting.
+        clientsMock.Setup(c => c.Caller).Returns(singleClientProxyMock.Object);
         hub.Clients = clientsMock.Object;
 
         var groupsMock = new Mock<IGroupManager>();

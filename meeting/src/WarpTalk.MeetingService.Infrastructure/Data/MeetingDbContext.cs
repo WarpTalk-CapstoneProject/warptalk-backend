@@ -259,6 +259,9 @@ public partial class MeetingDbContext : DbContext
             entity.Property(e => e.ProviderIdentity)
                 .HasMaxLength(255)
                 .HasColumnName("provider_identity");
+            entity.Property(e => e.DisplayName)
+                .HasMaxLength(255)
+                .HasColumnName("display_name");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("updated_at");
