@@ -126,10 +126,15 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             await _unitOfWork.SaveChangesAsync(ct);
 
             var occurrences = new List<TranslationRoomDto>();
+            // The first occurrence mints the code; every one after it answers to the same one, so
+            // the booking has a single link to share for its whole life.
+            string? sharedRoomCode = null;
+
             for (var index = 0; index < initialDates.Count; index++)
             {
                 var created = await CreateOccurrenceAsync(
-                    series, plan, initialDates[index], isFirst: index == 0, request.InvitedEmails, ct);
+                    series, plan, initialDates[index], isFirst: index == 0, request.InvitedEmails, ct,
+                    sharedRoomCode);
 
                 if (!created.IsSuccess)
                 {
@@ -137,6 +142,7 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
                     return Result.Failure<CreateRecurringRoomResponse>(created.Error!, created.ErrorCode);
                 }
 
+                sharedRoomCode ??= created.Value!.TranslationRoomCode;
                 occurrences.Add(created.Value!);
             }
 
@@ -475,11 +481,20 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             byWeekdays, series.RecurrenceByMonthDay);
 
         var invitedEmails = ReadInvitedEmails(series.InvitedEmails);
+
+        // Read the booking's code off an occurrence that already exists, so the ones this sweep
+        // creates answer to it too. Read rather than stored on the series row, which is what keeps
+        // "one code per booking" a code change instead of a migration against a live table.
+        var existingOccurrence = await _unitOfWork.TranslationRoomRepository
+            .FirstOrDefaultAsync(room => room.SeriesId == series.Id, ct: ct);
+        var sharedRoomCode = existingOccurrence?.TranslationRoomCode;
+
         var created = 0;
 
         foreach (var date in dates)
         {
-            var result = await CreateOccurrenceAsync(series, plan, date, isFirst: false, invitedEmails, ct);
+            var result = await CreateOccurrenceAsync(
+                series, plan, date, isFirst: false, invitedEmails, ct, sharedRoomCode);
             if (!result.IsSuccess)
             {
                 // Stop at the first refusal and leave the watermark where it is, so the next
@@ -537,7 +552,8 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         DateOnly localDate,
         bool isFirst,
         List<string>? invitedEmails,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? sharedRoomCode = null)
     {
         var scheduledAtUtc = RecurrenceScheduleCalculator.ToUtcInstant(localDate, plan.StartTimeLocal, plan.TimeZone);
 
@@ -558,7 +574,7 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             occurrenceRequest,
             series.HostId,
             ct,
-            new SeriesOccurrenceContext(series.Id, localDate, SendInvitationEmails: isFirst));
+            new SeriesOccurrenceContext(series.Id, localDate, SendInvitationEmails: isFirst, SharedRoomCode: sharedRoomCode));
     }
 
     private TranslationRoomSeries BuildSeriesEntity(CreateTranslationRoomRequest request, RecurrencePlan plan, Guid hostId)

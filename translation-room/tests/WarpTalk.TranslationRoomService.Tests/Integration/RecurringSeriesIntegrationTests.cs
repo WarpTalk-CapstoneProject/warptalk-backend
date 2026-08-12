@@ -153,8 +153,14 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
         rooms.Should().OnlyContain(r => r.Status == "SCHEDULED");
         rooms.Should().OnlyContain(r => r.ScheduledAt != null);
 
-        // One room row per meeting — the invariant the whole design exists to preserve.
-        rooms.Select(r => r.TranslationRoomCode).Distinct().Should().HaveCount(14);
+        // One room ROW per meeting — the invariant the whole design exists to preserve, so each
+        // day keeps its own transcript, artifacts and billing.
+        rooms.Select(r => r.Id).Distinct().Should().HaveCount(14);
+
+        // ...but ONE CODE for the booking. Thirty codes for one standup meant the invite sent on
+        // Monday opened Monday's room forever; by Wednesday it pointed at a meeting that had
+        // already ended.
+        rooms.Select(r => r.TranslationRoomCode).Distinct().Should().HaveCount(1);
         rooms.Should().OnlyContain(r => r.HostId == hostId);
         rooms.Select(r => r.SeriesOccurrenceLocalDate).Distinct().Should().HaveCount(14);
     }
@@ -317,6 +323,45 @@ public class RecurringSeriesIntegrationTests : IAsyncLifetime
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await response.Content.ReadAsStringAsync()).Should().Contain("not both");
+    }
+
+    [Fact]
+    public async Task The_shared_code_opens_todays_meeting_not_the_first_one()
+    {
+        // The point of one code per booking: following it on any day lands on that day's meeting.
+        var hostId = Guid.NewGuid();
+        var response = await CreateDailyAsync(hostId, "08:00", endDateLocal: "2026-09-05");
+
+        var rooms = await OccurrencesOfAsync(response.Series.SeriesId);
+        var code = rooms[0].TranslationRoomCode;
+        rooms.Should().OnlyContain(r => r.TranslationRoomCode == code);
+
+        using var scope = _factory.Services.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<ITranslationRoomRepository>();
+
+        // Resolution is against the real clock, not the injected one — the repository has no
+        // injected clock — so this asserts the RULE rather than a specific date: whatever it
+        // resolves to is a real occurrence of this series, and it is the earliest one still ahead.
+        var resolved = await repository.GetByCodeAsync(code);
+
+        resolved.Should().NotBeNull();
+        resolved!.SeriesId.Should().Be(response.Series.SeriesId);
+
+        var stillAhead = rooms
+            .Where(r => r.ScheduledAt >= DateTime.UtcNow)
+            .OrderBy(r => r.ScheduledAt)
+            .ToList();
+
+        if (stillAhead.Count > 0)
+        {
+            resolved.Id.Should().Be(stillAhead[0].Id, "a shared code opens the next meeting due");
+        }
+        else
+        {
+            resolved.Id.Should().Be(
+                rooms.OrderByDescending(r => r.ScheduledAt).First().Id,
+                "once the series is behind us the code opens the most recent meeting, not nothing");
+        }
     }
 
     [Fact]
