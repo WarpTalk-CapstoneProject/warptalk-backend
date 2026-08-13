@@ -33,4 +33,19 @@ public interface ITranslationRoomParticipantRepository : IGenericRepository<Tran
     Task<Dictionary<Guid, int>> CountSeatHoldingParticipantsByRoomsAsync(
         IReadOnlyCollection<Guid> roomIds,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// How many distinct people have EVER been in each room, whatever their status now.
+    ///
+    /// A different question from the one above, and the list needs both. Occupancy answers "who
+    /// is in there right now", which is what a live room should show — and which is always 0 for
+    /// a meeting that is over, so a finished meeting reported "0/100" no matter how many people
+    /// attended it. This answers "how many turned up", which is the only attendance figure a
+    /// finished meeting has.
+    ///
+    /// DISTINCT by user: a participant who dropped and rejoined is one attendee, not two.
+    /// </summary>
+    Task<Dictionary<Guid, int>> CountEverJoinedByRoomsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default);
 }
