@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -52,7 +52,7 @@ public static class WorkspaceHelper
 
         // "Enterprise" is the RequireVerifiedDomainForInternal column and nothing else. A
         // VerifiedDomains list left behind in the settings JSON used to count too, which made
-        // workspaces that had switched the policy off still behave as if it were on — the
+        // workspaces that had switched the policy off still behave as if it were on â€” the
         // WT-179 incident. Stale JSON is not evidence of live policy.
         return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
@@ -60,32 +60,6 @@ public static class WorkspaceHelper
             && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 
-    public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, string userEmail, CancellationToken ct)
-    {
-        var workspace = await unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-        if (workspace == null)
-        {
-            return false;
-        }
-
-        var config = GetWorkspaceConfig(workspace);
-        if (!workspace.RequireVerifiedDomainForInternal && !config.RequireVerifiedDomainForInternal)
-        {
-            return false;
-        }
-
-        if (string.IsNullOrEmpty(userEmail))
-        {
-            return true;
-        }
-
-        if (!EmailAddress.TryParse(userEmail, out var emailAddress) || emailAddress == null)
-        {
-            return true;
-        }
-        var isDomainVerified = await IsEmailDomainVerifiedAsync(unitOfWork, workspace, emailAddress.Domain, ct);
-        return !isDomainVerified;
-    }
 
     public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, Guid userId, CancellationToken ct)
     {
@@ -95,44 +69,6 @@ public static class WorkspaceHelper
         return string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
-    public static async Task<MembershipType> DetermineMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
-    {
-        if (workspace == null)
-        {
-            return MembershipType.Internal;
-        }
-
-        var config = GetWorkspaceConfig(workspace);
-        if (!workspace.RequireVerifiedDomainForInternal && !config.RequireVerifiedDomainForInternal)
-        {
-            return MembershipType.Internal;
-        }
-
-        var verifiedDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
-
-        return ResolveMembershipType(
-            userEmail,
-            verifiedDomains,
-            requireVerifiedDomain: true,
-            workspace.AllowSubdomains);
-    }
-
-    public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(
-        IUnitOfWork unitOfWork,
-        string? userEmail,
-        Workspace workspace,
-        CancellationToken ct)
-    {
-        var verifiedDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
-
-        // Join Requests are deliberately conservative: without proof of a
-        // verified workspace domain, the request remains provisional External.
-        return ResolveMembershipType(
-            userEmail,
-            verifiedDomains,
-            requireVerifiedDomain: true,
-            workspace.AllowSubdomains);
-    }
 
     public static async Task<JoinRequestEligibility> EvaluateJoinRequestEligibilityAsync(
         IUnitOfWork unitOfWork,
@@ -143,6 +79,30 @@ public static class WorkspaceHelper
     {
         var config = GetWorkspaceConfig(workspace);
         var verifiedDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
+        var requireVerifiedDomain = config.RequireVerifiedDomainForInternal;
+
+        // A workspace with no domain policy draws the internal/external line by hand, so a join
+        // request there is not decided by the requester's address â€” both classes are open and the
+        // reviewing Admin picks one.
+        //
+        // This used to hard-code requireVerifiedDomain: true regardless of the workspace, which
+        // meant such a workspace has no verified domains, so every requester inferred External,
+        // so AllowedFinalMembershipTypes only ever offered External â€” and ApproveJoinRequestAsync
+        // refused an Admin who chose Internal. There was no way at all to admit an internal member
+        // through this path.
+        if (!requireVerifiedDomain)
+        {
+            var allowedWithoutDomainPolicy = config.AllowExternalCollaboration
+                ? new[] { MembershipType.Internal.ToString(), MembershipType.External.ToString() }
+                : new[] { MembershipType.Internal.ToString() };
+
+            return new JoinRequestEligibility(
+                MembershipType.Internal,
+                allowedWithoutDomainPolicy,
+                RequiresPolicyAction: false,
+                PolicyReason: "This workspace assigns membership manually, so the reviewer chooses the access type.",
+                SuggestedActions: Array.Empty<string>());
+        }
 
         var inferredMembershipType = ResolveMembershipType(
             userEmail,
@@ -152,12 +112,7 @@ public static class WorkspaceHelper
 
         if (inferredMembershipType == MembershipType.Internal)
         {
-            var isEnterpriseWorkspace = workspace.RequireVerifiedDomainForInternal
-                || config.RequireVerifiedDomainForInternal
-                || verifiedDomains.Any();
-
             if (userId.HasValue
-                && isEnterpriseWorkspace
                 && await IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(unitOfWork, userId.Value, userEmail ?? string.Empty, ct))
             {
                 return new JoinRequestEligibility(
@@ -237,7 +192,7 @@ public static class WorkspaceHelper
     /// list that no longer matched the table went on deciding who counted as Internal (WT-179).
     ///
     /// Four call sites used to carry their own copy of this query. They agreed, which is why the
-    /// duplication was survivable — but a fifth copy that disagreed is exactly the shape of that
+    /// duplication was survivable â€” but a fifth copy that disagreed is exactly the shape of that
     /// incident, so there is now one.
     /// </summary>
     public static async Task<List<string>> GetActiveVerifiedDomainsAsync(
@@ -285,13 +240,13 @@ public static class WorkspaceHelper
     ///
     /// Deliberately blind to the owning workspace's lifecycle. It used to skip suspended and
     /// soft-deleted workspaces, which disagreed with the partial unique index behind the same
-    /// rule — the index only looks at <c>status</c>. A caller was told the domain was free,
+    /// rule â€” the index only looks at <c>status</c>. A caller was told the domain was free,
     /// the INSERT then hit the index, and the request failed as a 500 instead of a refusal.
     ///
     /// Suspension is reversible, so it must not release a claim: the workspace is coming back
     /// and expects to still hold its domain. Deletion is terminal, and releases the claim by
     /// revoking the rows outright (see SoftDeleteWorkspaceAsync) rather than by being filtered
-    /// out here — which keeps a single rule, "a domain is taken while its row is verified",
+    /// out here â€” which keeps a single rule, "a domain is taken while its row is verified",
     /// true at both layers.
     /// </summary>
     public static async Task<Guid?> GetWorkspaceIdVerifyingDomainAsync(IUnitOfWork unitOfWork, string domain, CancellationToken ct)
@@ -316,7 +271,7 @@ public static class WorkspaceHelper
     /// <code>require_verified_domain_for_internal == (active verified domains &gt; 0)</code>
     ///
     /// The column is derived, not configured. Holding a verified domain IS domain-verified
-    /// membership; holding none IS manually-assigned membership. Nobody sets the flag — an
+    /// membership; holding none IS manually-assigned membership. Nobody sets the flag â€” an
     /// Owner adds or revokes a domain and the policy follows, which is why the settings
     /// endpoint refuses the field outright.
     ///

@@ -114,6 +114,74 @@ public class WorkspaceInvitationServiceTests
 
     #region InviteMemberAsync Tests
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task InviteMemberAsync_ShouldFail_WhenMembershipTypeIsMissing(string? membershipType)
+    {
+        // The inviter decides the access class, so leaving it out is a malformed request rather
+        // than a request to guess. It used to fall back to inferring the type from the invitee's
+        // email — an inference that could not express External at all in some workspaces, so the
+        // caller silently got a decision nobody made.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Business WS",
+            Slug = "business-ws",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubVerifiedDomains(workspaceId, "warptalk.vn");
+
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", membershipType);
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.InvalidMembershipType, result.Error);
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldAllowInternal_ForAnyAddress_WhenWorkspaceHasNoDomainPolicy()
+    {
+        // A workspace that assigns membership by hand puts no domain constraint on the choice,
+        // so a public mailbox can be invited as an Internal member. The inviter is making that
+        // call deliberately; there is no verified domain for it to contradict.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Small Team",
+            Slug = "small-team",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = false
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+        StubUserEmail("teammate@gmail.com", Guid.NewGuid());
+        StubVerifiedDomains(workspaceId);
+
+        var request = new InviteMemberRequest("teammate@gmail.com", "Member", "Internal");
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+    }
+
     [Fact]
     public async Task InviteMemberAsync_ShouldSucceed_WhenWorkspaceIsBusiness()
     {

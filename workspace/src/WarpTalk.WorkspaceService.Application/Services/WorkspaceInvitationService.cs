@@ -93,23 +93,16 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
             // The inviter decides the access class; the domain only decides which choices are
-            // legal. Inferring it from the email instead made External unreachable through this
-            // endpoint whenever the invitee's domain happened to be verified — and unreachable
-            // outright while RequireVerifiedDomainForInternal was off, since the inference
-            // returns Internal for every address in that case (BR-140-011).
+            // legal. MembershipType is therefore required, not inferred.
             //
-            // An omitted MembershipType still falls back to the inference so older clients that
-            // never sent the field keep working.
-            MembershipType membershipTypeEnum;
-            if (string.IsNullOrWhiteSpace(request.MembershipType))
-            {
-                membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                    _unitOfWork,
-                    emailAddress.Value,
-                    workspace,
-                    ct);
-            }
-            else if (!Enum.TryParse(request.MembershipType, ignoreCase: true, out membershipTypeEnum))
+            // The fallback that used to stand here inferred it from the invitee's email, and the
+            // inference could not express what an inviter might want: External was unreachable
+            // whenever the invitee's domain happened to be verified, and unreachable outright in a
+            // workspace with no domain policy, where the inference answers Internal for every
+            // address (BR-140-011). Keeping it "for older clients" meant those clients silently
+            // got a decision nobody made; refusing is the honest answer.
+            if (string.IsNullOrWhiteSpace(request.MembershipType)
+                || !Enum.TryParse<MembershipType>(request.MembershipType, ignoreCase: true, out var membershipTypeEnum))
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
             }

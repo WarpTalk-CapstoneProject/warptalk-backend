@@ -70,8 +70,8 @@ public class VerifiedDomainService : IVerifiedDomainService
             // post-creation surface. Without it the create-time rule is cosmetic: an
             // attacker founds a workspace on their own domain and then adds
             // victimcorp.com here. Rows written by this method are exactly what
-            // WorkspaceHelper.DetermineMembershipTypeAsync reads to hand out the
-            // Internal membership tier.
+            // WorkspaceHelper.GetActiveVerifiedDomainsAsync reads, and therefore what
+            // decides who may be given the Internal membership tier.
             //
             // The old comment on step 6 ("non-public = enterprise-owned") is the
             // defect: non-public does not mean owned by the caller. WT-157 left the
