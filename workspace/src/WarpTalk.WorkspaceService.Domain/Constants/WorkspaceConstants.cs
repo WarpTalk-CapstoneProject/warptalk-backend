@@ -47,6 +47,7 @@ public static class WorkspaceConstants
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
+        public const string RequireVerifiedDomainIsDerived = "Whether internal members must use a verified domain is decided by the workspace's verified domains, not set directly. Add a verified domain to require one, or revoke every verified domain to stop requiring one.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
 
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";

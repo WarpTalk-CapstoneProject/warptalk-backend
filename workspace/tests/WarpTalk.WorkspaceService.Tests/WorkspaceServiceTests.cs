@@ -1428,8 +1428,14 @@ public class WorkspaceServiceTests
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
 
-        // The workspace has no rows in workspace_verified_domains. That, not the empty list in
-        // the DTO, is what makes RequireVerifiedDomainForInternal unsatisfiable here.
+        // The workspace has no rows in workspace_verified_domains, so its derived policy is
+        // "no domain requirement" and asking to turn the requirement on is not a thing this
+        // endpoint can do — a domain has to be added first, through VerifiedDomainService.
+        //
+        // Note which error comes back. The validator's VerifiedDomainsRequired rule can no
+        // longer be reached from here: the derived-value check refuses the mismatch before the
+        // validator sees it. That rule stays as defense-in-depth for any future caller, but
+        // this path is now structurally incapable of violating it.
         _workspaceVerifiedDomainRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
                 Arg.Any<string>(),
@@ -1440,7 +1446,45 @@ public class WorkspaceServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminTriesToChangeDomainPolicy()
+    {
+        // Before this, an Admin could PATCH requireVerifiedDomainForInternal and switch the whole
+        // workspace's membership policy — verified-domain CRUD was Owner-only, but the switch that
+        // gives those domains meaning was not. It is now nobody's to set: the value is derived.
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var settings = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30,
+            new List<string>(), true,
+            /* requireVerifiedDomainForInternal: */ true,
+            null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId });
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }

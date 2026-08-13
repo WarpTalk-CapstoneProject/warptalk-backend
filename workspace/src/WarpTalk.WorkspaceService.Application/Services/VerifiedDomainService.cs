@@ -106,6 +106,11 @@ public class VerifiedDomainService : IVerifiedDomainService
             var entry = VerifiedDomainMapper.ToEntity(workspaceId, domain, userId);
 
             await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(entry, ct);
+
+            // Adding the first domain is what makes this a domain-verified workspace. The policy
+            // column is derived from the domain list and is never assigned anywhere else.
+            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(entry.ToDto());
@@ -184,18 +189,15 @@ public class VerifiedDomainService : IVerifiedDomainService
             if (entry == null)
                 return Result.Failure(WorkspaceConstants.Errors.VerifiedDomainNotFound, ErrorCodes.NotFound);
 
-            // 4. Guard: cannot revoke the last domain when RequireVerifiedDomainForInternal is enabled
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (config.RequireVerifiedDomainForInternal)
-            {
-                var activeCount = (await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-                    vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
-                    "",
-                    ct)).Count;
-
-                if (activeCount <= 1)
-                    return Result.Failure(WorkspaceConstants.Errors.CannotRevokeLastDomain, ErrorCodes.ValidationError);
-            }
+            // The "cannot revoke the last domain while domain verification is required" guard used
+            // to sit here. It became a contradiction: the policy is now derived from the domain
+            // list, so revoking the last domain IS how a workspace stops requiring one. Keeping
+            // the guard left no way back to manually-assigned membership — the workspace would be
+            // stuck as domain-verified for good. Losing that policy is a real change, so it is
+            // confirmed in the UI and recorded, rather than blocked here.
+            //
+            // The guard below is a different rule and stays: it protects members who are already
+            // Internal by virtue of this domain.
 
             // 5. Guard: cannot revoke domain if active internal members rely on this domain
             var activeInternalMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
@@ -232,6 +234,11 @@ public class VerifiedDomainService : IVerifiedDomainService
             entry.SoftRevoke(userId);
 
             _unitOfWork.WorkspaceVerifiedDomainRepository.Update(entry);
+
+            // Revoking the last domain returns the workspace to manually-assigned membership.
+            // Same single writer as the add path.
+            await WorkspaceHelper.RecomputeDomainPolicyAsync(_unitOfWork, workspace, ct);
+
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success();

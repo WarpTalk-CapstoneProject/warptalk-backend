@@ -169,6 +169,18 @@ public class WorkspaceService : IWorkspaceService
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);
 
+            // Create is the one place the derived policy is known without a query: the domain
+            // rows do not exist yet, so RecomputeDomainPolicyAsync would count zero and write
+            // the wrong answer. `requireVerified` above is that same expression
+            // (domainsToVerify.Count > 0) evaluated against the list being written here, so the
+            // invariant holds from the first row.
+            //
+            // AllowExternalCollaboration is set for a duller reason: the column defaults to
+            // false while the configuration defaults to true, so leaving it unset writes a
+            // workspace whose column and settings JSON disagree from birth.
+            workspace.RequireVerifiedDomainForInternal = requireVerified;
+            workspace.AllowExternalCollaboration = config.AllowExternalCollaboration;
+
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
             var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
             if (!ownerRoleId.HasValue)
@@ -417,6 +429,19 @@ public class WorkspaceService : IWorkspaceService
             // refresh the mirror written below, so the two can never disagree within this call.
             var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
 
+            // RequireVerifiedDomainForInternal is derived from the domain list, so this endpoint
+            // cannot change it — not even for an Owner. Refusing a *different* value rather than
+            // the field's presence keeps read-modify-write honest: clients send back the whole
+            // settings document, and echoing what they were given must not be an error.
+            //
+            // The alternative, owner-gating it, would have left two ways to set one value: an
+            // Owner could switch the policy off while verified domains remained, which is the
+            // exact state WT-179 was about.
+            if (settings.RequireVerifiedDomainForInternal != (activeVerifiedDomains.Count > 0))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, ErrorCodes.ValidationError);
+            }
+
             var settingsValidation = WorkspaceSettingsValidator.Validate(settings, activeVerifiedDomains);
             if (!settingsValidation.IsValid)
             {
@@ -502,8 +527,27 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
+            // Release every verified domain this workspace holds.
+            //
+            // Deletion is terminal — ChangeLifecycleAsync refuses every transition on a deleted
+            // workspace — so nobody is left who could revoke these rows later. Without this, the
+            // domain stays claimed forever: no other workspace can take it, and no Owner exists
+            // to release it. Suspension deliberately does NOT do this, because a suspended
+            // workspace is coming back and expects to still hold its domains.
+            var heldDomains = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
+                "",
+                ct);
+
+            foreach (var heldDomain in heldDomains)
+            {
+                heldDomain.SoftRevoke(userId);
+                _unitOfWork.WorkspaceVerifiedDomainRepository.Update(heldDomain);
+            }
+
             workspace.DeletedAt = DateTime.UtcNow;
             workspace.UpdatedBy = userId;
+            workspace.RequireVerifiedDomainForInternal = false;
 
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);

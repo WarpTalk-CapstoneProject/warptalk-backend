@@ -280,6 +280,20 @@ public static class WorkspaceHelper
             || (workspace.AllowSubdomains && normalizedDomain.EndsWith($".{verifiedDomain}", StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// Which workspace currently holds <paramref name="domain"/>, if any.
+    ///
+    /// Deliberately blind to the owning workspace's lifecycle. It used to skip suspended and
+    /// soft-deleted workspaces, which disagreed with the partial unique index behind the same
+    /// rule — the index only looks at <c>status</c>. A caller was told the domain was free,
+    /// the INSERT then hit the index, and the request failed as a 500 instead of a refusal.
+    ///
+    /// Suspension is reversible, so it must not release a claim: the workspace is coming back
+    /// and expects to still hold its domain. Deletion is terminal, and releases the claim by
+    /// revoking the rows outright (see SoftDeleteWorkspaceAsync) rather than by being filtered
+    /// out here — which keeps a single rule, "a domain is taken while its row is verified",
+    /// true at both layers.
+    /// </summary>
     public static async Task<Guid?> GetWorkspaceIdVerifyingDomainAsync(IUnitOfWork unitOfWork, string domain, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(domain)) return null;
@@ -289,13 +303,44 @@ public static class WorkspaceHelper
             vd => vd.Domain.ToLower() == domain.ToLower()
                   && vd.Status == verifiedStatus
                   && vd.VerifiedAt != null
-                  && vd.RevokedAt == null
-                  && vd.Workspace.IsActive
-                  && vd.Workspace.DeletedAt == null,
+                  && vd.RevokedAt == null,
             "Workspace",
             ct);
 
         return verifiedDomain?.WorkspaceId;
+    }
+
+    /// <summary>
+    /// Restores the invariant that defines a workspace's membership policy:
+    ///
+    /// <code>require_verified_domain_for_internal == (active verified domains &gt; 0)</code>
+    ///
+    /// The column is derived, not configured. Holding a verified domain IS domain-verified
+    /// membership; holding none IS manually-assigned membership. Nobody sets the flag — an
+    /// Owner adds or revokes a domain and the policy follows, which is why the settings
+    /// endpoint refuses the field outright.
+    ///
+    /// Every path that changes the domain list calls this, and no path sets the column
+    /// directly. Three copies of one invariant is how WT-179 happened the first time.
+    ///
+    /// Returns the policy now in force.
+    /// </summary>
+    public static async Task<bool> RecomputeDomainPolicyAsync(
+        IUnitOfWork unitOfWork,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        var activeDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
+        var requireVerifiedDomain = activeDomains.Count > 0;
+
+        if (workspace.RequireVerifiedDomainForInternal != requireVerifiedDomain)
+        {
+            workspace.RequireVerifiedDomainForInternal = requireVerifiedDomain;
+            workspace.UpdatedAt = DateTime.UtcNow;
+            unitOfWork.WorkspaceRepository.Update(workspace);
+        }
+
+        return requireVerifiedDomain;
     }
 
     public static bool AreEquivalentAiPolicies(AiUsagePolicyConfiguration? current, AiUsagePolicyConfiguration? requested)

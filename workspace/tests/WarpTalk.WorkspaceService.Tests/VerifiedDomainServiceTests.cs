@@ -58,7 +58,7 @@ public class VerifiedDomainServiceTests
             Substitute.For<ILogger<VerifiedDomainService>>());
     }
 
-    private void SetupWorkspace(bool requireVerifiedDomain = false)
+    private Workspace SetupWorkspace(bool requireVerifiedDomain = false)
     {
         var workspace = new Workspace
         {
@@ -71,6 +71,8 @@ public class VerifiedDomainServiceTests
 
         _workspaceRepository.GetByIdAsync(_workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
+
+        return workspace;
     }
 
     private void SetupMember(Guid roleId)
@@ -247,10 +249,15 @@ public class VerifiedDomainServiceTests
 
     [Fact]
     [Trait("Category", "DomainRevocation")]
-    public async Task RevokeDomainAsync_ShouldFail_WhenLastDomain_And_RequireVerifiedDomainForInternal()
+    public async Task RevokeDomainAsync_ShouldSucceed_AndDropDomainPolicy_WhenRevokingLastDomain()
     {
+        // This used to be refused with CannotRevokeLastDomain. That guard contradicted the rule
+        // it was guarding: the membership policy is derived from the domain list, so revoking the
+        // last domain IS how a workspace returns to assigning membership by hand. Refusing here
+        // left no way back — a workspace that ever verified a domain was domain-verified for good.
+        //
         // Arrange
-        SetupWorkspace(requireVerifiedDomain: true);
+        var workspace = SetupWorkspace(requireVerifiedDomain: true);
         SetupMember(_ownerRoleId);
 
         var domainId = Guid.NewGuid();
@@ -268,18 +275,31 @@ public class VerifiedDomainServiceTests
             Arg.Any<CancellationToken>())
             .Returns(domain);
 
+        // No member is Internal by virtue of this domain, so the guard that DOES remain — the one
+        // protecting existing members — has nothing to protect here.
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
+
+        // Before revoke the workspace holds this one domain; afterwards it holds none, which is
+        // what RecomputeDomainPolicyAsync reads.
         _verifiedDomainRepo.FindAsync(
             Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
             Arg.Any<string>(),
             Arg.Any<CancellationToken>())
-            .Returns(new List<WorkspaceVerifiedDomain> { domain });
+            .Returns(_ => domain.RevokedAt == null
+                ? new List<WorkspaceVerifiedDomain> { domain }
+                : new List<WorkspaceVerifiedDomain>());
 
         // Act
         var result = await _service.RevokeDomainAsync(_workspaceId, domainId, _userId);
 
         // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(WorkspaceConstants.Errors.CannotRevokeLastDomain, result.Error);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(domain.RevokedAt);
+        Assert.False(workspace.RequireVerifiedDomainForInternal);
     }
 
     [Fact]
