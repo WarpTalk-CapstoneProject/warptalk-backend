@@ -95,4 +95,38 @@ public class NotificationValidatorTests
         Assert.False(result.IsSuccess);
         Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
     }
+
+    // The production defect of 2026-08-13: a user was invited to a meeting and "bị lỗi ở noti".
+    // MEETING_STARTED and MEETING_SUMMARY_READY are published by translation-room and were
+    // missing from the schema table, so an unknown type carrying a payload was rejected outright
+    // — every "your meeting started" and every "your summary is ready" notification silently
+    // discarded. Neither producer reads the reply, so the only trace was a log warning.
+    [Theory]
+    [InlineData(NotificationConstants.TypeMeetingStarted)]
+    [InlineData(NotificationConstants.TypeMeetingSummaryReady)]
+    public void Validate_MeetingLifecyclePayload_IsAccepted(string type)
+    {
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            room_id = "019ff9e1-e3e2-7024-99b7-6e37c6a18392",
+            room_title = "Test 13/8"
+        });
+
+        var result = NotificationValidator.Validate(type, "Title", "Content", "http://localhost/room", payload);
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(NotificationConstants.TypeMeetingStarted)]
+    [InlineData(NotificationConstants.TypeMeetingSummaryReady)]
+    public void Validate_MeetingLifecycleWithoutItsRoom_IsRejected(string type)
+    {
+        // Registered as REQUIRED on purpose: a notification about a meeting, with no meeting on
+        // it, has nothing for the client to open.
+        var result = NotificationValidator.Validate(type, "Title", "Content", null, "{}");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(NotificationConstants.ErrorMissingRequiredFields, result.Error);
+    }
 }

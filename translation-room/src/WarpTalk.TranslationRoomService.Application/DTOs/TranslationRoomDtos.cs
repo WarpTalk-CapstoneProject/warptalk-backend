@@ -170,7 +170,14 @@ public record TranslationRoomDto(
     // WT-327: the recurring series this room is an occurrence of, or null for a one-off.
     // Optional with a default so every existing construction site — and every existing client —
     // is unaffected: a room that is not part of a series looks exactly as it always did.
-    Guid? SeriesId = null
+    Guid? SeriesId = null,
+    /// <summary>
+    /// Distinct people who have ever been in this room. ParticipantCount answers "who is in
+    /// there NOW" and is 0 for every finished meeting — which is why an ended room reported
+    /// "0/100" however many people attended it. Trailing and defaulted so every existing
+    /// positional construction site still compiles.
+    /// </summary>
+    int AttendedCount = 0
 );
 
 public record TranslationRoomListItemDto(
@@ -200,7 +207,13 @@ public record TranslationRoomListItemDto(
     // WT-327: the booking this row stands for, populated only when the list was asked to group
     // by series. Null on an ungrouped list even for an occurrence, so a caller can never mistake
     // "one occurrence of many" for "the whole booking".
-    SeriesListSummaryDto? Series = null
+    SeriesListSummaryDto? Series = null,
+    /// <summary>
+    /// Distinct people who have ever been in this room, whatever their status now.
+    /// ParticipantCount is live occupancy and is 0 for every finished meeting, which is why an
+    /// ended room showed "0/100" no matter how many attended.
+    /// </summary>
+    int AttendedCount = 0
 );
 
 /// <summary>

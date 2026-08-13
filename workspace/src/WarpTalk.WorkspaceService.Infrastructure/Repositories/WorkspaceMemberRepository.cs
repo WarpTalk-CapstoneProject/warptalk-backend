@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -82,6 +83,12 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
             .ToListAsync(ct);
     }
 
+    /// <summary>Defines membership visibility for workspace directory queries.</summary>
+    public static Expression<Func<WorkspaceMember, bool>> DirectoryVisibilityFilter(bool includeInactiveAndBanned)
+        => includeInactiveAndBanned
+            ? m => m.RemovedAt == null
+            : m => m.RemovedAt == null && m.Status.ToLower() == ActiveStatus;
+
     public async Task<(List<WorkspaceMember> Items, int TotalCount)> GetPagedMembersAsync(
         Guid workspaceId,
         int page,
@@ -90,12 +97,9 @@ public class WorkspaceMemberRepository : GenericRepository<WorkspaceMember>, IWo
         bool isDescending = true,
         CancellationToken ct = default)
     {
-        var query = _dbSet.AsNoTracking().Where(m => m.WorkspaceId == workspaceId);
-
-        if (!includeInactiveAndBanned)
-        {
-            query = query.Where(m => m.Status.ToLower() == ActiveStatus && m.RemovedAt == null);
-        }
+        var query = _dbSet.AsNoTracking()
+            .Where(m => m.WorkspaceId == workspaceId)
+            .Where(DirectoryVisibilityFilter(includeInactiveAndBanned));
 
         var totalCount = await query.CountAsync(ct);
 

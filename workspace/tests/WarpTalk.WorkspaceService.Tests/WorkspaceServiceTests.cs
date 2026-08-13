@@ -821,6 +821,7 @@ public class WorkspaceServiceTests
             Name = "DeepMind",
             Slug = "deepmind",
             LogoUrl = "logo.png",
+            IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -906,6 +907,75 @@ public class WorkspaceServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceByIdAsync_ShouldFail_WhenWorkspaceIsSoftDeleted()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = Guid.NewGuid(),
+            MembershipType = MembershipType.Internal.ToString()
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(member);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace
+            {
+                Id = workspaceId,
+                Name = "DeepMind",
+                Slug = "deepmind",
+                IsActive = true,
+                DeletedAt = DateTime.UtcNow
+            });
+
+        var result = await _workspaceService.GetWorkspaceByIdAsync(workspaceId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNotFound, result.Error);
+    }
+
+    [Fact]
+    public async Task GetWorkspaceByIdAsync_ShouldFail_WhenWorkspaceIsDeactivated()
+    {
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var member = new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = Guid.NewGuid(),
+            MembershipType = MembershipType.Internal.ToString()
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(member);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace
+            {
+                Id = workspaceId,
+                Name = "DeepMind",
+                Slug = "deepmind",
+                IsActive = false
+            });
+
+        var result = await _workspaceService.GetWorkspaceByIdAsync(workspaceId, userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceInactive, result.Error);
     }
 
     [Fact]

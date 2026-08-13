@@ -32,6 +32,27 @@ public class GoogleAuthController : ControllerBase
         var result = await _googleAuthService.GoogleLoginAsync(loginRequest, ct);
         if (!result.IsSuccess)
         {
+            // WT-361 — the same lesson TokenController.Refresh already learned in WT-344: a
+            // failure to ANSWER is not a verdict on the credential.
+            //
+            // Every failure here returned 400, so a database blip, an unreachable Google, or a
+            // misconfigured client id were all indistinguishable from a token we looked at and
+            // refused. The bug report for this endpoint is literally "400 Bad Request" and
+            // nothing more, because 400 is the only thing it can say.
+            //
+            // 5xx is the honest answer for "we could not check", and it also tells the browser
+            // this is worth retrying — which a rejected token never is.
+            var isServiceFault =
+                result.ErrorCode == ErrorCodes.InternalServerError
+                || result.ErrorCode == ErrorCodes.ServiceUnavailable;
+
+            if (isServiceFault)
+            {
+                return StatusCode(
+                    StatusCodes.Status503ServiceUnavailable,
+                    new ApiErrorResponse(result.Error, result.ErrorCode));
+            }
+
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         var auth = result.Value!;

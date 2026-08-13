@@ -289,8 +289,10 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 
-    [Fact]
-    public async Task ListMembersAsync_ShouldShowAllMembersIncludingRemovedAndBanned_WhenRequesterIsOwnerOrAdmin()
+    [Theory]
+    [InlineData("Owner")]
+    [InlineData("Admin")]
+    public async Task ListMembersAsync_ShouldShowSuspendedMembers_WhenRequesterIsOwnerOrAdmin(string requesterRoleName)
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
@@ -305,17 +307,17 @@ public class WorkspaceMemberServiceTests
             .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "Internal", RoleId = requesterRoleId });
 
         _authIdentity.GetRoleByIdAsync(requesterRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = requesterRoleId, Name = "Owner" });
+            .Returns(new Role { Id = requesterRoleId, Name = requesterRoleName });
 
         var activeMemberUserId = Guid.NewGuid();
-        var removedMemberUserId = Guid.NewGuid();
+        var suspendedMemberUserId = Guid.NewGuid();
         var activeRoleId = Guid.NewGuid();
-        var removedRoleId = Guid.NewGuid();
+        var suspendedRoleId = Guid.NewGuid();
 
         var members = new List<WorkspaceMember>
         {
             new() { WorkspaceId = workspaceId, UserId = activeMemberUserId, RoleId = activeRoleId, Status = "Active", JoinedAt = DateTime.UtcNow.AddDays(-1) },
-            new() { WorkspaceId = workspaceId, UserId = removedMemberUserId, RoleId = removedRoleId, Status = "Removed", JoinedAt = DateTime.UtcNow, RemovedAt = DateTime.UtcNow }
+            new() { WorkspaceId = workspaceId, UserId = suspendedMemberUserId, RoleId = suspendedRoleId, Status = "Suspended", JoinedAt = DateTime.UtcNow }
         };
 
         _workspaceMemberRepository.GetPagedMembersAsync(workspaceId, query.Page, query.PageSize, true, true, Arg.Any<CancellationToken>())
@@ -323,13 +325,13 @@ public class WorkspaceMemberServiceTests
 
         _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = activeMemberUserId, FullName = "Active User", Email = "active@warptalk.vn" });
-        _authIdentity.GetUserByIdAsync(removedMemberUserId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = removedMemberUserId, FullName = "Removed User", Email = "removed@warptalk.vn" });
+        _authIdentity.GetUserByIdAsync(suspendedMemberUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = suspendedMemberUserId, FullName = "Suspended User", Email = "suspended@warptalk.vn" });
 
         _authIdentity.GetRoleByIdAsync(activeRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = activeRoleId, Name = "Member" });
-        _authIdentity.GetRoleByIdAsync(removedRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = removedRoleId, Name = "Member" });
+        _authIdentity.GetRoleByIdAsync(suspendedRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = suspendedRoleId, Name = "Member" });
 
         // Act
         var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);
@@ -340,8 +342,67 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(2, result.Value.Total);
         Assert.Equal("Active User", result.Value.Items[0].FullName);
         Assert.Equal("active@warptalk.vn", result.Value.Items[0].Email); // Owner/Admin can see emails
-        Assert.Equal("Removed User", result.Value.Items[1].FullName);
-        Assert.Equal("removed@warptalk.vn", result.Value.Items[1].Email);
+        Assert.Equal("Suspended User", result.Value.Items[1].FullName);
+        Assert.Equal("suspended@warptalk.vn", result.Value.Items[1].Email);
+    }
+
+    [Theory]
+    [InlineData("Owner")]
+    [InlineData("Admin")]
+    public async Task ListMembersAsync_ShouldExcludeRemovedMembersFromSearch_WhenRequesterIsOwnerOrAdmin(string requesterRoleName)
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var requesterUserId = Guid.NewGuid();
+        var query = new GetWorkspacesQuery(Page: 1, PageSize: 10, Search: "Removed");
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId });
+
+        var requesterRoleId = Guid.NewGuid();
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = requesterUserId, MembershipType = "Internal", RoleId = requesterRoleId });
+
+        StubRoleName(requesterRoleId, requesterRoleName);
+
+        var removedMemberUserId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        StubRoleName(memberRoleId, "Member");
+        _authIdentity.GetUserByIdAsync(removedMemberUserId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = removedMemberUserId, FullName = "Removed User", Email = "removed@warptalk.vn" });
+
+        // The repository is the real filter, so what this asserts is the predicate the service
+        // hands it: run it over the row that must not survive.
+        var rowsInWorkspace = new List<WorkspaceMember>
+        {
+            new()
+            {
+                WorkspaceId = workspaceId,
+                UserId = removedMemberUserId,
+                RoleId = memberRoleId,
+                Status = WorkspaceMemberStatus.Removed.ToStorageValue(),
+                MembershipType = "Internal",
+                JoinedAt = DateTime.UtcNow.AddDays(-2),
+                RemovedAt = DateTime.UtcNow
+            }
+        };
+
+        _workspaceMemberRepository
+            .FindAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                var predicate = call.Arg<Expression<Func<WorkspaceMember, bool>>>().Compile();
+                return (IReadOnlyList<WorkspaceMember>)rowsInWorkspace.Where(predicate).ToList();
+            });
+
+        // Act
+        var result = await _workspaceMemberService.ListMembersAsync(workspaceId, query, requesterUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        Assert.Empty(result.Value.Items);
+        Assert.Equal(0, result.Value.Total);
     }
 
     [Fact]
