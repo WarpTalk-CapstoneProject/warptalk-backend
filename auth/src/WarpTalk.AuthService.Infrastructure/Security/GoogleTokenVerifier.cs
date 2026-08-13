@@ -27,11 +27,10 @@ namespace WarpTalk.AuthService.Infrastructure.Security;
 /// session on the victim's email — no password, no phishing of WarpTalk itself, nothing the
 /// victim could notice.
 ///
-/// The frontend currently sends an OAuth2 <i>access</i> token, not an ID token
-/// (<c>useGoogleLogin</c> from @react-oauth/google returns <c>access_token</c>), so the
-/// access-token branch cannot simply be deleted without breaking Google sign-in. It is instead
-/// gated on <c>tokeninfo</c>, which unlike userinfo *does* report the audience the token was
-/// issued to. A token from any other client is now rejected.
+/// Current web clients send Google ID tokens, but the access-token branch is kept temporarily
+/// for older deployed clients during rollout. It is gated on <c>tokeninfo</c>, which unlike
+/// userinfo *does* report the audience the token was issued to. A token from any other client
+/// is rejected.
 ///
 /// The correct end state is for the frontend to send an ID token and for the access-token
 /// branch to be removed entirely.
@@ -52,8 +51,14 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
         IHttpClientFactory httpClientFactory,
         ILogger<GoogleTokenVerifier> logger)
     {
-        _clientId = configuration["Authentication:Google:ClientId"]
-            ?? throw new InvalidOperationException("Google ClientId is not configured.");
+        var clientId = configuration["Authentication:Google:ClientId"]?.Trim();
+        if (string.IsNullOrWhiteSpace(clientId)
+            || string.Equals(clientId, "CHANGE_ME", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Google ClientId is not configured.");
+        }
+
+        _clientId = clientId;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -98,7 +103,8 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
             return null;
         }
 
-        // 2. Opaque OAuth2 access token. Only reachable because the web client still sends one.
+        // 2. Opaque OAuth2 access token. Kept temporarily so clients deployed before the
+        // ID-token contract update keep working during rollout.
         return await VerifyAccessTokenAsync(idToken, ct);
     }
 

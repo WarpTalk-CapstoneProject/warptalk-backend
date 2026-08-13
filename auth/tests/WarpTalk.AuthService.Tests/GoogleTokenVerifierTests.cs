@@ -138,12 +138,27 @@ public class GoogleTokenVerifierTests
         Assert.Null(await CreateVerifier(new StubHandler()).VerifyGoogleTokenAsync(token));
     }
 
-    private static GoogleTokenVerifier CreateVerifier(StubHandler handler)
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("CHANGE_ME")]
+    public void Rejects_missing_or_placeholder_google_client_id(string? clientId)
+    {
+        var handler = new StubHandler();
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => CreateVerifier(handler, clientId));
+
+        Assert.Contains("Google ClientId is not configured", error.Message);
+    }
+
+    private static GoogleTokenVerifier CreateVerifier(StubHandler handler, string? clientId = OurClientId)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Authentication:Google:ClientId"] = OurClientId
+                ["Authentication:Google:ClientId"] = clientId
             })
             .Build();
 
