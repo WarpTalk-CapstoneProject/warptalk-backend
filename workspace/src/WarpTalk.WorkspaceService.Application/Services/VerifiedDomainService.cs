@@ -130,7 +130,7 @@ public class VerifiedDomainService : IVerifiedDomainService
 
             return Result.Success(entry.ToDto());
         }
-        catch (Exception ex) when (_unitOfWork.IsUniqueIndexViolation(ex, WorkspaceConstants.UniqueVerifiedDomainIndex))
+        catch (Exception ex) when (_unitOfWork.WorkspaceVerifiedDomainRepository.IsDomainAlreadyClaimedViolation(ex))
         {
             // Two requests can both pass the "not already claimed" check above and then race to
             // insert — the partial unique index on (domain) WHERE status = 'verified' is what

@@ -18,13 +18,6 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
-    /// <summary>
-    /// The partial unique index enforcing "one workspace per verified domain":
-    /// <c>ON workspace_verified_domains (domain) WHERE status = 'verified'</c>.
-    /// Named here because the service needs to recognise this specific index rejecting a
-    /// concurrent claim, and tell it apart from any other database failure.
-    /// </summary>
-    public const string UniqueVerifiedDomainIndex = "idx_workspace_verified_domains_unique_verified";
 
     // Error Messages
     public static class Errors

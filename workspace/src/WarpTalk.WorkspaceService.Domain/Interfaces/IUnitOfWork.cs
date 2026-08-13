@@ -24,15 +24,4 @@ public interface IUnitOfWork : IDisposable
     // repository here handed every IUnitOfWork holder an Update()/Remove() on audit history.
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
-
-    /// <summary>
-    /// Whether <paramref name="exception"/> is the database refusing a write because it would
-    /// duplicate a value the named unique index already holds — as opposed to any other failure,
-    /// which must still surface as an error.
-    ///
-    /// Exists so a service can tell "somebody else got there first" apart from "the database is
-    /// broken" without knowing which database it is talking to. The vendor-specific detection
-    /// lives in the implementation; the caller only names the index whose rule it expects.
-    /// </summary>
-    bool IsUniqueIndexViolation(Exception exception, string indexName);
 }
