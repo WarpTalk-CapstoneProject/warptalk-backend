@@ -722,7 +722,7 @@ cần thay implementation — không đụng call site nào.
 > bug đang sống → mục 3.17. Provider ở đây chỉ gom được phía backend; phía web vẫn là bản sao thủ
 > công cho tới khi có endpoint đọc platform config.
 
-Phần còn lại (bảng, API, admin UI, cache) tách ticket riêng → Q10.
+Phần còn lại (bảng, API, admin UI, cache) đã tách thành **WT-360**.
 
 ### 4.9 Đối chiếu hai loại theo từng action *(rà toàn bộ, không suy đoán)*
 
@@ -988,19 +988,13 @@ cả hai policy. Đăng nhập bằng Admin → không thấy control nào của
 | Q7 | Transfer ownership ràng buộc trong cùng verified domain → D-11, nên domain của workspace không đổi qua flow transfer. |
 | Q8 | Không có hai rule. D-11 là **một câu** áp dụng đồng nhất; workspace manual có tập verified domain rỗng nên ràng buộc rỗng theo nghĩa toán học. Không viết nhánh `if` theo loại workspace. |
 | Q11 | Giữ nguyên cột `allow_subdomains` trong DB, **không thêm logic BE** trong branch này. Mục 3.14 gỡ bỏ. Ghi nhận là nợ kỹ thuật ở §8, kèm điều kiện phải thoả khi mở lại. |
-| — | Dropdown invite: `Member` / `Admin` / `External`, bỏ chữ "guest", hiển thị policy "External luôn ở role Member" → §4.6. |
-
 | Q6 | Chặn Admin sửa verified domain ở **cả BE lẫn FE** → D-14. Admin vẫn xem được. |
+| Q10 | Hạ tầng platform config tách ticket riêng: **[WT-360](https://linear.app/fpt-sep490-su26/issue/WT-360/system-admin-configure-djuoc-platform-policy-bang-platform-dja-co)** — High, label `Feature`, assign Tú Huỳnh. Branch này chỉ giữ seam `IPublicEmailDomainProvider` (mục 3.12); WT-360 thay implementation. **OQ-8 của WT-360 phụ thuộc thứ tự merge với branch này.** |
+| Q11 | Giữ nguyên cột `allow_subdomains` trong DB, **không thêm logic BE** trong branch này. Mục 3.14 gỡ bỏ. Ghi nhận là nợ kỹ thuật ở §8, kèm điều kiện phải thoả khi mở lại. |
+| — | Dropdown invite: `Member` / `Admin` / `External`, bỏ chữ "guest", hiển thị policy "External luôn ở role Member" → §4.6. |
 | — | Bất biến "một domain một workspace" phải kín ở cả 4 khe hở → D-15, RC-7. |
 
 ### Còn treo
-- **Q10** *(mới, từ §4.8)* — Hạ tầng platform config: mở ticket riêng ngay, hay để sau capstone?
-  Bốn bảng `platform.*` và `privacy.policy_versions` đã có trong schema nhưng chưa có code. Nếu
-  làm, phạm vi tối thiểu là: đọc `system_configurations` cho danh sách public domain, đọc
-  `policy_versions` cho văn bản consent (`policy_type = verified_domain_assertion`), một trang
-  admin để sửa, và ghi `config_change_logs` mỗi lần đổi. Cache và invalidation xuyên service là
-  phần khó nhất — danh sách public domain được đọc trên đường create workspace và invite, nên
-  không thể query DB mỗi lần.
 - **Q9** *(thu hẹp)* — **Ở vòng đời bình thường D-11 không bao giờ fire.** Mọi Internal member của
   workspace domain-verified đều có domain thuộc list, vì `WorkspaceInvitationPolicy.ValidateAsync:126-146`
   chặn ở create và accept path re-check lại. Tập ứng viên = toàn bộ Internal member.
