@@ -511,10 +511,42 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             .FirstOrDefaultAsync(room => room.SeriesId == series.Id, ct: ct);
         var sharedRoomCode = existingOccurrence?.TranslationRoomCode;
 
+        // Which of these dates this series ALREADY has a room for.
+        //
+        // The enumerator works from the watermark and knows nothing about the rows; the unique
+        // index `(series_id, series_occurrence_local_date) WHERE series_id IS NOT NULL` counts
+        // every row including CANCELLED ones. So a series whose occurrences were cancelled has
+        // dates the enumerator offers again and the database refuses — and the refusal used to
+        // stop the pass without saving anything, which is a sweep that fails identically every
+        // five minutes forever. Production had two series doing exactly that, one of them since
+        // its occurrences were cancelled in bulk.
+        //
+        // Read once for the whole pass rather than per date: it is one query either way and the
+        // set is at most MaxOccurrencesPerPass wide.
+        var alreadyMaterialised = (await _unitOfWork.TranslationRoomRepository.FindAsync(
+                room => room.SeriesId == series.Id && room.SeriesOccurrenceLocalDate != null,
+                ct: ct))
+            .Select(room => room.SeriesOccurrenceLocalDate!.Value)
+            .ToHashSet();
+
         var created = 0;
+        var watermarkMoved = false;
 
         foreach (var date in dates)
         {
+            // Already there — cancelled, or created by a concurrent sweep on another replica.
+            // Either way this date is done, and the watermark has to move past it or the pass
+            // will offer it again for as long as the row exists.
+            if (alreadyMaterialised.Contains(date))
+            {
+                _logger.LogInformation(
+                    "WT-327: series {SeriesId} already has an occurrence for {Date}; advancing past it.",
+                    series.Id, date);
+                series.MaterializedThroughLocalDate = date;
+                watermarkMoved = true;
+                continue;
+            }
+
             var result = await CreateOccurrenceAsync(
                 series, plan, date, isFirst: false, invitedEmails, ct, sharedRoomCode);
             if (!result.IsSuccess)
@@ -529,10 +561,15 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             }
 
             created++;
+            watermarkMoved = true;
             series.MaterializedThroughLocalDate = date;
         }
 
-        if (created > 0)
+        // `created > 0` was the old condition, and it is why the loop above could never escape:
+        // a pass that skipped every date it was offered saved nothing, so the next pass was
+        // handed the identical work. Any watermark movement has to be persisted, whether the
+        // occurrences behind it were created now or found already there.
+        if (watermarkMoved)
         {
             if (RecurrenceScheduleCalculator.IsFullyMaterialized(series.MaterializedThroughLocalDate, series.EndsOnLocalDate))
             {
