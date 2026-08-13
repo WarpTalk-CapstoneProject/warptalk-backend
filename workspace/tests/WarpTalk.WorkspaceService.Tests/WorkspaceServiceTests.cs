@@ -1395,6 +1395,167 @@ public class WorkspaceServiceTests
 
     #endregion
 
+    #region RenameWorkspaceAsync Tests
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldSucceed_AndLeaveSlugUnchanged_WhenRequesterIsOwner()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId, Name = "DeepMind Team", Slug = "deepmind-team" };
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ownerMember);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest("  Gemini Team  "), ownerUserId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Gemini Team", workspace.Name);
+        // The slug is the addressable identity of the workspace and must survive a rename.
+        Assert.Equal("deepmind-team", workspace.Slug);
+        Assert.Equal(ownerUserId, workspace.UpdatedBy);
+
+        _workspaceRepository.Received(1).Update(workspace);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldFail_WhenRequesterIsAdmin()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var adminUserId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid(), Name = "DeepMind Team", Slug = "deepmind-team" };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminUserId, RoleId = adminRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(adminMember);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest("Gemini Team"), adminUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanRenameWorkspace, result.Error);
+        Assert.Equal("DeepMind Team", workspace.Name);
+        Assert.Equal("deepmind-team", workspace.Slug);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldFail_WhenRequesterIsMember()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var memberUserId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid(), Name = "DeepMind Team", Slug = "deepmind-team" };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = memberUserId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest("Gemini Team"), memberUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanRenameWorkspace, result.Error);
+        Assert.Equal("DeepMind Team", workspace.Name);
+        Assert.Equal("deepmind-team", workspace.Slug);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldFail_WhenNameIsBlank()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest("   "), ownerUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNameRequired, result.Error);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldFail_WhenNameExceedsColumnLength()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var tooLong = new string('a', WorkspaceConstants.MaxWorkspaceNameLength + 1);
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest(tooLong), ownerUserId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNameTooLong, result.Error);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RenameWorkspaceAsync_ShouldFail_WhenWorkspaceNotFound()
+    {
+        // Arrange
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((Workspace?)null);
+
+        // Act
+        var result = await _workspaceService.RenameWorkspaceAsync(workspaceId, new RenameWorkspaceRequest("Gemini Team"), userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.WorkspaceNotFound, result.Error);
+
+        _workspaceRepository.DidNotReceive().Update(Arg.Any<Workspace>());
+        await _unitOfWork.DidNotReceive().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
     #region SoftDeleteWorkspaceAsync Tests
 
     [Fact]

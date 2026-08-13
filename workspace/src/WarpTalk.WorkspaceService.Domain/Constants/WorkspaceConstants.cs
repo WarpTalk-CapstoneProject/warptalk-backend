@@ -18,6 +18,9 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+    // Matches workspace.workspaces.name VARCHAR(150) in the database schema.
+    public const int MaxWorkspaceNameLength = 150;
+
     // Error Messages
     public static class Errors
     {
@@ -48,6 +51,8 @@ public static class WorkspaceConstants
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
+        public const string OnlyOwnerCanRenameWorkspace = "Only the workspace owner can rename the workspace.";
+        public const string WorkspaceNameTooLong = "Workspace name must be 150 characters or fewer.";
 
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";

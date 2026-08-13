@@ -198,6 +198,28 @@ public class WorkspacesController : ControllerBase
     }
 
     [Authorize]
+    [HttpPatch("{id:guid}/name")]
+    public async Task<IActionResult> RenameWorkspace(Guid id, [FromBody] RenameWorkspaceRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _workspaceService.RenameWorkspaceAsync(id, request, userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return NoContent();
+    }
+
+    [Authorize]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> DeleteWorkspace(Guid id, CancellationToken ct)
     {

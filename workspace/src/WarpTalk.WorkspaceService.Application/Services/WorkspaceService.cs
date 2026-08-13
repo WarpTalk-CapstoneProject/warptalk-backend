@@ -496,6 +496,58 @@ public class WorkspaceService : IWorkspaceService
         }
     }
 
+    public async Task<Result> RenameWorkspaceAsync(Guid workspaceId, RenameWorkspaceRequest request, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            var name = request?.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNameRequired, ErrorCodes.ValidationError);
+            }
+
+            if (name.Length > WorkspaceConstants.MaxWorkspaceNameLength)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNameTooLong, ErrorCodes.ValidationError);
+            }
+
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null || workspace.DeletedAt != null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var executingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (executingMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotActiveMember, ErrorCodes.Forbidden);
+            }
+
+            var execRoleName = await _authIdentity.GetRoleNameByIdAsync(executingMember.RoleId, ct);
+            if (!execRoleName.IsOwner())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanRenameWorkspace, ErrorCodes.Forbidden);
+            }
+
+            // Slug is deliberately left untouched — see RenameWorkspaceRequest. A rename changes
+            // what the workspace is called, never where it is addressed.
+            workspace.Name = name;
+            workspace.UpdatedAt = DateTime.UtcNow;
+            workspace.UpdatedBy = userId;
+
+            _unitOfWork.WorkspaceRepository.Update(workspace);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while renaming workspace. WorkspaceId: {WorkspaceId}, UserId: {UserId}", workspaceId, userId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result> SoftDeleteWorkspaceAsync(Guid workspaceId, Guid userId, CancellationToken ct = default)
     {
         try

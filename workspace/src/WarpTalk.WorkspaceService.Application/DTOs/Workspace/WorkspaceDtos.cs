@@ -10,6 +10,16 @@ public record CreateWorkspaceRequest(
     bool? RequireVerifiedDomainForInternal = null
 );
 
+/// <summary>
+/// Renaming only ever touches the display name. The slug stays exactly as it was created:
+/// it is the primary lookup key for every [workspaceSlug] route and for the invitation join
+/// flow, so regenerating it would break every member's stored links and free the old slug up
+/// for squatting.
+/// </summary>
+public record RenameWorkspaceRequest(
+    string Name
+);
+
 public record GetWorkspacesQuery
 {
     public int Page { get; init; }
