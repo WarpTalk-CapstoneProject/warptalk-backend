@@ -18,6 +18,14 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+    /// <summary>
+    /// The partial unique index enforcing "one workspace per verified domain":
+    /// <c>ON workspace_verified_domains (domain) WHERE status = 'verified'</c>.
+    /// Named here because the service needs to recognise this specific index rejecting a
+    /// concurrent claim, and tell it apart from any other database failure.
+    /// </summary>
+    public const string UniqueVerifiedDomainIndex = "idx_workspace_verified_domains_unique_verified";
+
     // Error Messages
     public static class Errors
     {
@@ -29,6 +37,8 @@ public static class WorkspaceConstants
         public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
         public const string PublicEmailDomainCannotCreateWorkspace = "A public email domain cannot create a workspace. Use a business email address, or join an existing workspace by invitation.";
         public const string CannotVerifyUnownedDomain = "A workspace can only verify the email domain of the account creating it.";
+        public const string ConsentRequiredForSelfAssertedDomain = "Claiming a domain other than your own account's requires confirming that your organization owns it.";
+        public const string NewOwnerMustShareVerifiedDomain = "The new owner's email must be on one of this workspace's verified domains. Revoke the verified domains first if you need to hand the workspace to someone outside them.";
         public const string RequiredOwnerRoleNotFound = "Required owner role not found.";
         public const string UnexpectedErrorCreatingWorkspace = "An unexpected error occurred while creating the workspace.";
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";

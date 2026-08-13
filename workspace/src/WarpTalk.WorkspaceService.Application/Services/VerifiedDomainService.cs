@@ -38,8 +38,12 @@ public class VerifiedDomainService : IVerifiedDomainService
     // ADD
     // ─────────────────────────────────────────────────────────────────────────
 
-    public async Task<Result<VerifiedDomainDto>> AddDomainAsync(
+    public Task<Result<VerifiedDomainDto>> AddDomainAsync(
         Guid workspaceId, string domain, Guid userId, CancellationToken ct = default)
+        => AddDomainAsync(workspaceId, domain, userId, consentVersion: null, ct);
+
+    public async Task<Result<VerifiedDomainDto>> AddDomainAsync(
+        Guid workspaceId, string domain, Guid userId, string? consentVersion, CancellationToken ct = default)
     {
         try
         {
@@ -64,29 +68,32 @@ public class VerifiedDomainService : IVerifiedDomainService
             if (EmailAddress.IsPublicDomainName(domain))
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
 
-            // 3a. The caller may only claim the domain of their own account email.
+            // 3a. Which trust tier this claim rests on.
             //
-            // This is the same rule CreateWorkspaceAsync applies, enforced on the
-            // post-creation surface. Without it the create-time rule is cosmetic: an
-            // attacker founds a workspace on their own domain and then adds
-            // victimcorp.com here. Rows written by this method are exactly what
-            // WorkspaceHelper.GetActiveVerifiedDomainsAsync reads, and therefore what
-            // decides who may be given the Internal membership tier.
+            // The rule used to be "the caller may only claim the domain of their own account
+            // email" — full stop, refusing everything else. That was the only thing standing
+            // between "non-public = enterprise-owned" (the actual business rule: every domain
+            // added here is already treated as if it passed DNS verification, and WarpTalk is
+            // not on the hook for a wrong claim) and a company with several domains being unable
+            // to register any but the first from one Owner account.
             //
-            // The old comment on step 6 ("non-public = enterprise-owned") is the
-            // defect: non-public does not mean owned by the caller. WT-157 left the
-            // real verification method (DNS TXT / token / email challenge) undecided
-            // and unimplemented, so account-email ownership is the strongest proof
-            // available without new schema. Consequence: a company with several
-            // domains cannot register them all from one Owner account. That is a
-            // deliberate trade-off — refusing a legitimate second domain is
-            // recoverable, handing victimcorp.com to a stranger is not.
+            // Multi-domain is now allowed outright — the schema always supported it (see the
+            // partial unique index on `domain WHERE status = 'verified'`, which caps a domain at
+            // one workspace, not a workspace at one domain). What changes with the domain is how
+            // much evidence backs the claim:
+            //   - matches the caller's own email  → owner_email, self-evidencing
+            //   - anything else                   → self_asserted, and the Owner must say so
             var caller = await _authIdentity.GetUserByIdAsync(userId, ct);
             if (caller == null || !EmailAddress.TryParse(caller.Email, out var callerEmail) || callerEmail == null)
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
 
-            if (!string.Equals(domain, callerEmail.Domain, StringComparison.OrdinalIgnoreCase))
-                return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, ErrorCodes.Forbidden);
+            var isOwnerEmailDomain = string.Equals(domain, callerEmail.Domain, StringComparison.OrdinalIgnoreCase);
+            var verificationMethod = isOwnerEmailDomain
+                ? VerifiedDomainVerificationMethods.OwnerEmail
+                : VerifiedDomainVerificationMethods.SelfAsserted;
+
+            if (!isOwnerEmailDomain && string.IsNullOrWhiteSpace(consentVersion))
+                return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.ConsentRequiredForSelfAssertedDomain, ErrorCodes.ValidationError);
 
             // 4. Domain must not already be claimed by another workspace
             var owningWorkspaceId = await WorkspaceHelper.GetWorkspaceIdVerifyingDomainAsync(_unitOfWork, domain, ct);
@@ -102,8 +109,16 @@ public class VerifiedDomainService : IVerifiedDomainService
             if (duplicate)
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.DomainAlreadyAddedToWorkspace, ErrorCodes.ValidationError);
 
-            // 6. Trust the domain immediately — business rule: non-public = enterprise-owned
-            var entry = VerifiedDomainMapper.ToEntity(workspaceId, domain, userId);
+            // 6. Trust the domain immediately — business rule: non-public = enterprise-owned.
+            // The consent version (for self_asserted) is written onto the row itself, in this
+            // same INSERT, rather than to a separate audit call — the evidence for a claim
+            // cannot be allowed to succeed or fail independently of the claim.
+            var entry = VerifiedDomainMapper.ToEntity(
+                workspaceId,
+                domain,
+                userId,
+                verificationMethod,
+                consentEvidence: isOwnerEmailDomain ? verificationMethod : consentVersion!);
 
             await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(entry, ct);
 
@@ -114,6 +129,17 @@ public class VerifiedDomainService : IVerifiedDomainService
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(entry.ToDto());
+        }
+        catch (Exception ex) when (_unitOfWork.IsUniqueIndexViolation(ex, WorkspaceConstants.UniqueVerifiedDomainIndex))
+        {
+            // Two requests can both pass the "not already claimed" check above and then race to
+            // insert — the partial unique index on (domain) WHERE status = 'verified' is what
+            // actually decides who wins. The loser used to surface as an unhandled 500: the index
+            // was protecting the data correctly all along, only the reported error was wrong.
+            _logger.LogInformation(
+                "Concurrent verified-domain claim lost the race. WorkspaceId: {WorkspaceId}, Domain: {Domain}",
+                workspaceId, domain);
+            return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.DomainRegisteredElsewhere, ErrorCodes.ValidationError);
         }
         catch (Exception ex)
         {

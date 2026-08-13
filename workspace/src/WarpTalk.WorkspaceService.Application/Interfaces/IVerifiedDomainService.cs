@@ -16,6 +16,12 @@ public interface IVerifiedDomainService
     /// </summary>
     Task<Result<VerifiedDomainDto>> AddDomainAsync(Guid workspaceId, string domain, Guid userId, CancellationToken ct = default);
 
+    /// <param name="consentVersion">
+    /// Required when <paramref name="domain"/> is not the caller's own email domain: nothing can
+    /// verify such a claim, so the Owner's recorded agreement is the only evidence behind it.
+    /// </param>
+    Task<Result<VerifiedDomainDto>> AddDomainAsync(Guid workspaceId, string domain, Guid userId, string? consentVersion, CancellationToken ct = default);
+
     /// <summary>
     /// Returns the active (non-revoked) verified domains for a workspace.
     /// Accessible to Owner and Admin.
@@ -23,9 +29,10 @@ public interface IVerifiedDomainService
     Task<Result<List<VerifiedDomainDto>>> ListDomainsAsync(Guid workspaceId, Guid userId, CancellationToken ct = default);
 
     /// <summary>
-    /// Revokes a verified domain. Blocked if it is the last active domain and
-    /// <c>RequireVerifiedDomainForInternal</c> is still enabled on the workspace.
-    /// Only the workspace Owner may call this.
+    /// Revokes a verified domain. Revoking the last one is allowed and returns the workspace to
+    /// assigning membership by hand — that is how the policy is turned off. Still blocked when an
+    /// active Internal member holds their status by virtue of this domain and no other domain
+    /// covers them. Only the workspace Owner may call this.
     /// </summary>
     Task<Result> RevokeDomainAsync(Guid workspaceId, Guid domainId, Guid userId, CancellationToken ct = default);
 }

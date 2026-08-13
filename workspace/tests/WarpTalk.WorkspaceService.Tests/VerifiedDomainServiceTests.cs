@@ -154,11 +154,20 @@ public class VerifiedDomainServiceTests
 
     [Fact]
     [Trait("Category", "DomainValidation")]
-    public async Task AddDomainAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn()
+    public async Task AddDomainAsync_ShouldFail_WhenClaimingAnotherDomainWithoutConsent()
     {
-        // Without this, fixing CreateWorkspaceAsync alone is cosmetic: an attacker
-        // founds a workspace on their own domain and then claims victimcorp.com here.
-        // These rows are what DetermineMembershipTypeAsync reads to hand out Internal.
+        // This used to refuse outright: only the caller's own email domain could be claimed.
+        // That rule also made a company with several domains — acme.com and acme.vn — unable to
+        // register the second one from the same Owner account, which the schema always allowed
+        // (the unique index caps a domain at one workspace, not a workspace at one domain).
+        //
+        // What replaces it is consent, and it is worth being honest about what consent is and
+        // is not. It is NOT a barrier against a determined attacker: whoever claims
+        // victimcorp.com here can simply agree to the text. What actually keeps a domain from
+        // being stolen is the unique index — victimcorp.com can be held by exactly one workspace
+        // — plus the business rule that a claim is the claimant's assertion and their
+        // responsibility. Consent makes the assertion explicit and recorded, so a wrong claim is
+        // attributable rather than deniable.
         // Arrange
         SetupWorkspace();
         SetupMember(_ownerRoleId);
@@ -170,14 +179,78 @@ public class VerifiedDomainServiceTests
             .Returns(false);
 
         // Act
-        var result = await _service.AddDomainAsync(_workspaceId, "victimcorp.com", _userId);
+        var result = await _service.AddDomainAsync(_workspaceId, "victimcorp.com", _userId, consentVersion: null);
 
         // Assert
         Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.ConsentRequiredForSelfAssertedDomain, result.Error);
         await _verifiedDomainRepo.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
         await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    [Trait("Category", "DomainValidation")]
+    public async Task AddDomainAsync_ShouldRecordSelfAssertedTier_WhenClaimingAnotherDomainWithConsent()
+    {
+        // The legitimate multi-domain case: one company, several domains, one Owner account.
+        // The row records that this claim rests on the Owner's word rather than on their account
+        // — the tier and the agreed consent version are written in the same INSERT as the claim,
+        // so the evidence cannot end up missing for a claim that succeeded.
+        SetupWorkspace();
+        SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@acme.com");
+
+        _verifiedDomainRepo.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        _verifiedDomainRepo.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        WorkspaceVerifiedDomain? added = null;
+        await _verifiedDomainRepo.AddAsync(
+            Arg.Do<WorkspaceVerifiedDomain>(d => added = d), Arg.Any<CancellationToken>());
+
+        var result = await _service.AddDomainAsync(_workspaceId, "acme.vn", _userId, consentVersion: "2026-08-13");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(added);
+        Assert.Equal("acme.vn", added!.Domain);
+        Assert.Equal(VerifiedDomainVerificationMethods.SelfAsserted, added.VerificationMethod);
+        Assert.Equal("2026-08-13", added.VerificationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "DomainValidation")]
+    public async Task AddDomainAsync_ShouldRecordOwnerEmailTier_AndNotAskForConsent_ForTheCallersOwnDomain()
+    {
+        // Nothing to consent to: the caller's own account is the evidence.
+        SetupWorkspace();
+        SetupMember(_ownerRoleId);
+        SetupCallerEmail("owner@acme.com");
+
+        _verifiedDomainRepo.AnyAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        _verifiedDomainRepo.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        WorkspaceVerifiedDomain? added = null;
+        await _verifiedDomainRepo.AddAsync(
+            Arg.Do<WorkspaceVerifiedDomain>(d => added = d), Arg.Any<CancellationToken>());
+
+        var result = await _service.AddDomainAsync(_workspaceId, "acme.com", _userId, consentVersion: null);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(added);
+        Assert.Equal(VerifiedDomainVerificationMethods.OwnerEmail, added!.VerificationMethod);
     }
 
     [Fact]
