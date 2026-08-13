@@ -153,7 +153,9 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 List<WorkspaceMember> membersForSearch;
                 if (isOwnerOrAdmin)
                 {
-                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
+                    // Owner/Admin searches may include suspended members, but never tombstones.
+                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
+                        m => m.WorkspaceId == workspaceId && m.RemovedAt == null, "", ct);
                     membersForSearch = allMembers.OrderByDescending(m => m.JoinedAt).ToList();
                 }
                 else
