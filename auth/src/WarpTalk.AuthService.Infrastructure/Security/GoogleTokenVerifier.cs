@@ -118,6 +118,18 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
             using var tokenInfoResponse = await httpClient.GetAsync(tokenInfoUrl, ct);
             if (!tokenInfoResponse.IsSuccessStatusCode)
             {
+                // WT-361 — 4xx and 5xx from tokeninfo mean opposite things and must not share
+                // an answer. 4xx is Google looking at the token and refusing it: that is a
+                // verdict, and null (which becomes "invalid token") is correct. 5xx is Google
+                // being unable to answer, which says nothing about the token at all — swallowing
+                // it told the user their perfectly good credential was rejected.
+                if ((int)tokenInfoResponse.StatusCode >= 500)
+                {
+                    throw new HttpRequestException(
+                        $"Google tokeninfo returned {(int)tokenInfoResponse.StatusCode}; "
+                        + "the token could not be verified.");
+                }
+
                 _logger.LogWarning(
                     "Google tokeninfo rejected an access token with status {StatusCode}.",
                     (int)tokenInfoResponse.StatusCode);
@@ -136,9 +148,27 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
             {
                 // This is the account-takeover signature. Log it loudly: a legitimate WarpTalk
                 // client can never reach here.
+                //
+                // WT-361 — the values are NAMED now, and that is a deliberate change. This
+                // message used to say only "reported aud/azp that did not match", which reads as
+                // an attack and is far more often a deployment mistake: the web bundle is built
+                // with NEXT_PUBLIC_GOOGLE_CLIENT_ID and the auth service reads GOOGLE_CLIENT_ID
+                // from the host environment, two values nothing keeps in step. Google sign-in was
+                // reported broken in production with nothing to go on but a bare 400, and this
+                // log line was the one place that could have said why and did not.
+                //
+                // An OAuth client id is not a secret — it ships inside the public JavaScript
+                // bundle and is visible to anyone who opens devtools. Printing it costs nothing
+                // and turns an undiagnosable outage into one line.
                 _logger.LogWarning(
                     "Rejected a Google access token issued to a foreign OAuth client. "
-                    + "Expected our configured client id; token reported aud/azp that did not match.");
+                    + "Expected client id {ExpectedClientId}; token reported aud={TokenAudience} azp={TokenAuthorizedParty}. "
+                    + "If the reported values look like WarpTalk's own web client, the auth "
+                    + "service's GOOGLE_CLIENT_ID and the web bundle's NEXT_PUBLIC_GOOGLE_CLIENT_ID "
+                    + "have drifted apart.",
+                    _clientId,
+                    audience ?? "(absent)",
+                    authorizedParty ?? "(absent)");
                 return null;
             }
 
@@ -176,8 +206,16 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
-            _logger.LogWarning(ex, "Could not verify a Google access token.");
-            return null;
+            // WT-361 — rethrown, not swallowed. This used to return null, and null means
+            // "verified: not our client" everywhere upstream — so a DNS hiccup or a Google
+            // outage was reported to the user as an invalid credential, and to the operator as
+            // a 400 that looks like the caller's fault.
+            //
+            // GoogleLoginAsync's catch-all turns this into InternalServerError, which
+            // GoogleAuthController now answers with 503: "we could not check", which is both
+            // true and retryable.
+            _logger.LogWarning(ex, "Could not reach Google to verify an access token.");
+            throw;
         }
     }
 
