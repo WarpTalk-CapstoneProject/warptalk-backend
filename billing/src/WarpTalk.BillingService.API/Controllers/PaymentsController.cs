@@ -161,7 +161,14 @@ public class PaymentsController : ControllerBase
             var result = await _stripeWebhookService.HandleWebhookAsync(json, stripeSignature, HttpContext.RequestAborted);
             if (!result.IsSuccess)
             {
-                return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
+                // 500, not 400. WT-370: the service only reports a failure here when a
+                // REDELIVERY could still succeed, which makes this our fault, not a malformed
+                // request from Stripe. The distinction is not pedantic — this status is what the
+                // next person sees in the Stripe dashboard, and "400" points them at the sender.
+                // Either way it is non-2xx, which is what re-arms Stripe's ~3 days of retries.
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingStripeWebhookFailed, ErrorCodes.InternalServerError));
             }
 
             return Ok();

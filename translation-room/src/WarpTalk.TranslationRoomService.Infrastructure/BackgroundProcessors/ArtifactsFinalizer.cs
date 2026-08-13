@@ -284,6 +284,22 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         }
     }
 
+    /// <summary>
+    /// WT-369 — HOW LONG THE SUMMARY IS GIVEN TO SHOW UP.
+    ///
+    /// The transcript half of this finalization already waits up to 30s for its `final_processed`
+    /// signal. The summary was given nothing at all: one Redis read, immediately. But the summary
+    /// is produced by ai_assistant_worker, triggered independently from
+    /// MeetingService.EndMeetingAsync — the comment at the top of ProcessRoomFinalizationAsync
+    /// says in as many words that there is "no strict ordering guarantee" — and it is an LLM call
+    /// over a whole meeting transcript, which is not instant.
+    ///
+    /// Longer than the transcript's window because it is waiting on generation, not on a flush.
+    /// It exits the moment content appears, so a summary that is already there costs one read.
+    /// </summary>
+    private static readonly TimeSpan SummaryWaitTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan SummaryPollInterval = TimeSpan.FromSeconds(2);
+
     private async Task<TranslationRoomArtifact> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
     {
         _logger.LogInformation("Retrieving AI summary from Redis cache for room {RoomId}", roomId);
@@ -293,18 +309,39 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
             string summaryKey = $"meeting:{roomId}:summary";
 
-            var summaryContent = await _redisStateRepo.HashGetAsync(summaryKey, "content");
-            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
             // WT-13: ai_assistant_worker also writes a structured JSON version of the same
             // summary/decisions/action-items when it can (see MeetingAssistant.generate_structured_summary).
-            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
+            var (summaryContent, actionItems, structuredJson) =
+                await WaitForSummaryAsync(summaryKey, roomId, ct);
 
             var summaryText = FormatSummaryText(roomId, summaryContent, actionItems);
             long sizeBytes = Encoding.UTF8.GetByteCount(summaryText);
             string content = BuildStructuredSummaryContent(structuredJson, summaryContent, actionItems);
 
-            // Clean up meeting summary key from Redis
-            await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            // DELETE ONLY WHAT WE ACTUALLY READ.
+            //
+            // This used to delete unconditionally, which is what made the race permanent rather
+            // than merely unlucky: the finalizer read an empty key, wrote an "insufficient data"
+            // artifact, and then removed the key — so when the AI worker finished a few seconds
+            // later it wrote a real summary into a key nobody would ever read again. Leaving the
+            // key alone on the empty path means a late summary is still there to be recovered.
+            bool foundSomething =
+                !string.IsNullOrWhiteSpace(summaryContent)
+                || !string.IsNullOrWhiteSpace(actionItems)
+                || !string.IsNullOrWhiteSpace(structuredJson);
+
+            if (foundSomething)
+            {
+                await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            }
+            else
+            {
+                _logger.LogError(
+                    "No AI summary appeared for room {RoomId} within {Seconds}s. Saving an insufficient-data summary artifact and KEEPING {SummaryKey} so a late result is not lost.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds,
+                    summaryKey);
+            }
 
             return BuildArtifactRequest(
                 roomId,
@@ -336,6 +373,54 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 false,
                 content: BuildStructuredSummaryContent(null, null, null))
                 .ToEntity();
+        }
+    }
+
+    /// <summary>
+    /// Polls the summary hash until the AI worker has written something, or the window closes.
+    ///
+    /// Returns whatever is there at the end — an empty result is a legitimate answer that the
+    /// caller turns into an explicit insufficient-data artifact, because a UI stuck on
+    /// "generating" forever is worse than one that says the summary did not arrive (WT-13).
+    /// </summary>
+    private async Task<(string? Content, string? ActionItems, string? StructuredJson)> WaitForSummaryAsync(
+        string summaryKey,
+        Guid roomId,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + SummaryWaitTimeout;
+        var logged = false;
+
+        while (true)
+        {
+            var content = await _redisStateRepo.HashGetAsync(summaryKey, "content");
+            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
+            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
+
+            if (!string.IsNullOrWhiteSpace(content)
+                || !string.IsNullOrWhiteSpace(actionItems)
+                || !string.IsNullOrWhiteSpace(structuredJson))
+            {
+                return (content, actionItems, structuredJson);
+            }
+
+            if (DateTime.UtcNow >= deadline || ct.IsCancellationRequested)
+            {
+                return (content, actionItems, structuredJson);
+            }
+
+            if (!logged)
+            {
+                // Once, not every poll: this is the normal case for a meeting that has just
+                // ended, and it should read as "waiting", not as a fault.
+                _logger.LogInformation(
+                    "Summary for room {RoomId} is not in Redis yet — waiting up to {Seconds}s for ai_assistant_worker.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds);
+                logged = true;
+            }
+
+            await Task.Delay(SummaryPollInterval, ct);
         }
     }
 

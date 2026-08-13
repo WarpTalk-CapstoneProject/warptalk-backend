@@ -39,6 +39,31 @@ public class StripeWebhookService : IStripeWebhookService
 
     public async Task<Result<bool>> HandleWebhookAsync(string jsonPayload, string signatureHeader, CancellationToken cancellationToken = default)
     {
+        // WT-370 — THE LINE THAT MADE A TAKEN PAYMENT DISAPPEAR QUIETLY.
+        //
+        // Every branch below used to do `if (!result.IsSuccess) _logger.LogWarning(...)` and then
+        // fall through to `return Result.Success(true)`. So when processing failed, this endpoint
+        // answered Stripe 200 OK.
+        //
+        // Two consequences, and the incident is both of them:
+        //
+        //   1. STRIPE STOPPED TRYING. A non-2xx makes Stripe redeliver with backoff for ~3 days —
+        //      free, built-in recovery that heals any transient database or infrastructure fault
+        //      by itself. Answering 200 threw every one of those retries away on the first
+        //      attempt. A failure that would have fixed itself became permanent.
+        //
+        //   2. THE DASHBOARD LIED TO EVERY LATER INVESTIGATION. Stripe showed
+        //      "checkout.session.completed — 200 OK — Delivered" four times over while the
+        //      workspace had no plan, so the one place anybody looks first said the webhook was
+        //      fine. Triage went looking for a missing endpoint, a mode mismatch and a signature
+        //      problem, and none of those were ever wrong.
+        //
+        // Now: a failure that a redelivery could fix is reported as a failure. A failure that a
+        // redelivery cannot fix — the payload itself is unusable — is still acknowledged, because
+        // asking Stripe to resend the same broken payload for three days buys nothing; it is
+        // logged at Error instead so it surfaces rather than being retried into silence.
+        Result? processingFailure = null;
+
         try
         {
             var webhookSecret = _configuration[PaymentConstants.StripeConfigKeys.WebhookSecret];
@@ -80,7 +105,7 @@ public class StripeWebhookService : IStripeWebhookService
                          PlanSlug: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? session.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                          BillingCycle: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? session.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.PaymentIntentPaymentFailed)
@@ -100,7 +125,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? intent.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                         BillingCycle: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? intent.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.ChargeRefunded)
@@ -119,7 +144,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? charge.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                         BillingCycle: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? charge.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.ChargeDisputeCreated)
@@ -136,7 +161,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentType: string.Empty,
                         Status: PaymentConstants.PaymentStatuses.Disputed
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionUpdated)
@@ -155,7 +180,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                         BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.CustomerSubscriptionDeleted)
@@ -174,7 +199,7 @@ public class StripeWebhookService : IStripeWebhookService
                         PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                         BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                     ));
-                    if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                    if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
             }
             else if (type == PaymentConstants.StripeEvents.InvoicePaid)
@@ -203,9 +228,16 @@ public class StripeWebhookService : IStripeWebhookService
                             PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
                             BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
                         ));
-                        if (!result.IsSuccess) _logger.LogWarning("Webhook payment processing failed: {Error}", result.Error);
+                        if (!result.IsSuccess) processingFailure = Capture(result, type);
                     }
                 }
+            }
+
+            if (processingFailure is not null && IsWorthRedelivering(processingFailure.ErrorCode))
+            {
+                return Result.Failure<bool>(
+                    processingFailure.Error ?? BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed,
+                    ErrorCodes.InternalServerError);
             }
 
             return Result.Success(true);
@@ -221,6 +253,37 @@ public class StripeWebhookService : IStripeWebhookService
             return Result.Failure<bool>(ex.Message, ErrorCodes.InternalServerError);
         }
     }
+
+    /// <summary>
+    /// Logs a failed payment event and hands it back so the caller can decide the HTTP answer.
+    ///
+    /// Error, not Warning: a payment has been taken and the workspace did not get what it paid
+    /// for. The message keeps its original opening words on purpose — "Webhook payment processing
+    /// failed" is the string already written down as the one to grep for.
+    /// </summary>
+    private Result Capture(Result result, string eventType)
+    {
+        _logger.LogError(
+            "Webhook payment processing failed: {Error} (EventType: {EventType}, ErrorCode: {ErrorCode})",
+            result.Error,
+            eventType,
+            result.ErrorCode);
+        return result;
+    }
+
+    /// <summary>
+    /// Would sending this exact event again have a different outcome?
+    ///
+    /// A validation error means the payload cannot be used — the workspace id does not parse, the
+    /// plan slug names nothing. Three days of identical redeliveries produce three days of
+    /// identical failures, so those are acknowledged and left to the log. Everything else is
+    /// treated as transient (a database, a network, a service that was briefly unavailable),
+    /// which is precisely the case Stripe's redelivery schedule exists to rescue.
+    /// </summary>
+    private static bool IsWorthRedelivering(string? errorCode) =>
+        errorCode != ErrorCodes.ValidationError
+        && errorCode != ErrorCodes.BillingPlanNotFound
+        && errorCode != ErrorCodes.NotFound;
 
     private static decimal NormalizeStripeAmount(decimal amount, string? currency)
     {
