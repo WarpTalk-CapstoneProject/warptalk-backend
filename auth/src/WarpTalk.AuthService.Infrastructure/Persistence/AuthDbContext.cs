@@ -446,11 +446,21 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.ConsentType)
                 .HasMaxLength(50)
                 .HasColumnName("consent_type");
-            // consent_status is a Postgres enum, already declared in HasPostgresEnum above. It is
-            // mapped as text rather than a C# enum so the vocabulary lives in exactly one place —
-            // the database — instead of in two type systems that can drift apart.
+            // Plain text, like every other status in this codebase.
+            //
+            // This property USED to declare .HasColumnType("consent_status") against the Postgres
+            // enum the column really was, and every grant returned 500: AuthService builds its
+            // data source with plain UseNpgsql (Program.cs), so Npgsql has no mapping for that
+            // type, sends text, and Postgres answers `42804: column "consent_status" is of type
+            // consent_status but expression is of type text`. Migration
+            // 20260813090000_convert_voice_consent_status_to_varchar converted the column, exactly
+            // as 014-15-06-2026 had already done for translation_room and transcript — `voice` was
+            // simply outside that migration's scope and got left behind.
+            //
+            // A CHECK constraint on the column still refuses anything outside GRANTED/REVOKED/
+            // EXPIRED, so the guarantee the enum provided is intact; only the type is gone.
             entity.Property(e => e.ConsentStatus)
-                .HasColumnType("consent_status")
+                .HasMaxLength(50)
                 .HasColumnName("consent_status");
             entity.Property(e => e.ConsentTextVersion)
                 .HasMaxLength(50)
