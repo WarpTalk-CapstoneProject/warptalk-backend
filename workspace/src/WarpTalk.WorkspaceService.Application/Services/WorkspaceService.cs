@@ -349,7 +349,8 @@ public class WorkspaceService : IWorkspaceService
                 workspace.Slug,
                 role,
                 membershipType,
-                config.DefaultLanguage);
+                config.DefaultLanguage,
+                member.CanCreateMeetings);
             return Result.Success(response);
         }
         catch (Exception ex)

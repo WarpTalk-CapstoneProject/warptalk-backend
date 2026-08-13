@@ -57,7 +57,17 @@ public class TranslationRoomSessionService : ITranslationRoomSessionService
                 return Result.Failure<TranslationRoomSessionDto>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
             }
 
-            if (!await HasHostAuthorityAsync(room, requestedByUserId, ct))
+            // WT-371: STARTING translation may be opened to the room, on the host's say-so.
+            //
+            // Host-only was the right default and the wrong absolute: a meeting whose host is
+            // late or busy cannot begin, which is the same complaint WT-341 raised about
+            // starting the ROOM. The answer there and here is that different meetings want
+            // different answers, so the room carries the decision — `participants_can_start_
+            // translation`, off unless a host turned it on.
+            //
+            // STOPPING is untouched and stays host-only below: opening a meeting up is not the
+            // same as letting anyone cut it off for everybody.
+            if (!await CanStartSessionAsync(room, requestedByUserId, ct))
             {
                 return Result.Failure<TranslationRoomSessionDto>(
                     TranslationRoomSessionConstants.ErrorUnauthorizedManageSession,
@@ -209,6 +219,36 @@ public class TranslationRoomSessionService : ITranslationRoomSessionService
 
     private Task<bool> HasHostAuthorityAsync(TranslationRoom room, Guid requestedByUserId, CancellationToken ct)
         => RoomHostAccess.HasHostAuthorityAsync(room, requestedByUserId, _workspaceMemberDirectory, ct);
+
+    /// <summary>
+    /// Who may START translation: the host always, and anyone already in the room when the host
+    /// opened that up for this meeting (WT-371).
+    ///
+    /// "Anyone in the room", not "anyone at all" — the participant row is the membership check,
+    /// so a stranger holding a room id still cannot reach this, exactly as
+    /// <see cref="RoomHostAccess"/> intends. An unreadable settings blob falls back to
+    /// host-only: the permissive branch has to be something a host actually chose.
+    /// </summary>
+    private async Task<bool> CanStartSessionAsync(
+        TranslationRoom room,
+        Guid requestedByUserId,
+        CancellationToken ct)
+    {
+        if (await HasHostAuthorityAsync(room, requestedByUserId, ct))
+        {
+            return true;
+        }
+
+        if (!TranslationRoomMapper.ReadSettings(room.Settings).ParticipantsCanStartTranslation)
+        {
+            return false;
+        }
+
+        return await _unitOfWork.TranslationRoomParticipantRepository.AnyAsync(
+            participant => participant.TranslationRoomId == room.Id
+                && participant.UserId == requestedByUserId,
+            ct);
+    }
 
     /// <summary>
     /// Same shape as <c>TranslationRoomService.CanAccessRoomAsync</c>, including its deliberate
