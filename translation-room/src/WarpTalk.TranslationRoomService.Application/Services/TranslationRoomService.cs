@@ -571,8 +571,14 @@ public class TranslationRoomService : ITranslationRoomService
             // renders a room and any path that forgot silently reports 0 — which is the bug. One
             // grouped count over the page keeps the number impossible to get accidentally-empty,
             // and transfers a scalar per room instead of every participant row.
+            var roomIdsForCounts = roomEntities.Select(r => r.Id).ToList();
             var occupancyByRoom = await _participantRepository.CountSeatHoldingParticipantsByRoomsAsync(
-                roomEntities.Select(r => r.Id).ToList(),
+                roomIdsForCounts,
+                ct);
+            // "Who is here now" and "who turned up" are different questions, and a finished
+            // meeting only has an answer to the second.
+            var attendedByRoom = await _participantRepository.CountEverJoinedByRoomsAsync(
+                roomIdsForCounts,
                 ct);
 
             // The rule behind each collapsed row, read once for the page rather than per row.
@@ -585,7 +591,8 @@ public class TranslationRoomService : ITranslationRoomService
                     r,
                     userId,
                     occupancyByRoom.GetValueOrDefault(r.Id),
-                    r.SeriesId is Guid seriesId ? summaries?.GetValueOrDefault(seriesId) : null))
+                    r.SeriesId is Guid seriesId ? summaries?.GetValueOrDefault(seriesId) : null,
+                    attendedByRoom.GetValueOrDefault(r.Id)))
                 .ToList();
 
             return Result.Success(new TranslationRoomListResponse(rooms, total, page, pageSize));
@@ -2445,7 +2452,11 @@ public class TranslationRoomService : ITranslationRoomService
         TranslationRoom room,
         Guid userId,
         int seatsTaken,
-        SeriesListSummaryDto? series = null)
+        SeriesListSummaryDto? series = null,
+        // Distinct people who have ever been in the room. Trailing and defaulted so the sites
+        // that have not been taught to fetch it keep their previous behaviour rather than
+        // reporting a fabricated 0 as if it were an answer.
+        int attendedCount = 0)
     {
         // Same reader the detail endpoints use — the list used to deserialize the snake_case
         // blob straight into the PascalCase response record (without even
@@ -2476,7 +2487,8 @@ public class TranslationRoomService : ITranslationRoomService
             // room, so after a transfer the old host still saw host controls and the new one did not.
             room.IsHostedBy(userId),
             room.SeriesId,
-            series
+            series,
+            attendedCount
         );
     }
 
