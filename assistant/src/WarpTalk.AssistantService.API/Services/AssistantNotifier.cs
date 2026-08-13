@@ -35,6 +35,9 @@ public class AssistantNotifier : IAssistantNotifier
     public Task BroadcastMessageCompletedAsync(Guid conversationId, AssistantMessageDto message, CancellationToken ct = default) =>
         Group(conversationId).SendAsync("AssistantMessageCompleted", message, ct);
 
+    public Task BroadcastQuestionAsync(Guid conversationId, Guid messageId, string questionsJson, CancellationToken ct = default) =>
+        Group(conversationId).SendAsync("AssistantQuestion", new { conversationId, messageId, questionsJson }, ct);
+
     public Task BroadcastMessageFailedAsync(Guid conversationId, Guid messageId, string error, CancellationToken ct = default) =>
         Group(conversationId).SendAsync("AssistantMessageFailed", new { conversationId, messageId, error }, ct);
 
