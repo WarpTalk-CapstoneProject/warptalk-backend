@@ -27,7 +27,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
-        return ToActionResult(result);
+        return this.ToActionResult(result);
     }
 
     [HttpGet("workspace/{workspaceId}/history")]
@@ -35,11 +35,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetCreditHistory(Guid workspaceId, [FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetCreditHistoryAsync(workspaceId, query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return this.ToActionResult(result);
     }
 
     [HttpGet("history/global")]
@@ -47,40 +43,7 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<PaginatedResponse<CreditTransactionDto>>> GetGlobalCreditHistory([FromQuery] CreditHistoryQuery query, CancellationToken cancellationToken = default)
     {
         var result = await _creditService.GetGlobalCreditHistoryAsync(query, cancellationToken);
-        if (!result.IsSuccess)
-        {
-            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
-        }
-        return Ok(result.Value);
+        return this.ToActionResult(result);
     }
 
-    /// <summary>
-    /// The status a failure deserves, rather than 400 for all of them.
-    ///
-    /// A workspace with no subscription answered 400 Bad Request. Nothing about the request was
-    /// bad — the URL, the id and the caller's role were all fine; the workspace simply has no
-    /// plan. Production showed four of these per page load on the dashboard, and a client cannot
-    /// tell that apart from a malformed request, so the only honest thing it could render was an
-    /// error where there is no error.
-    ///
-    /// Same shape as AdminWorkspaceAnalyticsController.ToActionResult, which already made this
-    /// distinction in this service.
-    /// </summary>
-    private ActionResult<T> ToActionResult<T>(Result<T> result)
-    {
-        if (result.IsSuccess) return Ok(result.Value);
-
-        var error = new ApiErrorResponse(
-            result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
-            result.ErrorCode);
-
-        return result.ErrorCode switch
-        {
-            ErrorCodes.BillingSubscriptionNotFound => NotFound(error),
-            ErrorCodes.NotFound => NotFound(error),
-            ErrorCodes.Forbidden => StatusCode(StatusCodes.Status403Forbidden, error),
-            ErrorCodes.InternalServerError => StatusCode(StatusCodes.Status500InternalServerError, error),
-            _ => BadRequest(error),
-        };
-    }
 }
