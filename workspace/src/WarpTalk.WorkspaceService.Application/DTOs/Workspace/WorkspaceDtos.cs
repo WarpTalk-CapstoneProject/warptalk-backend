@@ -45,11 +45,23 @@ public record PagedResult<T>(
     int Total
 );
 
+/// <param name="CanCreateMeetings">
+/// The selected member's own <c>can_create_meetings</c> flag, so the shell can hide an action the
+/// server would refuse. WT-371 #2: an External member kept the full Internal UI — every New-meeting
+/// button in the app — and only found out on submit, as a 403 from the meeting-creation policy.
+///
+/// Advisory, never the gate. The decision still belongs to
+/// <c>WorkspaceDirectoryService.ValidateMeetingCreationAsync</c>, which reads the same column plus
+/// tenant lifecycle and plan quota; this field only spares the user a dead-end. It defaults to true
+/// so an older client, or a response deserialised without it, behaves exactly as before rather than
+/// hiding meeting creation from everyone.
+/// </param>
 public record SelectWorkspaceResponse(
     Guid SelectedWorkspaceId,
     string Name,
     string Slug,
     string Role,
     string MembershipType,
-    string DefaultLanguage = "en"
+    string DefaultLanguage = "en",
+    bool CanCreateMeetings = true
 );
