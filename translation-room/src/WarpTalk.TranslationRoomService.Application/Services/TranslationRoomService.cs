@@ -1851,89 +1851,189 @@ public class TranslationRoomService : ITranslationRoomService
 
         try
         {
-            var page = Math.Max(1, request.Page);
-            var pageSize = Math.Clamp(request.PageSize, 1, 100);
-            var historyRequest = request with { Status = request.Status ?? $"{"ENDED"},{"CANCELLED"}" };
-            var query = ApplyRoomFilters(
-                    await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct),
-                    historyRequest)
-                .Where(r => r.DeletedAt == null && r.IsActive);
+            var historyRequest = request with { Status = request.Status ?? "ENDED,CANCELLED" };
 
-            var total = await query.CountAsync(ct);
-
-            var roomEntities = await query
-                .OrderByDescending(r => r.EndedAt ?? r.StartedAt ?? r.CreatedAt)
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync(ct);
-
-            var roomIds = roomEntities.Select(r => r.Id).ToList();
-
-            var participantEntities = await _unitOfWork.TranslationRoomParticipantRepository
-                .Query()
-                .Where(p => roomIds.Contains(p.TranslationRoomId))
-                .ToListAsync(ct);
-            var participantsByRoom = participantEntities
-                .GroupBy(p => p.TranslationRoomId)
-                .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
-
-            // WT-280: history is the one path that already has the full roster in memory, so the
-            // seat count comes from it rather than from a second database round trip.
-            // HoldsSeat(...) — the METHOD form — is correct here precisely because these rows are
-            // already materialised; it must never appear inside a query EF has to translate.
-            var occupancyByRoom = participantEntities
-                .GroupBy(p => p.TranslationRoomId)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
-
-            var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
-                .Query()
-                .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
-                .OrderByDescending(a => a.CreatedAt)
-                .ToListAsync(ct);
-
-            // Artifact BODIES are decided per room by the room's own ArtifactAccess policy, not by
-            // the room-read gate that got this caller onto the page. History is reachable by every
-            // participant and by anyone holding an unaccepted invitation, so a HOST_ONLY room used
-            // to hand all of them its AI summary here while the download endpoint refused it.
-            // Participation is read from the roster already materialised above rather than from the
-            // (unloaded) navigation on each room entity.
-            var roomsById = roomEntities.ToDictionary(r => r.Id);
-            var participantUserIdsByRoom = participantEntities
-                .GroupBy(p => p.TranslationRoomId)
-                .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
-
-            var artifactsByRoom = artifactEntities
-                .GroupBy(a => a.TranslationRoomId)
-                .ToDictionary(
-                    g => g.Key,
-                    g =>
-                    {
-                        var room = roomsById[g.Key];
-                        var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
-                            room.HostId,
-                            room.Settings,
-                            participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
-                            userId);
-
-                        return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
-                    });
-
-            var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
-                    ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
-                    participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
-                    artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
-                ))
-                .ToList();
-
-            return Result.Success(new TranslationRoomHistoryResponse(rooms, total, page, pageSize));
+            return Result.Success(await BuildRoomTimelinePageAsync(
+                historyRequest, userId, userEmail, RoomTimelineOrder.EndedFirst, RoomTimelineScope.Workspace, ct));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while loading translation room history for UserId: {UserId}", userId);
             return Result.Failure<TranslationRoomHistoryResponse>("An unexpected error occurred while loading room history.", ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// WT-333 — UC 25. One user's own meetings inside one workspace, past and upcoming on a single
+    /// timeline.
+    ///
+    /// Deliberately NOT a new query. This is <see cref="GetTranslationRoomHistoryAsync"/> with three
+    /// substitutions, and all three are what separates an archive from a diary:
+    ///
+    /// SCOPE — forced to <c>mine</c>, so a workspace Owner/Admin gets their own rooms instead of the
+    /// tenant's. That is the entire bug: the Owner/Admin widening in
+    /// <see cref="BuildListableRoomsQueryAsync"/> happens before any filter runs, so there was no
+    /// request an Owner could send that meant "only mine".
+    ///
+    /// STATUS — defaults to the lifecycle states the My Meetings page buckets into upcoming, live,
+    /// and past. The room still has to survive <c>DeletedAt == null &amp;&amp; IsActive</c> like everywhere
+    /// else.
+    ///
+    /// ORDER — by ScheduledAt first. A future room has neither EndedAt nor StartedAt, so the
+    /// archive's ordering falls through to CreatedAt and sorts upcoming meetings by the day somebody
+    /// booked them rather than the day they happen.
+    ///
+    /// WorkspaceId stays required. A timeline spanning every workspace was considered and dropped:
+    /// it would mean taking the tenant boundary off this read for every caller, not just this one.
+    /// </summary>
+    public async Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
+    {
+        if (!request.WorkspaceId.HasValue || request.WorkspaceId.Value == Guid.Empty)
+        {
+            return Result.Failure<TranslationRoomHistoryResponse>(
+                "WorkspaceId is required when loading my meetings.",
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var timelineRequest = request with { Status = request.Status ?? BuildMyMeetingsDefaultStatusFilter() };
+
+            return Result.Success(await BuildRoomTimelinePageAsync(
+                timelineRequest, userId, userEmail, RoomTimelineOrder.ScheduledFirst, RoomTimelineScope.Mine, ct));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while loading my meetings for UserId: {UserId}", userId);
+            return Result.Failure<TranslationRoomHistoryResponse>("An unexpected error occurred while loading your meetings.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    private static string BuildMyMeetingsDefaultStatusFilter()
+        => string.Join(',', Enum.GetNames<RoomStatus>());
+
+    /// <summary>
+    /// The reading order of a page of rooms. Each value exists because one of the two callers has a
+    /// timestamp the other one's rooms do not have.
+    /// </summary>
+    private enum RoomTimelineOrder
+    {
+        /// <summary>Most recently finished first — every room in the archive has ended.</summary>
+        EndedFirst,
+
+        /// <summary>Newest booked slot first — matching the descending personal timeline query.</summary>
+        ScheduledFirst,
+    }
+
+    /// <summary>
+    /// Which caller boundary the shared timeline loader should apply before any filter runs.
+    /// Kept private so WT-333 does not widen the public query contract with an internal switch.
+    /// </summary>
+    private enum RoomTimelineScope
+    {
+        Workspace,
+        Mine,
+    }
+
+    /// <summary>
+    /// One page of rooms with their roster and artifacts, shared by the workspace archive
+    /// (<see cref="GetTranslationRoomHistoryAsync"/>) and the personal timeline
+    /// (<see cref="GetMyMeetingsAsync"/>).
+    ///
+    /// Shared as a body rather than copied: the artifact half below is a per-room authorization
+    /// decision, and a second copy of it would be a second place for the ArtifactAccess policy to
+    /// drift out of agreement with the download endpoint — which is precisely the WT-304 bug.
+    ///
+    /// Throws rather than returning a Result: both callers already wrap this in the try/catch that
+    /// owns their error message.
+    /// </summary>
+    private async Task<TranslationRoomHistoryResponse> BuildRoomTimelinePageAsync(
+        GetTranslationRoomsRequest request,
+        Guid userId,
+        string? userEmail,
+        RoomTimelineOrder order,
+        RoomTimelineScope scope,
+        CancellationToken ct)
+    {
+        var page = Math.Max(1, request.Page);
+        var pageSize = Math.Clamp(request.PageSize, 1, 100);
+        var query = ApplyRoomFilters(
+                await BuildListableRoomsQueryAsync(userId, userEmail, request.WorkspaceId, ct, scope),
+                request)
+            .Where(r => r.DeletedAt == null && r.IsActive);
+
+        var total = await query.CountAsync(ct);
+
+        var ordered = order == RoomTimelineOrder.ScheduledFirst
+            ? query.OrderByDescending(r => r.ScheduledAt ?? r.StartedAt ?? r.EndedAt ?? r.CreatedAt)
+            : query.OrderByDescending(r => r.EndedAt ?? r.StartedAt ?? r.CreatedAt);
+
+        var roomEntities = await ordered
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        var roomIds = roomEntities.Select(r => r.Id).ToList();
+
+        var participantEntities = await _unitOfWork.TranslationRoomParticipantRepository
+            .Query()
+            .Where(p => roomIds.Contains(p.TranslationRoomId))
+            .ToListAsync(ct);
+        var participantsByRoom = participantEntities
+            .GroupBy(p => p.TranslationRoomId)
+            .ToDictionary(g => g.Key, g => g.Select(p => p.ToDto()).ToList());
+
+        // WT-280: history is the one path that already has the full roster in memory, so the
+        // seat count comes from it rather than from a second database round trip.
+        // HoldsSeat(...) — the METHOD form — is correct here precisely because these rows are
+        // already materialised; it must never appear inside a query EF has to translate.
+        var occupancyByRoom = participantEntities
+            .GroupBy(p => p.TranslationRoomId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Count(p => TranslationRoomParticipantStatuses.HoldsSeat(p.Status)));
+
+        var artifactEntities = await _unitOfWork.TranslationRoomArtifactRepository
+            .Query()
+            .Where(a => roomIds.Contains(a.TranslationRoomId) && a.DeletedAt == null)
+            .OrderByDescending(a => a.CreatedAt)
+            .ToListAsync(ct);
+
+        // Artifact BODIES are decided per room by the room's own ArtifactAccess policy, not by
+        // the room-read gate that got this caller onto the page. History is reachable by every
+        // participant and by anyone holding an unaccepted invitation, so a HOST_ONLY room used
+        // to hand all of them its AI summary here while the download endpoint refused it.
+        // Participation is read from the roster already materialised above rather than from the
+        // (unloaded) navigation on each room entity.
+        var roomsById = roomEntities.ToDictionary(r => r.Id);
+        var participantUserIdsByRoom = participantEntities
+            .GroupBy(p => p.TranslationRoomId)
+            .ToDictionary(g => g.Key, g => g.Select(p => p.UserId).ToHashSet());
+
+        var artifactsByRoom = artifactEntities
+            .GroupBy(a => a.TranslationRoomId)
+            .ToDictionary(
+                g => g.Key,
+                g =>
+                {
+                    var room = roomsById[g.Key];
+                    var includeContent = ArtifactAccessHelper.HasAccessToRoomArtifacts(
+                        room.HostId,
+                        room.Settings,
+                        participantUserIdsByRoom.GetValueOrDefault(g.Key)?.Contains(userId) == true,
+                        userId);
+
+                    return g.Select(a => ToArtifactDto(a, includeContent)).ToList();
+                });
+
+        var rooms = roomEntities.Select(room => new TranslationRoomHistoryItemDto(
+                ToListItemDto(room, userId, occupancyByRoom.GetValueOrDefault(room.Id)),
+                participantsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomParticipantDto>()),
+                artifactsByRoom.GetValueOrDefault(room.Id, new List<TranslationRoomArtifactDto>())
+            ))
+            .ToList();
+
+        return new TranslationRoomHistoryResponse(rooms, total, page, pageSize);
     }
 
     public async Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default)
@@ -2138,13 +2238,29 @@ public class TranslationRoomService : ITranslationRoomService
     /// and entry is still governed per-room by <c>RequiresApproval</c>, untouched here. Listing a
     /// room is not admission to it, and artifact bodies stay behind their own per-room
     /// ArtifactAccess policy. If a private room type is ever introduced, its exclusion belongs here.
+    ///
+    /// WT-333: <paramref name="scope"/> lets the dedicated personal-timeline route DECLINE the
+    /// Owner/Admin widening above. The widening is what the workspace archive needs and what a
+    /// personal timeline must not have — an Owner opening "My Meetings" was handed every room in
+    /// the tenant, with no filter that could take it back, because the widening happens before any
+    /// filter runs. Asking for <see cref="RoomTimelineScope.Mine"/> returns the caller to the
+    /// ordinary read boundary, the same one every non-Owner already gets. It only ever NARROWS:
+    /// no scope value can reach a room
+    /// <see cref="BuildAccessibleRoomsQuery"/> would refuse, so this is not a new authorization
+    /// path and there is no new predicate to keep in sync.
     /// </summary>
     private async Task<IQueryable<TranslationRoom>> BuildListableRoomsQueryAsync(
         Guid userId,
         string? userEmail,
         Guid? workspaceId,
-        CancellationToken ct)
+        CancellationToken ct,
+        RoomTimelineScope scope = RoomTimelineScope.Workspace)
     {
+        if (scope == RoomTimelineScope.Mine)
+        {
+            return BuildAccessibleRoomsQuery(userId, userEmail);
+        }
+
         if (workspaceId.HasValue
             && workspaceId.Value != Guid.Empty
             && await _workspaceMemberDirectory.IsOwnerOrAdminAsync(workspaceId.Value, userId, ct))
@@ -2447,4 +2563,5 @@ public class TranslationRoomService : ITranslationRoomService
             feedback.CreatedAt
         );
     }
+
 }
