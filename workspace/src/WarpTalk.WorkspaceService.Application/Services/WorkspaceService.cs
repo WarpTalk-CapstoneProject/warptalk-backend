@@ -80,63 +80,59 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
             }
 
-            // ── Caller eligibility ────────────────────────────────────────────────
-            // These two rules are properties of the CALLER, not of the workspace being
-            // created, so they must not sit behind a flag the caller supplies in the
-            // request body. RequireVerifiedDomainForInternal answers a different
-            // question — "how do future JOINERS get classified in this workspace" — and
-            // is a legitimate per-workspace setting. It never decides who is allowed to
-            // found a workspace in the first place. Previously both checks ran only when
-            // that flag was on, so `{"requireVerifiedDomainForInternal": false}` turned
-            // them both off from the request body. WT-142: "FE disabled states do not
-            // replace backend authorization."
-
-            // The web client blocks this unconditionally in workspace/create/page.tsx
-            // ("Use a business email or join by invitation"). This is the server-side
-            // half of that rule.
-            if (emailAddress.IsPublicDomain)
-            {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, ErrorCodes.ValidationError);
-            }
-
-            // One Enterprise (internal) home per user.
+            // One internal home per user. Unconditional: it is a property of the CALLER,
+            // not of the workspace being created, so it must not sit behind a flag the
+            // caller supplies in the request body (WT-142: "FE disabled states do not
+            // replace backend authorization"). It costs nobody a slot to found a workspace
+            // with no domain policy — IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync
+            // only counts workspaces that require a verified domain.
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
             if (isInternalElsewhere)
             {
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
             }
 
-            var domainsToVerify = new List<string>();
-            bool requireVerified;
+            // ── Which membership policy is being asked for ────────────────────────
+            // The flag in the request is an INTENT ("do I want to claim my email domain"),
+            // not the stored value. What actually decides the policy is whether the
+            // workspace ends up holding a verified domain: holding one IS
+            // domain-verified membership, holding none IS manually-assigned membership.
+            // So the two can never contradict each other, and the combination
+            // {requireVerifiedDomainForInternal: false, verifiedDomains: ["acme.com"]}
+            // needs no error of its own — the claimed domain settles it.
+            var requireVerified = request.RequireVerifiedDomainForInternal ?? true;
 
-            if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
+            var domainsToVerify = (request.VerifiedDomains ?? new List<string>())
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Select(d => d.Trim().ToLowerInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (requireVerified && domainsToVerify.Count == 0)
             {
-                domainsToVerify = request.VerifiedDomains
-                    .Where(d => !string.IsNullOrWhiteSpace(d))
-                    .Select(d => d.Trim().ToLowerInvariant())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
+                domainsToVerify.Add(emailAddress.Domain);
             }
-            else
+
+            requireVerified = domainsToVerify.Count > 0;
+
+            // A public mailbox domain can never become a verified company domain, so a
+            // caller on one cannot found a workspace whose membership is decided by domain.
+            //
+            // This used to run unconditionally, against every caller. That was too wide:
+            // the rule protects the trusted Internal tier, and a workspace claiming no
+            // domain hands out no such tier. Refusing there blocked a legitimate case —
+            // a small team on personal addresses who assign Internal and External by hand —
+            // for no gain. The narrower rule below still refuses the case it was written
+            // for, and the per-domain check further down is unconditional regardless.
+            if (requireVerified && emailAddress.IsPublicDomain)
             {
-                if (request.RequireVerifiedDomainForInternal == true)
-                {
-                    domainsToVerify = new List<string> { emailAddress.Domain };
-                    requireVerified = true;
-                }
-                else
-                {
-                    requireVerified = false;
-                }
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, ErrorCodes.ValidationError);
             }
 
             // ── Domain claims ─────────────────────────────────────────────────────
             // Claiming a domain grants this workspace the trusted Internal tier over
             // everyone who later joins from that domain, so it is an authorization
-            // decision, not a preference. It is validated unconditionally: even when
-            // requireVerified is false the list is still persisted into the settings
-            // JSON, which IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync reads.
+            // decision, not a preference.
             foreach (var domain in domainsToVerify)
             {
                 // A caller may only claim the domain of their own account email.
