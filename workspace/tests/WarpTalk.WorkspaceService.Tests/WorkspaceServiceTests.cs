@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -279,8 +279,8 @@ public class WorkspaceServiceTests
         var user = new User { Id = userId, Email = "owner@deepmind.com" };
         // NOTE: this test used to claim BOTH "deepmind.com" and "google.com" from a
         // @deepmind.com account and assert both were written. That is the domain-claim
-        // hole, asserted as a feature. The legitimate half — a workspace claiming its
-        // own domain — is what it now covers; the refusal is pinned separately in
+        // hole, asserted as a feature. The legitimate half â€” a workspace claiming its
+        // own domain â€” is what it now covers; the refusal is pinned separately in
         // CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn.
         var request = new CreateWorkspaceRequest(
             "DeepMind Labs",
@@ -337,7 +337,7 @@ public class WorkspaceServiceTests
         Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
     }
 
-    // ── Hole 1: the public-email-domain block must not be switchable from the body ──
+    // â”€â”€ Hole 1: the public-email-domain block must not be switchable from the body â”€â”€
 
     [Theory]
     [InlineData(null)]
@@ -426,13 +426,13 @@ public class WorkspaceServiceTests
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
-    // ── Hole 2: a workspace may only claim a domain the caller's own email is on ──
+    // â”€â”€ Hole 2: a workspace may only claim a domain the caller's own email is on â”€â”€
 
     [Fact]
     public async Task CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn()
     {
         // attacker.com claiming victimcorp.com would auto-classify every victimcorp.com
-        // joiner as Internal — the trusted membership tier of a company the caller has
+        // joiner as Internal â€” the trusted membership tier of a company the caller has
         // nothing to do with.
         // Arrange
         var userId = Guid.NewGuid();
@@ -1205,6 +1205,18 @@ public class WorkspaceServiceTests
         _workspaceRepository.UpdateSettingsAsync(workspaceId, Arg.Any<WorkspaceConfiguration>(), userId, Arg.Any<CancellationToken>())
             .Returns(true);
 
+        // These settings ask for RequireVerifiedDomainForInternal, which is now satisfiable only
+        // by a row in workspace_verified_domains. The VerifiedDomains list carried in the DTO is
+        // a display mirror and no longer counts as evidence that a domain exists.
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new() { Domain = "warptalk.vn", Status = "verified", VerifiedAt = DateTime.UtcNow }
+            });
+
         // Act
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
 
@@ -1336,49 +1348,6 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenDomainIsPublicDomain()
-    {
-        // Arrange
-        var userId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var newSettings = new WorkspaceSettingsDto(
-            "vi",
-            "Asia/Ho_Chi_Minh",
-            new List<string>(),
-            false,
-            5,
-            30,
-            new List<string> { "yahoo.com" }, // Public domain
-            true,
-            true,
-            null,
-            false
-        );
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace { Id = workspaceId });
-        _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = userId, Email = "admin@warptalk.vn" });
-
-        var memberRoleId = Guid.NewGuid();
-        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
-        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(member);
-
-        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = memberRoleId, Name = "Owner" });
-
-        // Act
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
-
-        // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
-        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
     public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenStrictDomainVerificationHasNoDomains()
     {
         var userId = Guid.NewGuid();
@@ -1407,58 +1376,19 @@ public class WorkspaceServiceTests
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
 
+        // The workspace has no rows in workspace_verified_domains. That, not the empty list in
+        // the DTO, is what makes RequireVerifiedDomainForInternal unsatisfiable here.
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
-        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
-            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenRemovedDomainHasActiveInternalMembers()
-    {
-        var userId = Guid.NewGuid();
-        var activeMemberUserId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var ownerRoleId = Guid.NewGuid();
-        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId };
-        var activeInternalMember = new WorkspaceMember
-        {
-            WorkspaceId = workspaceId,
-            UserId = activeMemberUserId,
-            MembershipType = MembershipType.Internal.ToString()
-        };
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            AllowExternalCollaboration = true,
-            Settings = "{\"VerifiedDomains\":[\"company.com\"],\"AllowExternalCollaboration\":true}"
-        };
-        var requested = new WorkspaceSettingsDto(
-            "en", "UTC", new List<string>(), true, 5, 30,
-            new List<string>(), false, false, null, false);
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
-        _workspaceMemberRepository.FirstOrDefaultAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(owner);
-        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
-        _workspaceMemberRepository.FindAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new List<WorkspaceMember> { activeInternalMember });
-        _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = activeMemberUserId, Email = "member@company.com" });
-
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }

@@ -378,6 +378,13 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
+
+            // The settings JSON carries a VerifiedDomains list, but VerifiedDomainService writes
+            // domains to workspace_verified_domains and never touches that JSON, so the stored
+            // copy drifts the moment a domain is added or revoked. Overwrite it with the table on
+            // the way out: the DTO stays a faithful view, and no caller can be misled into
+            // treating the stale copy as policy.
+            settings.VerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
             return Result.Success(settings.ToSettingsDto());
         }
         catch (Exception ex)
@@ -410,7 +417,11 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
-            var settingsValidation = WorkspaceSettingsValidator.Validate(settings);
+            // Read once, from the table that owns them. Used both to validate the request and to
+            // refresh the mirror written below, so the two can never disagree within this call.
+            var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+
+            var settingsValidation = WorkspaceSettingsValidator.Validate(settings, activeVerifiedDomains);
             if (!settingsValidation.IsValid)
             {
                 return Result.Failure(settingsValidation.ErrorMessage, ErrorCodes.ValidationError);
@@ -423,54 +434,14 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);
             }
 
-            if (settings.VerifiedDomains != null && settings.VerifiedDomains.Any())
-            {
-                foreach (var domain in settings.VerifiedDomains)
-                {
-                    if (EmailAddress.IsPublicDomainName(domain))
-                    {
-                        return Result.Failure(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
-                    }
-                }
-            }
-
-            // Check if any domain is being removed via settings update
-            var removedDomains = currentConfig.VerifiedDomains
-                .Except(settings.VerifiedDomains ?? new List<string>(), StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (removedDomains.Any())
-            {
-                var newDomainsSet = (settings.VerifiedDomains ?? new List<string>())
-                    .Select(d => d.Trim().ToLowerInvariant())
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                var activeInternalMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
-                    m => m.WorkspaceId == workspaceId && m.RemovedAt == null && m.MembershipType == MembershipType.Internal.ToString(),
-                    "",
-                    ct);
-
-                if (activeInternalMembers.Any())
-                {
-                    var activeInternalMemberUsers = await Task.WhenAll(
-                        activeInternalMembers.Select(m => _authIdentity.GetUserByIdAsync(m.UserId, ct)));
-
-                    var activeInternalMemberDomains = activeInternalMemberUsers
-                        .Where(user => !string.IsNullOrWhiteSpace(user?.Email))
-                        .Select(user => user!.Email.Split('@').LastOrDefault()?.Trim().ToLowerInvariant())
-                        .Where(domain => !string.IsNullOrWhiteSpace(domain))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var removedDomain in removedDomains)
-                    {
-                        var targetDomain = removedDomain.Trim().ToLowerInvariant();
-                        if (activeInternalMemberDomains.Contains(targetDomain) && !newDomainsSet.Contains(targetDomain))
-                            return Result.Failure(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, ErrorCodes.ValidationError);
-                    }
-                }
-            }
-
+            // The domain lifecycle belongs to VerifiedDomainService — it owns the Owner-only
+            // check, the public-domain refusal, the cross-workspace uniqueness check, and the two
+            // revoke guards. This endpoint used to carry its own partial copy of those rules,
+            // driven by whatever VerifiedDomains the client happened to send. That copy could
+            // only ever be a second, weaker opinion about the same table, so the incoming list is
+            // now ignored outright and replaced with the table below.
             var newConfig = settings.ToConfiguration();
+            newConfig.VerifiedDomains = activeVerifiedDomains.ToList();
             var updated = await _unitOfWork.WorkspaceRepository.UpdateSettingsAsync(workspaceId, newConfig, userId, ct);
             if (!updated)
             {
