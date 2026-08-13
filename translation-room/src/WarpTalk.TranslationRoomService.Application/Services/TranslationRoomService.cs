@@ -443,12 +443,22 @@ public class TranslationRoomService : ITranslationRoomService
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // WT-187: published after the invitations are committed, so a client that
-                // refetches the moment it receives the event cannot miss them.
-                await PublishRoomInvitationsChangedAsync(room);
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
+
+            // EVERY new room announces itself, not only one created with email invitations.
+            //
+            // This call used to sit INSIDE the `if (request.InvitedEmails.Any())` block above, so
+            // a room created without typing anybody's email — the ordinary case for a workspace
+            // whose members can already see each other's meetings — published nothing at all.
+            // The whole realtime chain existed and worked; it simply was never rung. That is why
+            // the report was "phải F5" from one tester and "realtime mà, bth có cần reload đâu"
+            // from another: both were right, about different ways of creating a room.
+            //
+            // Still after the invitation SaveChangesAsync, so a client that refetches the instant
+            // it receives the event cannot miss rows that are about to be committed.
+            await PublishRoomInvitationsChangedAsync(room);
 
             // 5. Return mapped response. WT-280: seats are counted in the database, after the
             // host row above was committed, so a freshly created room correctly reports 1.
