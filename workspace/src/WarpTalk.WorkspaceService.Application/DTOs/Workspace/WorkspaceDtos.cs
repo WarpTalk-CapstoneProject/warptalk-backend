@@ -49,5 +49,7 @@ public record SelectWorkspaceResponse(
     Guid SelectedWorkspaceId,
     string Name,
     string Slug,
+    string Role,
+    string MembershipType,
     string DefaultLanguage = "en"
 );

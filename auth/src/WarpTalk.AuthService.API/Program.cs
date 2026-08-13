@@ -53,6 +53,7 @@ builder.Services.AddScoped<IUserRoleRepository, UserRoleRepository>();
 builder.Services.AddScoped<IUserSettingRepository, UserSettingRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IVoiceProfileRepository, VoiceProfileRepository>();
+builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
 builder.Services.AddScoped<IVoiceSampleRepository, VoiceSampleRepository>();
 builder.Services.AddScoped<IVoiceConsentRepository, VoiceConsentRepository>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
@@ -97,6 +98,7 @@ builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
 builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
+builder.Services.AddScoped<IVoiceConsentService, VoiceConsentService>();
 
 // Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();

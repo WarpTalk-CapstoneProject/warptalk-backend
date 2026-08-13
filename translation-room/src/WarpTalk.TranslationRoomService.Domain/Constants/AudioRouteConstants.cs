@@ -16,6 +16,13 @@ public static class AudioRouteConstants
     public const string ErrorFailedToProcessTelemetry = "Failed to process telemetry";
     public const string ErrorParticipantNotInRoom = "Caller is not a participant of this translation room.";
 
+    /// <summary>
+    /// Says what to do about it, not just what went wrong. The person has not refused anything —
+    /// they have most likely never been asked, and the fix is a page they can reach.
+    /// </summary>
+    public const string ErrorVoiceCloneConsentMissing =
+        "Voice cloning needs your consent first. Grant it in your account settings, then turn this on.";
+
     // Validation Messages
     public const string ValidationSelfRoutingNotAllowed = "Self-routing is not allowed.";
     public const string ValidationSourceLanguageRequired = "Source language is required for audio routing.";

@@ -357,6 +357,34 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
         }
 
         var now = _utcNow();
+
+        // The booking is stopped FIRST, before any occurrence is touched.
+        //
+        // This used to be the last write in the method, after a loop that cancels every future
+        // occurrence one at a time. Each of those does its own SaveChanges and its own Redis
+        // publish, so they commit as they go — and the controller hands this method the REQUEST's
+        // CancellationToken, which fires when the client disconnects. A host who closed the tab,
+        // navigated away, or met a gateway timeout partway through therefore left production in a
+        // state the code has no name for:
+        //
+        //     series      019ff440 "Daily meeting test"   ACTIVE
+        //     occurrences 14 of 14                        CANCELLED, all within 80ms
+        //
+        // A booking that says it is running, every meeting of which is cancelled. Nothing reads
+        // that state and nothing repairs it.
+        //
+        // Ordering fixes it rather than a transaction, because a transaction would be the wrong
+        // promise: an occurrence that started a second ago legitimately refuses to cancel (see the
+        // loop below), and rolling the whole stop back because one meeting is already running
+        // would mean a host cannot stop a series while it is in use — the moment they most want
+        // to. Stopping the series is the thing that was asked for and the thing that must not be
+        // lost; the occurrences follow it, best-effort, exactly as before.
+        series.Status = RecurrenceSeriesStatuses.Cancelled;
+        series.UpdatedAt = now;
+        series.UpdatedBy = hostId;
+        _seriesRepository.Update(series);
+        await _unitOfWork.SaveChangesAsync(ct);
+
         var futureOccurrences = await _seriesRepository.GetCancellableOccurrencesAsync(seriesId, now, ct);
 
         var cancelled = 0;
@@ -382,15 +410,9 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             }
         }
 
-        series.Status = RecurrenceSeriesStatuses.Cancelled;
-        series.UpdatedAt = now;
-        series.UpdatedBy = hostId;
-        _seriesRepository.Update(series);
-        await _unitOfWork.SaveChangesAsync(ct);
-
         _logger.LogInformation(
-            "WT-327: series {SeriesId} cancelled by host {HostId}; {Count} future occurrences cancelled with it.",
-            seriesId, hostId, cancelled);
+            "WT-327: series {SeriesId} cancelled by host {HostId}; {Count} of {Total} future occurrences cancelled with it.",
+            seriesId, hostId, cancelled, futureOccurrences.Count);
 
         return Result.Success(new CancelSeriesResult(seriesId, cancelled));
     }
@@ -489,10 +511,42 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             .FirstOrDefaultAsync(room => room.SeriesId == series.Id, ct: ct);
         var sharedRoomCode = existingOccurrence?.TranslationRoomCode;
 
+        // Which of these dates this series ALREADY has a room for.
+        //
+        // The enumerator works from the watermark and knows nothing about the rows; the unique
+        // index `(series_id, series_occurrence_local_date) WHERE series_id IS NOT NULL` counts
+        // every row including CANCELLED ones. So a series whose occurrences were cancelled has
+        // dates the enumerator offers again and the database refuses — and the refusal used to
+        // stop the pass without saving anything, which is a sweep that fails identically every
+        // five minutes forever. Production had two series doing exactly that, one of them since
+        // its occurrences were cancelled in bulk.
+        //
+        // Read once for the whole pass rather than per date: it is one query either way and the
+        // set is at most MaxOccurrencesPerPass wide.
+        var alreadyMaterialised = (await _unitOfWork.TranslationRoomRepository.FindAsync(
+                room => room.SeriesId == series.Id && room.SeriesOccurrenceLocalDate != null,
+                ct: ct))
+            .Select(room => room.SeriesOccurrenceLocalDate!.Value)
+            .ToHashSet();
+
         var created = 0;
+        var watermarkMoved = false;
 
         foreach (var date in dates)
         {
+            // Already there — cancelled, or created by a concurrent sweep on another replica.
+            // Either way this date is done, and the watermark has to move past it or the pass
+            // will offer it again for as long as the row exists.
+            if (alreadyMaterialised.Contains(date))
+            {
+                _logger.LogInformation(
+                    "WT-327: series {SeriesId} already has an occurrence for {Date}; advancing past it.",
+                    series.Id, date);
+                series.MaterializedThroughLocalDate = date;
+                watermarkMoved = true;
+                continue;
+            }
+
             var result = await CreateOccurrenceAsync(
                 series, plan, date, isFirst: false, invitedEmails, ct, sharedRoomCode);
             if (!result.IsSuccess)
@@ -507,10 +561,15 @@ public class TranslationRoomSeriesService : ITranslationRoomSeriesService
             }
 
             created++;
+            watermarkMoved = true;
             series.MaterializedThroughLocalDate = date;
         }
 
-        if (created > 0)
+        // `created > 0` was the old condition, and it is why the loop above could never escape:
+        // a pass that skipped every date it was offered saved nothing, so the next pass was
+        // handed the identical work. Any watermark movement has to be persisted, whether the
+        // occurrences behind it were created now or found already there.
+        if (watermarkMoved)
         {
             if (RecurrenceScheduleCalculator.IsFullyMaterialized(series.MaterializedThroughLocalDate, series.EndsOnLocalDate))
             {

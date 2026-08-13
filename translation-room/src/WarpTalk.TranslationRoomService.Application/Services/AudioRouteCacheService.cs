@@ -54,13 +54,45 @@ public class AudioRouteCacheService : IAudioRouteCacheService
         // drift into disagreeing about whether translation is on.
         var activeSession = await _sessionRepository.GetActiveSessionByRoomIdAsync(roomId, ct);
 
+        // What languages this room was CONFIGURED for, as opposed to which ones happen to
+        // be spoken in it right now.
+        //
+        // The AI pipeline had no access to this and was inferring the room's language set
+        // from the participants' speak-languages alone. Those are not the same set: a room
+        // configured Vietnamese + Japanese where both people SPEAK Vietnamese and one
+        // LISTENS in Japanese produced the set {vi}. STT then treated every Japanese
+        // character as foreign to the room and deleted it — a room configured for Japanese,
+        // dropping Japanese — while nothing at all constrained the languages it was never
+        // told about, which is how Arabic reached that room's transcript.
+        //
+        // Sent on the payload the STT worker already fetches for room_status, so this costs
+        // no extra round trip. `room` is already loaded above.
+        var configuredLanguages = new List<string>();
+        if (room is not null)
+        {
+            var source = Helpers.LanguageHelper.NormalizeLanguageCode(room.SourceLanguage);
+            if (!string.IsNullOrWhiteSpace(source) && source != "auto")
+            {
+                configuredLanguages.Add(source);
+            }
+
+            foreach (var target in Helpers.LanguageHelper.ParseTargetLanguages(room.TargetLanguages))
+            {
+                if (!string.IsNullOrWhiteSpace(target) && !configuredLanguages.Contains(target))
+                {
+                    configuredLanguages.Add(target);
+                }
+            }
+        }
+
         var payload = new
         {
             routes = activeOrPendingRoutes,
             version = DateTime.UtcNow.Ticks,
             generated_at = DateTime.UtcNow,
             room_status = room?.Status.ToString() ?? string.Empty,
-            translation_active = activeSession != null
+            translation_active = activeSession != null,
+            room_languages = configuredLanguages
         };
 
         var jsonPayload = JsonSerializer.Serialize(payload);

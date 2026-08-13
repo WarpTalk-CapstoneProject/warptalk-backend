@@ -80,6 +80,49 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
         return response;
     }
 
+    /// <summary>
+    /// WT-359. The only mutating RPC on this service, and it exists because host authority is
+    /// stored here but the Transfer Host action is owned and authorized by MeetingService. Before
+    /// this, a transfer wrote only meeting.meeting_rooms.active_host_id, so this service went on
+    /// answering "is this the host?" with the booker's id — and re-stamped their HOST role on
+    /// every rejoin.
+    /// </summary>
+    public override async Task<TransferRoomHostResponse> TransferRoomHost(
+        TransferRoomHostRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.RoomId, out var roomId))
+            throw GrpcErrors.InvalidId(TranslationRoomConstants.EntityTranslationRoom);
+
+        if (!Guid.TryParse(request.NewHostUserId, out var newHostUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        if (!Guid.TryParse(request.RequestedByUserId, out var requestedByUserId))
+            throw GrpcErrors.InvalidId("User");
+
+        var result = await _directoryService.TransferHostAsync(
+            roomId, requestedByUserId, newHostUserId, context.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            // Three refusals that mean different things to the caller, so they must not arrive as
+            // one status: the room is gone, the caller may not do this, or the request itself is
+            // impossible against the roster.
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                throw GrpcErrors.NotFound(TranslationRoomConstants.EntityTranslationRoom, request.RoomId);
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                throw new RpcException(new Status(StatusCode.PermissionDenied, result.Error ?? "Not the current host."));
+
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, result.Error ?? "Transfer refused."));
+        }
+
+        return new TransferRoomHostResponse
+        {
+            PreviousHostUserId = result.Value.ToString()
+        };
+    }
+
     public override async Task<GetActiveRoomCountByWorkspaceResponse> GetActiveRoomCountByWorkspace(
         GetActiveRoomCountByWorkspaceRequest request,
         ServerCallContext context)

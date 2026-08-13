@@ -33,8 +33,6 @@ public partial class AuthDbContext : DbContext
 
     public virtual DbSet<VoiceSample> VoiceSamples { get; set; }
 
-
-
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder
@@ -431,7 +429,10 @@ public partial class AuthDbContext : DbContext
 
             entity.ToTable("voice_consents", "voice");
 
-            entity.HasIndex(e => new { e.UserId, e.ConsentType, e.CreatedAt }, "voice_consents_user_type_created_at_idx").IsDescending(false, false, true);
+            // The one query this table exists to answer: "what did this person last decide about
+            // this kind of consent". Without the index that is a scan of everyone's history.
+            entity.HasIndex(e => new { e.UserId, e.ConsentType, e.CreatedAt },
+                "voice_consents_user_type_created_at_idx").IsDescending(false, false, true);
 
             entity.HasIndex(e => new { e.VoiceProfileId, e.ConsentStatus }, "voice_consents_voice_profile_id_status_idx");
 
@@ -446,11 +447,25 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.ConsentType)
                 .HasMaxLength(50)
                 .HasColumnName("consent_type");
+            // Plain text, like every other status in this codebase.
+            //
+            // This property USED to declare .HasColumnType("consent_status") against the Postgres
+            // enum the column really was, and every grant returned 500: AuthService builds its
+            // data source with plain UseNpgsql (Program.cs), so Npgsql has no mapping for that
+            // type, sends text, and Postgres answers `42804: column "consent_status" is of type
+            // consent_status but expression is of type text`. Migration
+            // 20260813090000_convert_voice_consent_status_to_varchar converted the column, exactly
+            // as 014-15-06-2026 had already done for translation_room and transcript — `voice` was
+            // simply outside that migration's scope and got left behind.
+            //
+            // A CHECK constraint on the column still refuses anything outside GRANTED/REVOKED/
+            // EXPIRED, so the guarantee the enum provided is intact; only the type is gone.
             entity.Property(e => e.ConsentStatus)
-                .HasMaxLength(20)
+                .HasMaxLength(50)
                 .HasColumnName("consent_status");
             entity.Property(e => e.ConsentTextVersion)
                 .HasMaxLength(50)
+                .HasComment("Which wording the person agreed to. An old row keeps its own version.")
                 .HasColumnName("consent_text_version");
             entity.Property(e => e.ContractHash)
                 .HasMaxLength(64)
@@ -460,6 +475,7 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.RevokedAt).HasColumnName("revoked_at");
             entity.Property(e => e.IpAddress)
                 .HasMaxLength(45)
+                .HasComment("Evidence of where the decision came from. Never used to identify.")
                 .HasColumnName("ip_address");
             entity.Property(e => e.NoImpersonationConfirmed).HasColumnName("no_impersonation_confirmed");
             entity.Property(e => e.OwnVoiceConfirmed).HasColumnName("own_voice_confirmed");

@@ -2,13 +2,14 @@ using System;
 
 namespace WarpTalk.AuthService.Domain.Entities;
 
+/// <summary>
+/// A person's decision about voice cloning, kept as an append-only record.
+/// </summary>
 public partial class VoiceConsent
 {
     public Guid Id { get; set; }
 
-    /// <summary>
-    /// External AuthService user id. No physical FK.
-    /// </summary>
+    /// <summary>External AuthService user id. No physical FK.</summary>
     public Guid UserId { get; set; }
 
     public Guid? VoiceProfileId { get; set; }

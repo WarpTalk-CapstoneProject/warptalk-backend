@@ -15,8 +15,12 @@ namespace WarpTalk.WorkspaceService.API.Controllers;
 /// What the system has indexed about this workspace — the chunk text that was embedded and
 /// the fact extracted from each — for the workspace Owner/Admin.
 ///
-/// Read-only. The workspace comes from the route and the caller from the token; the service
-/// checks the two against workspace_members on every call.
+/// The workspace comes from the route and the caller from the token; the service checks the
+/// two against workspace_members on every call.
+///
+/// READING AND WRITING HAVE DIFFERENT BARS. Owner and Admin can both see the listing. Only the
+/// Owner can correct a fact or delete a chunk: those decide what the assistant will tell
+/// everyone in the workspace, and what evidence remains of what it was told.
 /// </summary>
 [ApiController]
 [Route("api/v1/workspaces/{workspaceId:guid}/knowledge")]
@@ -40,6 +44,50 @@ public class WorkspaceKnowledgeController : ControllerBase
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
         var result = await _knowledgeService.GetKnowledgeAsync(workspaceId, query, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// Corrects one chunk's fact, its category, or whether WarpBot may retrieve it.
+    ///
+    /// PATCH and not PUT: this replaces the three annotation fields and nothing else — the
+    /// indexed text and the provenance are not the caller's to send, so a body that looked
+    /// like the whole resource would be inviting them to try.
+    /// </summary>
+    [Authorize]
+    [HttpPatch("{chunkId}")]
+    public async Task<IActionResult> UpdateChunk(
+        Guid workspaceId,
+        string chunkId,
+        [FromBody] UpdateWorkspaceKnowledgeChunkRequest request,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _knowledgeService.UpdateKnowledgeChunkAsync(
+            workspaceId, chunkId, request, userId.Value, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// Removes one chunk from the index.
+    ///
+    /// The source it came from is untouched — the document is still in the workspace, and
+    /// re-uploading it indexes it again. This says what the assistant may draw on, and is not
+    /// a retention or deletion request against the document itself.
+    /// </summary>
+    [Authorize]
+    [HttpDelete("{chunkId}")]
+    public async Task<IActionResult> DeleteChunk(Guid workspaceId, string chunkId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _knowledgeService.DeleteKnowledgeChunkAsync(
+            workspaceId, chunkId, userId.Value, ct);
+
+        if (result.IsSuccess) return NoContent();
         return ToActionResult(result);
     }
 

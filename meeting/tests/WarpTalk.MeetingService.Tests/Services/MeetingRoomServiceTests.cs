@@ -450,6 +450,12 @@ public class MeetingRoomServiceTests
             .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
         _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
 
+        // WT-359: host authority lives in the translation-room service, so the transfer has to
+        // reach it. It answers with the host it replaced.
+        _grpcServiceMock
+            .Setup(g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId))
+            .ReturnsAsync(Result.Success(currentHostId));
+
         var result = await _sut.TransferHostAsync(translationRoomId, currentHostId, newHostId);
 
         Assert.True(result.IsSuccess);
@@ -461,6 +467,96 @@ public class MeetingRoomServiceTests
                 "warptalk:translation-room:commands",
                 It.Is<object>(payload => HasProperty(payload, "Command", "HostChanged") && HasProperty(payload, "NewHostUserId", newHostId.ToString()))),
             Times.Once);
+    }
+
+    /// <summary>
+    /// WT-359. The transfer used to write only this service's active_host_id, which is the LIVE
+    /// SESSION's host and not the one the translation-room service reads when it decides whether a
+    /// joiner is the host. That is why the outgoing host was handed the room back on rejoin.
+    /// </summary>
+    [Fact]
+    public async Task TransferHostAsync_MovesHostAuthorityInTheTranslationRoomService()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+        var currentHostId = Guid.NewGuid();
+        var newHostId = Guid.NewGuid();
+
+        var meetingRoom = new MeetingRoom { Id = meetingRoomId, TranslationRoomId = translationRoomId, ActiveHostId = currentHostId, ProviderRoomName = "room-1" };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        _grpcServiceMock
+            .Setup(g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId))
+            .ReturnsAsync(Result.Success(currentHostId));
+
+        var result = await _sut.TransferHostAsync(translationRoomId, currentHostId, newHostId);
+
+        Assert.True(result.IsSuccess);
+        _grpcServiceMock.Verify(
+            g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId), Times.Once);
+
+        // WT-358: both sides named, so a client can demote the outgoing host as well as promote the
+        // incoming one. The presence payload carries no role, so one id was never enough.
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(
+                "warptalk:translation-room:commands",
+                It.Is<object>(payload => HasProperty(payload, "PreviousHostUserId", currentHostId.ToString()))),
+            Times.Once);
+    }
+
+    /// <summary>
+    /// The remote write is ordered FIRST precisely so this case leaves nothing changed anywhere.
+    /// A local commit followed by a remote failure would reproduce the very split WT-359 is about,
+    /// and would do it silently.
+    /// </summary>
+    [Fact]
+    public async Task TransferHostAsync_LeavesLocalStateUntouched_WhenTheRoomServiceRefuses()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var meetingRoomId = Guid.NewGuid();
+        var currentHostId = Guid.NewGuid();
+        var newHostId = Guid.NewGuid();
+
+        var meetingRoom = new MeetingRoom { Id = meetingRoomId, TranslationRoomId = translationRoomId, ActiveHostId = currentHostId, ProviderRoomName = "room-1" };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(null));
+        _grpcServiceMock
+            .Setup(g => g.GetRoomDetailsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetTranslationRoomResponse { HostId = Guid.NewGuid().ToString() }));
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<MeetingParticipant, bool>>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingParticipant { MeetingRoomId = meetingRoomId, UserId = newHostId, IsActive = true });
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        _grpcServiceMock
+            .Setup(g => g.TransferRoomHostAsync(translationRoomId, currentHostId, newHostId))
+            .ReturnsAsync(Result.Failure<Guid>("Only the current host can transfer this room.", "TRANSFER_FORBIDDEN"));
+
+        var result = await _sut.TransferHostAsync(translationRoomId, currentHostId, newHostId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(currentHostId, meetingRoom.ActiveHostId);
+        _redisServiceMock.Verify(
+            r => r.PublishEventAsync(It.IsAny<string>(), It.IsAny<object>()), Times.Never);
     }
 
     [Fact]

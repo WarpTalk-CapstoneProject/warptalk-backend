@@ -40,6 +40,9 @@ public class TranslationRoomAudioRouteServiceTests
             _mockCacheService.Object,
             mockEventProcessor.Object,
             mockLanguagePolicy.Object,
+            // Granted by default: these tests predate the consent gate and are about routing, not
+            // permission. The gate itself is pinned separately in VoiceCloneConsentGateTests.
+            GrantedConsent(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 
@@ -193,5 +196,13 @@ public class TranslationRoomAudioRouteServiceTests
         var count = 0;
         foreach (var _ in routes) count++;
         return count;
+    }
+
+    private static IVoiceConsentDirectory GrantedConsent()
+    {
+        var mock = new Mock<IVoiceConsentDirectory>();
+        mock.Setup(d => d.HasVoiceCloneConsentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        return mock.Object;
     }
 }

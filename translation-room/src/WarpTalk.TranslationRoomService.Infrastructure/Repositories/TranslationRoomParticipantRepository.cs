@@ -54,4 +54,25 @@ public class TranslationRoomParticipantRepository : GenericRepository<Translatio
             .Select(g => new { RoomId = g.Key, Seats = g.Count() })
             .ToDictionaryAsync(x => x.RoomId, x => x.Seats, ct);
     }
+
+    public async Task<Dictionary<Guid, int>> CountEverJoinedByRoomsAsync(
+        IReadOnlyCollection<Guid> roomIds,
+        CancellationToken ct = default)
+    {
+        if (roomIds.Count == 0)
+        {
+            return new Dictionary<Guid, int>();
+        }
+
+        var ids = roomIds as List<Guid> ?? roomIds.ToList();
+
+        // No status filter: the question is who turned up, not who is still here. Counted
+        // DISTINCT by UserId because a participant who dropped and rejoined can hold more than
+        // one row for the same room, and they attended once.
+        return await _dbSet
+            .Where(p => ids.Contains(p.TranslationRoomId))
+            .GroupBy(p => p.TranslationRoomId)
+            .Select(g => new { RoomId = g.Key, Attended = g.Select(p => p.UserId).Distinct().Count() })
+            .ToDictionaryAsync(x => x.RoomId, x => x.Attended, ct);
+    }
 }

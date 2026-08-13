@@ -26,6 +26,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly IAudioRouteCacheService _audioRouteCacheService;
     private readonly IAudioRouteEventProcessor _eventProcessor;
     private readonly ILanguagePolicy _languagePolicy;
+    private readonly IVoiceConsentDirectory _voiceConsentDirectory;
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
 
     public TranslationRoomAudioRouteService(
@@ -33,6 +34,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         IAudioRouteCacheService audioRouteCacheService,
         IAudioRouteEventProcessor eventProcessor,
         ILanguagePolicy languagePolicy,
+        IVoiceConsentDirectory voiceConsentDirectory,
         ILogger<TranslationRoomAudioRouteService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -42,6 +44,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         _audioRouteCacheService = audioRouteCacheService;
         _eventProcessor = eventProcessor;
         _languagePolicy = languagePolicy;
+        _voiceConsentDirectory = voiceConsentDirectory;
         _logger = logger;
     }
 
@@ -431,6 +434,21 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             if (participant == null)
             {
                 return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+            }
+
+            // Turning cloning ON requires a consent record in AuthService; turning it OFF never
+            // does. Withdrawal must work even when the record cannot be read — the failure mode
+            // of a consent system has to be "less processing", never "you are stuck consenting".
+            //
+            // This flag is what the AI pipeline reads (see base_worker.is_voice_clone_consented,
+            // which fails closed on routes it has not received). Gating it here rather than in
+            // the worker keeps the check off the per-utterance hot path: the pipeline still
+            // consults exactly one local field, and that field can now only be true for somebody
+            // who agreed to it in a record that outlives this meeting.
+            if (enabled && !await _voiceConsentDirectory.HasVoiceCloneConsentAsync(userId, ct))
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(
+                    AudioRouteConstants.ErrorVoiceCloneConsentMissing, ErrorCodes.Forbidden);
             }
 
             var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);

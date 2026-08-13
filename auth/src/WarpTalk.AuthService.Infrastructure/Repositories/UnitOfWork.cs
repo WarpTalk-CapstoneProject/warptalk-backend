@@ -6,6 +6,7 @@ namespace WarpTalk.AuthService.Infrastructure.Repositories;
 public class UnitOfWork : IUnitOfWork
 {
     private readonly AuthDbContext _context;
+    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 
     public UnitOfWork(
         AuthDbContext context,
@@ -40,9 +41,6 @@ public class UnitOfWork : IUnitOfWork
     public IVoiceProfileRepository VoiceProfileRepository { get; }
     public IVoiceSampleRepository VoiceSampleRepository { get; }
     public IVoiceConsentRepository VoiceConsentRepository { get; }
-
-
-    private Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? _currentTransaction;
 
     public async Task<int> SaveChangesAsync(CancellationToken ct = default)
         => await _context.SaveChangesAsync(ct);

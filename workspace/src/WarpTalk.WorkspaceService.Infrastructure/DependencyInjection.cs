@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -114,7 +115,10 @@ public static class DependencyInjection
 
             vectorDbUrl = "http://localhost:6333";
         }
-        services.AddHttpClient<IKnowledgeChunkReader, QdrantKnowledgeChunkReader>(client =>
+        // One configuration, two clients. The reader and the writer talk to the same Qdrant with
+        // the same credentials; declaring the address twice is how they end up pointing at
+        // different instances after somebody edits one of them.
+        void ConfigureVectorDbClient(HttpClient client)
         {
             // A trailing slash keeps the relative request path from replacing the last
             // segment of the base address.
@@ -126,7 +130,10 @@ public static class DependencyInjection
             {
                 client.DefaultRequestHeaders.Add("api-key", vectorDbApiKey);
             }
-        });
+        }
+
+        services.AddHttpClient<IKnowledgeChunkReader, QdrantKnowledgeChunkReader>(ConfigureVectorDbClient);
+        services.AddHttpClient<IKnowledgeChunkWriter, QdrantKnowledgeChunkWriter>(ConfigureVectorDbClient);
         services.AddScoped<IDocumentEmbeddingResultProcessor, DocumentEmbeddingResultProcessor>();
         services.AddScoped<WorkspaceOutboxWriter>();
         services.AddScoped<WorkspaceOutboxDelivery>();
