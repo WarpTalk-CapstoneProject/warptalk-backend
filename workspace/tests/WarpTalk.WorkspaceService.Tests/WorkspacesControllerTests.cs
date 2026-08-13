@@ -169,7 +169,7 @@ public class WorkspacesControllerTests
     {
         // Arrange
         var workspaceId = Guid.NewGuid();
-        var expectedResponse = new SelectWorkspaceResponse(workspaceId, "DeepMind", "deepmind", "en");
+        var expectedResponse = new SelectWorkspaceResponse(workspaceId, "DeepMind", "deepmind", "Member", "External", "en");
 
         _workspaceService.SelectWorkspaceAsync(workspaceId, _userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success(expectedResponse));
