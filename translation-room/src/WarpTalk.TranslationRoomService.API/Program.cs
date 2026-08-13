@@ -116,6 +116,8 @@ builder.Services.AddHostedService<ArtifactsRecoveryWorker>();
 // because the in-memory queue was dropped by a restart or the attempt threw and was
 // swallowed. Keyed on "terminal room with no artifacts", read from the database.
 builder.Services.AddHostedService<ArtifactsReconciliationWorker>();
+// Nothing else ends a room when the last person leaves — see the worker's own notes.
+builder.Services.AddHostedService<AbandonedRoomSweepWorker>();
 builder.Services.AddHostedService<ParticipantOfflineConsumerWorker>();
 // The other half of a summary rewrite. Without this the request reaches the AI worker and
 // its answer is published to a stream nobody reads.
