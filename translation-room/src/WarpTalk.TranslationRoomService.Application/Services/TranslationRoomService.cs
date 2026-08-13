@@ -433,10 +433,21 @@ public class TranslationRoomService : ITranslationRoomService
                         Status = "PENDING"
                     }, ct);
 
-                    // 2. Send the email
+                    // 2. Tell them — both ways.
+                    //
+                    // Only the email was sent here. NotifyInvitedUserAsync already existed and was
+                    // already called when somebody is invited to an EXISTING room, so a meeting
+                    // that named its guests up front — the ordinary way to create one — was the
+                    // single path that rang no bell. "check noti i mn": there was nothing there
+                    // to check, and the only trace was an email to an account that had one.
+                    //
+                    // Same gate as the email, for the same reason: one daily standup must not
+                    // deliver thirty notifications. NotifyInvitedUserAsync skips anyone without an
+                    // account and never throws, so this cannot fail a room creation.
                     if (sendInvitationEmails)
                     {
                         emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                        emailTasks.Add(NotifyInvitedUserAsync(email, room, meetingLink, ct));
                     }
                 }
 
