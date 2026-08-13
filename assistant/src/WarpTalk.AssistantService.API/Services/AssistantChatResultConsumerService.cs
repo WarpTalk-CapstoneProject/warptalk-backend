@@ -225,6 +225,13 @@ public class AssistantChatResultConsumerService : BackgroundService
                     conversationId, requestId, fields.GetValueOrDefault("tool_name", ""), fields.GetValueOrDefault("tool_status", ""), ct);
                 break;
 
+            // The ask_user tool's output is a card, not text. Relayed on its own event so the
+            // client never has to find questions inside an assistant message.
+            case "question":
+                await notifier.BroadcastQuestionAsync(
+                    conversationId, requestId, fields.GetValueOrDefault("tool_calls_json", ""), ct);
+                break;
+
             case "completed":
                 await FinalizeMessageAsync(scope, conversationId, requestId, content, fields.GetValueOrDefault("tool_calls_json", ""), failed: false, ct);
                 break;
