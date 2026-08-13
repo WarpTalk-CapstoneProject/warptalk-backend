@@ -38,6 +38,21 @@ public static class NotificationValidator
             }
         },
         {
+            // room_id + room_title are exactly what TranslationRoomService.NotifyInviteesAsync
+            // and ArtifactsFinalizationWorker put in Metadata. Registered as REQUIRED because a
+            // notification about a meeting with no meeting on it is not worth delivering.
+            NotificationConstants.TypeMeetingStarted, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
+            NotificationConstants.TypeMeetingSummaryReady, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
             "TRANSCRIPT_READY", new PayloadSchema
             {
                 RequiredFields = { { "transcript_id", JsonValueKind.String }, { "meeting_name", JsonValueKind.String } }

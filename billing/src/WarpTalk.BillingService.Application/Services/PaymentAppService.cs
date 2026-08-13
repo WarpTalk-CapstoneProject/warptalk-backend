@@ -48,7 +48,22 @@ public class PaymentAppService : IPaymentAppService
             var result = await _stripePaymentService.CreateCheckoutSessionAsync(request);
             if (!result.IsSuccess)
             {
-                _logger.LogError(BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession);
+                // The REASON, not just the fact. This branch logged a bare "Failed to create
+                // checkout session" and dropped result.Error on the floor, so a production
+                // checkout that refuses every plan leaves a log line that says a checkout
+                // failed and nothing about why — which is exactly the state this was found in.
+                // The provider's own message is the only thing that distinguishes a missing
+                // API key from a plan with no price id from a declined request.
+                _logger.LogError(
+                    "{Message}. WorkspaceId: {WorkspaceId}, Plan: {PlanSlug}, Cycle: {BillingCycle}, Amount: {Amount} {Currency}, Reason: {Reason} ({ErrorCode})",
+                    BillingMessageConstants.LogMessages.FailedToCreateCheckoutSession,
+                    request.WorkspaceId,
+                    request.PlanSlug,
+                    request.BillingCycle,
+                    request.Amount,
+                    request.Currency,
+                    result.Error,
+                    result.ErrorCode);
                 return Result.Failure<string>(
                     result.Error ?? BillingMessageConstants.ApiErrorMessages.BillingCheckoutSessionCreateFailed,
                     ErrorCodes.InternalServerError);

@@ -239,6 +239,13 @@ public class MeetingsController : ControllerBase
             if (result.ErrorCode == ErrorCodes.InvalidState || result.ErrorCode == ErrorCodes.ValidationError)
                 return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 
+            // The recording provider's plan is out of minutes. Nothing here is broken and there
+            // is nothing to retry, so 500 is the wrong thing to say: it sent a host looking for
+            // a bug when the answer is "top up the plan". 402 is the honest status for a request
+            // refused over an exhausted allowance.
+            if (result.ErrorCode == "LIVEKIT_EGRESS_QUOTA_EXCEEDED")
+                return StatusCode(402, new ApiErrorResponse(result.Error, result.ErrorCode));
+
             return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

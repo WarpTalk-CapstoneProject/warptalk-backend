@@ -11,6 +11,15 @@ public static class NotificationConstants
     // WT-14: scheduled-meeting reminders (T-10min / T-1min), sent by the translation-room
     // service's ReminderNotificationWorker via SendNotification.
     public const string TypeMeetingReminder = "MEETING_REMINDER";
+    // Both are PUBLISHED by translation-room — TranslationRoomService when a room goes live and
+    // ArtifactsFinalizationWorker when a summary lands — and both were missing from the
+    // validator's schema table. An unknown type carrying a payload is rejected outright, so
+    // every "your meeting started" and every "your summary is ready" notification was dropped
+    // at validation with UNSUPPORTED_NOTIFICATION_TYPE. Neither producer looks at the reply, so
+    // nothing anywhere reported it; the only trace was a warning line in the notification
+    // service's own log.
+    public const string TypeMeetingStarted = "MEETING_STARTED";
+    public const string TypeMeetingSummaryReady = "MEETING_SUMMARY_READY";
 
     // Admin Notification Types (WT-58)
     public const string TypePromotion = "PROMOTION";
