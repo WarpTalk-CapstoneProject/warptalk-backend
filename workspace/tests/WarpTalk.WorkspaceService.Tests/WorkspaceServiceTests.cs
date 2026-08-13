@@ -1266,6 +1266,47 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenWorkspaceIsSoftDeleted()
+    {
+        // A membership row outlives the workspace, so the owner of a deleted workspace still
+        // passes the role check. Without the soft-delete guard the settings write would succeed
+        // against a workspace no part of the product can reach.
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var newSettings = new WorkspaceSettingsDto(
+            "vi",
+            "Asia/Ho_Chi_Minh",
+            new List<string>(),
+            false,
+            5,
+            30,
+            new List<string>(),
+            true,
+            true,
+            null,
+            false
+        );
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, DeletedAt = DateTime.UtcNow });
+
+        var ownerRoleId = Guid.NewGuid();
+        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId };
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(owner);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenDomainIsPublicDomain()
     {
         // Arrange

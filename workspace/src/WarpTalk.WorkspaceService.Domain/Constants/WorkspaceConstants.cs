@@ -52,7 +52,11 @@ public static class WorkspaceConstants
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
         public const string OnlyOwnerCanRenameWorkspace = "Only the workspace owner can rename the workspace.";
-        public const string WorkspaceNameTooLong = "Workspace name must be 150 characters or fewer.";
+        // `static readonly` rather than `const` so the limit is written once. A constant
+        // interpolated string cannot interpolate an int, and repeating the number in the
+        // message is exactly how the neighbouring range messages drifted from their bounds.
+        public static readonly string WorkspaceNameTooLong =
+            $"Workspace name must be {MaxWorkspaceNameLength} characters or fewer.";
 
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
         public const string NewOwnerMustBeActiveMember = "New owner must be an active member of the workspace.";

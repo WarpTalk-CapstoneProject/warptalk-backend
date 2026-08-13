@@ -376,7 +376,13 @@ public class WorkspaceService : IWorkspaceService
         try
         {
             var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-            if (workspace == null)
+
+            // `GetByIdAsync` is a raw `FindAsync` with no soft-delete filter, and membership rows
+            // outlive the workspace they belong to, so a former owner keeps passing the role check
+            // below long after the workspace is gone. Without this a deleted workspace stays
+            // writable: its settings would change, its policy row would look freshly edited, and
+            // nothing in the product would ever show the result.
+            if (workspace == null || workspace.DeletedAt != null)
             {
                 return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }

@@ -107,7 +107,7 @@ thị cho toàn bộ thành viên, auto-save theo từng ký tự gõ là sai v�
 | File | Thay đổi |
 |---|---|
 | `Application/DTOs/Workspace/WorkspaceDtos.cs` | `RenameWorkspaceRequest(string Name)`, kèm doc comment ghi rõ vì sao slug bất biến. |
-| `Domain/Constants/WorkspaceConstants.cs` | `MaxWorkspaceNameLength = 150`; error `OnlyOwnerCanRenameWorkspace`, `WorkspaceNameTooLong`. |
+| `Domain/Constants/WorkspaceConstants.cs` | `MaxWorkspaceNameLength = 150`; error `OnlyOwnerCanRenameWorkspace`, `WorkspaceNameTooLong` (message nội suy hằng số, không lặp lại số 150). |
 | `Application/Interfaces/IWorkspaceService.cs` | `RenameWorkspaceAsync`. |
 | `Application/Services/WorkspaceService.cs` | Cài đặt (xem §5.2). |
 | `API/Controllers/WorkspacesController.cs` | `PATCH api/v1/workspaces/{id:guid}/name` → `204`. |
@@ -123,6 +123,23 @@ thị cho toàn bộ thành viên, auto-save theo từng ký tự gõ là sai v�
 6. Set **`Name`, `UpdatedAt`, `UpdatedBy`**. Không đụng `Slug`.
 
 Trả `Result.Failure(...)`, không throw — bám theo `WorkspaceService.cs:404-408` và `:516-520`.
+
+### 5.2b `UpdateWorkspaceSettingsAsync` cũng chặn workspace đã soft-delete
+
+Ban đầu chỉ rename kiểm tra `DeletedAt`, khiến hai endpoint cạnh nhau hành xử khác nhau. Đã sửa
+`UpdateWorkspaceSettingsAsync` dùng cùng guard, theo đúng idiom + comment có sẵn ở
+`SelectWorkspaceAsync` (`WorkspaceService.cs:313-318`).
+
+Lý do đây là bug chứ không phải khác biệt vô hại: hàng membership **sống lâu hơn** workspace, nên
+owner của một workspace đã xoá vẫn qua được vòng kiểm tra role bên dưới. Không có guard này thì
+workspace đã xoá vẫn ghi settings được — policy đổi, `updated_at` mới, và không màn hình nào trong
+sản phẩm hiển thị kết quả đó.
+
+Test kèm theo: `UpdateWorkspaceSettingsAsync_ShouldFail_WhenWorkspaceIsSoftDeleted`.
+
+**Vẫn còn lệch, không xử lý ở đây**: `GetWorkspaceByIdAsync` (`:258`) và
+`GetWorkspaceByIdForAdminAsync` (`:278`) cũng không lọc `DeletedAt`. Đó là đường đọc, hậu quả khác
+hẳn đường ghi, nên để lại cho ticket riêng.
 
 ### 5.3 Web — `warptalk-web/`
 
