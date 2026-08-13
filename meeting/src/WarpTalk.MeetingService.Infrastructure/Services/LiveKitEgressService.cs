@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
@@ -65,6 +66,21 @@ public class LiveKitEgressService : ILiveKitEgressService
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogError("LiveKit StartRoomCompositeEgress failed ({Status}): {Body}", response.StatusCode, body);
+
+                // A quota refusal is not a fault, and saying "Internal Server Error" about it
+                // sends whoever pressed Record to look for a bug that does not exist. LiveKit
+                // answers an exhausted plan with 429 and {"code":"resource_exhausted"} — which is
+                // what production returned all morning while the host was told only "Could not
+                // start recording."
+                if (body.Contains("resource_exhausted", StringComparison.OrdinalIgnoreCase)
+                    || response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    return Result.Failure<string>(
+                        "Recording is unavailable: this workspace's video-recording minutes are used up. "
+                        + "The meeting itself, its transcript and its translation are unaffected.",
+                        "LIVEKIT_EGRESS_QUOTA_EXCEEDED");
+                }
+
                 return Result.Failure<string>($"LiveKit Egress start failed: {response.StatusCode}", "LIVEKIT_EGRESS_START_FAILED");
             }
 
