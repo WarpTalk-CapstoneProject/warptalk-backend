@@ -63,3 +63,31 @@ public class GetWorkspaceKnowledgeQuery
 
     public int PageSize { get; set; } = 50;
 }
+
+/// <summary>
+/// What an Owner may correct about an indexed chunk.
+///
+/// Deliberately three fields and not the whole DTO. The chunk's TEXT is the only thing the
+/// vector was computed from, so editing it here would leave WarpBot retrieving on the old
+/// meaning and displaying the new words — and the provenance (which document, which meeting,
+/// which chunk index) is a record of where the text came from, which is not an opinion anyone
+/// gets to revise.
+///
+/// Both string fields are nullable and both nulls are meaningful: clearing a wrong fact is a
+/// correction in its own right, and is not the same as declining to change it.
+/// </summary>
+public class UpdateWorkspaceKnowledgeChunkRequest
+{
+    /// <summary>The one-line fact, or null to say this chunk has none.</summary>
+    public string? Fact { get; set; }
+
+    /// <summary>One of the six closed categories, or null. Rejected if it is neither.</summary>
+    public string? FactCategory { get; set; }
+
+    /// <summary>
+    /// Whether WarpBot may retrieve this chunk when answering. Turning it off is the softer
+    /// alternative to deleting: the row stays visible and auditable on this page, and stops
+    /// being reachable in an answer.
+    /// </summary>
+    public bool AiRetrieval { get; set; } = true;
+}

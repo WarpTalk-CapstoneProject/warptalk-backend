@@ -110,26 +110,7 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
         var items = new List<KnowledgeChunkRecord>(body.Result.Points.Count);
         foreach (var point in body.Result.Points)
         {
-            var payload = point.Payload ?? new Dictionary<string, JsonElement>();
-            items.Add(new KnowledgeChunkRecord(
-                ChunkId: ReadString(payload, "chunk_id") ?? point.Id?.ToString() ?? string.Empty,
-                SourceType: ReadString(payload, "source_type") ?? "unknown",
-                Text: ReadString(payload, "text"),
-                Fact: ReadString(payload, "fact"),
-                FactCategory: ReadString(payload, "fact_category"),
-                DocumentId: ReadString(payload, "document_id"),
-                DocumentName: ReadString(payload, "document_name"),
-                ChunkIndex: ReadInt(payload, "chunk_index"),
-                SpeakerName: ReadString(payload, "speaker_name"),
-                StartMs: ReadLong(payload, "start_ms"),
-                RetentionState: ReadString(payload, "retention_state"),
-                DeletionState: ReadString(payload, "deletion_state"),
-                AiRetrieval: ReadBool(payload, "ai_retrieval"),
-                // Glossary producers predate `source_title` and write `source_term` instead.
-                // Falling back keeps their rows named after the term rather than the generic
-                // "Glossary term" the UI would otherwise have to show.
-                SourceTitle: ReadString(payload, "source_title")
-                    ?? ReadString(payload, "source_term")));
+            items.Add(ToRecord(point));
         }
 
         // next_page_offset is null on the last page; Qdrant ids may be numeric or uuid, and
@@ -140,6 +121,87 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
                 : null;
 
         return new KnowledgeChunkPage(items, nextCursor);
+    }
+
+    public async Task<KnowledgeChunkRecord?> FindAsync(
+        Guid workspaceId,
+        string chunkId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(chunkId)) return null;
+
+        var collection = $"workspace_{workspaceId}";
+
+        // Retrieve by id rather than scrolling with a `chunk_id` filter. The payload's
+        // `chunk_id` is written by the indexer, but ScrollAsync falls back to the point id for
+        // rows indexed before it was, so a filter on the payload key cannot see those at all —
+        // and the id is the same value either way, because the indexer upserts each point
+        // under its own chunk id.
+        var request = new { ids = new[] { PointId(chunkId) }, with_payload = true, with_vector = false };
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            $"collections/{collection}/points", request, SerializerOptions, ct);
+
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.BadRequest)
+        {
+            // NotFound: the workspace has never indexed anything. BadRequest: Qdrant rejects an
+            // id that is neither a uuid nor an unsigned integer, which is what a hand-typed or
+            // stale chunk id looks like. Neither is a fault, and both mean "no such chunk".
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+
+        var body = await response.Content.ReadFromJsonAsync<RetrieveResponse>(SerializerOptions, ct);
+        var found = body?.Result is { Count: > 0 } ? body.Result[0] : null;
+        if (found == null) return null;
+
+        // The collection is already per-workspace, so this can only differ if a collection were
+        // renamed or shared. Checking anyway is what keeps "reader returns null for another
+        // workspace's chunk" true by construction rather than by deployment layout — the writer
+        // trusts this method to be the tenancy check before it deletes anything.
+        var payload = found.Payload ?? new Dictionary<string, JsonElement>();
+        var owner = ReadString(payload, "workspace_id");
+        if (owner != null && !string.Equals(owner, workspaceId.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Refused a knowledge chunk read across workspaces. Collection: {Collection}", collection);
+            return null;
+        }
+
+        return ToRecord(found);
+    }
+
+    /// <summary>
+    /// Qdrant ids are a uuid or an unsigned integer, and it rejects the wrong JSON type rather
+    /// than coercing. Producers here write uuids, but transcript segments have used numeric ids,
+    /// so the type is chosen from the value instead of assumed.
+    /// </summary>
+    private static object PointId(string chunkId)
+        => ulong.TryParse(chunkId, out var numeric) ? numeric : chunkId;
+
+    private static KnowledgeChunkRecord ToRecord(ScrollPoint point)
+    {
+        var payload = point.Payload ?? new Dictionary<string, JsonElement>();
+        return new KnowledgeChunkRecord(
+            ChunkId: ReadString(payload, "chunk_id") ?? point.Id?.ToString() ?? string.Empty,
+            SourceType: ReadString(payload, "source_type") ?? "unknown",
+            Text: ReadString(payload, "text"),
+            Fact: ReadString(payload, "fact"),
+            FactCategory: ReadString(payload, "fact_category"),
+            DocumentId: ReadString(payload, "document_id"),
+            DocumentName: ReadString(payload, "document_name"),
+            ChunkIndex: ReadInt(payload, "chunk_index"),
+            SpeakerName: ReadString(payload, "speaker_name"),
+            StartMs: ReadLong(payload, "start_ms"),
+            RetentionState: ReadString(payload, "retention_state"),
+            DeletionState: ReadString(payload, "deletion_state"),
+            AiRetrieval: ReadBool(payload, "ai_retrieval"),
+            // Glossary producers predate `source_title` and write `source_term` instead.
+            // Falling back keeps their rows named after the term rather than the generic
+            // "Glossary term" the UI would otherwise have to show.
+            SourceTitle: ReadString(payload, "source_title")
+                ?? ReadString(payload, "source_term"));
     }
 
     private static string? ReadString(IReadOnlyDictionary<string, JsonElement> payload, string key)
@@ -161,6 +223,11 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
 
     private static bool ReadBool(IReadOnlyDictionary<string, JsonElement> payload, string key)
         => payload.TryGetValue(key, out var value) && value.ValueKind == JsonValueKind.True;
+
+    private sealed class RetrieveResponse
+    {
+        public List<ScrollPoint>? Result { get; set; }
+    }
 
     private sealed class ScrollResponse
     {

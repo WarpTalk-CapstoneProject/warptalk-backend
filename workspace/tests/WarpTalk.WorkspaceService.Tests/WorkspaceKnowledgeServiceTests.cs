@@ -22,6 +22,7 @@ public class WorkspaceKnowledgeServiceTests
     private readonly IWorkspaceMemberRepository _memberRepository = Substitute.For<IWorkspaceMemberRepository>();
     private readonly IAuthIdentityClient _authIdentity = Substitute.For<IAuthIdentityClient>();
     private readonly IKnowledgeChunkReader _chunkReader = Substitute.For<IKnowledgeChunkReader>();
+    private readonly IKnowledgeChunkWriter _chunkWriter = Substitute.For<IKnowledgeChunkWriter>();
     private readonly WorkspaceKnowledgeService _service;
 
     private readonly Guid _workspaceId = Guid.NewGuid();
@@ -35,6 +36,7 @@ public class WorkspaceKnowledgeServiceTests
             _unitOfWork,
             _authIdentity,
             _chunkReader,
+            _chunkWriter,
             Substitute.For<ILogger<WorkspaceKnowledgeService>>());
     }
 
@@ -306,6 +308,189 @@ public class WorkspaceKnowledgeServiceTests
         Assert.True(result.IsSuccess);
         Assert.Single(result.Value!.Items);
         await _authIdentity.DidNotReceiveWithAnyArgs().GetRoleByIdAsync(default, default);
+    }
+
+    // ── Correcting and removing what was indexed ─────────────────────────────────────────
+    //
+    // The listing is Owner OR Admin; these are Owner only. The asymmetry is the point: seeing
+    // what the assistant knows and deciding what it is allowed to know are different acts, and
+    // the second one also erases the evidence of the first.
+
+    private void GivenChunkExists(KnowledgeChunkRecord record)
+    {
+        _chunkReader
+            .FindAsync(_workspaceId, record.ChunkId, Arg.Any<CancellationToken>())
+            .Returns(record);
+    }
+
+    private static UpdateWorkspaceKnowledgeChunkRequest Update(
+        string? fact = "Payment terms are net 45",
+        string? category = "requirement",
+        bool aiRetrieval = true)
+        => new() { Fact = fact, FactCategory = category, AiRetrieval = aiRetrieval };
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_IsRefusedForAnAdmin()
+    {
+        // An Admin can read this page. Rewriting what WarpBot will tell the workspace is a
+        // different thing, and it is the Owner's.
+        GivenMemberWithRole("Admin");
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(), _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().SetAnnotationAsync(default, default!, default!);
+    }
+
+    [Fact]
+    public async Task DeleteKnowledgeChunkAsync_IsRefusedForAnAdmin()
+    {
+        GivenMemberWithRole("Admin");
+
+        var result = await _service.DeleteKnowledgeChunkAsync(_workspaceId, "chunk-1", _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().DeleteAsync(default, default!);
+    }
+
+    [Fact]
+    public async Task DeleteKnowledgeChunkAsync_ReadsBeforeItWrites()
+    {
+        // The tenancy check. Chunk ids are globally unique in a store shared by every
+        // workspace, so an id in a URL proves nothing about who owns it — the read is what
+        // turns "delete this id" into "delete this id IF it is ours".
+        GivenMemberWithRole("Owner");
+        _chunkReader
+            .FindAsync(_workspaceId, "someone-elses-chunk", Arg.Any<CancellationToken>())
+            .Returns((KnowledgeChunkRecord?)null);
+
+        var result = await _service.DeleteKnowledgeChunkAsync(
+            _workspaceId, "someone-elses-chunk", _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.NotFound, result.ErrorCode);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().DeleteAsync(default, default!);
+    }
+
+    [Fact]
+    public async Task DeleteKnowledgeChunkAsync_RemovesAChunkTheWorkspaceOwns()
+    {
+        GivenMemberWithRole("Owner");
+        GivenChunkExists(DocumentChunk());
+
+        var result = await _service.DeleteKnowledgeChunkAsync(_workspaceId, "chunk-1", _userId);
+
+        Assert.True(result.IsSuccess);
+        await _chunkWriter.Received(1).DeleteAsync(_workspaceId, "chunk-1", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_RejectsACategoryOutsideTheClosedSet()
+    {
+        // Rejected before the store is touched. The listing filters by category, so a value
+        // nothing else recognises produces a row that no filter can ever show again.
+        GivenMemberWithRole("Owner");
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(category: "vibes"), _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        await _chunkReader.DidNotReceiveWithAnyArgs().FindAsync(default, default!);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().SetAnnotationAsync(default, default!, default!);
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_RejectsACategoryWithNoFactToCategorise()
+    {
+        GivenMemberWithRole("Owner");
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(fact: "   ", category: "risk"), _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_ClearsAFactWhenBothAreEmptied()
+    {
+        // "This extracted fact is wrong and I have nothing to put in its place" is a real
+        // correction, and it must not be mistaken for "leave it as it was".
+        GivenMemberWithRole("Owner");
+        GivenChunkExists(DocumentChunk());
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(fact: null, category: null), _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Value!.Fact);
+        Assert.Null(result.Value.FactCategory);
+        await _chunkWriter.Received(1).SetAnnotationAsync(
+            _workspaceId,
+            "chunk-1",
+            Arg.Is<KnowledgeChunkAnnotation>(a => a.Fact == null && a.FactCategory == null),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_WritesTheTrimmedFactAndReturnsIt()
+    {
+        GivenMemberWithRole("Owner");
+        GivenChunkExists(DocumentChunk());
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId,
+            "chunk-1",
+            Update(fact: "  Payment terms are net 45  ", category: "Requirement"),
+            _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("Payment terms are net 45", result.Value!.Fact);
+        // Categories are stored lower-case, the same way the listing filter sends them.
+        Assert.Equal("requirement", result.Value.FactCategory);
+        // Everything the Owner does not get to change comes back unchanged.
+        Assert.Equal("Payment terms are net 30.", result.Value.Text);
+        Assert.Equal("contract.pdf", result.Value.DocumentName);
+        await _chunkWriter.Received(1).SetAnnotationAsync(
+            _workspaceId,
+            "chunk-1",
+            Arg.Is<KnowledgeChunkAnnotation>(a =>
+                a.Fact == "Payment terms are net 45" && a.FactCategory == "requirement"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_CanTakeAChunkOutOfRetrievalWithoutDeletingIt()
+    {
+        // The softer alternative to delete: the row stays on the page, auditable, and stops
+        // being reachable in an answer.
+        GivenMemberWithRole("Owner");
+        GivenChunkExists(DocumentChunk());
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(aiRetrieval: false), _userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.AiRetrieval);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().DeleteAsync(default, default!);
+    }
+
+    [Fact]
+    public async Task UpdateKnowledgeChunkAsync_IsRefusedForSomeoneWhoIsNotInTheWorkspace()
+    {
+        GivenNoMembership();
+
+        var result = await _service.UpdateKnowledgeChunkAsync(
+            _workspaceId, "chunk-1", Update(), _userId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        await _chunkReader.DidNotReceiveWithAnyArgs().FindAsync(default, default!);
+        await _chunkWriter.DidNotReceiveWithAnyArgs().SetAnnotationAsync(default, default!, default!);
     }
 
     private sealed class HttpRequestExceptionStub : Exception

@@ -283,6 +283,84 @@ public class QdrantKnowledgeChunkReaderTests
             _workspaceId, new KnowledgeChunkFilter(null, null), 50, null));
     }
 
+    // ── FindAsync: the tenancy check the edit and delete paths stand on ────────────────────
+
+    [Fact]
+    public async Task FindAsync_RetrievesByIdRatherThanFilteringOnThePayload()
+    {
+        // Not a scroll with a `chunk_id` filter. Rows indexed before the payload carried
+        // `chunk_id` are listed under their POINT id, so a payload filter cannot see them at
+        // all — and retrieve-by-id finds both, because the indexer upserts each point under
+        // its own chunk id.
+        var (reader, handler) = Build(
+            HttpStatusCode.OK,
+            $"{{\"result\":[{{\"id\":\"chunk-1\",\"payload\":{{\"workspace_id\":\"{_workspaceId}\",\"source_type\":\"document\",\"text\":\"hello\"}}}}]}}");
+
+        var record = await reader.FindAsync(_workspaceId, "chunk-1");
+
+        Assert.Equal(
+            $"http://qdrant.test/collections/workspace_{_workspaceId}/points",
+            handler.LastRequestUri);
+        Assert.NotNull(record);
+        Assert.Equal("chunk-1", record!.ChunkId);
+        Assert.Equal("hello", record.Text);
+    }
+
+    [Fact]
+    public async Task FindAsync_SendsANumericIdAsANumber()
+    {
+        // Qdrant ids are a uuid or an unsigned integer, and it rejects the wrong JSON type
+        // rather than coercing. Transcript segments have used numeric ids.
+        var (reader, handler) = Build(HttpStatusCode.OK, "{\"result\":[]}");
+
+        await reader.FindAsync(_workspaceId, "42");
+
+        using var sent = JsonDocument.Parse(handler.LastRequestBody!);
+        var id = sent.RootElement.GetProperty("ids")[0];
+        Assert.Equal(JsonValueKind.Number, id.ValueKind);
+        Assert.Equal(42, id.GetInt32());
+    }
+
+    [Fact]
+    public async Task FindAsync_RefusesAChunkBelongingToAnotherWorkspace()
+    {
+        // The whole point. Ids are globally unique across a store shared by every workspace,
+        // so this is what stops one workspace's chunk id in a URL from reaching another
+        // workspace's row — and, through the writer, deleting it.
+        var (reader, _) = Build(
+            HttpStatusCode.OK,
+            "{\"result\":[{\"id\":\"chunk-1\",\"payload\":{\"workspace_id\":\"11111111-1111-1111-1111-111111111111\",\"source_type\":\"document\"}}]}");
+
+        Assert.Null(await reader.FindAsync(_workspaceId, "chunk-1"));
+    }
+
+    [Fact]
+    public async Task FindAsync_ReturnsNullRatherThanThrowingForTheOrdinaryMisses()
+    {
+        // A workspace that has never indexed anything (404), an id Qdrant will not even parse
+        // (400), and an id that simply is not there. None of the three is a fault, and a row a
+        // colleague deleted while this page was open is the most likely cause of all of them.
+        foreach (var (status, body) in new[]
+                 {
+                     (HttpStatusCode.NotFound, "{\"status\":\"error\"}"),
+                     (HttpStatusCode.BadRequest, "{\"status\":\"error\"}"),
+                     (HttpStatusCode.OK, "{\"result\":[]}"),
+                 })
+        {
+            var (reader, _) = Build(status, body);
+            Assert.Null(await reader.FindAsync(_workspaceId, "chunk-1"));
+        }
+    }
+
+    [Fact]
+    public async Task FindAsync_DoesNotCallTheStoreForAnEmptyId()
+    {
+        var (reader, handler) = Build(HttpStatusCode.OK, "{\"result\":[]}");
+
+        Assert.Null(await reader.FindAsync(_workspaceId, "  "));
+        Assert.Null(handler.LastRequestUri);
+    }
+
     private const string EmptyResult =
         "{\"result\":{\"points\":[],\"next_page_offset\":null},\"status\":\"ok\"}";
 

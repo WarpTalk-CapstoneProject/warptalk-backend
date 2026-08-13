@@ -31,6 +31,23 @@ public interface IKnowledgeChunkReader
         int limit,
         string? cursor,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// One chunk by id, or null if this workspace has no such chunk.
+    ///
+    /// Exists for the edit and delete paths, which must not act on a chunk id the caller
+    /// merely guessed. Ids are globally unique in a store shared by every workspace, so
+    /// "not found" and "belongs to somebody else" have to be the same answer here — an
+    /// implementation that returned another workspace's chunk would turn one route into a
+    /// cross-tenant read and, through the writer, a cross-tenant delete.
+    ///
+    /// Returns null rather than throwing when nothing matches: a row deleted by a colleague
+    /// while this page was open is an ordinary race, not a fault.
+    /// </summary>
+    Task<KnowledgeChunkRecord?> FindAsync(
+        Guid workspaceId,
+        string chunkId,
+        CancellationToken ct = default);
 }
 
 /// <summary>
