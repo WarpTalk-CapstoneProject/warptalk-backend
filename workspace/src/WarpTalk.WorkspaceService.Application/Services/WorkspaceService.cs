@@ -261,6 +261,16 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
             }
 
+            if (workspace.DeletedAt != null)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (!workspace.IsActive)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.WorkspaceInactive, ErrorCodes.NotFound);
+            }
+
             var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
             return Result.Success(workspace.ToDto(roleName, member.MembershipType));
         }
@@ -333,7 +343,13 @@ public class WorkspaceService : IWorkspaceService
             await _workspaceCache.SetActiveWorkspaceDetailsAsync(userId, workspaceId, role, membershipType, ct);
 
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var response = new SelectWorkspaceResponse(workspaceId, workspace.Name, workspace.Slug, config.DefaultLanguage);
+            var response = new SelectWorkspaceResponse(
+                workspaceId,
+                workspace.Name,
+                workspace.Slug,
+                role,
+                membershipType,
+                config.DefaultLanguage);
             return Result.Success(response);
         }
         catch (Exception ex)
