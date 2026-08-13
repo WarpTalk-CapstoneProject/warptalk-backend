@@ -17,7 +17,8 @@ public record RoomSettingsRequest(
     string? ArtifactAccess = null,
     bool? MuteOnEntry = null,
     bool? AutoRecord = null,
-    bool? BreakoutsEnabled = null
+    bool? BreakoutsEnabled = null,
+    bool? ParticipantsCanStartTranslation = null
 );
 
 public record RoomSettingsResponse(
@@ -25,7 +26,8 @@ public record RoomSettingsResponse(
     string ArtifactAccess,
     bool MuteOnEntry,
     bool AutoRecord,
-    bool BreakoutsEnabled
+    bool BreakoutsEnabled,
+    bool ParticipantsCanStartTranslation
 );
 
 public record UpdateRoomSettingsRequest(
