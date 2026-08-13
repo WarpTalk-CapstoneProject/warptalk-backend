@@ -33,7 +33,29 @@ public static class WorkspaceMapper
         return ToDto(workspace, role.ToRoleName());
     }
 
-    public static Workspace ToEntity(this CreateWorkspaceRequest request, string slug, Guid ownerId, string settingsJson = "{}", DateTime? utcNow = null)
+    /// <summary>
+    /// Builds the <see cref="Workspace"/> row for a create request.
+    /// </summary>
+    /// <remarks>
+    /// The two policy flags are explicit REQUIRED parameters rather than being read back out of
+    /// <paramref name="settingsJson"/> because the dedicated columns — not the JSON — are the
+    /// authorization source of truth. <c>WorkspaceHelper.GetWorkspaceConfig</c> and
+    /// <c>WorkspaceRepository.GetSettingsAsync</c> both overwrite the deserialized JSON values
+    /// with the columns, precisely so that stale settings JSON can never move policy (WT-179).
+    ///
+    /// While this mapper omitted them, every workspace was inserted with the CLR default
+    /// <c>false</c> on both columns. Creation looked correct from the outside — the settings JSON
+    /// said <c>requireVerifiedDomainForInternal: true</c> and rows landed in
+    /// <c>workspace_verified_domains</c> — but the column that every reader actually consults said
+    /// otherwise, so invitation validation, membership classification and the "one internal home
+    /// per user" rule all silently no-opped. <c>AllowExternalCollaboration</c> had the mirror
+    /// problem: the configuration default is <c>true</c>, the column landed <c>false</c>.
+    ///
+    /// Passing them in makes the contradiction impossible to reintroduce by omission: a caller
+    /// cannot construct a workspace without stating its policy, and the compiler enforces it.
+    /// Keep them aligned with the config that produced <paramref name="settingsJson"/>.
+    /// </remarks>
+    public static Workspace ToEntity(this CreateWorkspaceRequest request, string slug, Guid ownerId, bool requireVerifiedDomainForInternal, bool allowExternalCollaboration, string settingsJson = "{}", DateTime? utcNow = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
         return new Workspace
@@ -44,6 +66,8 @@ public static class WorkspaceMapper
             LogoUrl = request.LogoUrl,
             OwnerId = ownerId,
             Settings = settingsJson,
+            RequireVerifiedDomainForInternal = requireVerifiedDomainForInternal,
+            AllowExternalCollaboration = allowExternalCollaboration,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now

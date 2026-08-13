@@ -171,7 +171,9 @@ public class WorkspaceService : IWorkspaceService
                 RequireVerifiedDomainForInternal = requireVerified
             };
             var settingsJson = JsonSerializer.Serialize(config);
-            var workspace = request.ToEntity(slug, userId, settingsJson);
+            // The columns, not the JSON, are what every policy reader consults — pass the same
+            // values the config was built from so the two can never disagree. See ToEntity.
+            var workspace = request.ToEntity(slug, userId, requireVerified, config.AllowExternalCollaboration, settingsJson);
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
             var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
@@ -401,7 +403,16 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            var ownerOnlyPolicyChanged = currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
+            // Both flags define who the workspace treats as its own people, so both are the
+            // Owner's call and not an Admin's. RequireVerifiedDomainForInternal is the switch that
+            // gives the verified-domain list its meaning: with it off, the domains are inert and
+            // every joiner is classified without reference to them. Leaving it merely
+            // Owner-or-Admin while VerifiedDomainService keeps domain CRUD strictly Owner-only
+            // protected the list but not the setting that decides whether the list matters —
+            // an Admin could PATCH this one field and turn the entire membership policy off.
+            var ownerOnlyPolicyChanged =
+                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration
+                || currentConfig.RequireVerifiedDomainForInternal != settings.RequireVerifiedDomainForInternal;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);

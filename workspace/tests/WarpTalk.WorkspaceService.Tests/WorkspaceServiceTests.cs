@@ -1395,6 +1395,205 @@ public class WorkspaceServiceTests
 
     #endregion
 
+    #region Workspace Policy Column Tests
+
+    // The dedicated `require_verified_domain_for_internal` / `allow_external_collaboration`
+    // columns are the authorization source of truth — WorkspaceHelper.GetWorkspaceConfig and
+    // WorkspaceRepository.GetSettingsAsync both mirror them over whatever the settings JSON says.
+    // WorkspaceMapper.ToEntity used to leave both at the CLR default `false`, so a workspace could
+    // be created with the JSON and the workspace_verified_domains rows both saying the policy was
+    // on while every reader of the columns saw it off. These tests assert on the entity actually
+    // handed to the repository, which is the only place that contradiction was observable.
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldPersistRequireVerifiedDomainColumn_WhenRequestedTrue()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        StubUser(userId, new User { Id = userId, Email = "owner@warptalk.vn" });
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+        _workspaceRepository.AnyAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        Workspace? persisted = null;
+        await _workspaceRepository.AddAsync(Arg.Do<Workspace>(w => persisted = w), Arg.Any<CancellationToken>());
+
+        var request = new CreateWorkspaceRequest("Verified Co", null, RequireVerifiedDomainForInternal: true);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        // The column, not the JSON. Before the fix this was false while the settings JSON and the
+        // workspace_verified_domains row both claimed the policy was on.
+        Assert.True(persisted!.RequireVerifiedDomainForInternal);
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "warptalk.vn"), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldPersistRequireVerifiedDomainColumnAsFalse_WhenRequestedFalse()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        StubUser(userId, new User { Id = userId, Email = "owner@warptalk.vn" });
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+        _workspaceRepository.AnyAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        Workspace? persisted = null;
+        await _workspaceRepository.AddAsync(Arg.Do<Workspace>(w => persisted = w), Arg.Any<CancellationToken>());
+
+        var request = new CreateWorkspaceRequest("Open Co", null, RequireVerifiedDomainForInternal: false);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        Assert.False(persisted!.RequireVerifiedDomainForInternal);
+        await _workspaceVerifiedDomainRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldPersistRequireVerifiedDomainColumnAsFalse_WhenOmittedAndNoDomainsGiven()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        StubUser(userId, new User { Id = userId, Email = "owner@warptalk.vn" });
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+        _workspaceRepository.AnyAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        Workspace? persisted = null;
+        await _workspaceRepository.AddAsync(Arg.Do<Workspace>(w => persisted = w), Arg.Any<CancellationToken>());
+
+        // Neither the flag nor a domain list supplied.
+        var request = new CreateWorkspaceRequest("Default Co", null);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        // Verification is opt-in when nothing is asked for — this documents the existing
+        // create-time defaulting in CreateWorkspaceAsync, which this hotfix deliberately leaves
+        // alone. The bug was never the default; it was that the column ignored the request.
+        Assert.False(persisted!.RequireVerifiedDomainForInternal);
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldPersistAllowExternalCollaborationColumnAsTrue_MatchingConfigurationDefault()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        StubUser(userId, new User { Id = userId, Email = "owner@warptalk.vn" });
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+        _workspaceRepository.AnyAsync(Arg.Any<Expression<Func<Workspace, bool>>>(), Arg.Any<CancellationToken>()).Returns(false);
+
+        Workspace? persisted = null;
+        await _workspaceRepository.AddAsync(Arg.Do<Workspace>(w => persisted = w), Arg.Any<CancellationToken>());
+
+        var request = new CreateWorkspaceRequest("External Friendly Co", null, RequireVerifiedDomainForInternal: true);
+
+        // Act
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        // WorkspaceConfiguration defaults this to true and the serialized JSON said true; the
+        // column used to land false, so external collaboration was silently off everywhere.
+        Assert.True(persisted!.AllowExternalCollaboration);
+        Assert.Equal(new WorkspaceConfiguration().AllowExternalCollaboration, persisted.AllowExternalCollaboration);
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminChangesRequireVerifiedDomainForInternal()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+
+        // Policy currently off; the columns are what GetWorkspaceConfig reads back.
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = false,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30}"
+        };
+
+        // AllowExternalCollaboration is left untouched, so this isolates the new flag. A domain is
+        // supplied purely so WorkspaceSettingsValidator passes and the request reaches the gate.
+        var requested = new WorkspaceSettingsDto(
+            "en", "UTC", new List<string>(), true, 5, 30,
+            new List<string> { "company.com" }, true, true, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        // Assert
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, result.Error);
+        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
+            Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task UpdateWorkspaceSettingsAsync_ShouldSucceed_WhenAdminChangesNonPolicyFieldOnly()
+    {
+        // Arrange
+        var userId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+        var admin = new WorkspaceMember { Id = Guid.NewGuid(), WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId };
+
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = false,
+            Settings = "{\"AllowExternalCollaboration\":true,\"RequireVerifiedDomainForInternal\":false,\"ArtifactRetentionDays\":30,\"DefaultLanguage\":\"en\"}"
+        };
+
+        // Only DefaultLanguage moves; both policy flags match the current workspace state. Proves
+        // the owner-only gate was not over-tightened into a blanket Owner-only settings endpoint.
+        var requested = new WorkspaceSettingsDto(
+            "vi", "UTC", new List<string>(), true, 5, 30,
+            new List<string>(), true, false, null, false);
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(admin);
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceRepository.UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        // Act
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+
+        // Assert
+        Assert.True(result.IsSuccess);
+        await _workspaceRepository.Received(1).UpdateSettingsAsync(
+            workspaceId, Arg.Is<WorkspaceConfiguration>(c => c.DefaultLanguage == "vi"), userId, Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
     #region SoftDeleteWorkspaceAsync Tests
 
     [Fact]
