@@ -337,32 +337,53 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
             var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
-            invitation.TokenHash = TokenHasher.Hash(invitationToken);
+
+            // BR-34 — a resend SUPERSEDES rather than overwrites.
+            //
+            // This used to write the new token hash straight onto the existing row. The old token
+            // did stop working, so the security property held, but the SRS status REPLACED had no
+            // row to live on and nothing recorded that a second email had gone out under different
+            // token material. One row cannot be both the superseded invitation and its replacement.
+            //
+            // Order matters: the old row is marked before the new one is added, so a reader that
+            // catches the transaction mid-flight never sees two PENDING invitations for the same
+            // address. Both writes commit together.
+            var now = DateTime.UtcNow;
+            invitation.Status = InvitationStatus.REPLACED.ToString();
             _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+
+            // The same source the create path reads, so a workspace that shortened its invitation
+            // window gets that window on a resend too rather than the default.
+            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            var replacement = invitation.ToReplacementInvitation(
+                TokenHasher.Hash(invitationToken),
+                config.InvitationExpiryDays,
+                now);
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(replacement, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var inviterUser = await _authIdentity.GetUserByIdAsync(invitation.InvitedBy, ct);
+            var inviterUser = await _authIdentity.GetUserByIdAsync(replacement.InvitedBy, ct);
             var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
-            var emailResult = await _emailComposer.SendInvitationEmailAsync(invitation, workspace, inviterName, roleName, invitationToken, ct);
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(replacement, workspace, inviterName, roleName, invitationToken, ct);
 
-            invitation.LastSentAt = DateTime.UtcNow;
-            invitation.SentCount++;
+            replacement.LastSentAt = DateTime.UtcNow;
+            replacement.SentCount++;
 
             if (emailResult.IsSuccess)
             {
-                invitation.DeliveryStatus = "Sent";
-                invitation.ProviderMessageId = emailResult.MessageId;
+                replacement.DeliveryStatus = "Sent";
+                replacement.ProviderMessageId = emailResult.MessageId;
             }
             else
             {
-                invitation.DeliveryStatus = "Failed";
-                _logger.LogWarning("Retry delivery failed for invitation {InvitationId}: {Error}", invitation.Id, emailResult.ErrorMessage);
+                replacement.DeliveryStatus = "Failed";
+                _logger.LogWarning("Retry delivery failed for invitation {InvitationId}: {Error}", replacement.Id, emailResult.ErrorMessage);
             }
 
-            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            _unitOfWork.WorkspaceInvitationRepository.Update(replacement);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(invitation.ToDto(roleName));
+            return Result.Success(replacement.ToDto(roleName));
         }
         catch (Exception ex)
         {

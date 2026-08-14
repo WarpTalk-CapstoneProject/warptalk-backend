@@ -80,25 +80,42 @@ public class PlanService : IPlanService
         }
     }
 
+    /// <summary>
+    /// BR-74 — the customer-facing catalogue. Only plans that are actually on sale.
+    ///
+    /// This filtered on DeletedAt alone despite its name, so a plan an administrator had
+    /// deactivated stayed selectable for new purchases on the landing page and in every checkout
+    /// flow. `SubscriptionService` already refuses to create a subscription against an inactive
+    /// plan, so the end state was a customer picking a plan and being told no at the till.
+    ///
+    /// Administrators must NOT use this. Deactivating a plan through the edit form would remove it
+    /// from the only list the admin page has, and there would be no way to switch it back on —
+    /// deactivation would be a one-way door. That is what GetAllPlansAsync below is for.
+    /// </summary>
     public async Task<Result<IEnumerable<PlanDto>>> GetActivePlansAsync(
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var plans = (await _unitOfWork.Plans.FindAsync(
-                p => p.DeletedAt == null,
-                cancellationToken)).ToList();
+            var plans = await LoadCatalogueAsync(cancellationToken);
+            return Result.Success(plans.Where(p => p.IsActive).Select(p => p.ToDto()));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlans);
+            return Result.Failure<IEnumerable<PlanDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
 
-            if (!plans.Any())
-            {
-                var defaultEnterprisePlan = PlanMapper.CreateDefaultEnterprisePlan();
-                
-                await _unitOfWork.Plans.AddAsync(defaultEnterprisePlan, cancellationToken);
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-                
-                plans.Add(defaultEnterprisePlan);
-            }
-
+    /// <summary>
+    /// Every plan, deactivated ones included. System Admin only — see the controller.
+    /// </summary>
+    public async Task<Result<IEnumerable<PlanDto>>> GetAllPlansAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var plans = await LoadCatalogueAsync(cancellationToken);
             return Result.Success(plans.Select(p => p.ToDto()));
         }
         catch (Exception ex)
@@ -106,6 +123,31 @@ public class PlanService : IPlanService
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlans);
             return Result.Failure<IEnumerable<PlanDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Every non-deleted plan, seeding the default Enterprise plan on a genuinely empty catalogue.
+    ///
+    /// The seed is keyed on "no plans exist", NOT on "no ACTIVE plans exist". Those differ exactly
+    /// when an administrator has deactivated everything — and seeding there would mint a brand new
+    /// Enterprise plan every time the catalogue was read, silently undoing the decision to take the
+    /// product off sale.
+    /// </summary>
+    private async Task<List<Plan>> LoadCatalogueAsync(CancellationToken cancellationToken)
+    {
+        var plans = (await _unitOfWork.Plans.FindAsync(
+            p => p.DeletedAt == null,
+            cancellationToken)).ToList();
+
+        if (plans.Count == 0)
+        {
+            var defaultEnterprisePlan = PlanMapper.CreateDefaultEnterprisePlan();
+            await _unitOfWork.Plans.AddAsync(defaultEnterprisePlan, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            plans.Add(defaultEnterprisePlan);
+        }
+
+        return plans;
     }
 
     public async Task<Result<PlanDto>> GetPlanByIdAsync(
