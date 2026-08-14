@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -298,8 +298,8 @@ public class WorkspaceServiceTests
         var user = new User { Id = userId, Email = "owner@deepmind.com" };
         // NOTE: this test used to claim BOTH "deepmind.com" and "google.com" from a
         // @deepmind.com account and assert both were written. That is the domain-claim
-        // hole, asserted as a feature. The legitimate half â€” a workspace claiming its
-        // own domain â€” is what it now covers; the refusal is pinned separately in
+        // hole, asserted as a feature. The legitimate half — a workspace claiming its
+        // own domain — is what it now covers; the refusal is pinned separately in
         // CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn.
         var request = new CreateWorkspaceRequest(
             "DeepMind Labs",
@@ -356,7 +356,7 @@ public class WorkspaceServiceTests
         Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
     }
 
-    // â”€â”€ Hole 1: the public-email-domain block must not be switchable from the body â”€â”€
+    // ── Hole 1: the public-email-domain block must not be switchable from the body ──
 
     [Theory]
     [InlineData(null)]
@@ -478,13 +478,13 @@ public class WorkspaceServiceTests
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
     }
 
-    // â”€â”€ Hole 2: a workspace may only claim a domain the caller's own email is on â”€â”€
+    // ── Hole 2: a workspace may only claim a domain the caller's own email is on ──
 
     [Fact]
     public async Task CreateWorkspaceAsync_ShouldFail_WhenClaimingDomainTheCallerDoesNotOwn()
     {
         // attacker.com claiming victimcorp.com would auto-classify every victimcorp.com
-        // joiner as Internal â€” the trusted membership tier of a company the caller has
+        // joiner as Internal — the trusted membership tier of a company the caller has
         // nothing to do with.
         // Arrange
         var userId = Guid.NewGuid();

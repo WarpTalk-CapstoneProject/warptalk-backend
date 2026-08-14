@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -52,7 +52,7 @@ public static class WorkspaceHelper
 
         // "Enterprise" is the RequireVerifiedDomainForInternal column and nothing else. A
         // VerifiedDomains list left behind in the settings JSON used to count too, which made
-        // workspaces that had switched the policy off still behave as if it were on â€” the
+        // workspaces that had switched the policy off still behave as if it were on — the
         // WT-179 incident. Stale JSON is not evidence of live policy.
         return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
@@ -82,12 +82,12 @@ public static class WorkspaceHelper
         var requireVerifiedDomain = config.RequireVerifiedDomainForInternal;
 
         // A workspace with no domain policy draws the internal/external line by hand, so a join
-        // request there is not decided by the requester's address â€” both classes are open and the
+        // request there is not decided by the requester's address — both classes are open and the
         // reviewing Admin picks one.
         //
         // This used to hard-code requireVerifiedDomain: true regardless of the workspace, which
         // meant such a workspace has no verified domains, so every requester inferred External,
-        // so AllowedFinalMembershipTypes only ever offered External â€” and ApproveJoinRequestAsync
+        // so AllowedFinalMembershipTypes only ever offered External — and ApproveJoinRequestAsync
         // refused an Admin who chose Internal. There was no way at all to admit an internal member
         // through this path.
         if (!requireVerifiedDomain)
@@ -192,7 +192,7 @@ public static class WorkspaceHelper
     /// list that no longer matched the table went on deciding who counted as Internal (WT-179).
     ///
     /// Four call sites used to carry their own copy of this query. They agreed, which is why the
-    /// duplication was survivable â€” but a fifth copy that disagreed is exactly the shape of that
+    /// duplication was survivable — but a fifth copy that disagreed is exactly the shape of that
     /// incident, so there is now one.
     /// </summary>
     public static async Task<List<string>> GetActiveVerifiedDomainsAsync(
@@ -240,13 +240,13 @@ public static class WorkspaceHelper
     ///
     /// Deliberately blind to the owning workspace's lifecycle. It used to skip suspended and
     /// soft-deleted workspaces, which disagreed with the partial unique index behind the same
-    /// rule â€” the index only looks at <c>status</c>. A caller was told the domain was free,
+    /// rule — the index only looks at <c>status</c>. A caller was told the domain was free,
     /// the INSERT then hit the index, and the request failed as a 500 instead of a refusal.
     ///
     /// Suspension is reversible, so it must not release a claim: the workspace is coming back
     /// and expects to still hold its domain. Deletion is terminal, and releases the claim by
     /// revoking the rows outright (see SoftDeleteWorkspaceAsync) rather than by being filtered
-    /// out here â€” which keeps a single rule, "a domain is taken while its row is verified",
+    /// out here — which keeps a single rule, "a domain is taken while its row is verified",
     /// true at both layers.
     /// </summary>
     public static async Task<Guid?> GetWorkspaceIdVerifyingDomainAsync(IUnitOfWork unitOfWork, string domain, CancellationToken ct)
@@ -271,7 +271,7 @@ public static class WorkspaceHelper
     /// <code>require_verified_domain_for_internal == (active verified domains &gt; 0)</code>
     ///
     /// The column is derived, not configured. Holding a verified domain IS domain-verified
-    /// membership; holding none IS manually-assigned membership. Nobody sets the flag â€” an
+    /// membership; holding none IS manually-assigned membership. Nobody sets the flag — an
     /// Owner adds or revokes a domain and the policy follows, which is why the settings
     /// endpoint refuses the field outright.
     ///
