@@ -149,7 +149,7 @@ public class DlpSecurityGuardrailE2ETests
             30,
             new List<string> { "company.com" },
             true,
-            true,
+            false,
             new AiUsagePolicyDto(
                 true,
                 new PiiRedactionDto(true),

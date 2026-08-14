@@ -44,6 +44,7 @@ public static class WorkspaceConstants
         public const string MaxActiveRoomsOutOfRange = "Max active rooms must be between 1 and 50.";
         public const string ArtifactRetentionDaysOutOfRange = "Artifact retention days must be between 1 and 3650.";
         public const string VerifiedDomainsRequired = "Verified domains are required when internal members must use verified domains.";
+        public const string RequireVerifiedDomainPolicyDerivedFromDomains = "RequireVerifiedDomainForInternal is derived from active verified domains. Add or revoke verified domains to change it.";
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";

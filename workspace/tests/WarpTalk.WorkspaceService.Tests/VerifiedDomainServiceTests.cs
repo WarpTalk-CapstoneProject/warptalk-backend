@@ -58,7 +58,7 @@ public class VerifiedDomainServiceTests
             Substitute.For<ILogger<VerifiedDomainService>>());
     }
 
-    private void SetupWorkspace(bool requireVerifiedDomain = false)
+    private Workspace SetupWorkspace(bool requireVerifiedDomain = false)
     {
         var workspace = new Workspace
         {
@@ -71,6 +71,8 @@ public class VerifiedDomainServiceTests
 
         _workspaceRepository.GetByIdAsync(_workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
+
+        return workspace;
     }
 
     private void SetupMember(Guid roleId)
@@ -106,7 +108,7 @@ public class VerifiedDomainServiceTests
     public async Task AddDomainAsync_ShouldSucceed_WhenValidCorporateDomain_ByOwner()
     {
         // Arrange
-        SetupWorkspace();
+        var workspace = SetupWorkspace();
         SetupMember(_ownerRoleId);
         SetupCallerEmail("owner@enterprise.com");
 
@@ -129,9 +131,11 @@ public class VerifiedDomainServiceTests
         Assert.NotNull(result.Value);
         Assert.Equal("enterprise.com", result.Value.Domain);
         Assert.Equal("verified", result.Value.Status);
+        Assert.True(workspace.RequireVerifiedDomainForInternal);
         await _verifiedDomainRepo.Received(1).AddAsync(
             Arg.Is<WorkspaceVerifiedDomain>(vd => vd.Domain == "enterprise.com" && vd.WorkspaceId == _workspaceId),
             Arg.Any<CancellationToken>());
+        _workspaceRepository.Received(1).Update(workspace);
     }
 
     [Fact]
@@ -247,10 +251,10 @@ public class VerifiedDomainServiceTests
 
     [Fact]
     [Trait("Category", "DomainRevocation")]
-    public async Task RevokeDomainAsync_ShouldFail_WhenLastDomain_And_RequireVerifiedDomainForInternal()
+    public async Task RevokeDomainAsync_ShouldSucceed_AndDisableDomainPolicy_WhenRevokingLastDomain()
     {
         // Arrange
-        SetupWorkspace(requireVerifiedDomain: true);
+        var workspace = SetupWorkspace(requireVerifiedDomain: true);
         SetupMember(_ownerRoleId);
 
         var domainId = Guid.NewGuid();
@@ -259,7 +263,8 @@ public class VerifiedDomainServiceTests
             Id = domainId,
             WorkspaceId = _workspaceId,
             Domain = "company.com",
-            Status = "verified"
+            Status = "verified",
+            VerifiedAt = DateTime.UtcNow
         };
 
         _verifiedDomainRepo.FirstOrDefaultAsync(
@@ -272,14 +277,23 @@ public class VerifiedDomainServiceTests
             Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
             Arg.Any<string>(),
             Arg.Any<CancellationToken>())
-            .Returns(new List<WorkspaceVerifiedDomain> { domain });
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        _workspaceMemberRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>());
 
         // Act
         var result = await _service.RevokeDomainAsync(_workspaceId, domainId, _userId);
 
         // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(WorkspaceConstants.Errors.CannotRevokeLastDomain, result.Error);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(domain.RevokedAt);
+        Assert.False(workspace.RequireVerifiedDomainForInternal);
+        _verifiedDomainRepo.Received(1).Update(domain);
+        _workspaceRepository.Received(1).Update(workspace);
     }
 
     [Fact]
@@ -304,6 +318,12 @@ public class VerifiedDomainServiceTests
             Arg.Any<string>(),
             Arg.Any<CancellationToken>())
             .Returns(targetDomain);
+
+        _verifiedDomainRepo.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+            Arg.Any<string>(),
+            Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
         var activeInternalMember = new WorkspaceMember
         {
@@ -335,7 +355,7 @@ public class VerifiedDomainServiceTests
     public async Task RevokeDomainAsync_ShouldSucceed_WhenNoActiveInternalMembers_UsingDomain()
     {
         // Arrange
-        SetupWorkspace(requireVerifiedDomain: false);
+        var workspace = SetupWorkspace(requireVerifiedDomain: true);
         SetupMember(_ownerRoleId);
 
         var domainId = Guid.NewGuid();
@@ -365,6 +385,8 @@ public class VerifiedDomainServiceTests
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(targetDomain.RevokedAt);
+        Assert.False(workspace.RequireVerifiedDomainForInternal);
         _verifiedDomainRepo.Received(1).Update(targetDomain);
+        _workspaceRepository.Received(1).Update(workspace);
     }
 }

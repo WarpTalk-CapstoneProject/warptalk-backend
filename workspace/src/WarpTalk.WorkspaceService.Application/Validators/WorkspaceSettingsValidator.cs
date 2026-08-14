@@ -43,13 +43,6 @@ public static class WorkspaceSettingsValidator
             errors["invitationExpiryDays"] = [WorkspaceConstants.Errors.InvitationExpiryDaysOutOfRange];
         }
 
-        if (settings.RequireVerifiedDomainForInternal
-            && (settings.VerifiedDomains is null
-                || !settings.VerifiedDomains.Any(domain => !string.IsNullOrWhiteSpace(domain))))
-        {
-            errors["verifiedDomains"] = [WorkspaceConstants.Errors.VerifiedDomainsRequired];
-        }
-
         return new WorkspaceSettingsValidationResult(errors);
     }
 }

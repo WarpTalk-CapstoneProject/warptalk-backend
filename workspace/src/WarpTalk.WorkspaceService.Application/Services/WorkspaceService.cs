@@ -412,23 +412,26 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
+            var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            var hasActiveVerifiedDomain = await WorkspaceHelper.HasActiveVerifiedDomainAsync(_unitOfWork, workspaceId, ct);
+            if (settings.RequireVerifiedDomainForInternal != hasActiveVerifiedDomain)
+            {
+                return Result.Failure(
+                    WorkspaceConstants.Errors.RequireVerifiedDomainPolicyDerivedFromDomains,
+                    ErrorCodes.ValidationError);
+            }
+
             var settingsValidation = WorkspaceSettingsValidator.Validate(settings);
             if (!settingsValidation.IsValid)
             {
                 return Result.Failure(settingsValidation.ErrorMessage, ErrorCodes.ValidationError);
             }
 
-            var currentConfig = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            // Both flags define who the workspace treats as its own people, so both are the
-            // Owner's call and not an Admin's. RequireVerifiedDomainForInternal is the switch that
-            // gives the verified-domain list its meaning: with it off, the domains are inert and
-            // every joiner is classified without reference to them. Leaving it merely
-            // Owner-or-Admin while VerifiedDomainService keeps domain CRUD strictly Owner-only
-            // protected the list but not the setting that decides whether the list matters —
-            // an Admin could PATCH this one field and turn the entire membership policy off.
+            // External collaboration is the Owner's policy call. Domain verification policy is
+            // derived from active workspace_verified_domains rows, so clients cannot move it by
+            // PATCHing settings JSON.
             var ownerOnlyPolicyChanged =
-                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration
-                || currentConfig.RequireVerifiedDomainForInternal != settings.RequireVerifiedDomainForInternal;
+                currentConfig.AllowExternalCollaboration != settings.AllowExternalCollaboration;
             if (ownerOnlyPolicyChanged && !execRoleName.IsOwner())
             {
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);
@@ -547,8 +550,17 @@ public class WorkspaceService : IWorkspaceService
             }
 
             workspace.DeletedAt = DateTime.UtcNow;
+            workspace.DeletedBy = userId;
             workspace.UpdatedBy = userId;
 
+            var activeDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+            foreach (var domain in activeDomains)
+            {
+                domain.SoftRevoke(userId);
+                _unitOfWork.WorkspaceVerifiedDomainRepository.Update(domain);
+            }
+
+            WorkspaceHelper.SyncDomainPolicy(workspace, hasActiveVerifiedDomain: false, userId);
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
             await _unitOfWork.SaveChangesAsync(ct);

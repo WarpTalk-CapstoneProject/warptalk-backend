@@ -14,6 +14,61 @@ namespace WarpTalk.WorkspaceService.Application.Helpers;
 
 public static class WorkspaceHelper
 {
+    public static string NormalizeDomainName(string domain)
+    {
+        return domain.Trim().TrimStart('@').ToLowerInvariant();
+    }
+
+    public static async Task<IReadOnlyList<WorkspaceVerifiedDomain>> GetActiveVerifiedDomainsAsync(
+        IUnitOfWork unitOfWork,
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
+        return await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+            vd => vd.WorkspaceId == workspaceId
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
+            "",
+            ct);
+    }
+
+    public static async Task<bool> HasActiveVerifiedDomainAsync(
+        IUnitOfWork unitOfWork,
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        return (await GetActiveVerifiedDomainsAsync(unitOfWork, workspaceId, ct)).Any();
+    }
+
+    public static void SyncDomainPolicy(Workspace workspace, bool hasActiveVerifiedDomain, Guid userId)
+    {
+        workspace.RequireVerifiedDomainForInternal = hasActiveVerifiedDomain;
+
+        var config = GetWorkspaceConfig(workspace);
+        config.RequireVerifiedDomainForInternal = hasActiveVerifiedDomain;
+        workspace.Settings = JsonSerializer.Serialize(config);
+        workspace.UpdatedAt = DateTime.UtcNow;
+        workspace.UpdatedBy = userId;
+    }
+
+    public static async Task<bool> RecomputeDomainPolicyAsync(
+        IUnitOfWork unitOfWork,
+        Workspace workspace,
+        Guid userId,
+        CancellationToken ct)
+    {
+        var hasActiveVerifiedDomain = await HasActiveVerifiedDomainAsync(unitOfWork, workspace.Id, ct);
+        if (workspace.RequireVerifiedDomainForInternal == hasActiveVerifiedDomain)
+        {
+            return false;
+        }
+
+        SyncDomainPolicy(workspace, hasActiveVerifiedDomain, userId);
+        return true;
+    }
+
     public static WorkspaceConfiguration GetWorkspaceConfig(Workspace workspace)
     {
         WorkspaceConfiguration config;

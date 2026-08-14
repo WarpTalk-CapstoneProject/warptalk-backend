@@ -1172,8 +1172,8 @@ public class WorkspaceServiceTests
             5,
             30,
             new List<string> { "warptalk.vn" },
-            true,
-            true,
+            false,
+            false,
             new AiUsagePolicyDto(
                 true,
                 new PiiRedactionDto(true),
@@ -1350,7 +1350,7 @@ public class WorkspaceServiceTests
             30,
             new List<string> { "yahoo.com" }, // Public domain
             true,
-            true,
+            false,
             null,
             false
         );
@@ -1379,7 +1379,7 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenStrictDomainVerificationHasNoDomains()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenRequestChangesDerivedDomainPolicy()
     {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
@@ -1411,7 +1411,7 @@ public class WorkspaceServiceTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainPolicyDerivedFromDomains, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
@@ -1580,7 +1580,7 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminChangesRequireVerifiedDomainForInternal()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminChangesDerivedDomainPolicyPayload()
     {
         // Arrange
         var userId = Guid.NewGuid();
@@ -1615,8 +1615,8 @@ public class WorkspaceServiceTests
 
         // Assert
         Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, result.Error);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainPolicyDerivedFromDomains, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
@@ -1674,8 +1674,16 @@ public class WorkspaceServiceTests
         var ownerUserId = Guid.NewGuid();
         var ownerRoleId = Guid.NewGuid();
 
-        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId };
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId, RequireVerifiedDomainForInternal = true };
         var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var activeDomain = new WorkspaceVerifiedDomain
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Domain = "company.com",
+            Status = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant(),
+            VerifiedAt = DateTime.UtcNow
+        };
 
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
             .Returns(workspace);
@@ -1683,6 +1691,11 @@ public class WorkspaceServiceTests
             .Returns(ownerMember);
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain> { activeDomain });
 
         // Act
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);
@@ -1690,8 +1703,12 @@ public class WorkspaceServiceTests
         // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(workspace.DeletedAt);
+        Assert.Equal(ownerUserId, workspace.DeletedBy);
         Assert.Equal(ownerUserId, workspace.UpdatedBy);
+        Assert.False(workspace.RequireVerifiedDomainForInternal);
+        Assert.NotNull(activeDomain.RevokedAt);
 
+        _workspaceVerifiedDomainRepository.Received(1).Update(activeDomain);
         _workspaceRepository.Received(1).Update(workspace);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
         await _eventPublisher.Received(1).PublishWorkspaceDeletedAsync(workspaceId, ownerUserId, Arg.Any<CancellationToken>());

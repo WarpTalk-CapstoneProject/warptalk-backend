@@ -59,7 +59,7 @@ public class VerifiedDomainService : IVerifiedDomainService
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.OnlyOwnerCanManageDomains, ErrorCodes.Forbidden);
 
             // 3. Normalise and validate domain
-            domain = domain.Trim().ToLowerInvariant();
+            domain = WorkspaceHelper.NormalizeDomainName(domain);
 
             if (EmailAddress.IsPublicDomainName(domain))
                 return Result.Failure<VerifiedDomainDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
@@ -96,7 +96,7 @@ public class VerifiedDomainService : IVerifiedDomainService
             // 5. Domain must not already be active in this workspace
             var duplicate = await _unitOfWork.WorkspaceVerifiedDomainRepository.AnyAsync(
                 vd => vd.WorkspaceId == workspaceId
-                      && vd.Domain == domain
+                      && vd.Domain.ToLower() == domain
                       && vd.RevokedAt == null,
                 ct);
             if (duplicate)
@@ -106,6 +106,8 @@ public class VerifiedDomainService : IVerifiedDomainService
             var entry = VerifiedDomainMapper.ToEntity(workspaceId, domain, userId);
 
             await _unitOfWork.WorkspaceVerifiedDomainRepository.AddAsync(entry, ct);
+            WorkspaceHelper.SyncDomainPolicy(workspace, hasActiveVerifiedDomain: true, userId);
+            _unitOfWork.WorkspaceRepository.Update(workspace);
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success(entry.ToDto());
@@ -184,20 +186,20 @@ public class VerifiedDomainService : IVerifiedDomainService
             if (entry == null)
                 return Result.Failure(WorkspaceConstants.Errors.VerifiedDomainNotFound, ErrorCodes.NotFound);
 
-            // 4. Guard: cannot revoke the last domain when RequireVerifiedDomainForInternal is enabled
-            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
-            if (config.RequireVerifiedDomainForInternal)
-            {
-                var activeCount = (await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-                    vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
-                    "",
-                    ct)).Count;
+            var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
+            var remainingActiveDomainRows = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                vd => vd.WorkspaceId == workspaceId
+                      && vd.Id != domainId
+                      && vd.Status == verifiedStatus
+                      && vd.VerifiedAt != null
+                      && vd.RevokedAt == null,
+                "",
+                ct);
+            var remainingActiveDomains = (remainingActiveDomainRows ?? Array.Empty<WorkspaceVerifiedDomain>())
+                .Select(d => WorkspaceHelper.NormalizeDomainName(d.Domain))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                if (activeCount <= 1)
-                    return Result.Failure(WorkspaceConstants.Errors.CannotRevokeLastDomain, ErrorCodes.ValidationError);
-            }
-
-            // 5. Guard: cannot revoke domain if active internal members rely on this domain
+            // 4. Guard: cannot revoke domain if active internal members rely on this domain
             var activeInternalMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
                 m => m.WorkspaceId == workspaceId && m.RemovedAt == null && m.MembershipType == MembershipType.Internal.ToString(),
                 "",
@@ -205,11 +207,7 @@ public class VerifiedDomainService : IVerifiedDomainService
 
             if (activeInternalMembers.Any())
             {
-                var targetDomain = entry.Domain.Trim().ToLowerInvariant();
-                var remainingActiveDomains = (await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-                    vd => vd.WorkspaceId == workspaceId && vd.Id != domainId && vd.RevokedAt == null,
-                    "",
-                    ct)).Select(d => d.Domain.Trim().ToLowerInvariant()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var targetDomain = WorkspaceHelper.NormalizeDomainName(entry.Domain);
 
                 foreach (var activeMember in activeInternalMembers)
                 {
@@ -232,6 +230,8 @@ public class VerifiedDomainService : IVerifiedDomainService
             entry.SoftRevoke(userId);
 
             _unitOfWork.WorkspaceVerifiedDomainRepository.Update(entry);
+            WorkspaceHelper.SyncDomainPolicy(workspace, remainingActiveDomains.Any(), userId);
+            _unitOfWork.WorkspaceRepository.Update(workspace);
             await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success();
