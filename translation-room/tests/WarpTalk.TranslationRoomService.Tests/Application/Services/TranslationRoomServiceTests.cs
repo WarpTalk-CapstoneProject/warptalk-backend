@@ -873,23 +873,41 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// This test used to assert the opposite — that a room created with no invitees publishes
+    /// NOTHING — and carried no reason for it. That behaviour is the bug: the publish sat inside
+    /// the `if (InvitedEmails.Any())` block, so creating a room the ordinary way (no emails typed,
+    /// workspace members already see each other's meetings) rang no bell and every other client
+    /// had to press F5. It produced two contradictory reports of the same feature on the same
+    /// evening, both correct, about two different ways of creating a room.
+    ///
+    /// Publishing is not a disclosure. The payload only says "this workspace's meeting list
+    /// changed"; what any given member may then SEE is decided server-side by
+    /// GetTranslationRoomsAsync when they refetch. So there is nothing to protect by staying
+    /// silent, and a list that needs a manual refresh to be right is simply wrong.
+    /// </summary>
     [Fact]
-    public async Task CreateTranslationRoomAsync_DoesNotPublish_WhenNobodyIsInvited()
+    public async Task CreateTranslationRoomAsync_Publishes_EvenWhenNobodyIsInvited()
     {
+        var workspaceId = Guid.NewGuid();
         _mockRoomRepo
             .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var request = new CreateTranslationRoomRequest(
-            Guid.NewGuid(), "Solo", null, "INSTANT", 10,
+            workspaceId, "Solo", null, "INSTANT", 10,
             "vi-VN", new List<string> { "en-US" }, null, null, null);
 
         var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
 
         result.IsSuccess.Should().BeTrue();
         _mockRedisStateRepository.Verify(
-            r => r.PublishAsync(MeetingEventsChannel, It.IsAny<string>()),
-            Times.Never);
+            r => r.PublishAsync(
+                MeetingEventsChannel,
+                It.Is<string>(payload =>
+                    payload.Contains("\"eventType\":\"MeetingInvited\"")
+                    && payload.Contains($"\"workspaceId\":\"{workspaceId}\""))),
+            Times.Once);
     }
 
     [Fact]

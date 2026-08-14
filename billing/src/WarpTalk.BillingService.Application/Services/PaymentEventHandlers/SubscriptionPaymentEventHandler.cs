@@ -6,6 +6,7 @@ using WarpTalk.BillingService.Application.Mappers;
 using WarpTalk.BillingService.Domain.Constants;
 using WarpTalk.BillingService.Domain.Entities;
 using WarpTalk.BillingService.Domain.Interfaces;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Application.Services.PaymentEventHandlers;
@@ -65,14 +66,29 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         Plan plan,
         CancellationToken cancellationToken)
     {
+        // `DeletedAt == null` mirrors the lookup in PaymentAppService.CreatePaymentEventContextAsync
+        // exactly. It did not, and the difference decided which branch below runs: a soft-deleted
+        // row that still carried is_active = true was INVISIBLE to that lookup — so
+        // context.Subscription came back null and this method took the "create a new one" path —
+        // while being visible here, where it was cancelled but left is_active = true. Migration
+        // 016 puts a unique index on (workspace_id) WHERE is_active = true, so inserting the new
+        // subscription then violated it, SaveChangesAsync threw, and the whole payment event
+        // rolled back: money taken, nothing activated. Two queries over one table have to agree
+        // on what "the workspace's subscription" means.
         var oldSubs = await _unitOfWork.SubscriptionRepository.FindAsync(
-            s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.Id != (context.Subscription != null ? context.Subscription.Id : Guid.Empty),
+            s => s.WorkspaceId == context.WorkspaceId && s.IsActive && s.DeletedAt == null && s.Id != (context.Subscription != null ? context.Subscription.Id : Guid.Empty),
             cancellationToken);
 
         foreach (var oldSub in oldSubs)
         {
             oldSub.AutoRenew = false;
             oldSub.Status = SubscriptionConstants.SubscriptionStatuses.Cancelled;
+            // IsActive is the flag every "does this workspace have a plan" query filters on, and
+            // the one migration 016's unique index is built over — Status is a label beside it.
+            // Cancelling without clearing this left the superseded row still answering as the
+            // workspace's active subscription and still occupying the one slot the index allows.
+            oldSub.IsActive = false;
+            oldSub.CancelledAt ??= DateTime.UtcNow;
             oldSub.UpdatedAt = DateTime.UtcNow;
         }
 
@@ -101,6 +117,12 @@ public sealed class SubscriptionPaymentEventHandler : IPaymentEventHandler
         return context.Subscription;
     }
 
+    /// <summary>
+    /// WT-370: this took <paramref name="billingCycle"/> and threw it away, returning one month
+    /// for everything. Stripe was already charging the annual price on an annual interval, so a
+    /// ₫1,900,000/year purchase bought twelve months of billing and thirty days of credits — the
+    /// workspace stops translating in month two while the card keeps being charged once a year.
+    /// </summary>
     private static DateTime CalculatePeriodEnd(string billingCycle)
-        => DateTime.UtcNow.AddMonths(1);
+        => BillingCycleResolver.AddOneCycle(DateTime.UtcNow, billingCycle);
 }
