@@ -75,3 +75,22 @@ public record UpdateSubscriptionContractTermsRequest(
     decimal? OveragePricePerCreditOverride = null,
     int? InvoiceTermsDaysOverride = null,
     string? BillingContactEmail = null);
+
+/// <summary>
+/// What a workspace Owner may say about running past zero credits: on or off. Nothing else.
+///
+/// The CAP stays a platform decision. `UpdateContractTermsAsync` can set any
+/// `OverageCapCreditsOverride` and is [Authorize(AdminSystem)] for that reason — letting a
+/// customer choose their own ceiling is letting them issue themselves credit. This endpoint only
+/// moves between 0 and the cap the PLAN already grants, so the most an Owner can do is use an
+/// allowance somebody at WarpTalk already agreed to.
+/// </summary>
+public record SetWorkspaceOverageRequest(bool Enabled);
+
+/// <summary>What the billing page renders. `PlanCapCredits` is 0 on a plan that does not offer
+/// overage at all, which is the difference between "switched off" and "not available".</summary>
+public record WorkspaceOverageSettingDto(
+    bool Enabled,
+    int EffectiveCapCredits,
+    int PlanCapCredits,
+    int OverageCreditsThisCycle);

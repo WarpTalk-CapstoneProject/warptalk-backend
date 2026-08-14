@@ -404,6 +404,101 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
+    /// <summary>What the workspace's billing page shows about running past zero credits.</summary>
+    public async Task<Result<WorkspaceOverageSettingDto>> GetOverageSettingAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        var (sub, plan, failure) = await LoadActiveSubscriptionAsync<WorkspaceOverageSettingDto>(
+            workspaceId, cancellationToken);
+        if (failure is not null) return failure;
+
+        var effective = sub!.OverageCapCreditsOverride ?? plan!.OverageCapCredits;
+        return Result.Success(new WorkspaceOverageSettingDto(
+            Enabled: effective > 0,
+            EffectiveCapCredits: effective,
+            PlanCapCredits: plan!.OverageCapCredits,
+            OverageCreditsThisCycle: sub.OverageCreditsThisCycle));
+    }
+
+    /// <summary>
+    /// Turn overage on or off for this workspace, WITHIN the allowance its plan already grants.
+    ///
+    /// Enabling clears the override so the plan's own cap applies; disabling pins it to 0. The
+    /// Owner therefore cannot raise their own ceiling — that is what UpdateContractTermsAsync is
+    /// for, and why that one is system-admin-only. A plan whose cap is 0 offers no overage at
+    /// all, and enabling on it changes nothing, which is reported honestly rather than as success.
+    /// </summary>
+    public async Task<Result<WorkspaceOverageSettingDto>> SetOverageAsync(
+        Guid workspaceId,
+        SetWorkspaceOverageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var (sub, plan, failure) = await LoadActiveSubscriptionAsync<WorkspaceOverageSettingDto>(
+            workspaceId, cancellationToken);
+        if (failure is not null) return failure;
+
+        if (request.Enabled && plan!.OverageCapCredits <= 0)
+        {
+            return Result.Failure<WorkspaceOverageSettingDto>(
+                "This plan does not include an overage allowance. Contact WarpTalk to add one.",
+                ErrorCodes.ValidationError);
+        }
+
+        // null, not the number: the override exists to DIFFER from the plan. Copying the plan's
+        // cap into it would freeze today's value, so a later plan change would silently not apply.
+        sub!.OverageCapCreditsOverride = request.Enabled ? null : 0;
+
+        // Switching it off must not strand a workspace that is already suspended for having used
+        // it — that would make the toggle a one-way door. Switching it ON is the case that can
+        // legitimately resume, and only when the room under the cap is real.
+        var effective = sub.OverageCapCreditsOverride ?? plan!.OverageCapCredits;
+        if (request.Enabled
+            && sub.ServiceState == SubscriptionConstants.ServiceStates.Suspended
+            && sub.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap
+            && sub.OverageCreditsThisCycle < effective)
+        {
+            sub.ResumeAiService();
+        }
+
+        _unitOfWork.SubscriptionRepository.Update(sub);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        await PublishEntitlementsAsync(
+            sub.WorkspaceId,
+            EntitlementConstants.Reasons.ContractOverrideChanged,
+            cancellationToken);
+
+        return Result.Success(new WorkspaceOverageSettingDto(
+            Enabled: effective > 0,
+            EffectiveCapCredits: effective,
+            PlanCapCredits: plan!.OverageCapCredits,
+            OverageCreditsThisCycle: sub.OverageCreditsThisCycle));
+    }
+
+    /// <summary>The active subscription and its plan, or the failure both overage methods return.</summary>
+    private async Task<(Subscription? Sub, Plan? Plan, Result<T>? Failure)> LoadActiveSubscriptionAsync<T>(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        if (sub is null)
+            return (null, null, Result.Failure<T>(
+                ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                ErrorCodes.BillingSubscriptionNotFound));
+
+        var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
+        if (plan is null)
+            return (null, null, Result.Failure<T>(
+                ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                ErrorCodes.BillingPlanNotFound));
+
+        return (sub, plan, null);
+    }
+
     public async Task<Result<SubscriptionDto>> UpdateContractTermsAsync(
         Guid workspaceId,
         UpdateSubscriptionContractTermsRequest request,
