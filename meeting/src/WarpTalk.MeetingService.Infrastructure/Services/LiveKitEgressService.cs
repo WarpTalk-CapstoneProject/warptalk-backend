@@ -127,6 +127,64 @@ public class LiveKitEgressService : ILiveKitEgressService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result<JsonElement?>> GetEgressAsync(string egressId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(egressId))
+            return Result.Success<JsonElement?>(null);
+
+        try
+        {
+            // Filtered server-side by egress_id rather than listing everything and matching
+            // here: an account that has recorded for months would otherwise pay to serialise its
+            // whole egress history on every reconciliation tick.
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{_host}/twirp/livekit.Egress/ListEgress")
+            {
+                Content = JsonContent.Create(new { egress_id = egressId })
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", GenerateServiceToken());
+
+            using var response = await _httpClient.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "LiveKit ListEgress failed ({Status}) for {EgressId}: {Body}",
+                    response.StatusCode,
+                    egressId,
+                    body);
+                return Result.Failure<JsonElement?>(
+                    $"LiveKit ListEgress failed: {response.StatusCode}",
+                    "LIVEKIT_EGRESS_LIST_FAILED");
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                // An empty/absent list is LiveKit saying "I have no such egress", which is a real
+                // answer the caller acts on — not an error to retry.
+                return Result.Success<JsonElement?>(null);
+            }
+
+            foreach (var item in items.EnumerateArray())
+            {
+                // Clone: `item` points into `doc`, which this method disposes on the way out.
+                // Returning it unclone­d hands the caller a JsonElement whose backing buffer has
+                // already been returned to the pool.
+                return Result.Success<JsonElement?>(item.Clone());
+            }
+
+            return Result.Success<JsonElement?>(null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to read LiveKit Egress {EgressId}", egressId);
+            return Result.Failure<JsonElement?>($"Failed to read egress: {ex.Message}", "LIVEKIT_EGRESS_LIST_FAILED");
+        }
+    }
+
     private static string? TryGetProperty(JsonElement root, string propertyName) =>
         root.TryGetProperty(propertyName, out var value) ? value.GetString() : null;
 

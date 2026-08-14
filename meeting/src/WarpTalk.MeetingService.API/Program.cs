@@ -146,6 +146,12 @@ builder.Services.AddHostedService<WarpTalk.MeetingService.API.HostedServices.Mee
 // guarded ten-second scan that only touches sessions already past due.
 builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.BreakoutExpiryWorker>();
 
+// WT-371 #8: recording's ONLY completion path was LiveKit's egress_ended webhook, and on
+// production that webhook was never configured — so every recording started, ran, uploaded, and
+// was never heard from again, with the room left saying "recording" indefinitely. This sweep asks
+// LiveKit directly. With the webhook working it finds nothing.
+builder.Services.AddHostedService<WarpTalk.MeetingService.API.Workers.EgressReconciliationWorker>();
+
 // Chat repositories and services
 builder.Services.AddScoped<IMeetingChatMessageRepository, MeetingChatMessageRepository>();
 builder.Services.AddScoped<IMeetingChatTranslationRepository, MeetingChatTranslationRepository>();
@@ -163,6 +169,10 @@ builder.Services.AddHttpClient<IChatTranslator, OpenAIChatTranslator>();
 // History service
 builder.Services.AddScoped<IMeetingHistoryService, MeetingHistoryService>();
 
+// Shared by the egress_ended webhook and the reconciliation sweep, so "what finishing a recording
+// means" exists in exactly one place — see IEgressCompletion.
+builder.Services.AddScoped<IEgressCompletion, EgressCompletion>();
+builder.Services.AddScoped<IEgressReconciliation, EgressReconciliationService>();
 builder.Services.AddScoped<IMeetingWebhookService, MeetingWebhookService>();
 
 builder.Services.AddGrpcClient<TranslationRoomService.TranslationRoomServiceClient>(o =>

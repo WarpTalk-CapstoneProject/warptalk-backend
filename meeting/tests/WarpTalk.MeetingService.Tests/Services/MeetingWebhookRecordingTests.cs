@@ -162,9 +162,15 @@ public sealed class MeetingWebhookRecordingTests
                 ["LiveKit:ApiSecret"] = Secret
             })
             .Build();
+        // The REAL EgressCompletion, not a mock. The egress assertions in this file are about what
+        // finishing a recording actually does — clearing ActiveEgressId, publishing the versioned
+        // envelope — and that work moved into EgressCompletion when the reconciliation sweep
+        // became its second caller. Mocking it here would leave the tests passing while testing
+        // nothing but a delegation.
         return new MeetingWebhookService(
             unitOfWork,
             redis,
+            new EgressCompletion(unitOfWork, redis),
             configuration,
             NullLogger<MeetingWebhookService>.Instance);
     }
