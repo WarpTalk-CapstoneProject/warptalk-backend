@@ -1,3 +1,6 @@
+using System;
+using System.Linq.Expressions;
+using System.Threading;
 using Moq;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Services;
@@ -606,6 +609,99 @@ public class TranslationRoomServiceTests
         _mockAudioRouteEventProcessor.Verify(
             a => a.ProcessEventAsync(roomId, null, AudioRoutingEventType.room_resume.ToString(), "{}", default),
             Times.Once);
+    }
+
+    // ── Who may press Start Translation (WT-373) ──────────────────────────────────────────────
+    //
+    // /resume is the only path that opens a TranslationRoomSession, and that row IS
+    // `translation_active` in PublishRoutesUpdateAsync — the flag the AI translation worker gates
+    // every STT result on. So an authorization answer here is not "a 401 the user retries": it is
+    // whether the meeting produces dubbed audio at all.
+    //
+    // WT-371 opened starting to participants and implemented the rule in
+    // TranslationRoomSessionService.CanStartSessionAsync, which serves POST /sessions — an
+    // endpoint the client does not call. This method kept a bare IsHostedBy, so the rule was
+    // enforced where nothing runs and ignored where everything does. Nothing covered this path.
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldLetAParticipantStart_WhenTheRoomOptedIn()
+    {
+        // The reported WT-373 case: the control bar offers the button on exactly this setting, so
+        // before the fix the user was shown a button that could only answer 401.
+        var roomId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.Settings = "{\"participants_can_start_translation\":true}";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, participantId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldRefuseAParticipant_WhenTheRoomHasNotOptedIn()
+    {
+        // The default. Opening translation to the room is a choice a host makes per room.
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldRefuseAStranger_EvenWhenTheRoomOptedIn()
+    {
+        // The setting opens translation to the ROOM, not to anyone holding its id. Without the
+        // membership clause it would let any authenticated stranger start billable AI in it.
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.Settings = "{\"participants_can_start_translation\":true}";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldStillLetTheHostStart_WithoutConsultingWorkspaceService()
+    {
+        // Host identity is checked first on purpose: the host path must not depend on
+        // WorkspaceService being reachable, and must not cost a gRPC hop per press.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockWorkspaceMemberDirectory.Verify(
+            d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()

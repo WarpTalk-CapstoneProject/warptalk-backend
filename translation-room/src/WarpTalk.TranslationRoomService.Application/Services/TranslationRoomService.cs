@@ -1378,7 +1378,29 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+
+            // WT-373: the room's own rule, not a bare host check.
+            //
+            // This was `IsHostedBy(hostId)`, and WT-371's "participants may start translation"
+            // was implemented only in TranslationRoomSessionService.CanStartSessionAsync — which
+            // serves POST /sessions, an endpoint the client does not call. Start Translation
+            // calls /resume, so the rule was enforced where nothing runs and ignored where
+            // everything does.
+            //
+            // The cost was the whole feature: /resume is the only path that opens a
+            // TranslationRoomSession, and that row IS `translation_active` in
+            // PublishRoutesUpdateAsync, which the AI worker gates every STT result on. A
+            // participant in an opted-in room was shown the button, pressed it, and got 401 from
+            // a branch that returns without logging — no session, no dub, and nothing anywhere
+            // saying why.
+            //
+            // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
+            // not the same as letting anyone cut it off for everybody.
+            if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
+                    translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
+            {
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            }
 
             // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
             // because opening the room no longer starts translation with it — an open, never-yet-

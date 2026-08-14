@@ -229,26 +229,19 @@ public class TranslationRoomSessionService : ITranslationRoomSessionService
     /// <see cref="RoomHostAccess"/> intends. An unreadable settings blob falls back to
     /// host-only: the permissive branch has to be something a host actually chose.
     /// </summary>
-    private async Task<bool> CanStartSessionAsync(
+    // The rule itself now lives in RoomStartTranslationAccess, shared with
+    // TranslationRoomService.ResumeTranslationRoomAsync — the endpoint the Start Translation
+    // button actually calls, and which enforced a different rule until WT-373.
+    private Task<bool> CanStartSessionAsync(
         TranslationRoom room,
         Guid requestedByUserId,
         CancellationToken ct)
-    {
-        if (await HasHostAuthorityAsync(room, requestedByUserId, ct))
-        {
-            return true;
-        }
-
-        if (!TranslationRoomMapper.ReadSettings(room.Settings).ParticipantsCanStartTranslation)
-        {
-            return false;
-        }
-
-        return await _unitOfWork.TranslationRoomParticipantRepository.AnyAsync(
-            participant => participant.TranslationRoomId == room.Id
-                && participant.UserId == requestedByUserId,
+        => RoomStartTranslationAccess.CanStartTranslationAsync(
+            room,
+            requestedByUserId,
+            _workspaceMemberDirectory,
+            _unitOfWork.TranslationRoomParticipantRepository,
             ct);
-    }
 
     /// <summary>
     /// Same shape as <c>TranslationRoomService.CanAccessRoomAsync</c>, including its deliberate
