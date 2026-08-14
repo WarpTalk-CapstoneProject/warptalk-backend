@@ -225,6 +225,67 @@ public class WorkspaceInvitationServiceTests
             after.AddDays(3).AddSeconds(1));
     }
 
+    /// <summary>
+    /// WT-375. The Owner turned External collaboration on precisely so this person could join,
+    /// and the invitation sent before that is now unacceptable: it was stored Internal (the
+    /// workspace had no external policy then) and Internal needs a verified domain, which a
+    /// public gmail address can never have.
+    ///
+    /// Acceptance refuses it and tells the Owner to revoke it and send a new one — and sending a
+    /// new one was refused because the dead invitation was still PENDING. There was no UI
+    /// anywhere to break that loop. A re-invite now supersedes an invitation that can no longer
+    /// be accepted.
+    /// </summary>
+    [Fact]
+    public async Task InviteMemberAsync_ShouldSupersedeAPendingInvitation_ThatCanNoLongerBeAccepted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Kim",
+            Slug = "kim",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true,
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        var stranded = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = "nh@gmail.com",
+            Status = InvitationStatus.PENDING.ToString(),
+            RoleId = roleId,
+            MembershipType = "Internal",
+            ExpiresAt = DateTime.UtcNow.AddDays(1),
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        _workspaceInvitationRepository.GetPendingByEmailAsync(workspaceId, "nh@gmail.com", Arg.Any<CancellationToken>()).Returns(stranded);
+
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleName(roleId, "Member");
+        StubRoleId("Member", roleId);
+        StubUserEmail("nh@gmail.com", Guid.NewGuid());
+
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var request = new InviteMemberRequest("nh@gmail.com", "Member", "External");
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(InvitationStatus.REVOKED.ToString(), stranded.Status);
+    }
+
     [Fact]
     public async Task InviteMemberAsync_ShouldReturnConflict_WhenActivePendingInvitationExists()
     {
