@@ -19,7 +19,7 @@ public class UserServiceGrpcTests
             .Returns(Result.Success<UserLanguageDefaultsDto?>(
                 new UserLanguageDefaultsDto("vi-VN", "en-US", VoiceCloneEnabled: true)));
 
-        var service = new UserServiceGrpc(userDirectory, Substitute.For<IVoiceConsentService>());
+        var service = new UserServiceGrpc(userDirectory, Substitute.For<IVoiceConsentService>(), Substitute.For<IVoiceProfileService>());
 
         var response = await service.GetUserSettings(
             new GetUserRequest { Id = userId.ToString() },
@@ -43,7 +43,7 @@ public class UserServiceGrpcTests
             .GetLanguageDefaultsAsync(userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success<UserLanguageDefaultsDto?>(null));
 
-        var service = new UserServiceGrpc(userDirectory, Substitute.For<IVoiceConsentService>());
+        var service = new UserServiceGrpc(userDirectory, Substitute.For<IVoiceConsentService>(), Substitute.For<IVoiceProfileService>());
 
         var response = await service.GetUserSettings(
             new GetUserRequest { Id = userId.ToString() },

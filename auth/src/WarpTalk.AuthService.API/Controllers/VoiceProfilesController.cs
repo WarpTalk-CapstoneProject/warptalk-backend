@@ -107,4 +107,42 @@ public class VoiceProfilesController : ControllerBase
         }
         return NoContent();
     }
+
+    /// <summary>
+    /// WT-396 — the voice this user is DUBBED IN.
+    ///
+    /// A separate route from the preferred-voice one, deliberately, because they point in
+    /// opposite directions: that one is the voice you HEAR other people in, this one is how you
+    /// sound to them. Sharing an endpoint is how an uploaded recording ended up changing neither.
+    /// </summary>
+    [Authorize]
+    [HttpGet("dub-voice")]
+    public async Task<IActionResult> GetDubVoice(CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.GetDubVoiceAsync(userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(new { voiceId = result.Value });
+    }
+
+    /// <summary>Pick, or clear with an empty voiceId, the voice this user is dubbed in.</summary>
+    [Authorize]
+    [HttpPut("dub-voice")]
+    public async Task<IActionResult> SetDubVoice([FromBody] SetDubVoiceRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.SetDubVoiceAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(new { voiceId = result.Value });
+    }
 }

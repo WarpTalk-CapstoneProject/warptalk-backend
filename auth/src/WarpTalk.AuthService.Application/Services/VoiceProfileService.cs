@@ -82,6 +82,72 @@ public class VoiceProfileService : IVoiceProfileService
         return Result.Success(voices);
     }
 
+    public async Task<Result<string?>> GetDubVoiceAsync(Guid userId, CancellationToken ct = default)
+    {
+        var settings = await _unitOfWork.UserSettingRepository.GetByUserIdAsync(userId, ct);
+        var chosen = settings?.DubVoiceId;
+        return Result.Success(string.IsNullOrWhiteSpace(chosen) ? null : chosen);
+    }
+
+    public async Task<Result<string?>> SetDubVoiceAsync(Guid userId, SetDubVoiceRequest request, CancellationToken ct = default)
+    {
+        var voiceId = request.VoiceId?.Trim();
+        var clearing = string.IsNullOrEmpty(voiceId);
+
+        var settings = await _unitOfWork.UserSettingRepository.GetByUserIdAsync(userId, ct);
+        if (settings is null)
+        {
+            return Result.Failure<string?>("No settings for this user.", ErrorCodes.NotFound);
+        }
+
+        if (!clearing && !await IsVoiceChoosableByAsync(userId, voiceId!, request.Language, ct))
+        {
+            // Refused here rather than stored and discovered later. An id Cartesia does not know
+            // produces no error anywhere: the dub simply comes back in some other voice, which is
+            // indistinguishable from this feature not working — the report that started WT-396.
+            return Result.Failure<string?>(
+                "That voice is not one you can be dubbed in.",
+                ErrorCodes.ValidationError);
+        }
+
+        settings.DubVoiceId = clearing ? null : voiceId;
+        settings.UpdatedAt = DateTime.UtcNow;
+        await _unitOfWork.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "Dub voice {Action} for user {UserId}", clearing ? "cleared" : "set", userId);
+
+        return Result.Success(settings.DubVoiceId);
+    }
+
+    /// <summary>
+    /// Whether this user may be dubbed in this voice: it is either on public offer, or it is the
+    /// provider voice behind one of their OWN profiles.
+    ///
+    /// The second half is what lets an uploaded recording be chosen. It is scoped to the caller's
+    /// own profiles on purpose — a voice cloned from somebody's recording is theirs, and being
+    /// able to name another person's voice id would be a way to be dubbed as them.
+    /// </summary>
+    private async Task<bool> IsVoiceChoosableByAsync(
+        Guid userId, string voiceId, string? language, CancellationToken ct)
+    {
+        var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+        if (profiles.Any(p =>
+                p.DeletedAt == null
+                && string.Equals(p.EmbeddingRef, voiceId, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            return false;
+        }
+
+        var catalog = await _voiceCatalog.GetAsync(language.Trim(), ct);
+        return catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
+    }
+
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Language))
@@ -316,6 +382,22 @@ public class VoiceProfileService : IVoiceProfileService
             profile.UpdatedBy = userId;
 
             _unitOfWork.VoiceProfileRepository.Update(profile);
+
+            // WT-396. If this was the voice they had chosen to be dubbed in, the choice goes with
+            // it — in the SAME unit of work, for the same reason the samples do. Left behind, it
+            // names a voice whose profile no longer exists: Cartesia answers an unknown id by
+            // dubbing them in something else, which reads as the feature being broken rather than
+            // as a profile having been deleted.
+            if (!string.IsNullOrWhiteSpace(profile.EmbeddingRef))
+            {
+                var settings = await _unitOfWork.UserSettingRepository.GetByUserIdAsync(userId, ct);
+                if (settings is not null
+                    && string.Equals(settings.DubVoiceId, profile.EmbeddingRef, StringComparison.Ordinal))
+                {
+                    settings.DubVoiceId = null;
+                    settings.UpdatedAt = now;
+                }
+            }
 
             // The sample rows go in the SAME unit of work as the profile. Soft-deleting only
             // the profile left every voice_samples row with deleted_at = NULL pointing at a
