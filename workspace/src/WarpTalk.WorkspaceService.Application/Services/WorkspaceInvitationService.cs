@@ -152,6 +152,27 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                     _unitOfWork.WorkspaceInvitationRepository.Update(existingPendingInvite);
                     await _unitOfWork.SaveChangesAsync(ct);
                 }
+                else if (await IsNoLongerAcceptableAsync(existingPendingInvite, workspace, ct))
+                {
+                    // WT-375. The pending invitation cannot be accepted any more — the workspace's
+                    // access policy moved after it was sent, and acceptance refuses it (see
+                    // WorkspaceInvitationAcceptanceProcessor: the stored membership type is the
+                    // decision and may only be admitted unchanged or refused, never recomputed
+                    // into one that passes, BR-140-013).
+                    //
+                    // That rule is right and stays. What was wrong is that it left no way out:
+                    // the acceptance error tells the Owner to "revoke it and send a new one", and
+                    // sending a new one was refused because the dead invitation was still PENDING.
+                    // An Owner who flipped External collaboration ON specifically so somebody
+                    // could join had no UI anywhere to unstick them.
+                    //
+                    // So a re-invite supersedes it. Only in this branch: a pending invitation that
+                    // WOULD still be accepted is a real duplicate and stays a conflict, because
+                    // re-issuing it silently invalidates a link the invitee may already be holding.
+                    existingPendingInvite.Status = InvitationStatus.REVOKED.ToString();
+                    _unitOfWork.WorkspaceInvitationRepository.Update(existingPendingInvite);
+                    await _unitOfWork.SaveChangesAsync(ct);
+                }
                 else
                 {
                     return Result.Failure<InviteMemberResponse>("An active pending invitation already exists for this email address.", ErrorCodes.Conflict);
@@ -933,6 +954,36 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _logger.LogError(ex, "Error occurred while rejecting join request.");
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Whether a PENDING invitation would now be refused at acceptance.
+    ///
+    /// Asked against the same policy acceptance asks, so the two can never disagree about which
+    /// invitations are dead — an invitation this says is fine but acceptance refuses would be
+    /// stuck all over again, which is the WT-375 defect itself.
+    /// </summary>
+    private async Task<bool> IsNoLongerAcceptableAsync(
+        WorkspaceInvitation invitation,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        if (!Enum.TryParse<MembershipType>(invitation.MembershipType, ignoreCase: true, out var storedType))
+        {
+            // A membership type nothing can parse is not a live invitation to protect.
+            return true;
+        }
+
+        var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
+        var policyResult = await WorkspaceInvitationPolicy.ValidateAsync(
+            _unitOfWork,
+            workspace,
+            invitation.Email,
+            storedType,
+            roleName,
+            ct);
+
+        return !policyResult.IsSuccess;
     }
 
     private async Task<Result> EnsureTrialInviteCapacityAsync(Guid workspaceId, CancellationToken ct)
