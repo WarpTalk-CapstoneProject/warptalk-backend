@@ -29,9 +29,17 @@ public class AuthController : ControllerBase
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
-        var auth = result.Value!;
-        AuthSessionCookies.Write(Request, Response, auth);
-        return Ok(AuthSessionCookies.ToResponse(auth));
+        var registration = result.Value!;
+
+        // BR-02 — cookies only when there is a real session to write. An unverified account gets
+        // told to check its email, and nothing that could be mistaken for a signed-in state.
+        if (registration.Auth is null)
+        {
+            return Ok(new { emailVerificationRequired = true });
+        }
+
+        AuthSessionCookies.Write(Request, Response, registration.Auth);
+        return Ok(AuthSessionCookies.ToResponse(registration.Auth));
     }
 
     [HttpPost("register-invited")]

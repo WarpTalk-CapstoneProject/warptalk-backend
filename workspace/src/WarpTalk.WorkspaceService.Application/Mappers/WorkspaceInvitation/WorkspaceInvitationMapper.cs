@@ -37,6 +37,46 @@ public static class WorkspaceInvitationMapper
         };
     }
 
+    /// <summary>
+    /// BR-34 — the replacement issued when a pending invitation is resent.
+    ///
+    /// Resending used to overwrite `TokenHash` on the existing row. That does invalidate the old
+    /// token, but it leaves nothing to mark REPLACED and no record that a second email was ever
+    /// sent with different token material — the status the SRS requires had no row to live on.
+    ///
+    /// Carries the inviter's original intent forward unchanged: the same invited email, role and
+    /// membership type, credited to the same inviter. A resend is the same invitation said again,
+    /// not a new decision.
+    ///
+    /// `SentCount` starts at 0 because it counts sends of THIS token; the superseded row keeps its
+    /// own history. The expiry is fresh — the point of resending is that the last one was not
+    /// usable, and inheriting a nearly-expired window would reproduce that.
+    /// </summary>
+    public static WorkspaceInvitation ToReplacementInvitation(
+        this WorkspaceInvitation superseded,
+        string tokenHash,
+        int validExpiryDays,
+        DateTime now)
+    {
+        ArgumentNullException.ThrowIfNull(superseded);
+
+        return new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = superseded.WorkspaceId,
+            Email = superseded.Email,
+            RoleId = superseded.RoleId,
+            InvitedBy = superseded.InvitedBy,
+            TokenHash = tokenHash,
+            Status = InvitationStatus.PENDING.ToString(),
+            DeliveryStatus = InvitationDeliveryStatus.NotSent.ToString(),
+            SentCount = 0,
+            MembershipType = superseded.MembershipType,
+            ExpiresAt = now.AddDays(validExpiryDays),
+            CreatedAt = now
+        };
+    }
+
     public static WorkspaceInvitationDto ToDto(this WorkspaceInvitation invitation, string roleName, JoinRequestEligibility? eligibility = null)
     {
         ArgumentNullException.ThrowIfNull(invitation);
