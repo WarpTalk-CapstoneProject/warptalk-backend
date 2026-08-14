@@ -23,6 +23,31 @@ public class VoiceProfileService : IVoiceProfileService
     };
 
     /// <summary>
+    /// The media type alone, with any parameters stripped — <c>audio/webm;codecs=opus</c> becomes
+    /// <c>audio/webm</c>.
+    /// </summary>
+    /// <remarks>
+    /// WT-372. The allowlist above holds bare types, and the check compared the WHOLE
+    /// <c>Content-Type</c> header against it. A <c>Content-Type</c> is a media type plus optional
+    /// parameters (RFC 9110 §8.3), and browsers send them: <c>MediaRecorder</c> is constructed
+    /// with <c>audio/webm;codecs=opus</c> and reports that string back, so the recorded file
+    /// reaches this service as <c>audio/webm;codecs=opus</c> and misses <c>audio/webm</c> by the
+    /// suffix. Recording therefore failed with "Unsupported audio format." on every browser,
+    /// while UPLOADING a .wav worked — a file picked off disk carries a bare <c>audio/wav</c>.
+    ///
+    /// Fixed here rather than by stripping the parameter in the web client: the parameter is
+    /// legal, every conforming client may send one, and the desktop app and Safari
+    /// (<c>audio/mp4;codecs=mp4a.40.2</c>) would each have hit the same wall separately.
+    /// </remarks>
+    private static string MediaTypeOf(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType)) return string.Empty;
+
+        var separator = contentType.IndexOf(';');
+        return (separator < 0 ? contentType : contentType[..separator]).Trim();
+    }
+
+    /// <summary>
     /// The only provider a picked library voice can currently come from. Stored on the
     /// profile so a future second provider can coexist without guessing what an
     /// EmbeddingRef belongs to.
@@ -201,7 +226,7 @@ public class VoiceProfileService : IVoiceProfileService
             {
                 return Result.Failure<VoiceProfileDto>("The voice sample file exceeds the 20 MB limit.", ErrorCodes.ValidationError);
             }
-            if (!AllowedContentTypes.Contains(request.Sample.ContentType))
+            if (!AllowedContentTypes.Contains(MediaTypeOf(request.Sample.ContentType)))
             {
                 return Result.Failure<VoiceProfileDto>("Unsupported audio format.", ErrorCodes.ValidationError);
             }

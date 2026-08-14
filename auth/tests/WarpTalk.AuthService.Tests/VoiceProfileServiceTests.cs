@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -226,6 +228,77 @@ public class VoiceProfileServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Contains("sample", result.Error!, StringComparison.OrdinalIgnoreCase);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    // ── The sample's media type (WT-372) ────────────────────────────────────────────────────
+    //
+    // Nothing here touched Sample.ContentType before, which is exactly why the recorded-sample
+    // path could be broken for every browser at once and stay broken: the only samples the suite
+    // had ever seen were the null one above.
+
+    /// <summary>
+    /// The reported WT-372 failure, verbatim from the browser.
+    ///
+    /// `MediaRecorder` is constructed with "audio/webm;codecs=opus" and reports that string back
+    /// as its `mimeType`, so the File the page builds — and therefore the part's Content-Type —
+    /// carries the codecs parameter. Against a bare-type allowlist that misses by the suffix, and
+    /// the owner sees "Failed to create voice profile" with no way to tell why.
+    /// </summary>
+    [Theory]
+    [InlineData("audio/webm;codecs=opus")]        // Chrome / Edge — the reported case
+    [InlineData("audio/ogg;codecs=opus")]         // Firefox
+    [InlineData("audio/mp4;codecs=mp4a.40.2")]    // Safari
+    [InlineData("audio/webm; codecs=opus")]       // a space after the separator is equally legal
+    [InlineData("audio/wav")]                     // the upload path, which always worked
+    public async Task CreateProfileAsync_ShouldAcceptSample_WhenMediaTypeCarriesParameters(string contentType)
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = Sample(contentType),
+            });
+
+        Assert.True(result.IsSuccess, $"'{contentType}' was rejected: {result.Error}");
+        _profiles.Received(1).Add(Arg.Any<VoiceProfile>());
+    }
+
+    /// <summary>
+    /// Stripping the parameters must not turn the allowlist off. A parameter on a type that was
+    /// never allowed is still not allowed, and neither is a type that merely starts with one.
+    /// </summary>
+    [Theory]
+    [InlineData("video/mp4;codecs=avc1")]
+    [InlineData("application/octet-stream")]
+    [InlineData("audio/webmsomethingelse")]
+    [InlineData("")]
+    public async Task CreateProfileAsync_ShouldStillRejectSample_WhenMediaTypeIsNotAllowed(string contentType)
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = Sample(contentType),
+            });
+
+        Assert.False(result.IsSuccess, $"'{contentType}' was accepted");
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    /// <summary>One non-empty audio part, described by <paramref name="contentType"/>.</summary>
+    private static IFormFile Sample(string contentType, long length = 64 * 1024)
+    {
+        var file = Substitute.For<IFormFile>();
+        file.ContentType.Returns(contentType);
+        file.Length.Returns(length);
+        file.FileName.Returns("voice-sample.webm");
+        file.OpenReadStream().Returns(_ => new MemoryStream(new byte[8]));
+        return file;
     }
 
     private VoiceProfile ProfileWithSamples(Guid userId, params string[] fileUrls)
