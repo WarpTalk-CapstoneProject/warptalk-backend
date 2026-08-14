@@ -15,6 +15,16 @@ public partial class UserSetting
 
     public bool VoiceCloneEnabled { get; set; }
 
+    /// <summary>
+    /// WT-396. The provider voice id this person is DUBBED IN, or null to clone their voice live
+    /// from the meeting — which is what happened to everyone before this existed.
+    ///
+    /// Not the same direction as a <c>voice.voice_profiles</c> row written by
+    /// <c>SetPreferredVoiceAsync</c>: those say which voice this person HEARS other people in.
+    /// The two were the same table and a chosen voice went to the wrong one of them.
+    /// </summary>
+    public string? DubVoiceId { get; set; }
+
     public bool MicNoiseSuppression { get; set; }
 
     public string DefaultTranslationRoomType { get; set; } = null!;
