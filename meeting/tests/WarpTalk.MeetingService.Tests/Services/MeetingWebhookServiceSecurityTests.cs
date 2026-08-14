@@ -45,9 +45,12 @@ public class MeetingWebhookServiceSecurityTests
                 ["LiveKit:ApiSecret"] = Secret
             })
             .Build();
+        // These tests are about token validation, which runs before any event is dispatched, so
+        // the completion collaborator is never reached.
         return new MeetingWebhookService(
             Mock.Of<IUnitOfWork>(),
             Mock.Of<IRedisService>(),
+            Mock.Of<IEgressCompletion>(),
             config,
             NullLogger<MeetingWebhookService>.Instance);
     }
