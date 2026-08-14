@@ -43,6 +43,9 @@ public class TranslationRoomAudioRouteServiceTests
             // Granted by default: these tests predate the consent gate and are about routing, not
             // permission. The gate itself is pinned separately in VoiceCloneConsentGateTests.
             GrantedConsent(),
+            // See LateJoinerAudioRouteTests: silent on purpose, so WT-401's seeding does not
+            // quietly change what these older routing assertions are testing.
+            NoVoicePreference(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 
@@ -72,6 +75,16 @@ public class TranslationRoomAudioRouteServiceTests
             VoiceCloneEnabled = voiceCloneEnabled,
             Status = status.ToString(),
         };
+
+    /// <summary>A directory that reports no stored preference — the pre-WT-401 behaviour.</summary>
+    private static IUserSettingsDirectory NoVoicePreference()
+    {
+        var directory = new Mock<IUserSettingsDirectory>();
+        directory
+            .Setup(d => d.GetVoicePreferenceAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UserVoicePreference?)null);
+        return directory.Object;
+    }
 
     [Fact]
     public async Task SetVoiceCloneConsentAsync_ShouldEnableOnlyCallersOutgoingRoutes()

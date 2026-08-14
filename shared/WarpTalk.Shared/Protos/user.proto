@@ -39,6 +39,19 @@ message GetUserSettingsResponse {
   bool found = 1;
   string default_speak_language = 2;
   string default_listen_language = 3;
+
+  // WT-401: the account-level "Enable Voice Cloning" preference.
+  //
+  // This is a WISH, not a permission. It says the person would like their own voice used when
+  // they speak in a meeting; whether that is allowed is HasVoiceCloneConsent, which is a
+  // separate RPC on purpose and stays the gate in front of biometric processing.
+  //
+  // It is here because the preference had no way to reach a meeting at all: the switch in
+  // Settings wrote to AuthService and nothing ever read it, while the only field the dub
+  // actually consults — TranslationRoomAudioRoute.VoiceCloneEnabled — was hard-coded false.
+  // Users saw "Enable Voice Cloning: On", heard a stock voice, and concluded the cloning was
+  // bad rather than switched off.
+  bool voice_clone_enabled = 4;
 }
 
 message GetRoleByNameRequest {

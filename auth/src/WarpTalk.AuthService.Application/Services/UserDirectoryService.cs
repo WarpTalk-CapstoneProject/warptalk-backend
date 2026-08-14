@@ -61,7 +61,8 @@ public class UserDirectoryService : IUserDirectoryService
 
         return Result.Success<UserLanguageDefaultsDto?>(new UserLanguageDefaultsDto(
             settings.DefaultSpeakLanguage ?? FallbackSpeakLanguage,
-            settings.DefaultListenLanguage ?? FallbackListenLanguage));
+            settings.DefaultListenLanguage ?? FallbackListenLanguage,
+            settings.VoiceCloneEnabled));
     }
 
     public async Task<Result<RoleDto>> GetRoleByNameAsync(string name, CancellationToken ct = default)

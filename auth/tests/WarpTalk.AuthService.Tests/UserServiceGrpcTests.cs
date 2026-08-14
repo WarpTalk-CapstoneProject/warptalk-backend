@@ -17,7 +17,7 @@ public class UserServiceGrpcTests
         userDirectory
             .GetLanguageDefaultsAsync(userId, Arg.Any<CancellationToken>())
             .Returns(Result.Success<UserLanguageDefaultsDto?>(
-                new UserLanguageDefaultsDto("vi-VN", "en-US")));
+                new UserLanguageDefaultsDto("vi-VN", "en-US", VoiceCloneEnabled: true)));
 
         var service = new UserServiceGrpc(userDirectory, Substitute.For<IVoiceConsentService>());
 
@@ -28,6 +28,10 @@ public class UserServiceGrpcTests
         Assert.True(response.Found);
         Assert.Equal("vi-VN", response.DefaultSpeakLanguage);
         Assert.Equal("en-US", response.DefaultListenLanguage);
+        // WT-401: the preference has to survive the trip. It is the only way the switch in
+        // Settings can reach a meeting, and dropping it here is invisible — the caller would
+        // simply see "false" and leave voice cloning off for someone who asked for it.
+        Assert.True(response.VoiceCloneEnabled);
     }
 
     [Fact]
