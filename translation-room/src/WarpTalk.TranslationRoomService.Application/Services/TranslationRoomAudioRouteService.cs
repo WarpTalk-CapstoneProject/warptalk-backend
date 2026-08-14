@@ -27,6 +27,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly IAudioRouteEventProcessor _eventProcessor;
     private readonly ILanguagePolicy _languagePolicy;
     private readonly IVoiceConsentDirectory _voiceConsentDirectory;
+    private readonly IUserSettingsDirectory _userSettingsDirectory;
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
 
     public TranslationRoomAudioRouteService(
@@ -35,6 +36,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         IAudioRouteEventProcessor eventProcessor,
         ILanguagePolicy languagePolicy,
         IVoiceConsentDirectory voiceConsentDirectory,
+        IUserSettingsDirectory userSettingsDirectory,
         ILogger<TranslationRoomAudioRouteService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -45,7 +47,56 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         _eventProcessor = eventProcessor;
         _languagePolicy = languagePolicy;
         _voiceConsentDirectory = voiceConsentDirectory;
+        _userSettingsDirectory = userSettingsDirectory;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// WT-401 — whether a NEW route for this speaker starts with voice cloning already on.
+    ///
+    /// TWO ANSWERS, BOTH REQUIRED, AND THEY ARE NOT THE SAME QUESTION.
+    ///   * IVoiceConsentDirectory — may we process this person's voice biometrically? A legal
+    ///     gate. It fails closed when AuthService is unreachable, by its own contract.
+    ///   * IUserSettingsDirectory — do they WANT to be dubbed in their own voice? A preference,
+    ///     the one the switch in Settings writes and that nothing used to read.
+    ///
+    /// Before this, the answer was the literal `false` and the preference reached nothing. A
+    /// user with "Enable Voice Cloning" showing ON in Settings heard a stock catalogue voice and
+    /// reasonably concluded the cloning was poor, when it had never been switched on at all.
+    ///
+    /// Nothing here widens consent: without a live grant the route stays off however the
+    /// preference reads. A guest has no user id and therefore no preference — off, as before.
+    ///
+    /// Answers are cached per call because the mesh is O(n^2) in participants and this is asked
+    /// per PAIR; without it a six-person room would make sixty RPCs to learn six facts.
+    /// </summary>
+    private async Task<bool> ShouldSeedVoiceCloneAsync(
+        Guid? speakerUserId,
+        IDictionary<Guid, bool> cache,
+        CancellationToken ct)
+    {
+        if (speakerUserId is not { } userId) return false;
+        if (cache.TryGetValue(userId, out var cached)) return cached;
+
+        var seed = false;
+        try
+        {
+            if (await _voiceConsentDirectory.HasVoiceCloneConsentAsync(userId, ct))
+            {
+                var preference = await _userSettingsDirectory.GetVoicePreferenceAsync(userId, ct);
+                seed = preference?.VoiceCloneEnabled ?? false;
+            }
+        }
+        catch (Exception ex)
+        {
+            // A room that cannot be translated is a worse outcome than a dub in the default
+            // voice, and the participant can still turn cloning on from the meeting itself.
+            _logger.LogWarning(ex, "Could not resolve voice clone seed for user {UserId}; leaving the route off", userId);
+            seed = false;
+        }
+
+        cache[userId] = seed;
+        return seed;
     }
 
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> GenerateRoutesAsync(Guid roomId, CancellationToken ct = default)
@@ -76,6 +127,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             var sourceLanguage = room.SourceLanguage;
             var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var voiceCloneSeeds = new Dictionary<Guid, bool>();
 
             // Generate full-mesh audio routing pathways
             foreach (var speaker in participants)
@@ -114,11 +166,11 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                             TargetParticipantId = listener.Id,
                             SourceLanguage = sourceLang,
                             TargetLanguage = targetLang,
-                            // Default to false per policy — matches TranslationRoomAudioRouteMapper.
-                            // ToEntity's documented default. Voice cloning is opt-in (biometric
-                            // data): the speaker must explicitly enable it via ToggleVoiceCloneAsync
-                            // before tts_worker is allowed to clone their voice.
-                            VoiceCloneEnabled = false,
+                            // Voice cloning is still opt-in (biometric data) — but the opt-in the
+                            // speaker already gave now reaches the route. See
+                            // ShouldSeedVoiceCloneAsync: a live consent grant AND the account
+                            // preference, or this stays false exactly as it did before.
+                            VoiceCloneEnabled = await ShouldSeedVoiceCloneAsync(speaker.UserId, voiceCloneSeeds, ct),
                             Status = AudioRouteStatus.PENDING.ToString(),
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow
@@ -216,6 +268,7 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             var newRoutes = new List<TranslationRoomAudioRoute>();
             var updatedRoutes = new List<TranslationRoomAudioRoute>();
+            var voiceCloneSeeds = new Dictionary<Guid, bool>();
 
             // Only the pairs this participant is one half of: they speak to everyone already
             // here, and everyone already here speaks to them.
@@ -254,7 +307,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                         TargetParticipantId = listener.Id,
                         SourceLanguage = sourceLang,
                         TargetLanguage = targetLang,
-                        VoiceCloneEnabled = SpeakerHasConsentedInRoom(existingRoutes, speaker.Id),
+                        // Their answer in THIS room wins — they may have turned it off here on
+                        // purpose. Only a speaker with no route to inherit from falls back to
+                        // what they asked for in Settings (WT-401).
+                        VoiceCloneEnabled = SpeakerHasConsentedInRoom(existingRoutes, speaker.Id)
+                            || (!SpeakerHasAnyRouteInRoom(existingRoutes, speaker.Id)
+                                && await ShouldSeedVoiceCloneAsync(speaker.UserId, voiceCloneSeeds, ct)),
                         Status = AudioRouteStatus.PENDING.ToString(),
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow
@@ -314,6 +372,19 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             r.SourceParticipantId == speakerParticipantId &&
             r.Status != AudioRouteStatus.COMPLETED.ToString() &&
             r.VoiceCloneEnabled);
+    }
+
+    /// <summary>
+    /// Whether this speaker already has ANY outgoing route in this room — consented or not.
+    ///
+    /// This is what keeps the Settings preference (WT-401) from overriding a decision the person
+    /// made inside the meeting. A speaker who switched cloning OFF here has routes that say
+    /// false; seeding from their account preference when a new listener joins would silently
+    /// turn it back on, which is the worse direction to be wrong in for biometric data.
+    /// </summary>
+    private static bool SpeakerHasAnyRouteInRoom(List<TranslationRoomAudioRoute> existingRoutes, Guid speakerParticipantId)
+    {
+        return existingRoutes.Any(r => r.SourceParticipantId == speakerParticipantId);
     }
 
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default)

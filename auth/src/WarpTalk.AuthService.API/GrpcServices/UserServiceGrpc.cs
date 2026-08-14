@@ -75,7 +75,8 @@ public class UserServiceGrpc : UserService.UserServiceBase
         {
             Found = true,
             DefaultSpeakLanguage = result.Value.DefaultSpeakLanguage,
-            DefaultListenLanguage = result.Value.DefaultListenLanguage
+            DefaultListenLanguage = result.Value.DefaultListenLanguage,
+            VoiceCloneEnabled = result.Value.VoiceCloneEnabled
         };
     }
 
