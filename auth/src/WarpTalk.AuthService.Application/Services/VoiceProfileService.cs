@@ -271,8 +271,11 @@ public class VoiceProfileService : IVoiceProfileService
                 await stream.CopyToAsync(buffer, ct);
             }
 
+            // Language is nullable on the entity and the AI side reads it as a plain string.
+            // Sending null would reach Cartesia as a missing field rather than a default, so an
+            // unlabelled recording would fail to clone for a reason nobody could see from here.
             var queued = await _cloneQueue.RequestAsync(
-                profile.Id, userId, profile.Language, buffer.ToArray(), ct);
+                profile.Id, userId, profile.Language ?? "en", buffer.ToArray(), ct);
 
             if (!queued)
             {
