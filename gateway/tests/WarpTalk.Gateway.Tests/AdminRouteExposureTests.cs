@@ -23,6 +23,9 @@ public sealed class AdminRouteExposureTests
         // The subscription directory and its revenue summary, served by billing. Read-only:
         // changing a plan or cancelling a subscription already has its own validated path.
         "/api/v1/admin/subscriptions/{**catch-all}",
+        // The platform meeting directory, served by translation-room. Metadata only: no join, no
+        // room control, and no transcript read anywhere on that controller.
+        "/api/v1/admin/meetings/{**catch-all}",
     ];
 
     private static JsonElement Routes()

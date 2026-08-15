@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -14,6 +15,113 @@ public class TranslationRoomRepository : GenericRepository<TranslationRoom>, ITr
     public TranslationRoomRepository(TranslationRoomDbContext dbContext) : base(dbContext)
     {
     }
+
+    /// <summary>
+    /// The statuses that mean "this room is carrying audio right now".
+    ///
+    /// PAUSED is included: translation has stopped but the call has not, everyone is still
+    /// connected, and a count that dropped it would report an in-progress meeting as finished.
+    /// WAITING is not — nobody is in the room yet, the host has not opened it.
+    /// </summary>
+    private static readonly string[] LiveStatuses =
+        [nameof(RoomStatus.IN_PROGRESS), nameof(RoomStatus.PAUSED)];
+
+    public async Task<(IReadOnlyList<AdminMeetingRow> Items, int Total)> GetAdminDirectoryAsync(
+        AdminMeetingFilter filter,
+        int page,
+        int pageSize,
+        CancellationToken ct = default)
+    {
+        var query = ApplyAdminFilters(_dbSet.AsNoTracking(), filter);
+
+        var total = await query.CountAsync(ct);
+
+        // Sorted on the ENTITY, before the projection — which is what makes projecting straight
+        // into a positional record safe. Ordering a record projection by one of its own properties
+        // does not translate, and that defect has already cost this codebase a 500 on every call
+        // to billing's usage-by-member.
+        var rows = await ApplyAdminSort(query, filter.Sort)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(r => new AdminMeetingRow(
+                r.Id,
+                r.WorkspaceId,
+                r.Title,
+                r.TranslationRoomCode,
+                r.Status,
+                r.TranslationRoomType,
+                r.SourceLanguage,
+                r.TargetLanguages,
+                r.ScheduledAt,
+                r.StartedAt,
+                r.EndedAt,
+                r.DurationSeconds,
+                r.CreatedAt))
+            .ToListAsync(ct);
+
+        return (rows, total);
+    }
+
+    public async Task<(int Live, int StartedSince)> GetAdminCountsAsync(
+        DateTime since,
+        CancellationToken ct = default)
+    {
+        var live = await _dbSet
+            .AsNoTracking()
+            .CountAsync(r => r.DeletedAt == null && LiveStatuses.Contains(r.Status), ct);
+
+        // StartedAt, not CreatedAt: a room booked last week and run today belongs to today, and
+        // counting by creation would attribute it to the day somebody filled in a form.
+        var startedSince = await _dbSet
+            .AsNoTracking()
+            .CountAsync(r => r.DeletedAt == null && r.StartedAt != null && r.StartedAt >= since, ct);
+
+        return (live, startedSince);
+    }
+
+    private static IQueryable<TranslationRoom> ApplyAdminFilters(
+        IQueryable<TranslationRoom> query,
+        AdminMeetingFilter filter)
+    {
+        query = query.Where(r => r.DeletedAt == null);
+
+        if (filter.WorkspaceId is { } workspaceId)
+        {
+            query = query.Where(r => r.WorkspaceId == workspaceId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Status))
+        {
+            query = filter.Status == "live"
+                ? query.Where(r => LiveStatuses.Contains(r.Status))
+                : query.Where(r => r.Status == filter.Status);
+        }
+
+        // The window is measured against when the meeting HAPPENED — started if it ever did,
+        // otherwise the time it was booked for, otherwise when the row was made. Filtering on
+        // CreatedAt alone would put an instant meeting and a meeting booked a month ago on the
+        // same day, which is the confusion the workspace list already had to fix.
+        if (filter.From is { } from)
+        {
+            query = query.Where(r => (r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt) >= from);
+        }
+
+        if (filter.To is { } to)
+        {
+            query = query.Where(r => (r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt) <= to);
+        }
+
+        return query;
+    }
+
+    private static IQueryable<TranslationRoom> ApplyAdminSort(
+        IQueryable<TranslationRoom> query,
+        string sort) => sort switch
+        {
+            "recent_asc" => query.OrderBy(r => r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt),
+            "duration_desc" => query.OrderByDescending(r => r.DurationSeconds),
+            _ => query.OrderByDescending(r => r.StartedAt ?? r.ScheduledAt ?? r.CreatedAt),
+        };
 
     public async Task<bool> ExistsByCodeAsync(string roomCode, IEnumerable<string>? excludedStatuses = null, CancellationToken cancellationToken = default)
     {
