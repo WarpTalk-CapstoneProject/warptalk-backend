@@ -32,6 +32,13 @@ public sealed class AdminRouteExposureTests
         // Product feedback, served by translation-room. Read-only and aggregated; comments come
         // back without the person who wrote them.
         "/api/v1/admin/feedback/{**catch-all}",
+        // The language catalog room validation reads, inactive rows included. Read-only:
+        // deactivating a language stops every new room in it platform-wide, and translation-room
+        // has no message bus to record who did it.
+        "/api/v1/admin/languages/{**catch-all}",
+        // Voice-clone consent, served by auth. COUNTS ONLY — a per-person list of who agreed to
+        // being cloned is a register of biometric permissions, and nothing here acts on a person.
+        "/api/v1/admin/voice-consent/{**catch-all}",
     ];
 
     private static JsonElement Routes()
