@@ -6,7 +6,10 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 
 namespace WarpTalk.TranslationRoomService.Infrastructure.Redis;
 
@@ -141,9 +144,21 @@ public class TranslationRoomEventConsumerService : BackgroundService
                     Guid? routeId = Guid.TryParse(routeIdStr, out var parsedRouteId) ? parsedRouteId : null;
 
                     using var scope = _scopeFactory.CreateScope();
-                    var processorService = scope.ServiceProvider.GetRequiredService<IAudioRouteEventProcessor>();
 
-                    var result = await processorService.ProcessEventAsync(roomId, routeId, eventTypeStr, payloadStr, ct);
+                    // WT-419: a language change is not a state transition on an existing route, it
+                    // decides which routes should exist at all — so it goes to its own processor
+                    // and ends in GenerateRoutesAsync. Dispatching here rather than inside
+                    // AudioRouteEventProcessor also avoids a dependency cycle: the route service
+                    // already takes an IAudioRouteEventProcessor, so the processor cannot take the
+                    // route service back. This consumer is in neither object graph.
+                    var result = string.Equals(
+                            eventTypeStr,
+                            AudioRoutingEventType.participant_language_changed.ToString(),
+                            StringComparison.OrdinalIgnoreCase)
+                        ? await ProcessLanguageChangeAsync(scope, roomId, payloadStr, ct)
+                        : await scope.ServiceProvider
+                            .GetRequiredService<IAudioRouteEventProcessor>()
+                            .ProcessEventAsync(roomId, routeId, eventTypeStr, payloadStr, ct);
 
                     if (result.IsSuccess)
                     {
@@ -181,6 +196,48 @@ public class TranslationRoomEventConsumerService : BackgroundService
             _logger.LogError("Message {MessageId} failed after {MaxRetries} attempts. Routing to DLQ.", message.Id, maxRetries);
             await RouteToDlqAsync(message, lastError, ct);
         }
+    }
+
+    /// <summary>
+    /// WT-419 — unpack the language-change payload and hand it to its processor.
+    ///
+    /// A payload that cannot be read is failed rather than swallowed: this event is the only thing
+    /// that keeps the audio mesh in step with what people actually chose, and a silently dropped
+    /// one restores the exact bug it was added to fix. Failing routes it to the DLQ, where it is
+    /// visible.
+    /// </summary>
+    private static async Task<Result> ProcessLanguageChangeAsync(
+        IServiceScope scope,
+        Guid roomId,
+        string payloadJson,
+        CancellationToken ct)
+    {
+        Guid userId;
+        string? speakLanguage;
+        string? listenLanguage;
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+
+            if (!root.TryGetProperty("userId", out var userIdElement)
+                || !Guid.TryParse(userIdElement.GetString(), out userId))
+            {
+                return Result.Failure("participant_language_changed payload carried no usable userId", ErrorCodes.ValidationError);
+            }
+
+            speakLanguage = root.TryGetProperty("speakLanguage", out var speak) ? speak.GetString() : null;
+            listenLanguage = root.TryGetProperty("listenLanguage", out var listen) ? listen.GetString() : null;
+        }
+        catch (JsonException ex)
+        {
+            return Result.Failure($"participant_language_changed payload was not valid JSON: {ex.Message}", ErrorCodes.ValidationError);
+        }
+
+        return await scope.ServiceProvider
+            .GetRequiredService<IParticipantLanguageProcessor>()
+            .ProcessLanguageChangeAsync(roomId, userId, speakLanguage, listenLanguage, ct);
     }
 
     private async Task RouteToDlqAsync(RedisStreamMessage message, string error, CancellationToken ct)

@@ -504,6 +504,12 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantLanguageChanged", userId, normalizedListenLanguage);
 
+        // WT-419. The Redis hash above is read by STT; the AUDIO MESH reads the participant row in
+        // Postgres, and nothing here ever wrote it. Routes were therefore pinned to whatever
+        // languages a pair held at join time — two people who joined matching had no route at all,
+        // and changing language afterwards created none. This is the missing edge.
+        await PublishLanguageChangeAsync(translationRoomId, userId, listenLanguage: normalizedListenLanguage);
+
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} changed listen language to {ListenLanguage} in translationRoom {TranslationRoomId}",
             userId, normalizedListenLanguage, translationRoomId);
@@ -538,9 +544,53 @@ public class TranslationRoomHub : Hub
         await Clients.OthersInGroup(groupName)
             .SendAsync("ParticipantSpeakLanguageChanged", userId, normalizedSpeakLanguage);
 
+        // WT-419 — see SetListenLanguage above. Same gap, same fix, and this is the side the
+        // production report came in on: an en/en speaker whose vi/vi listener received nothing.
+        await PublishLanguageChangeAsync(translationRoomId, userId, speakLanguage: normalizedSpeakLanguage);
+
         _logger.LogInformation(
             "TranslationRoomHub: User {UserId} changed speak language to {SpeakLanguage} in translationRoom {TranslationRoomId}",
             userId, normalizedSpeakLanguage, translationRoomId);
+    }
+
+    /// <summary>
+    /// Tell TranslationRoomService that this participant's languages moved, so it can persist them
+    /// and rebuild the audio mesh. WT-419.
+    ///
+    /// Fire-and-forget on purpose, and swallowing is deliberate: the hub call must not fail because
+    /// a stream write did, or a Redis blip would surface to the user as "changing language failed"
+    /// when the client-side change has in fact already applied. The consumer on the other end has
+    /// its own retry and a DLQ; a lost publish shows up there rather than here.
+    ///
+    /// Only the field that actually changed is sent. The processor treats a missing language as
+    /// "unchanged" rather than as a request to blank the column, because these are two separate hub
+    /// methods and neither knows the other's current value.
+    /// </summary>
+    private async Task PublishLanguageChangeAsync(
+        Guid translationRoomId,
+        string userId,
+        string? speakLanguage = null,
+        string? listenLanguage = null)
+    {
+        try
+        {
+            var payload = JsonSerializer.Serialize(
+                new { userId, speakLanguage, listenLanguage },
+                RosterJsonOptions);
+
+            await _streamService.PublishSystemEventAsync(
+                translationRoomId.ToString(),
+                "participant_language_changed",
+                payload);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not publish the language change for user {UserId} in room {RoomId}; the audio "
+                + "mesh will keep using their previous languages until something else regenerates it",
+                userId, translationRoomId);
+        }
     }
 
     /// <summary>

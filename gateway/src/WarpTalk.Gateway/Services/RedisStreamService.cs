@@ -73,6 +73,42 @@ public sealed class RedisStreamService
         return messageId.ToString();
     }
 
+    /// <summary>
+    /// Publish a room system event for TranslationRoomService to consume. WT-419.
+    ///
+    /// Field names match what TranslationRoomEventConsumerService reads — `event_type`, `room_id`,
+    /// `route_id`, `payload` — and the stream is the one it already has a consumer group on. This
+    /// is deliberately not a new channel: the existing one carries retry, a DLQ and a guarded
+    /// consumer group, and a second path would have to grow all three again.
+    /// </summary>
+    public async Task<string> PublishSystemEventAsync(
+        string translationRoomId,
+        string eventType,
+        string payloadJson,
+        string routeId = "")
+    {
+        var db = _redis.GetDatabase();
+        const string streamKey = "translationRoom:system_events";
+
+        var entries = new NameValueEntry[]
+        {
+            new("event_type", eventType),
+            new("room_id", translationRoomId),
+            new("route_id", routeId),
+            new("payload", payloadJson),
+            new("timestamp_ms", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()),
+        };
+
+        var messageId = await db.StreamAddAsync(
+            streamKey, entries, maxLength: _streamMaxLength, useApproximateMaxLength: true);
+
+        _logger.LogDebug(
+            "Published {EventType} for room {RoomId} to {StreamKey}",
+            eventType, translationRoomId, streamKey);
+
+        return messageId.ToString();
+    }
+
     // ── Consume ──────────────────────────────────────────────
 
     /// <summary>
