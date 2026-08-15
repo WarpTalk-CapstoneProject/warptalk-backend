@@ -863,9 +863,20 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                     ErrorCodes.ValidationError);
             }
 
+            // ANY row for this pair, removed or not. WT-416.
+            //
+            // This used to filter on RemovedAt == null, which made a departed member invisible
+            // here — and then AddAsync below inserted a second row for the same
+            // (workspace_id, user_id). That pair carries a UNIQUE constraint with NO
+            // `WHERE removed_at IS NULL` predicate, so the insert threw, the catch-all turned it
+            // into "An unexpected error occurred", and the owner got a 500. Three members of one
+            // production workspace could not be let back in.
+            //
+            // Leaving is a soft delete, so the slot is still occupied by the row that recorded
+            // the departure. Approving a rejoin has to REUSE it.
             var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == requesterId && m.RemovedAt == null, "", ct);
-            if (existingMember != null)
+                m => m.WorkspaceId == workspaceId && m.UserId == requesterId, "", ct);
+            if (existingMember != null && existingMember.RemovedAt == null)
             {
                 return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.Conflict);
             }
@@ -884,14 +895,27 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             invitation.ReviewedBy = adminUserId;
             invitation.ReviewedAt = reviewedAt;
 
-            var newMember = WorkspaceMemberMapper.CreateInvitationMember(
-                workspaceId,
-                requesterId,
-                memberRoleId.Value,
-                membershipType.ToString(),
-                reviewedAt);
+            if (existingMember != null)
+            {
+                // A returning member. Their row already holds the slot the unique constraint
+                // guards, so it is revived rather than duplicated. ReviveAsMember sets exactly
+                // what CreateInvitationMember sets, from the same helpers, so somebody rejoining
+                // does not quietly get different defaults from somebody joining for the first
+                // time.
+                existingMember.ReviveAsMember(memberRoleId.Value, membershipType.ToString(), reviewedAt);
+                _unitOfWork.WorkspaceMemberRepository.Update(existingMember);
+            }
+            else
+            {
+                var newMember = WorkspaceMemberMapper.CreateInvitationMember(
+                    workspaceId,
+                    requesterId,
+                    memberRoleId.Value,
+                    membershipType.ToString(),
+                    reviewedAt);
 
-            await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
+                await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
+            }
             _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
             await _unitOfWork.SaveChangesAsync(ct);
 

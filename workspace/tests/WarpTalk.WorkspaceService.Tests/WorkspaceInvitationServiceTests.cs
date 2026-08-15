@@ -1335,6 +1335,141 @@ public class WorkspaceInvitationServiceTests
         await _emailComposer.Received(1).SendJoinRequestApprovedEmailAsync(invitation, workspace, Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// WT-416 — a member who left, then asked to come back.
+    ///
+    /// Leaving is a SOFT delete: the row stays and RemovedAt is stamped. But workspace_members
+    /// carries UNIQUE (workspace_id, user_id) with NO `WHERE removed_at IS NULL` predicate, so
+    /// the departed row still occupies the slot. The lookup here filtered on RemovedAt == null,
+    /// which made that row invisible, and AddAsync then inserted a second row for the same pair:
+    /// unique violation, caught by the catch-all, surfaced as 500 "An unexpected error
+    /// occurred". Three members of one production workspace were stuck outside it.
+    /// </summary>
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldRevive_WhenRequesterPreviouslyLeftTheWorkspace()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = memberRoleId,
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace { Id = workspaceId, Name = "Acme", Slug = "acme", AllowExternalCollaboration = true };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+        var departed = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = requesterId,
+            RoleId = Guid.NewGuid(),
+            Status = "removed",
+            MembershipType = MembershipType.Internal.ToString(),
+            RemovedAt = DateTime.UtcNow.AddDays(-1),
+            RemovedBy = adminId,
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, departed);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Owner" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _emailComposer.SendJoinRequestApprovedEmailAsync(
+            Arg.Any<WorkspaceInvitation>(), Arg.Any<Workspace>(), Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "approval-message", null));
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.External.ToString()));
+
+        Assert.True(result.IsSuccess, "approving a returning member failed — this is the 500 in WT-416");
+
+        // The row is reused, never duplicated: a second insert for this pair is the unique
+        // violation itself.
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+        _workspaceMemberRepository.Received(1).Update(departed);
+
+        // And it comes back as a real membership, not a removed row with a new role.
+        Assert.Null(departed.RemovedAt);
+        Assert.Null(departed.RemovedBy);
+        Assert.Equal(memberRoleId, departed.RoleId);
+        Assert.Equal(MembershipType.External.ToString(), departed.MembershipType);
+        Assert.Equal("active", departed.Status, ignoreCase: true);
+    }
+
+    /// <summary>
+    /// The guard that must not move: somebody who is ALREADY a member is still a conflict, not a
+    /// revival. Widening the lookup to include removed rows must not make it accept a live one.
+    /// </summary>
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldStillRefuse_WhenRequesterIsAlreadyAnActiveMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = Guid.NewGuid(),
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace { Id = workspaceId, Name = "Acme", Slug = "acme", AllowExternalCollaboration = true };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+        var liveMember = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = requesterId,
+            RoleId = Guid.NewGuid(),
+            Status = "active",
+            MembershipType = MembershipType.Internal.ToString(),
+            RemovedAt = null,
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, liveMember);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Owner" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.External.ToString()));
+
+        Assert.False(result.IsSuccess, "an existing active member was approved a second time");
+        Assert.Equal(ErrorCodes.Conflict, result.ErrorCode);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task ApproveJoinRequestAsync_ShouldRejectInternal_WhenRequesterEmailDomainIsNotVerified()
     {
