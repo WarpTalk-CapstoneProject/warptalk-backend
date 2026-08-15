@@ -137,7 +137,16 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
-                return Result.Failure<ArtifactDownloadDto>("Unauthorized to download this artifact.", ErrorCodes.Unauthorized);
+            {
+                // Named rather than flat — see ArtifactAccessHelper.DescribeArtifactDenial. The
+                // participant roster is already loaded on the room this query returned, so saying
+                // WHICH refusal this is costs nothing beyond the predicate.
+                var wasThere = artifact.TranslationRoom.TranslationRoomParticipants
+                    .Any(participant => participant.UserId == userId);
+                return Result.Failure<ArtifactDownloadDto>(
+                    ArtifactAccessHelper.DescribeArtifactDenial(wasThere),
+                    ErrorCodes.Unauthorized);
+            }
 
             if (artifact.RetentionUntil.HasValue && DateTime.UtcNow > artifact.RetentionUntil.Value)
             {

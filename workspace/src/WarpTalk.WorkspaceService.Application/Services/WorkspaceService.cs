@@ -388,7 +388,28 @@ public class WorkspaceService : IWorkspaceService
             }
 
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
-            return Result.Success(settings.ToSettingsDto());
+
+            // The ceiling travels WITH the setting, because the setting alone is not the rule.
+            // Meeting creation enforces the tighter of the two (WorkspaceDirectoryService
+            // .ResolveMaxActiveRooms), so a page that showed only the stored number was reporting
+            // a limit the product does not apply — which is exactly the bug: settings said 20,
+            // room creation refused at 5, and nothing on screen connected the two.
+            var snapshot = await _unitOfWork.WorkspaceEntitlementSnapshotRepository
+                .GetForWorkspaceAsync(workspaceId, ct);
+            var entitlements = snapshot == null
+                ? WorkspaceEntitlements.Unknown
+                : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+            var ceiling = entitlements.SelfServiceLimit(EntitlementKeys.MaxActiveRooms);
+
+            return Result.Success(settings.ToSettingsDto() with
+            {
+                MaxActiveRoomsCeiling = ceiling.HasValue
+                    ? (int)Math.Clamp(ceiling.Value, int.MinValue, int.MaxValue)
+                    : null,
+                MaxActiveRoomsCeilingSource = ceiling.HasValue
+                    ? entitlements.Source(EntitlementKeys.MaxActiveRooms)
+                    : null,
+            });
         }
         catch (Exception ex)
         {

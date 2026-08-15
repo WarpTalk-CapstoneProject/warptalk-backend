@@ -130,14 +130,13 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             ? WorkspaceEntitlements.Unknown
             : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
 
-        var activeRoomLimit = ResolveMaxActiveRooms(entitlements, config);
-        if (activeRoomLimit > 0)
+        var activeRooms = ResolveMaxActiveRooms(entitlements, config);
+        if (activeRooms.Limit > 0)
         {
             var activeRoomCount = await _translationRoomClient.GetActiveRoomCountAsync(workspaceId, ct);
-            if (activeRoomCount >= activeRoomLimit)
+            if (activeRoomCount >= activeRooms.Limit)
             {
-                return Decision(MeetingCreationDecisionDto.Denied(
-                    $"Workspace active room limit ({activeRoomLimit}) has been reached."));
+                return Decision(MeetingCreationDecisionDto.Denied(DescribeActiveRoomDenial(activeRooms)));
             }
         }
 
@@ -205,19 +204,99 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
     /// The settings-JSON value remains the fallback for cold start only. It is where every existing
     /// workspace's number lives today, and dropping straight to it keeps behaviour identical for a
     /// workspace whose snapshot has not arrived — the same rule the pre-WT-263 code applied.
+    ///
+    /// WHAT THAT SENTENCE ASSUMED, AND WHY IT WAS NOT TRUE
+    ///   "The resolver has already clamped an owner's value to the plan ceiling" is only true of a
+    ///   value the resolver ever SAW. Nothing writes <c>workspace_entitlement_overrides</c> — the
+    ///   billing repository exposes GetForWorkspaceAsync and GetAsync and no writer at all — so the
+    ///   Workspace Settings page's "Max Active Rooms" field has never reached the resolver. It
+    ///   writes the settings JSON, and the branch above then answered from the snapshot and never
+    ///   read it.
+    ///
+    ///   The field was therefore inert in BOTH directions: a workspace that set 20 was still capped
+    ///   at 5, and a workspace that tightened itself to 2 was still allowed 5. It was reported as
+    ///   the first of those ("max active room setting là 20 nhưng 5 lại bị chặn"), and the second is
+    ///   the one that should worry anybody — a self-imposed limit that silently does not apply.
+    ///
+    ///   The tighter of the two is the answer that satisfies both layers. It cannot violate the
+    ///   resolver's invariant, because taking a MINIMUM can only ever tighten: a workspace still
+    ///   cannot raise its own ceiling, which is the whole rule
+    ///   (EntitlementConstants.Errors.WorkspaceOverrideLoosens). Wiring the settings field through
+    ///   to a real workspace_entitlement_override row is the proper fix and belongs in billing;
+    ///   until then this at least stops the field from being a decoration.
     /// </summary>
-    private static int ResolveMaxActiveRooms(
+    private static ActiveRoomAllowance ResolveMaxActiveRooms(
         WorkspaceEntitlements entitlements,
         Domain.Settings.WorkspaceConfiguration config)
     {
         var resolved = entitlements.SelfServiceLimit(EntitlementKeys.MaxActiveRooms);
-        if (resolved.HasValue)
+        if (!resolved.HasValue)
         {
-            return (int)Math.Clamp(resolved.Value, int.MinValue, int.MaxValue);
+            // Cold start: no snapshot, so no plan quota is in force and the workspace's own number
+            // is the only rule there is.
+            return new ActiveRoomAllowance(config.MaxActiveRooms, config.MaxActiveRooms, null, null);
         }
 
-        return config.MaxActiveRooms;
+        var ceiling = (int)Math.Clamp(resolved.Value, int.MinValue, int.MaxValue);
+        var configured = config.MaxActiveRooms;
+
+        return new ActiveRoomAllowance(
+            Limit: Math.Min(ceiling, configured),
+            Ceiling: ceiling,
+            CeilingSource: entitlements.Source(EntitlementKeys.MaxActiveRooms),
+            Configured: configured);
     }
+
+    /// <summary>
+    /// The resolved room cap and the two numbers it came from, so a denial can say which one bound.
+    /// </summary>
+    /// <param name="Limit">What is enforced — the tighter of the two.</param>
+    /// <param name="Ceiling">The most this workspace's plan/contract permits.</param>
+    /// <param name="CeilingSource">Provenance of the ceiling, e.g. <c>platform_default</c>. Null at cold start.</param>
+    /// <param name="Configured">The workspace's own settings-JSON value, or null at cold start.</param>
+    private readonly record struct ActiveRoomAllowance(
+        int Limit,
+        int Ceiling,
+        string? CeilingSource,
+        int? Configured);
+
+    /// <summary>
+    /// Why this workspace may not open another room, in terms somebody can act on.
+    ///
+    /// "Workspace active room limit (5) has been reached." was the whole message, and against a
+    /// settings page reading 20 it is not merely unhelpful — it looks like a bug in the product.
+    /// The number that actually bound, and the layer that decided it, are both known here and cost
+    /// nothing to say.
+    /// </summary>
+    private static string DescribeActiveRoomDenial(ActiveRoomAllowance allowance)
+    {
+        var message = $"Workspace active room limit ({allowance.Limit}) has been reached.";
+
+        // The workspace asked for more than its plan allows. This is the reported case, and the
+        // one where the bare sentence above contradicts what the owner is looking at.
+        if (allowance.Configured > allowance.Ceiling)
+        {
+            return message
+                + $" This workspace's plan allows {allowance.Ceiling} concurrent rooms"
+                + $"{DescribeSource(allowance.CeilingSource)}, and the workspace setting of "
+                + $"{allowance.Configured} cannot raise it — only lower it.";
+        }
+
+        // The workspace tightened itself below its plan. Also worth naming: the owner can undo it.
+        if (allowance.Configured < allowance.Ceiling)
+        {
+            return message
+                + $" This is the workspace's own setting; its plan allows up to {allowance.Ceiling}.";
+        }
+
+        // The two agree, or there is no ceiling to compare against (cold start). Name the source
+        // when there is one; a bare number with no provenance is what sent people to the settings
+        // page in the first place.
+        return message + DescribeSource(allowance.CeilingSource);
+    }
+
+    private static string DescribeSource(string? source) =>
+        string.IsNullOrWhiteSpace(source) ? string.Empty : $" ({source})";
 
     public async Task<Result<WorkspaceSettingsSnapshotDto>> GetSettingsAsync(
         Guid workspaceId,

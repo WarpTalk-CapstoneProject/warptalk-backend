@@ -895,8 +895,33 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Failure<RecordingStateDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
-            return Result.Failure<RecordingStateDto>("Only the host can control recording.", ErrorCodes.Forbidden);
+        // Anyone IN the meeting may start or stop the recording — not only the host.
+        //
+        // The host-only rule here did not match anything else in the product. The web client has
+        // shown the record button to workspace Owners/Admins since WT-188 (isHost in
+        // persistent-meeting-session includes role === "owner" | "admin"), and the auto-start
+        // effect fires on that same flag — so a workspace Owner joining a meeting somebody else
+        // booked got an automatic, unprompted 403 and a "Could not start recording." toast on
+        // every single join. The gateway hub (RoomHostAuthority) and the translation-room service
+        // (RoomHostAccess) had both already been widened past host-only for exactly this reason;
+        // this method was the one that never was.
+        //
+        // Widened to every participant rather than to Owner/Admin because recording a meeting is
+        // not a governance action over a tenant — it is a thing the people in the room do, and
+        // whoever needs the transcript to have timestamps is usually not whoever booked it.
+        // Participation is still REQUIRED: a stranger holding a room id must not be able to spin
+        // up an Egress against a room they are not in, which is a billable action.
+        //
+        // Everyone in the room is told either way — SetRecordingAsync broadcasts
+        // RecordingStateChanged below, and the client raises a toast for every participant on
+        // receipt. Nobody is recorded without being told; that notice is what makes this rule
+        // acceptable rather than the permission check.
+        if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
+        {
+            return Result.Failure<RecordingStateDto>(
+                "Only someone in this meeting can control recording.",
+                ErrorCodes.Forbidden);
+        }
 
         var normalizedAction = action?.Trim().ToLowerInvariant();
 
@@ -1000,6 +1025,36 @@ public class MeetingRoomService : IMeetingRoomService
         bool isOriginalHost = roomDetails.HostId == callerUserId.ToString();
         bool isActiveHost = meetingRoom.ActiveHostId == callerUserId;
         return isOriginalHost || isActiveHost;
+    }
+
+    /// <summary>
+    /// Whether this caller is actually in this meeting — the host, or a participant who has
+    /// joined and not left.
+    ///
+    /// Deliberately weaker than <see cref="IsHostAsync"/> and used only where the action belongs
+    /// to the room rather than to whoever booked it (recording). It is still a real check: the
+    /// room id travels in a shareable link, so "authenticated" is not "present", and starting an
+    /// Egress costs money against the workspace.
+    ///
+    /// The host is admitted without a participant row because a host who has opened the room but
+    /// whose LiveKit join has not landed yet is unambiguously in the meeting, and the recording
+    /// auto-start fires in exactly that window.
+    /// </summary>
+    private async Task<bool> IsInMeetingAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
+    {
+        if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
+            return true;
+
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(
+            p => p.MeetingRoomId == meetingRoom.Id
+                 && p.UserId == callerUserId
+                 && p.DeletedAt == null);
+
+        // IsActive OR LeftAt == null: the two are written by different paths (the disconnect
+        // handler flips IsActive, the leave endpoint stamps LeftAt) and a participant who is
+        // present according to either one is present. Requiring both would make a brief
+        // reconnect look like an intruder.
+        return participant != null && (participant.IsActive || participant.LeftAt == null);
     }
 
     private Task<Result> PublishGatewayCommandAsync(string command, Guid translationRoomId, object extraFields)
