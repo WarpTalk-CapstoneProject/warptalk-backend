@@ -536,8 +536,29 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
-            workspace.DeletedAt = DateTime.UtcNow;
+            var deletedAt = DateTime.UtcNow;
+            workspace.DeletedAt = deletedAt;
             workspace.UpdatedBy = userId;
+
+            // WT-417: the members go with it.
+            //
+            // This used to stamp the workspace and leave every membership row untouched, with
+            // RemovedAt still NULL — so deleting a workspace left behind rows that every
+            // membership lookup in the service correctly reads as LIVE memberships of a workspace
+            // that no longer exists. They are unreachable (the workspace is filtered out of every
+            // listing by DeletedAt) and permanent (nothing un-deletes a workspace — ReactivateAsync
+            // flips IsActive, not this), and because UNIQUE (workspace_id, user_id) has no
+            // `WHERE removed_at IS NULL`, they hold their slot against any future rejoin.
+            //
+            // That is the orphan the ticket is named for. Fixing the acceptance guard alone would
+            // have left this generating fresh orphans on every delete.
+            var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+            foreach (var member in members)
+            {
+                member.RemovedAt = deletedAt;
+                member.RemovedBy = userId;
+                _unitOfWork.WorkspaceMemberRepository.Update(member);
+            }
 
             _unitOfWork.WorkspaceRepository.Update(workspace);
             await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, userId, ct);
