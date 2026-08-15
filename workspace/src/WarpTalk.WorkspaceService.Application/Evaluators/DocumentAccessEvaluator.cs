@@ -230,7 +230,28 @@ public class DocumentAccessEvaluator : IDocumentAccessEvaluator
 
         if (document.IsRestricted())
         {
-            return Result.Failure(WorkspaceConstants.Errors.AccessDeniedSensitive);
+            // Owner/Admin keep sight of a sensitive document. WT-411.
+            //
+            // This was the only gate in this method that did NOT exempt them — archived (above),
+            // approval-restricted, and download-of-unpublished all do. The consequence was the
+            // reported bug: a member uploads, the workspace owner approves, AI processing marks
+            // the document sensitive, and it VANISHES from the owner's list while the uploader
+            // (exempted at the top of this method) still sees it. Nothing was deleted; five
+            // production documents sat at confidentiality_level=restricted with deleted_at NULL.
+            //
+            // Withholding it bought no protection either way: Owner/Admin already pass
+            // CanManagePoliciesAsync for every document in their workspace, so they could grant
+            // themselves an ALLOW policy and read it regardless. All the denial achieved was to
+            // hide the thing they had just approved, and to remove the one seat that could
+            // diagnose or retry a failed scan.
+            //
+            // Scoped to Owner/Admin deliberately. An ordinary Internal member is still refused —
+            // that rule is pinned by EvaluateAccessAsync_ShouldDenyAccess_WhenSensitiveDocument_
+            // AndNoMatchingPolicies, which stubs the role as "Member", and it stays.
+            if (!isOwnerOrAdmin)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.AccessDeniedSensitive);
+            }
         }
 
         // Non-sensitive default action
