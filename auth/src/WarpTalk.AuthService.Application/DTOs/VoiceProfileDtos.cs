@@ -44,6 +44,25 @@ public record SetPreferredVoiceRequest(
     string? VoiceId
 );
 
+/// <summary>
+/// WT-396 — pick (or clear) the voice this user is DUBBED IN.
+///
+/// The opposite direction from SetPreferredVoiceRequest above, and the distinction is the bug
+/// this exists for: that one says which voice you HEAR everybody else in, this one says how YOU
+/// sound to them. They shared a table, so an upload meant to change how someone sounded changed
+/// nothing at all.
+///
+/// VoiceId null or empty clears the choice and returns to cloning the speaker live from the
+/// meeting, which is what happens for everyone who has not chosen.
+///
+/// Language is only used to validate a catalogue pick; a voice belonging to one of the user's own
+/// profiles is accepted regardless, because it is theirs.
+/// </summary>
+public record SetDubVoiceRequest(
+    string? VoiceId,
+    string? Language = null
+);
+
 public class CreateVoiceProfileRequest
 {
     public string DisplayName { get; set; } = null!;

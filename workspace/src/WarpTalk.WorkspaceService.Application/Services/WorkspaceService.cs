@@ -351,7 +351,8 @@ public class WorkspaceService : IWorkspaceService
                 workspace.Slug,
                 role,
                 membershipType,
-                config.DefaultLanguage);
+                config.DefaultLanguage,
+                member.CanCreateMeetings);
             return Result.Success(response);
         }
         catch (Exception ex)
@@ -549,10 +550,36 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
-            workspace.DeletedAt = DateTime.UtcNow;
+            var deletedAt = DateTime.UtcNow;
+            workspace.DeletedAt = deletedAt;
             workspace.DeletedBy = userId;
             workspace.UpdatedBy = userId;
 
+            // WT-417: the members go with it.
+            //
+            // This used to stamp the workspace and leave every membership row untouched, with
+            // RemovedAt still NULL — so deleting a workspace left behind rows that every
+            // membership lookup in the service correctly reads as LIVE memberships of a workspace
+            // that no longer exists. They are unreachable (the workspace is filtered out of every
+            // listing by DeletedAt) and permanent (nothing un-deletes a workspace — ReactivateAsync
+            // flips IsActive, not this), and because UNIQUE (workspace_id, user_id) has no
+            // `WHERE removed_at IS NULL`, they hold their slot against any future rejoin.
+            //
+            // That is the orphan the ticket is named for. Fixing the acceptance guard alone would
+            // have left this generating fresh orphans on every delete.
+            var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+            foreach (var member in members)
+            {
+                member.RemovedAt = deletedAt;
+                member.RemovedBy = userId;
+                _unitOfWork.WorkspaceMemberRepository.Update(member);
+            }
+
+            // The verified domains go with it too, for the same reason and with a sharper edge:
+            // a domain row left behind still holds its claim in the partial unique index, so no
+            // other workspace can ever take that domain — and there is no Owner left to revoke it,
+            // because deletion is terminal (ChangeLifecycleAsync refuses every transition on a
+            // deleted workspace). The claim would outlive the tenant permanently.
             var activeDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
             foreach (var domain in activeDomains)
             {

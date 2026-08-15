@@ -123,6 +123,48 @@ public class WorkspaceMemberServiceTests
         Assert.True(invited.CanCreateMeetings);
     }
 
+    /// <summary>
+    /// WT-371 #2: the grant above is for INTERNAL members. An external collaborator accepting an
+    /// invitation used to receive it too, so anyone invited from outside a verified domain landed in
+    /// the workspace able to open meetings — the one action that spends the tenant's credits — and
+    /// with the full internal UI offering it.
+    ///
+    /// Asserted on the entity, for the same reason the test above is: this is where the answer is
+    /// decided. The casing variants are not padding — the column is written from
+    /// <c>MembershipType.External.ToString()</c> in one path and echoed from a stored row in
+    /// another, and a case-sensitive comparison here would restore the bug for whichever path
+    /// happened to disagree.
+    /// </summary>
+    [Theory]
+    [InlineData("External")]
+    [InlineData("external")]
+    [InlineData("EXTERNAL")]
+    public void CreateInvitationMember_ShouldWithholdMeetingCreation_FromExternalMembers(string membershipType)
+    {
+        var member = WorkspaceMemberMapper.CreateInvitationMember(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), membershipType);
+
+        Assert.False(member.CanCreateMeetings);
+    }
+
+    /// <summary>
+    /// The other half of the rule, and the reason it is written as "not External" rather than
+    /// "is Internal": a workspace with no verified-domain policy classifies everyone Internal, and
+    /// an unrecognised or empty value must not silently strip meeting creation from ordinary
+    /// members. Only an explicit External withholds it.
+    /// </summary>
+    [Theory]
+    [InlineData("Internal")]
+    [InlineData("internal")]
+    [InlineData("")]
+    public void CreateInvitationMember_ShouldGrantMeetingCreation_ToEveryoneElse(string membershipType)
+    {
+        var member = WorkspaceMemberMapper.CreateInvitationMember(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), membershipType);
+
+        Assert.True(member.CanCreateMeetings);
+    }
+
     private void StubRoleName(Guid roleId, string roleName)
     {
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())

@@ -9,7 +9,11 @@ namespace WarpTalk.BillingService.Application.Interfaces;
 
 public interface IPlanService
 {
+    /// <summary>Customer-facing catalogue: active plans only (BR-74).</summary>
     Task<Result<IEnumerable<PlanDto>>> GetActivePlansAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Every plan including deactivated ones. System Admin only.</summary>
+    Task<Result<IEnumerable<PlanDto>>> GetAllPlansAsync(CancellationToken cancellationToken = default);
     Task<Result<PlanDto>> GetPlanByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<Result<PlanDto>> UpdatePlanAsync(Guid id, PlanRequest request, CancellationToken cancellationToken = default);
 }

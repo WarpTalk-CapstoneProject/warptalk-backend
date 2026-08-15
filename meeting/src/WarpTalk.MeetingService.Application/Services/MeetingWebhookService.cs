@@ -18,13 +18,20 @@ public class MeetingWebhookService : IMeetingWebhookService
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly IRedisService _redisService;
+    private readonly IEgressCompletion _egressCompletion;
     private readonly string _apiSecret;
     private readonly ILogger<MeetingWebhookService> _logger;
 
-    public MeetingWebhookService(IUnitOfWork unitOfWork, IRedisService redisService, IConfiguration config, ILogger<MeetingWebhookService> logger)
+    public MeetingWebhookService(
+        IUnitOfWork unitOfWork,
+        IRedisService redisService,
+        IEgressCompletion egressCompletion,
+        IConfiguration config,
+        ILogger<MeetingWebhookService> logger)
     {
         _unitOfWork = unitOfWork;
         _redisService = redisService;
+        _egressCompletion = egressCompletion;
         _apiSecret = config["LiveKit:ApiSecret"] ?? throw new ArgumentNullException("LiveKit:ApiSecret");
         _logger = logger;
     }
@@ -175,88 +182,19 @@ public class MeetingWebhookService : IMeetingWebhookService
     // A completed RoomComposite Egress must not be acknowledged to LiveKit until its durable
     // domain event is in Redis Streams. LiveKit can then retry a transient Redis failure, while
     // the translation-room consumer uses EgressId as its durable idempotency key.
+    //
+    // The work itself lives in IEgressCompletion because this is no longer the only path into it:
+    // EgressReconciliationService performs the identical completion for an egress whose webhook
+    // never arrived (WT-371 #8). Two copies would drift, and the copy that drifted would be the
+    // fallback — the one that only runs when this path is already broken, so nobody would see it.
+    //
+    // Still throws on a failed publish: that becomes a 500 and LiveKit retries.
     private async Task HandleEgressEnded(JsonElement root)
     {
         if (!root.TryGetProperty("egressInfo", out var egressInfo))
             return;
 
-        var egressId = TryGetString(egressInfo, "egressId") ?? TryGetString(egressInfo, "egress_id");
-        var roomName = TryGetString(egressInfo, "roomName") ?? TryGetString(egressInfo, "room_name");
-
-        if (string.IsNullOrWhiteSpace(egressId) && string.IsNullOrWhiteSpace(roomName))
-            return;
-
-        var room = !string.IsNullOrWhiteSpace(egressId)
-            ? await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ActiveEgressId == egressId)
-            : await _unitOfWork.MeetingRoomRepository.FirstOrDefaultAsync(r => r.ProviderRoomName == roomName);
-
-        if (room == null) return;
-
-        room.ActiveEgressId = null;
-
-        string? fileUrl = null;
-        long? fileSizeBytes = null;
-        if (egressInfo.TryGetProperty("fileResults", out var fileResults) && fileResults.ValueKind == JsonValueKind.Array)
-        {
-            var first = fileResults.EnumerateArray().FirstOrDefault();
-            if (first.ValueKind == JsonValueKind.Object)
-            {
-                fileUrl = TryGetString(first, "location") ?? TryGetString(first, "filename");
-                fileSizeBytes = TryGetInt64(first, "size")
-                    ?? TryGetInt64(first, "fileSize")
-                    ?? TryGetInt64(first, "file_size");
-            }
-        }
-
-        // A failed/empty egress has no recording artifact. Clearing ActiveEgressId is still
-        // correct, but there is no completed recording event to publish.
-        if (string.IsNullOrWhiteSpace(egressId) || string.IsNullOrWhiteSpace(fileUrl))
-            return;
-
-        var fileFormat = GetFileFormat(fileUrl);
-        var envelope = DomainEventEnvelope.Create(
-            MeetingEventTypes.RecordingCompleted,
-            "meeting-service",
-            workspaceId: null,
-            new MeetingRecordingCompletedEventPayload(
-                room.TranslationRoomId,
-                egressId,
-                fileUrl,
-                fileFormat,
-                fileSizeBytes,
-                ContainsRawAudio: true,
-                ContainsRawVideo: true));
-        var publishResult = await _redisService.PublishStreamMessageAsync(
-            "meeting:domain-events",
-            new Dictionary<string, string>
-            {
-                ["event_id"] = envelope.EventId.ToString(),
-                ["event_type"] = envelope.EventType,
-                ["schema_version"] = envelope.SchemaVersion.ToString(),
-                ["envelope"] = JsonSerializer.Serialize(envelope)
-            });
-
-        if (!publishResult.IsSuccess)
-            throw new InvalidOperationException(
-                $"Could not durably publish {MeetingEventTypes.RecordingCompleted}: {publishResult.Error}");
-    }
-
-    private static string? TryGetString(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static long? TryGetInt64(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var number)
-            ? number
-            : null;
-
-    private static string GetFileFormat(string fileUrl)
-    {
-        var path = Uri.TryCreate(fileUrl, UriKind.Absolute, out var uri)
-            ? uri.AbsolutePath
-            : fileUrl;
-        return Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        await _egressCompletion.ApplyAsync(egressInfo);
     }
 
     private async Task HandleTrackPublished(JsonElement root)

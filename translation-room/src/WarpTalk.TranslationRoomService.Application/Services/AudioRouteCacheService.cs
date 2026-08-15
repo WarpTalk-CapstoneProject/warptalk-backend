@@ -18,26 +18,67 @@ public class AudioRouteCacheService : IAudioRouteCacheService
     private readonly ITranslationRoomRepository _roomRepository;
     private readonly ITranslationRoomSessionRepository _sessionRepository;
     private readonly IRedisStateRepository _redisStateRepo;
+    private readonly IDubVoiceDirectory _dubVoices;
 
     public AudioRouteCacheService(
         ITranslationRoomAudioRouteRepository routeRepository,
         ITranslationRoomRepository roomRepository,
         ITranslationRoomSessionRepository sessionRepository,
-        IRedisStateRepository redisStateRepo)
+        IRedisStateRepository redisStateRepo,
+        IDubVoiceDirectory dubVoices)
     {
         _routeRepository = routeRepository;
         _roomRepository = roomRepository;
         _sessionRepository = sessionRepository;
         _redisStateRepo = redisStateRepo;
+        _dubVoices = dubVoices;
+    }
+
+    /// <summary>
+    /// WT-396 — attach each speaker's chosen dub voice to the routes they speak on.
+    ///
+    /// Asked once per distinct SPEAKER, not once per route: the mesh is O(n^2) in participants
+    /// and the answer is a property of the person, so a six-way room would otherwise make thirty
+    /// calls to learn six facts on the path that starts every meeting.
+    ///
+    /// Never throws. A speaker whose preference cannot be read is published without one, which
+    /// the workers read as "clone them live" — the behaviour everybody had before this existed.
+    /// </summary>
+    private async Task<List<TranslationRoomAudioRouteDto>> WithDubVoicesAsync(
+        List<TranslationRoomAudioRouteDto> routes, CancellationToken ct)
+    {
+        var byUser = new Dictionary<Guid, string?>();
+        var enriched = new List<TranslationRoomAudioRouteDto>(routes.Count);
+
+        foreach (var route in routes)
+        {
+            if (route.SourceUserId is not { } speaker)
+            {
+                enriched.Add(route);
+                continue;
+            }
+
+            if (!byUser.TryGetValue(speaker, out var voiceId))
+            {
+                voiceId = await _dubVoices.GetDubVoiceAsync(speaker, ct);
+                byUser[speaker] = voiceId;
+            }
+
+            enriched.Add(route with { SourceDubVoiceId = voiceId });
+        }
+
+        return enriched;
     }
 
     public async Task<List<TranslationRoomAudioRouteDto>> PublishRoutesUpdateAsync(Guid roomId, CancellationToken ct = default)
     {
         var allRoutes = await _routeRepository.GetRoutesByRoomIdAsync(roomId, ct);
-        var activeOrPendingRoutes = allRoutes
-            .Where(r => r.Status != AudioRouteStatus.COMPLETED.ToString())
-            .Select(TranslationRoomAudioRouteMapper.ToDto)
-            .ToList();
+        var activeOrPendingRoutes = await WithDubVoicesAsync(
+            allRoutes
+                .Where(r => r.Status != AudioRouteStatus.COMPLETED.ToString())
+                .Select(TranslationRoomAudioRouteMapper.ToDto)
+                .ToList(),
+            ct);
 
         var room = await _roomRepository.GetByIdAsync(roomId, ct);
 

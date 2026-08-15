@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.MeetingService.Application.DTOs;
 using WarpTalk.MeetingService.Application.Interfaces;
+using WarpTalk.Shared;
 using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.MeetingService.API.Controllers;
@@ -23,6 +24,26 @@ public class MeetingChatController : ControllerBase
 
     private Guid CurrentUserId => User.GetUserId() ?? Guid.Empty;
 
+    /// <summary>
+    /// WT-365 — a 403 that says why.
+    ///
+    /// Every one of these branches used to call <c>Forbid()</c>. On an API controller that runs
+    /// the authentication scheme's forbid handler and returns 403 with NO BODY AT ALL — so the
+    /// service's own reason ("Not an active participant.") was computed, returned up the stack,
+    /// and then thrown away one line before it reached the wire. The chat panel could only fall
+    /// back to "Message could not be sent. Try again.", which is advice that will never work:
+    /// the send is being refused, not dropped. That generic sentence is what the bug report
+    /// contains, because it is all the user had.
+    ///
+    /// The sibling NOT_FOUND/BadRequest branches already pass <c>result.Error</c>; this brings
+    /// 403 in line with them and with <c>ApiErrorResponse</c>, which is the shape the web
+    /// client's getErrorMessage() reads.
+    /// </summary>
+    private ObjectResult ForbiddenWithReason(string? reason) =>
+        StatusCode(
+            StatusCodes.Status403Forbidden,
+            new ApiErrorResponse(reason ?? "You cannot do that in this meeting.", "FORBIDDEN"));
+
     [HttpGet]
     public async Task<IActionResult> GetMessages(Guid roomId, CancellationToken ct)
     {
@@ -30,7 +51,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 
@@ -45,7 +66,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 
@@ -59,7 +80,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 
@@ -73,7 +94,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 
@@ -89,7 +110,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 
@@ -103,7 +124,7 @@ public class MeetingChatController : ControllerBase
         if (!result.IsSuccess)
         {
             if (result.ErrorCode == "NOT_FOUND") return NotFound(result.Error);
-            if (result.ErrorCode == "FORBIDDEN") return Forbid();
+            if (result.ErrorCode == "FORBIDDEN") return ForbiddenWithReason(result.Error);
             return BadRequest(result.Error);
         }
 

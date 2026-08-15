@@ -115,4 +115,38 @@ public class SubscriptionsController : ControllerBase
         }
         return Ok(result.Value);
     }
+
+    /// <summary>
+    /// Whether this workspace keeps translating past zero credits, and how far.
+    ///
+    /// Workspace-scoped, not [Authorize(AdminSystem)] like contract-terms above: the Owner is
+    /// choosing whether to USE an allowance, not how big it is. The service refuses to enable
+    /// anything on a plan whose cap is 0.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId}/overage")]
+    public async Task<ActionResult<WorkspaceOverageSettingDto>> GetOverage(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.GetOverageSettingAsync(workspaceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpPut("workspace/{workspaceId}/overage")]
+    public async Task<ActionResult<WorkspaceOverageSettingDto>> SetOverage(
+        Guid workspaceId,
+        [FromBody] SetWorkspaceOverageRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.SetOverageAsync(workspaceId, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
 }

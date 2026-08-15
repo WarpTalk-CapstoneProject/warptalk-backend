@@ -49,6 +49,18 @@ public partial class WorkspaceDocument
 
     public string IngestionStatus { get; set; } = null!;
 
+    /// <summary>
+    /// Why the last AI ingestion attempt did not complete, or null when it succeeded, was
+    /// skipped, or predates WT-411.
+    ///
+    /// IngestionStatus alone cannot answer this. The guardrail's fail-safe marks a document
+    /// restricted+failed on ANY exception — a timeout, a Redis blip, an extraction crash — and
+    /// the scan marks it restricted when it genuinely FINDS PII or DLP content. Those two are
+    /// the same row from the outside, so nobody could tell a document hidden by a transient
+    /// fault from one hidden on purpose, or know whether retrying would help.
+    /// </summary>
+    public string? IngestionFailureReason { get; set; }
+
     public DateTime? LastIndexedAt { get; set; }
 
     public string? IndexVersion { get; set; }

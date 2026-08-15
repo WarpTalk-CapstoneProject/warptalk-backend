@@ -25,4 +25,20 @@ public interface IVoiceProfileService
     /// null when the preference was cleared.
     /// </summary>
     Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-396 — the voice this user is DUBBED IN. The other direction from SetPreferredVoiceAsync
+    /// above, which is the voice they HEAR other people in; the two were the same table and a
+    /// chosen voice went to the wrong one.
+    ///
+    /// Accepts either a voice from the public catalogue or the provider id behind one of this
+    /// user's own profiles, and nothing else: an unvalidated id reaches Cartesia as an unknown
+    /// voice and the dub silently falls back, which is exactly the failure being fixed.
+    ///
+    /// A null or empty VoiceId clears the choice and returns to cloning live from the meeting.
+    /// </summary>
+    Task<Result<string?>> SetDubVoiceAsync(Guid userId, SetDubVoiceRequest request, CancellationToken ct = default);
+
+    /// <summary>The user's chosen dub voice, or null when they have not chosen one.</summary>
+    Task<Result<string?>> GetDubVoiceAsync(Guid userId, CancellationToken ct = default);
 }

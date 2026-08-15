@@ -170,8 +170,26 @@ public class TranslationRoomService : ITranslationRoomService
         string meetingLink,
         CancellationToken ct)
     {
+        // WT-415: both skips are logged now, and this is the whole point of the change.
+        //
+        // MEETING_INVITED has produced ZERO rows in production while its siblings
+        // MEETING_STARTED (127) and MEETING_REMINDER (20) fire normally, against 538
+        // invitation rows. It is not throwing — its own catch below has never logged either —
+        // so it is returning at one of the two guards, and neither said which. That is the
+        // same shape as every other silent exit found this week: the branch that swallows a
+        // feature has to say so, or the next investigation restarts from nothing.
+        //
+        // Warning, not information: neither of these is a normal outcome for an invitee who
+        // has an account, which is the case the bell exists for.
         if (_notificationClient is null || _userClient is null)
         {
+            _logger.LogWarning(
+                "invite_notification_skipped: reason=clients_unavailable RoomId={RoomId} "
+                + "NotificationClient={HasNotificationClient} UserClient={HasUserClient}. "
+                + "The invitation and its email are unaffected.",
+                room.Id,
+                _notificationClient is not null,
+                _userClient is not null);
             return;
         }
 
@@ -183,7 +201,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (string.IsNullOrWhiteSpace(user?.Id))
             {
-                // No account yet. The invitation email is their only channel, by design.
+                // No account yet. The invitation email is their only channel, by design — so
+                // this one is Information, not Warning. It is still logged, because "everybody
+                // we invited happens to have no account" and "the lookup is broken" produce the
+                // same silence, and only the count over time tells them apart.
+                _logger.LogInformation(
+                    "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
+                    room.Id);
                 return;
             }
 
@@ -201,6 +225,12 @@ public class TranslationRoomService : ITranslationRoomService
             request.Metadata.Add("room_title", room.Title);
 
             await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+
+            // The success side too, so "it fired and something downstream dropped it" can be
+            // told apart from "it never fired". Without this, a MEETING_INVITED row missing
+            // from the notification service is unattributable.
+            _logger.LogInformation(
+                "invite_notification_sent: RoomId={RoomId} UserId={UserId}", room.Id, user.Id);
         }
         catch (Exception ex)
         {
@@ -433,22 +463,43 @@ public class TranslationRoomService : ITranslationRoomService
                         Status = "PENDING"
                     }, ct);
 
-                    // 2. Send the email
+                    // 2. Tell them — both ways.
+                    //
+                    // Only the email was sent here. NotifyInvitedUserAsync already existed and was
+                    // already called when somebody is invited to an EXISTING room, so a meeting
+                    // that named its guests up front — the ordinary way to create one — was the
+                    // single path that rang no bell. "check noti i mn": there was nothing there
+                    // to check, and the only trace was an email to an account that had one.
+                    //
+                    // Same gate as the email, for the same reason: one daily standup must not
+                    // deliver thirty notifications. NotifyInvitedUserAsync skips anyone without an
+                    // account and never throws, so this cannot fail a room creation.
                     if (sendInvitationEmails)
                     {
                         emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                        emailTasks.Add(NotifyInvitedUserAsync(email, room, meetingLink, ct));
                     }
                 }
 
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // WT-187: published after the invitations are committed, so a client that
-                // refetches the moment it receives the event cannot miss them.
-                await PublishRoomInvitationsChangedAsync(room);
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
+
+            // EVERY new room announces itself, not only one created with email invitations.
+            //
+            // This call used to sit INSIDE the `if (request.InvitedEmails.Any())` block above, so
+            // a room created without typing anybody's email — the ordinary case for a workspace
+            // whose members can already see each other's meetings — published nothing at all.
+            // The whole realtime chain existed and worked; it simply was never rung. That is why
+            // the report was "phải F5" from one tester and "realtime mà, bth có cần reload đâu"
+            // from another: both were right, about different ways of creating a room.
+            //
+            // Still after the invitation SaveChangesAsync, so a client that refetches the instant
+            // it receives the event cannot miss rows that are about to be committed.
+            await PublishRoomInvitationsChangedAsync(room);
 
             // 5. Return mapped response. WT-280: seats are counted in the database, after the
             // host row above was committed, so a freshly created room correctly reports 1.
@@ -1357,7 +1408,29 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+
+            // WT-373: the room's own rule, not a bare host check.
+            //
+            // This was `IsHostedBy(hostId)`, and WT-371's "participants may start translation"
+            // was implemented only in TranslationRoomSessionService.CanStartSessionAsync — which
+            // serves POST /sessions, an endpoint the client does not call. Start Translation
+            // calls /resume, so the rule was enforced where nothing runs and ignored where
+            // everything does.
+            //
+            // The cost was the whole feature: /resume is the only path that opens a
+            // TranslationRoomSession, and that row IS `translation_active` in
+            // PublishRoutesUpdateAsync, which the AI worker gates every STT result on. A
+            // participant in an opted-in room was shown the button, pressed it, and got 401 from
+            // a branch that returns without logging — no session, no dub, and nothing anywhere
+            // saying why.
+            //
+            // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
+            // not the same as letting anyone cut it off for everybody.
+            if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
+                    translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
+            {
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            }
 
             // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
             // because opening the room no longer starts translation with it — an open, never-yet-

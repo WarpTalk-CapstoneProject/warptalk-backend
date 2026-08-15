@@ -9,6 +9,7 @@ using Stripe.Checkout;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
@@ -91,15 +92,18 @@ public class StripePaymentService : IStripePaymentService
                                 // inferring it from a number meant the plans page and the
                                 // subscription could disagree, silently, about what was bought.
                                 //
-                                // The old heuristic stays only as the fallback for a request that
+                                // WT-370: that fix was inert. It compared BillingCycle against
+                                // PriceIntervals ("month"/"year"), and the plans page sends
+                                // "monthly"/"yearly" — so NEITHER branch ever matched and every
+                                // request fell through to the heuristic below. BillingCycleResolver
+                                // now owns the comparison and knows both vocabularies.
+                                //
+                                // The heuristic stays only as the fallback for a request that
                                 // names no cycle, so nothing that relied on it starts failing.
-                                Interval = string.Equals(request.BillingCycle, PaymentConstants.PriceIntervals.Year, StringComparison.OrdinalIgnoreCase)
-                                    ? PaymentConstants.PriceIntervals.Year
-                                    : string.Equals(request.BillingCycle, PaymentConstants.PriceIntervals.Month, StringComparison.OrdinalIgnoreCase)
-                                        ? PaymentConstants.PriceIntervals.Month
-                                        : string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
+                                Interval = BillingCycleResolver.ToPriceInterval(request.BillingCycle)
+                                    ?? (string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
                                             ? (request.Amount >= 1000000m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month)
-                                            : (request.Amount > 50m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month)
+                                            : (request.Amount > 50m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month))
                             } : null
                         },
                         Quantity = 1,

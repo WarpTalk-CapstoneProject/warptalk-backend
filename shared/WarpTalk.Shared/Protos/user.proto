@@ -17,6 +17,13 @@ service UserService {
   // audio route may enable voice cloning) has no business with the audit fields, and a narrow
   // answer is one that cannot start being used for something else.
   rpc HasVoiceCloneConsent (GetUserRequest) returns (HasVoiceCloneConsentResponse);
+
+  // WT-396: the voice this person chose to be DUBBED IN, if they chose one.
+  //
+  // Not the voice they hear other people in — that is a different preference, stored separately,
+  // and the two sharing a table is the reason an uploaded recording changed nothing. Empty means
+  // "not chosen", and the caller falls back to cloning the speaker live from the meeting.
+  rpc GetPreferredVoice (GetUserRequest) returns (GetPreferredVoiceResponse);
 }
 
 message GetUserRequest {
@@ -39,6 +46,19 @@ message GetUserSettingsResponse {
   bool found = 1;
   string default_speak_language = 2;
   string default_listen_language = 3;
+
+  // WT-401: the account-level "Enable Voice Cloning" preference.
+  //
+  // This is a WISH, not a permission. It says the person would like their own voice used when
+  // they speak in a meeting; whether that is allowed is HasVoiceCloneConsent, which is a
+  // separate RPC on purpose and stays the gate in front of biometric processing.
+  //
+  // It is here because the preference had no way to reach a meeting at all: the switch in
+  // Settings wrote to AuthService and nothing ever read it, while the only field the dub
+  // actually consults — TranslationRoomAudioRoute.VoiceCloneEnabled — was hard-coded false.
+  // Users saw "Enable Voice Cloning: On", heard a stock voice, and concluded the cloning was
+  // bad rather than switched off.
+  bool voice_clone_enabled = 4;
 }
 
 message GetRoleByNameRequest {
@@ -59,4 +79,14 @@ message HasVoiceCloneConsentResponse {
   // False whenever the answer is not a live grant — never asked, withdrawn, or expired. The
   // caller must treat any failure to reach this service the same way.
   bool granted = 1;
+}
+
+message GetPreferredVoiceResponse {
+  // The provider's own id for the chosen voice. Empty when the person has not chosen one, when
+  // the profile behind their choice has no provider voice yet — an uploaded sample not yet
+  // cloned — or when this service cannot answer. Empty always means "fall back", never "silence".
+  string voice_id = 1;
+  // "cartesia". Carried so a caller can refuse a voice from a provider it does not speak to,
+  // rather than passing an id that provider will not recognise.
+  string provider = 2;
 }

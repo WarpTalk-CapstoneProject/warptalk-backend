@@ -44,7 +44,8 @@ public static class TranslationRoomMapper
             settings.ArtifactAccess,
             settings.MuteOnEntry,
             settings.AutoRecord,
-            settings.BreakoutsEnabled);
+            settings.BreakoutsEnabled,
+            settings.ParticipantsCanStartTranslation);
     }
 
     /// <summary>
@@ -188,6 +189,9 @@ public static class TranslationRoomMapper
             MuteOnEntry = requested?.MuteOnEntry ?? defaults.MuteOnEntry,
             AutoRecord = requested?.AutoRecord ?? defaults.AutoRecord,
             BreakoutsEnabled = requested?.BreakoutsEnabled ?? defaults.BreakoutsEnabled,
+            // No meeting-type default: WT-371 wants host-only unless a host says otherwise, and
+            // seeding it per type would put the looser stance back where nobody chose it.
+            ParticipantsCanStartTranslation = requested?.ParticipantsCanStartTranslation ?? false,
         };
     }
 

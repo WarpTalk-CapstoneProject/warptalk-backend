@@ -21,3 +21,22 @@ public interface IVoiceConsentDirectory
     /// </summary>
     Task<bool> HasVoiceCloneConsentAsync(Guid userId, CancellationToken ct = default);
 }
+
+/// <summary>
+/// WT-396: the voice a speaker chose to be DUBBED IN, asked of AuthService.
+///
+/// Separate from IVoiceConsentDirectory above because they answer different questions about the
+/// same person — that one is "may we clone them at all", this one is "and which voice did they
+/// ask for". A single directory returning both would make it easy to check one and act on the
+/// other, which is close enough to the bug being fixed to be worth the extra interface.
+/// </summary>
+public interface IDubVoiceDirectory
+{
+    /// <summary>
+    /// The provider voice id, or null when the speaker has not chosen one, is a guest, or
+    /// AuthService cannot answer. Null always means "clone them live from the meeting instead",
+    /// which is what happened for everybody before this existed — so an outage degrades to the
+    /// previous behaviour rather than to silence.
+    /// </summary>
+    Task<string?> GetDubVoiceAsync(Guid userId, CancellationToken ct = default);
+}
