@@ -170,8 +170,26 @@ public class TranslationRoomService : ITranslationRoomService
         string meetingLink,
         CancellationToken ct)
     {
+        // WT-415: both skips are logged now, and this is the whole point of the change.
+        //
+        // MEETING_INVITED has produced ZERO rows in production while its siblings
+        // MEETING_STARTED (127) and MEETING_REMINDER (20) fire normally, against 538
+        // invitation rows. It is not throwing — its own catch below has never logged either —
+        // so it is returning at one of the two guards, and neither said which. That is the
+        // same shape as every other silent exit found this week: the branch that swallows a
+        // feature has to say so, or the next investigation restarts from nothing.
+        //
+        // Warning, not information: neither of these is a normal outcome for an invitee who
+        // has an account, which is the case the bell exists for.
         if (_notificationClient is null || _userClient is null)
         {
+            _logger.LogWarning(
+                "invite_notification_skipped: reason=clients_unavailable RoomId={RoomId} "
+                + "NotificationClient={HasNotificationClient} UserClient={HasUserClient}. "
+                + "The invitation and its email are unaffected.",
+                room.Id,
+                _notificationClient is not null,
+                _userClient is not null);
             return;
         }
 
@@ -183,7 +201,13 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (string.IsNullOrWhiteSpace(user?.Id))
             {
-                // No account yet. The invitation email is their only channel, by design.
+                // No account yet. The invitation email is their only channel, by design — so
+                // this one is Information, not Warning. It is still logged, because "everybody
+                // we invited happens to have no account" and "the lookup is broken" produce the
+                // same silence, and only the count over time tells them apart.
+                _logger.LogInformation(
+                    "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
+                    room.Id);
                 return;
             }
 
@@ -201,6 +225,12 @@ public class TranslationRoomService : ITranslationRoomService
             request.Metadata.Add("room_title", room.Title);
 
             await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+
+            // The success side too, so "it fired and something downstream dropped it" can be
+            // told apart from "it never fired". Without this, a MEETING_INVITED row missing
+            // from the notification service is unattributable.
+            _logger.LogInformation(
+                "invite_notification_sent: RoomId={RoomId} UserId={UserId}", room.Id, user.Id);
         }
         catch (Exception ex)
         {
