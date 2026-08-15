@@ -32,6 +32,7 @@ public class VoiceProfileServiceTests
     private readonly IVoiceProfileRepository _profiles = Substitute.For<IVoiceProfileRepository>();
     private readonly IVoiceSampleRepository _samples = Substitute.For<IVoiceSampleRepository>();
     private readonly IVoiceSampleStorage _storage = Substitute.For<IVoiceSampleStorage>();
+    private readonly IVoiceCloneRequestQueue _cloneQueue;
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
     private readonly VoiceProfileService _service;
 
@@ -45,8 +46,12 @@ public class VoiceProfileServiceTests
             new VoiceCatalogItemDto(LinhVoiceId, "Linh - Soft Presence", "feminine"),
             new VoiceCatalogItemDto(MinhVoiceId, "Minh - Conversational Partner", "masculine"));
 
+        // Silent by default: the clone hand-off is pinned in UploadCloneHandoffTests, and a
+        // queue that answered here would change what every assertion below is testing.
+        _cloneQueue = Substitute.For<IVoiceCloneRequestQueue>();
         _service = new VoiceProfileService(
-            _unitOfWork, _storage, _catalog, Substitute.For<ILogger<VoiceProfileService>>());
+            _unitOfWork, _storage, _catalog, _cloneQueue,
+            Substitute.For<ILogger<VoiceProfileService>>());
     }
 
     private void StubCatalog(params VoiceCatalogItemDto[] voices) =>
