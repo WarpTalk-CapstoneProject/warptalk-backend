@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using StackExchange.Redis;
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Security.Claims;
 using System.Text.Json;
@@ -259,6 +260,69 @@ public class TranslationRoomHubTests
                 It.Is<object[]>(args => (string)args[0] == userId && (string)args[1] == "vi"),
                 default),
             Times.Once);
+    }
+
+    /// <summary>
+    /// WT-419 — the edge that was missing entirely.
+    ///
+    /// These two methods wrote the new language to a Redis hash and broadcast it, and that was all.
+    /// The AUDIO MESH reads participant.SpeakLanguage / ListenLanguage out of Postgres, and nothing
+    /// here ever wrote those columns or asked for a regeneration — so a pair's routes stayed pinned
+    /// to the languages they joined with. Two people who joined matching had no route at all, and
+    /// switching afterwards created none: production, 15 Aug, an en/en speaker whose vi/vi listener
+    /// received neither dubbed audio nor a translated transcript.
+    ///
+    /// The assertion is on the STREAM, not on a service call, because that stream is what carries
+    /// the fact across the service boundary — TranslationRoomEventConsumerService is the only
+    /// listener and it already owns retry and a DLQ.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ChangingALanguageMidMeeting_PublishesTheChangeForTheAudioMesh(bool speakSide)
+    {
+        var (hub, dbMock, _, _, _, _) = CreateHub();
+        var roomId = Guid.NewGuid();
+        var userId = Guid.NewGuid().ToString();
+        hub.Context = CreateContext(userId, "conn-mesh");
+
+        // Captured rather than matched with It.Is: StreamAddAsync carries eight parameters on this
+        // version of StackExchange.Redis, several of them optional, and an argument-by-argument
+        // expression breaks the next time the library adds one — which says nothing about this fix.
+        var published = new List<(RedisKey Stream, NameValueEntry[] Entries)>();
+        dbMock
+            .Setup(db => db.StreamAddAsync(
+                It.IsAny<RedisKey>(), It.IsAny<NameValueEntry[]>(), It.IsAny<RedisValue?>(),
+                It.IsAny<long?>(), It.IsAny<bool>(), It.IsAny<long?>(),
+                It.IsAny<StreamTrimMode>(), It.IsAny<CommandFlags>()))
+            .Callback<RedisKey, NameValueEntry[], RedisValue?, long?, bool, long?, StreamTrimMode, CommandFlags>(
+                (stream, entries, _, _, _, _, _, _) => published.Add((stream, entries)))
+            .ReturnsAsync(new RedisValue("1-0"));
+
+        if (speakSide)
+            await hub.SetSpeakLanguage(roomId, "en-US");
+        else
+            await hub.SetListenLanguage(roomId, "en-US");
+
+        var systemEvent = Assert.Single(published, p => p.Stream == "translationRoom:system_events");
+
+        string Field(string name) =>
+            systemEvent.Entries.Single(e => e.Name == name).Value.ToString();
+
+        Assert.Equal("participant_language_changed", Field("event_type"));
+        Assert.Equal(roomId.ToString(), Field("room_id"));
+
+        var payload = Field("payload");
+        Assert.Contains(userId, payload);
+
+        // Normalized, not the raw "en-US" the caller sent: the mesh compares these against the same
+        // normalization LanguagePolicy uses, so an unnormalized value would never match.
+        Assert.Contains(speakSide ? "\"speakLanguage\":\"en\"" : "\"listenLanguage\":\"en\"", payload);
+
+        // The other side must travel as null, not as a value. These are two separate hub methods
+        // and neither knows the other's current setting, so sending one would let a speak change
+        // silently overwrite a listen choice.
+        Assert.Contains(speakSide ? "\"listenLanguage\":null" : "\"speakLanguage\":null", payload);
     }
 
     [Fact]

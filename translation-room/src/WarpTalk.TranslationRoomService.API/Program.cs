@@ -99,6 +99,10 @@ builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
 builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
 builder.Services.AddScoped<IAudioRouteTransitionProcessor, AudioRouteTransitionProcessor>();
 builder.Services.AddScoped<IAudioRouteEventProcessor, AudioRouteEventProcessor>();
+// WT-419. Separate from the processor above because a language change decides which routes should
+// EXIST rather than moving existing ones through a state machine — and because the route service
+// already depends on IAudioRouteEventProcessor, so the reverse edge would be a cycle.
+builder.Services.AddScoped<IParticipantLanguageProcessor, ParticipantLanguageProcessor>();
 builder.Services.AddScoped<ITelemetryStateService, TelemetryStateService>();
 builder.Services.AddScoped<ITelemetryProcessor, TelemetryProcessor>();
 builder.Services.AddScoped<IArtifactsFinalizer, ArtifactsFinalizer>();

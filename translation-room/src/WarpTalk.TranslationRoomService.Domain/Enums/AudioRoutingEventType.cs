@@ -42,6 +42,20 @@ public enum AudioRoutingEventType
     token_exhausted,
     token_recovered,
 
+    /// <summary>
+    /// Somebody changed the language they speak or hear WHILE the meeting is running. WT-419.
+    ///
+    /// Not a state transition on an existing route, which is what every other member of this enum
+    /// is — it changes the SHAPE of the mesh, so it is dispatched away from
+    /// AudioRouteEventProcessor entirely (see ParticipantLanguageProcessor) and ends in a full
+    /// GenerateRoutesAsync rather than a per-route transition.
+    ///
+    /// It exists because the gateway hub wrote language changes to Redis and nowhere else, while
+    /// the mesh reads the participant row in Postgres. A route was therefore pinned to whatever
+    /// languages the pair held at join time, forever.
+    /// </summary>
+    participant_language_changed,
+
     tts_unavailable,
     audio_unavailable,
     audio_recovered,
