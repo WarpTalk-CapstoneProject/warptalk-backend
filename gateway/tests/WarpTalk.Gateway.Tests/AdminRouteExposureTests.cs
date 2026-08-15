@@ -29,6 +29,9 @@ public sealed class AdminRouteExposureTests
         // The System Health screen, served by workspace. Query-only against the metrics store:
         // nothing behind it can silence an alert, restart a container or write a sample.
         "/api/v1/admin/platform-health/{**catch-all}",
+        // Product feedback, served by translation-room. Read-only and aggregated; comments come
+        // back without the person who wrote them.
+        "/api/v1/admin/feedback/{**catch-all}",
     ];
 
     private static JsonElement Routes()
