@@ -1,7 +1,10 @@
+using System.Collections.Generic;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using WarpTalk.Gateway.Configuration;
 
 namespace WarpTalk.Gateway.Tests;
@@ -149,6 +152,65 @@ public sealed class SessionRecoveryRateLimitTests
     public void DefaultRecoveryLimit_IsSixtyAMinute()
     {
         Assert.Equal(60, new GatewayRateLimitOptions().SessionRecoveryPermitLimit);
+    }
+
+    /// <summary>
+    /// The rejection log must name the budget that was actually spent.
+    ///
+    /// ResolvePartitionKey had no session-recovery branch, so a refused logout logged `ip:` — a
+    /// budget it was not drawn from. Diagnosing 289 refused logouts in three hours meant deciding
+    /// whether the session-recovery budget was exhausted or the guard was never matching, and
+    /// this line answered the same thing to both questions. A log that names the wrong budget is
+    /// worse than one that names none, because it gets believed.
+    /// </summary>
+    [Theory]
+    [InlineData("/api/v1/auth/logout")]
+    [InlineData("/api/v1/auth/refresh")]
+    public async Task ARefusedRecoveryRequestIsLoggedAgainstItsOwnPartition(string path)
+    {
+        var options = new RateLimiterOptions();
+        GatewayRateLimiterExtensions.Configure(
+            options, new GatewayRateLimitOptions { SessionRecoveryPermitLimit = 1, WindowSeconds = 60 });
+
+        var context = RequestFrom("203.0.113.50", path);
+        context.Response.Body = new System.IO.MemoryStream();
+
+        using var admitted = options.GlobalLimiter!.AttemptAcquire(context);
+        Assert.True(admitted.IsAcquired);
+        using var refused = options.GlobalLimiter.AttemptAcquire(context);
+        Assert.False(refused.IsAcquired);
+
+        var logged = new List<string>();
+        var services = new ServiceCollection();
+        services.AddLogging(builder => builder.AddProvider(new CapturingLoggerProvider(logged)));
+        context.RequestServices = services.BuildServiceProvider();
+
+        await options.OnRejected!(
+            new OnRejectedContext { HttpContext = context, Lease = refused },
+            CancellationToken.None);
+
+        var line = Assert.Single(logged);
+        Assert.Contains("session-recovery:", line);
+        Assert.DoesNotContain("partition ip:", line);
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        private readonly List<string> _sink;
+        public CapturingLoggerProvider(List<string> sink) => _sink = sink;
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(_sink);
+        public void Dispose() { }
+
+        private sealed class CapturingLogger : ILogger
+        {
+            private readonly List<string> _sink;
+            public CapturingLogger(List<string> sink) => _sink = sink;
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => _sink.Add(formatter(state, exception));
+        }
     }
 
     private static PartitionedRateLimiter<HttpContext> BuildGlobalLimiter(

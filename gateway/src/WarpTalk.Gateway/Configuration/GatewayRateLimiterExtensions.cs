@@ -226,6 +226,19 @@ public static class GatewayRateLimiterExtensions
     /// </summary>
     private static string ResolvePartitionKey(HttpContext context)
     {
+        // Session-recovery FIRST, because the limiter checks it first. This branch was missing:
+        // the partition was added to the limiter and not to the line that reports it, so every
+        // refused logout logged `ip:` — the budget it was NOT drawn from.
+        //
+        // That is not a cosmetic slip. Diagnosing 289 refused logouts in three hours meant
+        // deciding whether the session-recovery budget was exhausted or the guard was never
+        // matching, and this line answered "ip:" to both. A log that names the wrong budget is
+        // worse than one that names none, because it is believed.
+        if (IsSessionRecovery(context.Request.Path))
+        {
+            return $"session-recovery:{RequestRateLimitPartitionKeys.Ip(context)}";
+        }
+
         var userKey = RequestRateLimitPartitionKeys.User(context);
 
         return context.User.Identity?.IsAuthenticated == true
