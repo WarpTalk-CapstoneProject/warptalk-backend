@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Authorization;
 using Npgsql;
 using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
@@ -86,6 +87,7 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 // is no generic on IUnitOfWork and no Repository<T>() factory.
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
+builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -200,6 +202,10 @@ builder.Services.AddWarpTalkJwtAuthentication(
         };
     });
 builder.Services.AddAuthorization();
+// The gate every ~/api/v1/admin/* endpoint shares. AdminMeetingsController is the first admin
+// surface in this service, and without this the policy name resolves to nothing — the attribute
+// then throws at request time instead of refusing the caller.
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = builder.Configuration.GetRequiredServiceUri(
