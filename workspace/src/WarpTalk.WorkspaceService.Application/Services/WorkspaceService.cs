@@ -91,13 +91,22 @@ public class WorkspaceService : IWorkspaceService
             // them both off from the request body. WT-142: "FE disabled states do not
             // replace backend authorization."
 
-            // The web client blocks this unconditionally in workspace/create/page.tsx
-            // ("Use a business email or join by invitation"). This is the server-side
-            // half of that rule.
-            if (emailAddress.IsPublicDomain)
-            {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, ErrorCodes.ValidationError);
-            }
+            // A public-domain account may now found a workspace. WT-417.
+            //
+            // This used to refuse gmail.com and its siblings outright, so anybody without a
+            // corporate address could only ever JOIN one by invitation — which is not the
+            // product the owner wants.
+            //
+            // Removing it does NOT open public-domain VERIFICATION: EmailAddress.IsPublicDomainName
+            // still refuses to let anyone claim gmail.com as a workspace's verified domain, in
+            // VerifiedDomainService, in UpdateSettings, and a few lines below here. That
+            // separation is load-bearing — a verified domain makes every address on it Internal,
+            // so verifying gmail.com would silently make every Gmail user internal to that
+            // workspace. The guard below even says so: "kept so relaxing that rule cannot
+            // silently re-open public-domain verification". This is that relaxation, and the
+            // guard is why it is safe.
+            //
+            // The one-Enterprise-home rule below is likewise untouched.
 
             // One Enterprise (internal) home per user.
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);

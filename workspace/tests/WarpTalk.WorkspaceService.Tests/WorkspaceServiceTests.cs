@@ -330,41 +330,114 @@ public class WorkspaceServiceTests
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
         // Assert
-        // The caller-eligibility gate now fires first, so the refusal names the account
-        // rather than the claimed domain. Both refusals are still refusals.
+        // WT-417 removed the caller-eligibility gate, so the refusal now comes from the gate
+        // that actually matters here: nobody may claim gmail.com as a workspace's VERIFIED
+        // domain. A verified domain makes every address on it Internal, so verifying gmail.com
+        // would make every Gmail user internal to this workspace.
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
     }
 
-    // ── Hole 1: the public-email-domain block must not be switchable from the body ──
+    // ── WT-417: a public-domain account may found a workspace ──
 
+    /// <summary>
+    /// This test used to assert the opposite, and its subject was WT-142's "the public-domain
+    /// block must not be switchable from the request body". The block is gone by product
+    /// decision, so what it pins now is that removing it did what was asked — for every value
+    /// of the body flag that used to be the bypass.
+    /// </summary>
     [Theory]
     [InlineData(null)]
     [InlineData(false)]
-    [InlineData(true)]
-    public async Task CreateWorkspaceAsync_ShouldFail_ForPublicEmailDomain_WhateverRequireVerifiedDomainForInternalSays(bool? requireVerified)
+    public async Task CreateWorkspaceAsync_ShouldSucceed_ForPublicEmailDomain(bool? requireVerified)
     {
-        // The bypass this pins: POST /workspaces {"requireVerifiedDomainForInternal": false}
-        // from a gmail.com account used to create a workspace, because BOTH the
-        // public-domain check and the already-Internal-elsewhere check sat inside
-        // `if (requireVerified)` and requireVerified came from the request body.
-        // Arrange
         var userId = Guid.NewGuid();
-        var user = new User { Id = userId, Email = "attacker@gmail.com" };
+        var user = new User { Id = userId, Email = "someone@gmail.com" };
         var request = new CreateWorkspaceRequest("Free Workspace", null, RequireVerifiedDomainForInternal: requireVerified);
 
         StubUser(userId, user);
         StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
 
-        // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
-        // Assert
+        Assert.True(result.IsSuccess, "a gmail.com account was still refused a workspace");
+        await _workspaceRepository.ReceivedWithAnyArgs(1).AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The one combination a public-domain account still cannot have, and it is not a leftover
+    /// of the removed rule — it is the verified-domain rule doing its job.
+    ///
+    /// Asking for RequireVerifiedDomainForInternal with no explicit domain list makes the
+    /// service claim the CREATOR'S OWN domain. For a Gmail account that is gmail.com, and
+    /// verifying gmail.com would make every Gmail address on earth Internal to this workspace.
+    ///
+    /// Found by this test failing when it was first written to expect success for all three
+    /// flag values — the nuance would otherwise have shipped unnoticed.
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldStillRefuse_WhenAPublicDomainAccountAsksToVerifyItsOwnDomain()
+    {
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "someone@gmail.com" };
+        var request = new CreateWorkspaceRequest("Free Workspace", null, RequireVerifiedDomainForInternal: true);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
         Assert.False(result.IsSuccess);
-        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
-        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The sibling rule that lived in the SAME `if (requireVerified)` block as the removed
+    /// public-domain check, and which WT-142 made unswitchable. Removing one of the two must not
+    /// have taken the other with it: somebody who is already Internal in an Enterprise workspace
+    /// still cannot found a second one, whatever the request body says.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateWorkspaceAsync_ShouldStillFail_WhenAlreadyInternalElsewhere_WhateverTheBodySays(bool? requireVerified)
+    {
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "person@acme.com" };
+        var request = new CreateWorkspaceRequest("Second Home", null, RequireVerifiedDomainForInternal: requireVerified);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var enterprise = new Workspace
+        {
+            Id = Guid.NewGuid(),
+            Name = "Acme",
+            Slug = "acme",
+            RequireVerifiedDomainForInternal = true,
+        };
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<System.Linq.Expressions.Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new()
+                {
+                    WorkspaceId = enterprise.Id,
+                    UserId = userId,
+                    MembershipType = MembershipType.Internal.ToString(),
+                    Workspace = enterprise,
+                },
+            });
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        Assert.False(result.IsSuccess, "the one-Enterprise-home rule was lost with the public-domain gate");
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
