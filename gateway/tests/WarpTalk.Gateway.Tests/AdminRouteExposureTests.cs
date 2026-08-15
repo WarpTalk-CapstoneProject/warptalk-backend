@@ -16,6 +16,10 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/workspaces/{**catch-all}",
         "/api/v1/admin/audit-log/{**catch-all}",
         "/api/v1/admin/billing/{**catch-all}",
+        // The platform user directory, served by auth. Read-only: the controller has no mutation,
+        // because auditing one would need a message bus the auth service deliberately does not
+        // have.
+        "/api/v1/admin/users/{**catch-all}",
     ];
 
     private static JsonElement Routes()

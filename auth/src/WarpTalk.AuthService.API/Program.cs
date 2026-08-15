@@ -19,6 +19,7 @@ using WarpTalk.AuthService.Infrastructure.Security;
 using WarpTalk.AuthService.Infrastructure.Storage;
 using WarpTalk.AuthService.Infrastructure.Extensions;
 using WarpTalk.AuthService.Infrastructure.Services;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -96,6 +97,7 @@ builder.Services.AddResendClient(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAuthEmailSender, ResendAuthEmailSender>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
+builder.Services.AddScoped<IAdminUserService, AdminUserService>();
 builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
 builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
@@ -125,6 +127,10 @@ builder.Services.AddScoped<IWorkspaceInvitationClient, WorkspaceInvitationGrpcCl
 // Clean & Secure JWT Authentication
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+// The gate every ~/api/v1/admin/* endpoint shares. Auth is the last service to need it, and
+// AdminUsersController is why: without this registration the policy name resolves to nothing and
+// the attribute throws at request time instead of refusing the caller.
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 
 // Validation & Custom API Behavior
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();
