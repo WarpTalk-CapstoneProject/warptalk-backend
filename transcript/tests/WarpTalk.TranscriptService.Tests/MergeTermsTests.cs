@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using WarpTalk.TranscriptService.Infrastructure.Redis;
 using System.Text.Json;
 using WarpTalk.Shared.Events;
@@ -209,12 +211,89 @@ public class MergeTermsTests
 
         var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
             workspaceTerms,
-            maxKeywords: 4);
+            globalTerms: new List<PromptTerm>(),
+            maxKeywords: 4,
+            maxGlobalKeywords: 3);
 
         Assert.Equal(
             new[] { "workspace-high", "workspace-high-vi", "workspace-mid", "workspace-mid-vi" },
             keywords);
         Assert.DoesNotContain("architecture", keywords);
+    }
+
+    /// <summary>
+    /// WT-426 — a global term must not take a slot from a workspace term.
+    ///
+    /// The call site used to pass `merged`, so a high-priority GLOBAL term outranked a
+    /// workspace one in a budget of ten. Global terms describe what somebody on the platform
+    /// says, usually not the people in this room, so they are hallucination surface with no
+    /// upside — and on a noisy production meeting the recogniser reached for exactly them,
+    /// emitting "WarpTalk, WarpBot, Codex." as an utterance nobody spoke.
+    /// </summary>
+    [Fact]
+    public void BuildSttKeywords_LetsWorkspaceTermsWinTheBudgetOverHigherPriorityGlobals()
+    {
+        var workspaceTerms = new List<PromptTerm> { new("Warpspace", "Warpspace", 1) };
+        var globalTerms = new List<PromptTerm> { new("Kubernetes", "Kubernetes", 99) };
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            workspaceTerms, globalTerms, maxKeywords: 1, maxGlobalKeywords: 3);
+
+        Assert.Equal(new[] { "Warpspace" }, keywords);
+    }
+
+    /// <summary>
+    /// The negative control for the test above. Globals earned their place — "Codex" came back
+    /// as "cô đích" without them — so narrowing the budget must not evict them entirely.
+    /// </summary>
+    [Fact]
+    public void BuildSttKeywords_StillCarriesGlobalTermsWhenThereIsRoom()
+    {
+        var workspaceTerms = new List<PromptTerm> { new("Warpspace", "Warpspace", 1) };
+        var globalTerms = new List<PromptTerm> { new("Codex", "Codex", 5) };
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            workspaceTerms, globalTerms, maxKeywords: 10, maxGlobalKeywords: 3);
+
+        Assert.Contains("Warpspace", keywords);
+        Assert.Contains("Codex", keywords);
+    }
+
+    [Fact]
+    public void BuildSttKeywords_BoundsHowMuchOfTheBudgetGlobalTermsMayTake()
+    {
+        // Room for ten, but a platform glossary could supply hundreds. Without its own ceiling a
+        // workspace with two terms of its own would hand the other eight slots to terms nobody in
+        // the room is going to say.
+        var workspaceTerms = new List<PromptTerm> { new("Warpspace", "Warpspace", 1) };
+        var globalTerms = Enumerable.Range(0, 20)
+            .Select(index => new PromptTerm($"Globalterm{index}", $"Globalterm{index}", index))
+            .ToList();
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            workspaceTerms, globalTerms, maxKeywords: 10, maxGlobalKeywords: 3);
+
+        Assert.Equal(4, keywords.Count);
+        Assert.Contains("Warpspace", keywords);
+        Assert.Equal(3, keywords.Count(k => k.StartsWith("Globalterm", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void BuildSttKeywords_NeverExceedsTheOverallBudget()
+    {
+        // The two ceilings must compose, not add. A list bigger than the writer intends is the
+        // shape of the bug: the recogniser resolves ambiguity into whatever it was handed.
+        var workspaceTerms = Enumerable.Range(0, 20)
+            .Select(index => new PromptTerm($"Workspaceterm{index}", $"Workspaceterm{index}", index))
+            .ToList();
+        var globalTerms = Enumerable.Range(0, 20)
+            .Select(index => new PromptTerm($"Globalterm{index}", $"Globalterm{index}", index))
+            .ToList();
+
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            workspaceTerms, globalTerms, maxKeywords: 5, maxGlobalKeywords: 3);
+
+        Assert.Equal(5, keywords.Count);
     }
 
     [Theory]
@@ -262,7 +341,8 @@ public class MergeTermsTests
             new("AI", "AI", 4),
         };
 
-        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(terms, maxKeywords: 4);
+        var keywords = GlossaryStartedEventConsumer.BuildSttKeywords(
+            terms, globalTerms: new List<PromptTerm>(), maxKeywords: 4, maxGlobalKeywords: 3);
 
         Assert.Contains("Codex", keywords);
         Assert.Contains("AI", keywords);
