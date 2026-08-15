@@ -95,4 +95,13 @@ public record KnowledgeChunkRecord(
     /// transcript — a meeting's name on its summary, the term on a glossary entry. Trailing
     /// and defaulted so the positional construction in existing callers still compiles.
     /// </summary>
-    string? SourceTitle = null);
+    string? SourceTitle = null,
+    /// <summary>
+    /// When this chunk was written to the store, in epoch milliseconds, or null for a chunk
+    /// indexed before the producer stamped one.
+    ///
+    /// The only ordering signal a chunk carries. Qdrant's scroll returns points in point-id
+    /// order, which is meaningless to a reader, so without this the listing could only be
+    /// sorted by something a human typed — and it was, alphabetically by source name.
+    /// </summary>
+    long? IndexedAtMs = null);
