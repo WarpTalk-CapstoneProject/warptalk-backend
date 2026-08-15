@@ -67,6 +67,36 @@ public static class GatewayRateLimiterExtensions
                 return RateLimitPartition.GetNoLimiter<string>(HealthProbePrefix);
             }
 
+            // Signing out and refreshing get their own budget, because they are how a browser
+            // ESCAPES a bad session — and they are unauthenticated by construction, so without
+            // this they draw on the general anonymous IP pool below, shared with every other
+            // tokenless request from that address.
+            //
+            // WT-405: that pool spilled in production and took POST /api/v1/auth/logout with it.
+            // The gateway answered 429, so AuthSessionCookies.Clear never ran; the browser had
+            // already torn its own session down and been told it succeeded, while the server
+            // kept the HttpOnly cookies and a refresh-token family live for another seven days.
+            // The user was signed out in the tab and signed in on the server, and the natural
+            // recovery — reloading — spent more permits from the same exhausted pool, so the
+            // state could not clear itself. Refresh sits here for the same reason: a client that
+            // cannot refresh and cannot sign out has no move left.
+            //
+            // Not GetNoLimiter: /auth/refresh takes a credential, and an unbounded credential
+            // endpoint is a brute-force surface. A separate bounded partition is the point —
+            // ordinary browsing can no longer starve these two, and they cannot starve it.
+            // (/auth/login stays on LoginPolicy's 5/min per IP; it is not a recovery path.)
+            if (IsSessionRecovery(httpContext.Request.Path))
+            {
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: $"session-recovery:{RequestRateLimitPartitionKeys.Ip(httpContext)}",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        AutoReplenishment = true,
+                        PermitLimit = limits.SessionRecoveryPermitLimit,
+                        Window = window
+                    });
+            }
+
             // A signed-in caller is partitioned by WHO THEY ARE, not by where they are sitting.
             //
             // IP was the only partition, and the partition key is what decides who shares a budget.
@@ -206,6 +236,18 @@ public static class GatewayRateLimiterExtensions
 
     public static bool IsHealthProbe(PathString path) =>
         path.StartsWithSegments(HealthProbePrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The two endpoints a browser needs in order to get OUT of a broken session.
+    ///
+    /// Exact paths, not a prefix over /api/v1/auth: everything else under that prefix is
+    /// ordinary API surface, and /auth/login in particular must keep LoginPolicy's much
+    /// tighter per-IP budget. A prefix match here would quietly raise the login limit from
+    /// five a minute to sixty.
+    /// </summary>
+    public static bool IsSessionRecovery(PathString path) =>
+        path.Equals("/api/v1/auth/logout", StringComparison.OrdinalIgnoreCase)
+        || path.Equals("/api/v1/auth/refresh", StringComparison.OrdinalIgnoreCase);
 
     private static TimeSpan ResolveRetryAfter(RateLimitLease lease, TimeSpan window)
     {

@@ -95,11 +95,26 @@ public class TokenController : ControllerBase
         }
 
         var result = await _tokenService.LogoutAsync(userId.Value, refreshToken, ct);
+
+        // Before the status is decided, and on every path out of here.
+        //
+        // WT-405: this used to sit after the failure check, so a logout the service could not
+        // complete returned 400 with all three cookies still in the jar. The browser has already
+        // torn its own session down by the time this request is sent — it does not, and cannot,
+        // put the session back — so refusing to clear leaves the two sides disagreeing: signed
+        // out in the tab, signed in here, with a session marker that still says "there is a
+        // refresh token worth redeeming".
+        //
+        // Clearing a cookie is not the same act as revoking a token, and only one of them can
+        // fail. Whether the family was revoked is what the status code is for; the cookies name
+        // a session this browser has finished with either way, and holding on to them protects
+        // nothing.
+        AuthSessionCookies.Clear(Request, Response);
+
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
-        AuthSessionCookies.Clear(Request, Response);
         return NoContent();
     }
 }
