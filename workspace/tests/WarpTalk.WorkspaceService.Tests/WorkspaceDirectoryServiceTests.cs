@@ -401,6 +401,63 @@ public class WorkspaceDirectoryServiceTests
         Assert.Contains("active room limit (2)", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The workspace's own setting is a TIGHTENING and is applied.
+    ///
+    /// Nothing writes workspace_entitlement_overrides — billing exposes no writer — so the
+    /// Settings page's "Max Active Rooms" never reaches the resolver and the snapshot always
+    /// answered first. A workspace that lowered its own cap to 2 was still allowed 5.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_AppliesTheWorkspaceSetting_WhenItIsTighterThanThePlan()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":2}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "5", "platform_default")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(2);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, Array.Empty<string>());
+
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("active room limit (2)", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("plan allows up to 5", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The reported bug: the settings page reads 20, room creation refuses at 5, and the message
+    /// gave the owner no way to connect the two.
+    ///
+    /// The setting must NOT raise the ceiling — a workspace may only tighten
+    /// (EntitlementConstants.Errors.WorkspaceOverrideLoosens) — but the refusal has to say that
+    /// out loud, and name the layer that decided 5. Here that layer is platform_default, which is
+    /// what an inactive subscription resolves to however grand the plan on the row.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_SaysWhyTheSettingDidNotRaiseTheLimit()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":20}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "5", "platform_default")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(5);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, Array.Empty<string>());
+
+        Assert.False(result.Value!.IsAllowed);
+        var message = result.Value.ErrorMessage;
+        Assert.Contains("active room limit (5)", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("platform_default", message, StringComparison.Ordinal);
+        Assert.Contains("20", message, StringComparison.Ordinal);
+        Assert.Contains("cannot raise it", message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task GetSettingsAsync_ReturnsSettings_WhenWorkspaceExists()
     {
