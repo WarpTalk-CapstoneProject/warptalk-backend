@@ -20,6 +20,9 @@ public sealed class AdminRouteExposureTests
         // because auditing one would need a message bus the auth service deliberately does not
         // have.
         "/api/v1/admin/users/{**catch-all}",
+        // The subscription directory and its revenue summary, served by billing. Read-only:
+        // changing a plan or cancelling a subscription already has its own validated path.
+        "/api/v1/admin/subscriptions/{**catch-all}",
     ];
 
     private static JsonElement Routes()

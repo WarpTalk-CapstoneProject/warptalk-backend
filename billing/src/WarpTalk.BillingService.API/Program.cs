@@ -73,6 +73,7 @@ try
 
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
+builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>();
 
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();

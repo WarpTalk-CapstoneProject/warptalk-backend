@@ -17,6 +17,122 @@ public class SubscriptionRepository : GenericRepository<Subscription>, ISubscrip
     {
     }
 
+    public async Task<(IReadOnlyList<AdminSubscriptionRow> Items, int Total)> GetAdminDirectoryAsync(
+        AdminSubscriptionFilter filter,
+        int page,
+        int pageSize,
+        CancellationToken ct = default)
+    {
+        var query = ApplyAdminFilters(_dbSet.AsNoTracking(), filter);
+
+        var total = await query.CountAsync(ct);
+
+        // The sort is applied to the ENTITY, before the projection — which is what makes
+        // projecting straight into a positional record safe here.
+        //
+        // Ordering a record projection by one of its OWN properties does not translate: EF cannot
+        // map a constructor parameter back to the expression it came from. That defect shipped in
+        // this very service, where usage-by-member returned 500 on every call it ever served.
+        // Verified by translating each shape in isolation: the same projection without a trailing
+        // OrderBy translates fine, and this has none.
+        var rows = await ApplyAdminSort(query, filter.Sort)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(s => new AdminSubscriptionRow(
+                s.Id,
+                s.WorkspaceId,
+                s.Status,
+                s.ServiceState,
+                s.SuspendedReason,
+                s.Plan.Name,
+                s.Plan.Slug,
+                s.Plan.Tier,
+                s.Plan.BillingCycle,
+                s.Plan.Price,
+                s.Plan.Currency,
+                s.ContractPriceVnd,
+                s.CreditsRemaining,
+                s.CreditsUsedThisCycle,
+                s.CurrentPeriodStart,
+                s.CurrentPeriodEnd,
+                s.AutoRenew,
+                s.TrialEndsAt,
+                s.CancelledAt,
+                s.CreatedAt))
+            .ToListAsync(ct);
+
+        return (rows, total);
+    }
+
+    public async Task<IReadOnlyList<AdminSubscriptionRow>> GetActiveForRevenueAsync(
+        CancellationToken ct = default)
+    {
+        var rows = await _dbSet
+            .AsNoTracking()
+            .Where(s =>
+                s.DeletedAt == null
+                && s.Status == SubscriptionConstants.SubscriptionStatuses.Active)
+            .Select(s => new AdminSubscriptionRow(
+                s.Id,
+                s.WorkspaceId,
+                s.Status,
+                s.ServiceState,
+                s.SuspendedReason,
+                s.Plan.Name,
+                s.Plan.Slug,
+                s.Plan.Tier,
+                s.Plan.BillingCycle,
+                s.Plan.Price,
+                s.Plan.Currency,
+                s.ContractPriceVnd,
+                s.CreditsRemaining,
+                s.CreditsUsedThisCycle,
+                s.CurrentPeriodStart,
+                s.CurrentPeriodEnd,
+                s.AutoRenew,
+                s.TrialEndsAt,
+                s.CancelledAt,
+                s.CreatedAt))
+            .ToListAsync(ct);
+
+        return rows;
+    }
+
+    private static IQueryable<Subscription> ApplyAdminFilters(
+        IQueryable<Subscription> query,
+        AdminSubscriptionFilter filter)
+    {
+        // A soft-deleted subscription is not a state anyone can act on, and counting it would make
+        // every figure here disagree with billing's own.
+        query = query.Where(s => s.DeletedAt == null);
+
+        if (!string.IsNullOrWhiteSpace(filter.Status))
+        {
+            var status = filter.Status;
+            query = query.Where(s => s.Status == status);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.PlanSlug))
+        {
+            var slug = filter.PlanSlug;
+            query = query.Where(s => s.Plan.Slug == slug);
+        }
+
+        return query;
+    }
+
+    private static IQueryable<Subscription> ApplyAdminSort(IQueryable<Subscription> query, string sort)
+        => sort switch
+        {
+            "period_end_desc" => query.OrderByDescending(s => s.CurrentPeriodEnd),
+            "created_desc" => query.OrderByDescending(s => s.CreatedAt),
+            "created_asc" => query.OrderBy(s => s.CreatedAt),
+            "credits_asc" => query.OrderBy(s => s.CreditsRemaining),
+            // Soonest renewal first: the default, because the question this screen answers is
+            // "what needs attention", and what needs attention is what runs out next.
+            _ => query.OrderBy(s => s.CurrentPeriodEnd),
+        };
+
     public async Task DeactivateOtherActiveSubscriptionsAsync(Guid userId, Guid excludeSubscriptionId, CancellationToken cancellationToken)
     {
         await _dbSet
