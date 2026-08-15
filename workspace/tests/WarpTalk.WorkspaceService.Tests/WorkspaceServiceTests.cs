@@ -1467,6 +1467,92 @@ public class WorkspaceServiceTests
 
     #region SoftDeleteWorkspaceAsync Tests
 
+    /// <summary>
+    /// WT-417 — deleting a workspace must take its memberships with it.
+    ///
+    /// This stamped the workspace and left every membership row untouched, RemovedAt still NULL.
+    /// Those rows then read as LIVE memberships of a workspace that no longer exists: unreachable
+    /// (the workspace is filtered out of every listing by DeletedAt), permanent (nothing
+    /// un-deletes a workspace — ReactivateAsync flips IsActive, not this), and blocking, because
+    /// UNIQUE (workspace_id, user_id) has no `WHERE removed_at IS NULL` and so the orphan holds
+    /// its slot against any future rejoin.
+    ///
+    /// That is the orphan the ticket is named for. Fixing the acceptance guard alone would have
+    /// left this manufacturing a fresh one on every delete.
+    /// </summary>
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldStampEveryMemberRemoved_SoNoOrphanMembershipSurvives()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId };
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var otherMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = Guid.NewGuid(), RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ownerMember);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _workspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { ownerMember, otherMember });
+
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(workspace.DeletedAt);
+
+        // Everybody, including the owner who pressed delete — their own orphan is what blocks
+        // them from recreating or rejoining afterwards.
+        Assert.NotNull(ownerMember.RemovedAt);
+        Assert.NotNull(otherMember.RemovedAt);
+        Assert.Equal(ownerUserId, ownerMember.RemovedBy);
+        Assert.Equal(ownerUserId, otherMember.RemovedBy);
+
+        // Stamped in the same instant as the workspace, so the two cannot be read as separate
+        // events when this is reconstructed later.
+        Assert.Equal(workspace.DeletedAt, ownerMember.RemovedAt);
+
+        _workspaceMemberRepository.Received(1).Update(ownerMember);
+        _workspaceMemberRepository.Received(1).Update(otherMember);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The negative control: a refused delete must not strip anybody's membership. The guards run
+    /// before the stamping, and a non-Owner reaching the member loop would be a worse bug than
+    /// the one being fixed.
+    /// </summary>
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldNotTouchMembers_WhenRequesterIsNotOwner()
+    {
+        var workspaceId = Guid.NewGuid();
+        var memberUserId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid() };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = memberUserId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, memberUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(workspace.DeletedAt);
+        Assert.Null(member.RemovedAt);
+        await _workspaceMemberRepository.DidNotReceive().GetActiveMembersByWorkspaceAsync(
+            Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+
     [Fact]
     public async Task SoftDeleteWorkspaceAsync_ShouldSucceed_AndPublishWorkspaceDeletedEvent_WhenRequesterIsOwner()
     {
@@ -1484,6 +1570,9 @@ public class WorkspaceServiceTests
             .Returns(ownerMember);
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        // WT-417 gave the delete a second dependency: the memberships go with the workspace.
+        _workspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { ownerMember });
 
         // Act
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);
