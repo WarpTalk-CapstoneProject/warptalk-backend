@@ -375,8 +375,20 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     // two produced an identical row before, so a document hidden by a timeout was
                     // indistinguishable from one hidden because it contains PII, and neither the
                     // owner nor a retry could tell which.
-                    document.IngestionFailureReason =
-                        WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed;
+                    //
+                    // The three causes are separated because they point at different components,
+                    // and telling them apart is exactly what was missing when five production
+                    // documents failed with nothing on record: the audit trail showed the
+                    // guardrail reading each file and then no SecurityScanCompleted row at all,
+                    // which proves ScanAsync threw but not WHICH way. A timeout blames the
+                    // security worker or the queue; scan_failed blames that worker's own upstream;
+                    // anything else is ours, here on the ingestion path.
+                    document.IngestionFailureReason = ex switch
+                    {
+                        TimeoutException => WorkspaceDocumentIngestionFailureReasons.SecurityScanTimeout,
+                        InvalidOperationException => WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed,
+                        _ => WorkspaceDocumentIngestionFailureReasons.IngestionError,
+                    };
                     document.UpdatedAt = DateTime.UtcNow;
 
                     unitOfWork.WorkspaceDocumentRepository.Update(document);

@@ -14,9 +14,18 @@ namespace WarpTalk.WorkspaceService.Domain.Constants;
 /// </summary>
 public static class WorkspaceDocumentIngestionFailureReasons
 {
-    /// <summary>The scan itself did not answer — timeout, transport error, extraction crash.
-    /// Says NOTHING about the content, and is the case a retry can fix.</summary>
+    /// <summary>The scan never answered within the 30s window. Says NOTHING about the content.
+    /// Points at the security worker or the queue between us and it — a retry may well work.</summary>
+    public const string SecurityScanTimeout = "security_scan_timeout";
+
+    /// <summary>The security worker answered and reported it could not complete the scan
+    /// (scan_failed=true) — typically its own upstream, e.g. the OpenAI call. Also says nothing
+    /// about the content, but points at a DIFFERENT component than a timeout does.</summary>
     public const string SecurityScanFailed = "security_scan_failed";
+
+    /// <summary>Anything else thrown on the ingestion path — extraction, storage, serialisation.
+    /// The catch-all, kept last so the specific reasons above are never reached for.</summary>
+    public const string IngestionError = "ingestion_error";
 
     /// <summary>The scan answered and found DLP-listed content. A policy decision, not a fault.</summary>
     public const string DlpDetected = "dlp_detected";

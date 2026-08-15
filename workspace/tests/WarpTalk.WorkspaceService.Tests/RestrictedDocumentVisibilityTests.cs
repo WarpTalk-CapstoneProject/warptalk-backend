@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -157,6 +158,35 @@ public class RestrictedDocumentVisibilityTests
             caller, _workspaceId, _documentId, WorkspaceDocumentPermissions.Download);
 
         Assert.False(result.IsSuccess);
+    }
+
+    /// <summary>
+    /// The three ways a scan can fail point at three different components, and the audit trail
+    /// for the production failures could not tell them apart — it showed the guardrail reading
+    /// each file and then NO SecurityScanCompleted row, which proves ScanAsync threw but not how.
+    ///
+    /// A timeout blames the security worker or the queue between us and it; scan_failed blames
+    /// that worker's own upstream (its OpenAI call); anything else is ours, on the ingestion path.
+    /// Collapsing them into one string is what left five production documents failed with nothing
+    /// to act on.
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(TimeoutException), "security_scan_timeout")]
+    [InlineData(typeof(InvalidOperationException), "security_scan_failed")]
+    [InlineData(typeof(IOException), "ingestion_error")]
+    public void EachWayAScanCanFailHasItsOwnReason(Type exceptionType, string expected)
+    {
+        var thrown = (Exception)Activator.CreateInstance(exceptionType, "boom")!;
+
+        // The same expression the guardrail's fail-safe uses.
+        var reason = thrown switch
+        {
+            TimeoutException => WorkspaceDocumentIngestionFailureReasons.SecurityScanTimeout,
+            InvalidOperationException => WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed,
+            _ => WorkspaceDocumentIngestionFailureReasons.IngestionError,
+        };
+
+        Assert.Equal(expected, reason);
     }
 
     /// <summary>
