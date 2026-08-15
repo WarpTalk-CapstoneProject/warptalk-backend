@@ -83,6 +83,39 @@ public static class WorkspaceMemberMapper
         };
     }
 
+    /// <summary>
+    /// Bring a departed member's row back as a fresh membership. WT-416.
+    ///
+    /// WHY THIS EXISTS INSTEAD OF A SECOND INSERT
+    ///     Leaving a workspace is a SOFT delete — the row stays and RemovedAt is stamped — but
+    ///     workspace_members carries
+    ///
+    ///         UNIQUE (workspace_id, user_id)
+    ///
+    ///     with no `WHERE removed_at IS NULL` predicate. So the schema says one row per person
+    ///     per workspace FOREVER, while the code says a person may join more than once and tells
+    ///     the difference by RemovedAt. Approving a rejoin inserted a second row for the same
+    ///     pair, hit the constraint, and surfaced as a 500 with "An unexpected error occurred".
+    ///     Three members of one production workspace were stuck outside it.
+    ///
+    /// Every field CreateInvitationMember sets is set here too, from the same helpers, so the
+    /// two cannot drift into "a rejoining member gets different defaults from a new one" — which
+    /// would be a subtler bug than the crash this replaces. RemovedBy is cleared alongside
+    /// RemovedAt: a row that is live again must not still name who removed it.
+    /// </summary>
+    public static void ReviveAsMember(
+        this WorkspaceMember member, Guid roleId, string membershipType, DateTime? utcNow = null)
+    {
+        var now = utcNow ?? DateTime.UtcNow;
+        member.RoleId = roleId;
+        member.Status = WorkspaceMemberStatus.Active.ToStorageValue();
+        member.MembershipType = membershipType;
+        member.CanCreateMeetings = CanCreateMeetingsFor(membershipType);
+        member.JoinedAt = now;
+        member.RemovedAt = null;
+        member.RemovedBy = null;
+    }
+
     public static WorkspaceMemberDto ToDto(this WorkspaceMember member, string fullName, string email, string? avatarUrl, string roleName)
     {
         return new WorkspaceMemberDto(
