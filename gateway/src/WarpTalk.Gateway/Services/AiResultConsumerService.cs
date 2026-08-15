@@ -78,7 +78,8 @@ public sealed class AiResultConsumerService : BackgroundService
                 ConsumeSTTResultsAsync(stoppingToken),
                 ConsumeTranslationResultsAsync(stoppingToken),
                 ConsumeTTSResultsAsync(stoppingToken),
-                ConsumeAiAssistantResultsAsync(stoppingToken));
+                ConsumeAiAssistantResultsAsync(stoppingToken),
+                ConsumeVoiceCloneStateAsync(stoppingToken));
         }
         catch (OperationCanceledException)
         {
@@ -414,6 +415,90 @@ public sealed class AiResultConsumerService : BackgroundService
                 await Task.Delay(1000, ct);
             }
         }
+    }
+
+    // ── Voice clone capture state → VoiceCloneStateChanged ───
+
+    /// <summary>
+    /// WT-420 — relay what the TTS worker knows about a speaker's voice clone to that speaker.
+    ///
+    /// The worker has always known whether it is capturing, how far along it is, whether the clip
+    /// was accepted and why one was refused. It wrote all of it to a structured log, which is the
+    /// wrong audience: on 15 Aug an entire test session concluded cloning was broken while the
+    /// worker was logging score 1.0. Nobody in a meeting can read a worker log.
+    ///
+    /// Broadcast to the room group rather than to one connection: the payload names its own
+    /// speaker, the client already filters realtime events by participant, and a per-user send
+    /// would need a userId→connection map this service does not have and should not grow.
+    /// </summary>
+    private async Task ConsumeVoiceCloneStateAsync(CancellationToken ct)
+    {
+        var streamKey = "voice:clone:state";
+
+        if (!await EnsureConsumerGroupWithRetryAsync(streamKey, ct))
+            return;
+
+        _logger.LogDebug("Consuming voice clone state: {StreamKey}", streamKey);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var entries = await _streamService.ConsumeAsync(
+                    streamKey, ConsumerGroupName, _consumerName, count: 10, blockMs: 2000);
+
+                foreach (var entry in entries)
+                {
+                    var translationRoomId = RedisStreamService.GetField(entry, "meeting_id") ?? "";
+                    var reason = RedisStreamService.GetField(entry, "reason") ?? "";
+
+                    // Acknowledged even when unusable, so a malformed entry cannot wedge the group
+                    // and stop every later message for every room.
+                    if (string.IsNullOrEmpty(translationRoomId) || string.IsNullOrEmpty(reason))
+                    {
+                        await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                        continue;
+                    }
+
+                    var state = new VoiceCloneStateDto(
+                        SpeakerId: RedisStreamService.GetField(entry, "speaker_id") ?? "",
+                        Reason: reason,
+                        // Absent rather than zero: the worker omits a metric it has nothing to say
+                        // about, and a 0.0 would render as "0 seconds captured" or "quality 0",
+                        // which is a claim rather than a gap.
+                        Seconds: ParseDouble(entry, "seconds"),
+                        RequiredSeconds: ParseDouble(entry, "required_seconds"),
+                        Score: ParseDouble(entry, "score"),
+                        ActiveSpeechRatio: ParseDouble(entry, "active_speech_ratio"));
+
+                    await _hubContext.Clients
+                        .Group($"translationRoom:{translationRoomId}")
+                        .SendAsync("VoiceCloneStateChanged", state, ct);
+
+                    await _streamService.AcknowledgeAsync(streamKey, ConsumerGroupName, entry.Id.ToString());
+                }
+
+                if (entries.Length == 0)
+                    await Task.Delay(200, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error consuming voice clone state");
+                await Task.Delay(1000, ct);
+            }
+        }
+    }
+
+    /// <summary>InvariantCulture, because the worker writes these with Python's repr and a
+    /// comma-decimal server locale would turn 0.978 into 978.</summary>
+    private static double? ParseDouble(StackExchange.Redis.StreamEntry entry, string field)
+    {
+        var raw = RedisStreamService.GetField(entry, field);
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
     }
 
     // ── AI Assistant Results → AiAssistantResult ─────────────

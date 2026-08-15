@@ -131,3 +131,27 @@ public record TranslationTextDto(
 /// straight back into SetVoicePreference.
 /// </summary>
 public record VoiceOptionDto(string Id, string Name, string Gender);
+
+/// <summary>
+/// What the TTS worker currently knows about ONE speaker's voice clone. WT-420.
+///
+/// Every field except <paramref name="Reason"/> is nullable and omitted when the worker had
+/// nothing to say about it. A zero would render as "0 seconds captured" or "quality 0" — a claim
+/// rather than a gap, and this whole surface exists because the product was making claims it
+/// could not support.
+///
+/// `Reason` mirrors base_worker.voice_clone_consent_state and the tts worker's own states:
+///   capturing              — collecting audio; Seconds/RequiredSeconds fill the progress bar
+///   cloning                — a clip was accepted and the clone is being built; Score is its grade
+///   clip_rejected:{why}    — refused by the quality gate; the suffix names WHICH bar was missed
+///   not_opted_in           — this speaker has routes and has not consented
+///   no_route_for_speaker   — nobody is listening to them in another language, so there is no dub
+///   no_routes / routes_unknown / cloned_* — see base_worker for the full set
+/// </summary>
+public record VoiceCloneStateDto(
+    string SpeakerId,
+    string Reason,
+    double? Seconds,
+    double? RequiredSeconds,
+    double? Score,
+    double? ActiveSpeechRatio);
