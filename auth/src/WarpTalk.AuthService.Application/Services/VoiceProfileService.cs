@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using WarpTalk.AuthService.Application.DTOs;
 using WarpTalk.AuthService.Application.Interfaces;
@@ -57,17 +58,20 @@ public class VoiceProfileService : IVoiceProfileService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IVoiceSampleStorage _storage;
     private readonly IVoiceCatalogDirectory _voiceCatalog;
+    private readonly IVoiceCloneRequestQueue _cloneQueue;
     private readonly ILogger<VoiceProfileService> _logger;
 
     public VoiceProfileService(
         IUnitOfWork unitOfWork,
         IVoiceSampleStorage storage,
         IVoiceCatalogDirectory voiceCatalog,
+        IVoiceCloneRequestQueue cloneQueue,
         ILogger<VoiceProfileService> logger)
     {
         _unitOfWork = unitOfWork;
         _storage = storage;
         _voiceCatalog = voiceCatalog;
+        _cloneQueue = cloneQueue;
         _logger = logger;
     }
 
@@ -244,16 +248,143 @@ public class VoiceProfileService : IVoiceProfileService
         }
     }
 
+    /// <summary>
+    /// Read the uploaded recording back and queue it for cloning.
+    ///
+    /// Read back rather than kept in memory from the upload: the request stream was already
+    /// consumed once to write it to storage, and rewinding an IFormFile's stream is only
+    /// sometimes possible depending on how ASP.NET buffered it. Storage is the one place the
+    /// bytes are definitely intact.
+    /// </summary>
+    private async Task QueueForCloningAsync(
+        VoiceProfile profile, Guid userId, IFormFile uploaded, CancellationToken ct)
+    {
+        try
+        {
+            using var buffer = new MemoryStream();
+            using (var stream = uploaded.OpenReadStream())
+            {
+                if (stream.CanSeek)
+                {
+                    stream.Position = 0;
+                }
+                await stream.CopyToAsync(buffer, ct);
+            }
+
+            var queued = await _cloneQueue.RequestAsync(
+                profile.Id, userId, profile.Language, buffer.ToArray(), ct);
+
+            if (!queued)
+            {
+                _logger.LogWarning(
+                    "Voice profile {ProfileId} was stored but not queued for cloning; it stays unusable until re-uploaded.",
+                    profile.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not queue voice profile {ProfileId} for cloning.", profile.Id);
+        }
+    }
+
+    /// <summary>
+    /// Pick up any clone the AI side has finished since the last time this user looked.
+    ///
+    /// This is where the round trip closes. Only profiles still waiting for a voice are asked
+    /// about, so a user with a settled set of profiles costs nothing, and the answer is deleted
+    /// as it is read — collecting the same result twice would rewrite a value that is already
+    /// stored and log a second time for one event.
+    ///
+    /// Nothing here may throw. A user opening the Voice Profiles page must see their profiles
+    /// whether or not Redis is reachable; the clone simply stays pending, which is a state the
+    /// page already renders.
+    /// </summary>
+    private async Task<int> CollectFinishedClonesAsync(
+        IReadOnlyList<VoiceProfile> profiles, CancellationToken ct)
+    {
+        var collected = 0;
+
+        foreach (var profile in profiles)
+        {
+            if (profile.DeletedAt != null || !string.IsNullOrWhiteSpace(profile.EmbeddingRef))
+            {
+                continue;
+            }
+
+            VoiceCloneOutcome? outcome;
+            try
+            {
+                outcome = await _cloneQueue.TakeOutcomeAsync(profile.Id, ct);
+            }
+            catch (Exception ex)
+            {
+                // The Redis implementation swallows its own failures, but the guard belongs
+                // here and not only there: this is a side errand on the path that lists
+                // somebody's profiles, and no side errand may decide whether they can see them.
+                // Without it, Redis being unreachable turns the Voice Profiles page into an
+                // error — losing a feature AND the page it lives on.
+                _logger.LogWarning(
+                    ex, "Could not collect a clone result for profile {ProfileId}.", profile.Id);
+                continue;
+            }
+
+            if (outcome is null)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(outcome.VoiceId))
+            {
+                profile.EmbeddingRef = outcome.VoiceId;
+                profile.Provider = outcome.Provider ?? LibraryVoiceProvider;
+                profile.Status = "active";
+                profile.IsActive = true;
+            }
+            else
+            {
+                // A named failure, not silence. "clone_failed" is what lets the page say the
+                // recording could not be turned into a voice instead of listing it as active
+                // and leaving somebody to discover in a meeting that it was never usable —
+                // which is the whole of WT-396.
+                profile.Status = "clone_failed";
+                profile.IsActive = false;
+                _logger.LogWarning(
+                    "Voice clone failed for profile {ProfileId}: {Error}",
+                    profile.Id, outcome.Error ?? "no reason given");
+            }
+
+            profile.UpdatedAt = DateTime.UtcNow;
+            _unitOfWork.VoiceProfileRepository.Update(profile);
+            collected++;
+        }
+
+        if (collected > 0)
+        {
+            await _unitOfWork.SaveChangesAsync(ct);
+        }
+
+        return collected;
+    }
+
     public async Task<Result<IReadOnlyList<VoiceProfileDto>>> GetProfilesAsync(Guid userId, CancellationToken ct = default)
     {
         try
         {
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
+            var collected = await CollectFinishedClonesAsync(profiles, ct);
+
             var dtos = new List<VoiceProfileDto>();
             foreach (var profile in profiles)
             {
                 dtos.Add(VoiceProfileMapper.ToDto(profile));
             }
+
+            if (collected > 0)
+            {
+                _logger.LogInformation(
+                    "Collected {Count} finished voice clone(s) for user {UserId}.", collected, userId);
+            }
+
             return Result.Success<IReadOnlyList<VoiceProfileDto>>(dtos);
         }
         catch (Exception ex)
@@ -355,6 +486,26 @@ public class VoiceProfileService : IVoiceProfileService
             }
 
             profile.VoiceSamples = sample != null ? new List<VoiceSample> { sample } : new List<VoiceSample>();
+
+            // WT-396 — hand the recording over to be turned into an actual voice.
+            //
+            // Until now this method ended here: bytes in a bucket, a row marked "active", and
+            // nothing anywhere that could make a voice out of them. The profile appeared in the
+            // UI as ready and the dub still came back in a stock catalogue voice, because the
+            // only voice the pipeline ever looked for was one cloned live from a meeting.
+            //
+            // AFTER the transaction commits, deliberately. Queueing first would let a worker
+            // finish and write an answer for a profile row that then failed to save, leaving a
+            // clone nobody owns and a paid provider call for nothing.
+            //
+            // Failure here is not failure of the upload. The recording is stored and the profile
+            // is theirs; what is missing is the voice, and the page shows a recording that is not
+            // yet usable rather than an upload that appears to have gone wrong after it worked.
+            if (sample != null && request.Sample != null)
+            {
+                await QueueForCloningAsync(profile, userId, request.Sample, ct);
+            }
+
             return Result.Success(VoiceProfileMapper.ToDto(profile));
         }
         catch (Exception ex)
