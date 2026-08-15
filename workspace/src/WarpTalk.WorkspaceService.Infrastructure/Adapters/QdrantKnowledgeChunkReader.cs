@@ -201,7 +201,12 @@ public class QdrantKnowledgeChunkReader : IKnowledgeChunkReader
             // Falling back keeps their rows named after the term rather than the generic
             // "Glossary term" the UI would otherwise have to show.
             SourceTitle: ReadString(payload, "source_title")
-                ?? ReadString(payload, "source_term"));
+                ?? ReadString(payload, "source_term"),
+            // Null for everything indexed before EmbeddingWorker started stamping it. That is a
+            // real absence and is reported as one — the listing sorts undated rows last rather
+            // than inventing a time for them, which would put old rows at the top of a list
+            // whose whole purpose is to show what is new.
+            IndexedAtMs: ReadLong(payload, "indexed_at"));
     }
 
     private static string? ReadString(IReadOnlyDictionary<string, JsonElement> payload, string key)

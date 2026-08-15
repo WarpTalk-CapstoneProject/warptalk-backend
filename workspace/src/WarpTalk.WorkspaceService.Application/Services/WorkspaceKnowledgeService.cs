@@ -339,7 +339,8 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
             record.RetentionState,
             record.DeletionState,
             record.AiRetrieval,
-            record.SourceTitle);
+            record.SourceTitle,
+            record.IndexedAtMs);
 
     private static string? Normalize(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
