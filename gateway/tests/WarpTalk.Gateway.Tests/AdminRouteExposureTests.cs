@@ -26,6 +26,9 @@ public sealed class AdminRouteExposureTests
         // The platform meeting directory, served by translation-room. Metadata only: no join, no
         // room control, and no transcript read anywhere on that controller.
         "/api/v1/admin/meetings/{**catch-all}",
+        // The System Health screen, served by workspace. Query-only against the metrics store:
+        // nothing behind it can silence an alert, restart a container or write a sample.
+        "/api/v1/admin/platform-health/{**catch-all}",
     ];
 
     private static JsonElement Routes()

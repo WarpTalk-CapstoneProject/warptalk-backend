@@ -34,6 +34,7 @@ builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.App
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
+builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.
 builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();
