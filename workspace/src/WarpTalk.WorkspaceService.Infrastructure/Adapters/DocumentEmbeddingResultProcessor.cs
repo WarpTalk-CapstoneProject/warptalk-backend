@@ -59,6 +59,9 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
             document.LastIndexedAt = DateTime.UtcNow;
             document.IndexVersion = BuildIndexVersion(provider, model, dimensions);
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
+            // Cleared on success so a reason from an earlier attempt cannot outlive the failure
+            // it described — the same rule the guardrail applies on its clean pass.
+            document.IngestionFailureReason = null;
             document.AiEligible =
                 document.IsAiAllowed &&
                 !document.IsRestricted() &&
@@ -84,6 +87,7 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.EmbeddingBlocked;
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -102,6 +106,12 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+            // WT-411 gave the guardrail's branches a reason and missed this one. A failure the
+            // embedding worker REPORTED and a failure the guardrail never got past produced an
+            // identical row — ingestion_status='failed', reason NULL — so the owner of a
+            // document could not tell a retryable outage from a policy refusal, and neither
+            // could anyone reading the table afterwards.
+            document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.EmbeddingFailed;
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);

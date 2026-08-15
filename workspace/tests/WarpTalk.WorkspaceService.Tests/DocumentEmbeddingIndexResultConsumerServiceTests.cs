@@ -114,8 +114,83 @@ public class DocumentEmbeddingIndexResultConsumerServiceTests
         Assert.Equal(WorkspaceDocumentIngestionStatus.failed.ToString(), document.IngestionStatus);
         Assert.False(document.AiEligible);
         Assert.Null(document.LastIndexedAt);
+        // WT-428. This assertion is the whole point: six production documents read "AI Failed"
+        // with ingestion_failure_reason NULL, because WT-411 gave the guardrail's branches a
+        // reason and left this one — the only other writer of 'failed' — writing nothing. A
+        // failure with no recorded cause cannot be triaged or retried on evidence.
+        Assert.Equal(
+            WorkspaceDocumentIngestionFailureReasons.EmbeddingFailed,
+            document.IngestionFailureReason);
         _documentRepository.Received().Update(document);
         await _auditRepository.Received().AddAsync(Arg.Any<WorkspaceDocumentAudit>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessEmbeddingResultAsync_ShouldRecordBlockedReason_WhenWorkerRefuses()
+    {
+        // A refusal and a fault are different facts pointing at different components, and both
+        // used to land as the same reason-less row.
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = Guid.NewGuid(),
+            IsAiAllowed = true,
+            AiEligible = true,
+            ConfidentialityLevel = "public_internal",
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString()
+        };
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        await _processor.ProcessResultAsync(new Dictionary<string, string>
+        {
+            ["job_id"] = "job-3",
+            ["source_id"] = documentId.ToString(),
+            ["status"] = "blocked",
+            ["reason"] = "policy"
+        }, CancellationToken.None);
+
+        Assert.Equal(WorkspaceDocumentIngestionStatus.skipped.ToString(), document.IngestionStatus);
+        Assert.False(document.AiEligible);
+        Assert.Equal(
+            WorkspaceDocumentIngestionFailureReasons.EmbeddingBlocked,
+            document.IngestionFailureReason);
+    }
+
+    [Fact]
+    public async Task ProcessEmbeddingResultAsync_ShouldClearReason_WhenIndexingLaterSucceeds()
+    {
+        // A stale reason must not outlive the failure it described — the same rule the guardrail
+        // applies on a clean pass. Without this, a document that failed once and then indexed
+        // fine would keep explaining a failure that no longer exists.
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = Guid.NewGuid(),
+            IsAiAllowed = true,
+            AiEligible = false,
+            ConfidentialityLevel = "public_internal",
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString(),
+            IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.EmbeddingFailed
+        };
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        await _processor.ProcessResultAsync(new Dictionary<string, string>
+        {
+            ["job_id"] = "job-4",
+            ["source_id"] = documentId.ToString(),
+            ["status"] = "indexed",
+            ["provider"] = "openai",
+            ["model"] = "text-embedding-3-small",
+            ["dimensions"] = "1536"
+        }, CancellationToken.None);
+
+        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+        Assert.True(document.AiEligible);
+        Assert.Null(document.IngestionFailureReason);
     }
 
     [Fact]
