@@ -431,8 +431,19 @@ public class TranslationRoomService : ITranslationRoomService
             // TranslationRoomMapper.BuildHostParticipant so the recurring-series materialiser
             // seeds its occurrences identically instead of from a second hand-written copy.
             var hostParticipant = TranslationRoomMapper.BuildHostParticipant(
-                room.Id, hostId, hostDisplayName, sourceLang, targetLangs);
+                room.Id, hostId, hostDisplayName, sourceLang, targetLangs, room.TranslationRoomType);
             await _participantRepository.AddAsync(hostParticipant, ct);
+
+            // An external-bridge room is the host plus a stand-in for the Google Meet / Zoom call
+            // they are actually sitting in. The stand-in is seeded here, at creation, rather than
+            // when the room starts, because the audio mesh is built from whoever holds a seat and
+            // a bridge room with one seat would generate no routes at all.
+            if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            {
+                await _participantRepository.AddAsync(
+                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs),
+                    ct);
+            }
 
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(room, ct);

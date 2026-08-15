@@ -35,4 +35,20 @@ public static class WorkspaceDocumentIngestionFailureReasons
 
     /// <summary>The embedding request could not be published. Retryable.</summary>
     public const string EmbeddingPublishFailed = "embedding_publish_failed";
+
+    /// <summary>
+    /// The embedding worker ran and reported that indexing failed.
+    ///
+    /// The request was published and consumed, so this points downstream of us — the worker's
+    /// own model call or its Qdrant upsert — not at the guardrail. WT-411 gave every OTHER
+    /// branch a reason and left this one writing NULL, which is why six production documents
+    /// read "AI Failed" with nothing anywhere saying why.
+    /// </summary>
+    public const string EmbeddingFailed = "embedding_failed";
+
+    /// <summary>
+    /// The embedding worker refused the document — a policy answer, not a fault, and therefore
+    /// not something a retry changes.
+    /// </summary>
+    public const string EmbeddingBlocked = "embedding_blocked";
 }
