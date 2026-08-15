@@ -134,12 +134,20 @@ public static class TranslationRoomMapper
     ///    (TranslationRoomParticipantStatuses.SeatHolding) and every write path in the service
     ///    stores it.
     /// </summary>
+    /// <param name="roomType">
+    /// EXTERNAL_BRIDGE inverts the listen rule above. In every other room the host is one of
+    /// several people and wants the room's target language; in a bridge room the host is the only
+    /// human present and the other "participant" is the external call, so the host wants to hear
+    /// their OWN language. Seeding targetLanguages[0] there would make the inbound route
+    /// en -> en, which translates nothing and would leave the far side apparently mute.
+    /// </param>
     public static TranslationRoomParticipant BuildHostParticipant(
         Guid roomId,
         Guid hostId,
         string hostDisplayName,
         string sourceLanguage,
-        IReadOnlyList<string> targetLanguages)
+        IReadOnlyList<string> targetLanguages,
+        string? roomType = null)
     {
         if (targetLanguages is null || targetLanguages.Count == 0)
             throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
@@ -153,7 +161,9 @@ public static class TranslationRoomMapper
             UserId = hostId,
             DisplayName = hostDisplayName,
             SpeakLanguage = sourceLanguage,
-            ListenLanguage = targetLanguages[0],
+            ListenLanguage = TranslationRoomTypes.IsExternalBridge(roomType)
+                ? sourceLanguage
+                : targetLanguages[0],
             Role = "HOST",
             Status = TranslationRoomParticipantStatuses.Connected,
             ConnectionType = "WEBRTC",
@@ -164,6 +174,57 @@ public static class TranslationRoomMapper
             UpdatedAt = now
         };
     }
+
+    /// <summary>
+    /// The second seat in an EXTERNAL_BRIDGE room: one stand-in for everyone on the far side of
+    /// the Google Meet / Zoom / Teams call.
+    ///
+    /// Its languages are the mirror of the host's, which is the whole trick. The existing mesh in
+    /// TranslationRoomAudioRouteService pairs source.SpeakLanguage with target.ListenLanguage, so
+    /// a host of vi/vi against a far side of en/en yields exactly the two routes the bridge needs
+    /// — vi to en outbound, en to vi inbound — and every worker downstream treats this like any
+    /// other room.
+    ///
+    /// IsUsingVoiceClone is false and must stay false. The people on the far side never agreed to
+    /// anything with WarpTalk, so their voices are not cloned; they are dubbed in a stock voice.
+    /// VoiceCloneConsentGate already fails closed for a participant with no consent record, so
+    /// this is belt and braces rather than the only guard.
+    /// </summary>
+    public static TranslationRoomParticipant BuildExternalBridgeParticipant(
+        Guid roomId,
+        string sourceLanguage,
+        IReadOnlyList<string> targetLanguages)
+    {
+        if (targetLanguages is null || targetLanguages.Count == 0)
+            throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
+
+        var now = DateTime.UtcNow;
+
+        return new TranslationRoomParticipant
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId,
+            DisplayName = TranslationRoomConstants.ExternalBridgeDisplayName,
+            // Mirror of the host: speaks what the far side speaks, hears what the far side hears.
+            SpeakLanguage = targetLanguages[0],
+            ListenLanguage = targetLanguages[0],
+            Role = "PARTICIPANT",
+            Status = TranslationRoomParticipantStatuses.Connected,
+            ConnectionType = ExternalBridgeConnectionType,
+            IsTranslationAudioEnabled = true,
+            IsUsingVoiceClone = false,
+            JoinedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    /// <summary>
+    /// Marks the stand-in row so a roster, a billing sweep or a presence check can tell it from a
+    /// real person. The column is a free varchar that has only ever held "WEBRTC".
+    /// </summary>
+    public const string ExternalBridgeConnectionType = "EXTERNAL_BRIDGE";
 
     /// <summary>
     /// The settings a new room starts with: the meeting type's profile, with any value the

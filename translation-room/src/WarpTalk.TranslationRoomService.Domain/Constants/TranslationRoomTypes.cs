@@ -18,6 +18,15 @@ public static class TranslationRoomTypes
     public const string VirtualAppointment = "VIRTUAL_APPOINTMENT";
     public const string LiveEvent = "LIVE_EVENT";
 
+    /// <summary>
+    /// The meeting happens somewhere else — Google Meet, Zoom, Teams — and WarpTalk only
+    /// translates for it. The room holds exactly two participants: the WarpTalk user, and one
+    /// pseudo-participant standing in for everyone on the far side of the external call. That
+    /// pairing is what makes the existing audio-route mesh produce the two routes the bridge
+    /// needs, without the AI pipeline knowing this room is any different.
+    /// </summary>
+    public const string ExternalBridge = "EXTERNAL_BRIDGE";
+
     /// <summary>Pre-existing values. Kept accepted so old rooms and old clients keep working.</summary>
     public const string LegacyInstant = "INSTANT";
     public const string LegacySchedule = "SCHEDULED";
@@ -25,11 +34,15 @@ public static class TranslationRoomTypes
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         Event, ChannelMeeting, Webinar, CompanyMeeting, VirtualAppointment, LiveEvent,
+        ExternalBridge,
         LegacyInstant, LegacySchedule,
     };
 
     public static bool IsKnown(string? type) =>
         !string.IsNullOrWhiteSpace(type) && All.Contains(type!);
+
+    public static bool IsExternalBridge(string? type) =>
+        string.Equals(type, ExternalBridge, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Normalizes free-form input ("Channel Meeting", "channel-meeting") to the stored form.
@@ -88,6 +101,14 @@ public static class TranslationRoomTypePolicy
             // Broadcast to a large audience.
             [TranslationRoomTypes.LiveEvent] =
                 new(RequiresApproval: true, MuteOnEntry: true, AutoRecord: true, BreakoutsEnabled: false, MaxParticipants: 1000),
+
+            // Exactly two seats and nothing else can join: the WarpTalk user, and the
+            // pseudo-participant that stands in for the external call. A lobby would have
+            // nobody to admit and breakouts nowhere to break out to. Auto-record stays off
+            // because the far side never agreed to anything — see the voice-clone rule that
+            // travels with this type.
+            [TranslationRoomTypes.ExternalBridge] =
+                new(RequiresApproval: false, MuteOnEntry: false, AutoRecord: false, BreakoutsEnabled: false, MaxParticipants: 2),
         };
 
     /// <summary>Falls back to the neutral profile for an unknown type rather than throwing —
