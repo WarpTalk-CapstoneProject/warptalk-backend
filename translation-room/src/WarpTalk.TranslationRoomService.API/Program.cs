@@ -88,6 +88,8 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
 builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
