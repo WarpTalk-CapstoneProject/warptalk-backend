@@ -278,6 +278,23 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     documentId);
             }
 
+            // WT-411: a refusal the scan actually reached is a different fact from a scan that
+            // never answered, and the fail-safe below records the other one.
+            if (scanResult.DlpDetected)
+            {
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.DlpDetected;
+            }
+            else if (scanResult.PiiDetected && !hasMaskedContent)
+            {
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.PiiUnmasked;
+            }
+            else
+            {
+                // Cleared on every clean pass, so a stale reason from an earlier attempt cannot
+                // outlive the failure it described.
+                document.IngestionFailureReason = null;
+            }
+
             var textToIngest = scanResult.PiiDetected
                 ? scanResult.MaskedContent!
                 : content.FullText;
@@ -312,6 +329,8 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 {
                     _logger.LogError(ex, "Failed to publish embedding index request for document {DocumentId}", documentId);
                     document.AiEligible = false;
+                    document.IngestionFailureReason =
+                        WorkspaceDocumentIngestionFailureReasons.EmbeddingPublishFailed;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
                 }
             }
@@ -351,6 +370,25 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
                     document.AiEligible = false;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+                    // WT-411: still fail closed — we genuinely do not know what is in this file —
+                    // but record that we FAILED TO LOOK rather than that we FOUND something. The
+                    // two produced an identical row before, so a document hidden by a timeout was
+                    // indistinguishable from one hidden because it contains PII, and neither the
+                    // owner nor a retry could tell which.
+                    //
+                    // The three causes are separated because they point at different components,
+                    // and telling them apart is exactly what was missing when five production
+                    // documents failed with nothing on record: the audit trail showed the
+                    // guardrail reading each file and then no SecurityScanCompleted row at all,
+                    // which proves ScanAsync threw but not WHICH way. A timeout blames the
+                    // security worker or the queue; scan_failed blames that worker's own upstream;
+                    // anything else is ours, here on the ingestion path.
+                    document.IngestionFailureReason = ex switch
+                    {
+                        TimeoutException => WorkspaceDocumentIngestionFailureReasons.SecurityScanTimeout,
+                        InvalidOperationException => WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed,
+                        _ => WorkspaceDocumentIngestionFailureReasons.IngestionError,
+                    };
                     document.UpdatedAt = DateTime.UtcNow;
 
                     unitOfWork.WorkspaceDocumentRepository.Update(document);
