@@ -35,14 +35,35 @@ public class UsageRecordRepository : GenericRepository<UsageRecord>, IUsageRecor
             query = query.Where(r => r.RecordedAt <= to.Value);
         }
 
-        return await query
+        // The aggregate is projected into an ANONYMOUS type and the record is constructed after
+        // materialisation. Ordering a constructor-bound projection is what broke this query.
+        //
+        // `WorkspaceMemberUsage` is a positional record, so its properties come from constructor
+        // PARAMETERS rather than member bindings. EF Core cannot map `u.CreditsConsumed` on such a
+        // projection back to the `g.Sum(...)` it came from, so the whole tree failed to translate
+        // and every request to /credits/workspace/{id}/usage-by-member returned 500 — the
+        // dashboard's "Member usage could not be loaded."
+        //
+        // An anonymous type is member-bound, so the ORDER BY still happens in PostgreSQL and this
+        // does not become an in-memory sort over every member of the workspace.
+        var aggregates = await query
             .GroupBy(r => r.UserId!.Value)
-            .Select(g => new WorkspaceMemberUsage(
-                g.Key,
-                g.Sum(r => r.CreditsConsumed),
-                g.Count(),
-                g.Max(r => (DateTime?)r.RecordedAt)))
-            .OrderByDescending(u => u.CreditsConsumed)
+            .Select(g => new
+            {
+                UserId = g.Key,
+                CreditsConsumed = g.Sum(r => r.CreditsConsumed),
+                RecordCount = g.Count(),
+                LastUsedAt = g.Max(r => (DateTime?)r.RecordedAt),
+            })
+            .OrderByDescending(a => a.CreditsConsumed)
             .ToListAsync(ct);
+
+        return aggregates
+            .Select(a => new WorkspaceMemberUsage(
+                a.UserId,
+                a.CreditsConsumed,
+                a.RecordCount,
+                a.LastUsedAt))
+            .ToList();
     }
 }
