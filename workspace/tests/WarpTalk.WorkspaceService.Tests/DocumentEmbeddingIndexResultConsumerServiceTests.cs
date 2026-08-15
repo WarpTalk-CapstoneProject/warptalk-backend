@@ -193,6 +193,58 @@ public class DocumentEmbeddingIndexResultConsumerServiceTests
         Assert.Null(document.IngestionFailureReason);
     }
 
+    [Theory]
+    [InlineData("transcript")]
+    [InlineData("meeting_summary")]
+    [InlineData("global_glossary_term")]
+    public async Task ProcessEmbeddingResultAsync_ShouldIgnore_ResultsThatAreNotDocuments(string sourceType)
+    {
+        // embedding:index_results is shared, and this group is its only consumer — so a
+        // transcript's result arrives here too. It must be dropped without a database lookup:
+        // production had 209 such entries and every one produced a "document not found" warning.
+        await _processor.ProcessResultAsync(new Dictionary<string, string>
+        {
+            ["job_id"] = "job-x",
+            ["source_type"] = sourceType,
+            ["source_id"] = Guid.NewGuid().ToString(),
+            ["status"] = "indexed"
+        }, CancellationToken.None);
+
+        await _documentRepository.DidNotReceive()
+            .GetByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        _documentRepository.DidNotReceive().Update(Arg.Any<WorkspaceDocument>());
+    }
+
+    [Fact]
+    public async Task ProcessEmbeddingResultAsync_ShouldStillHandle_AResultWithNoSourceType()
+    {
+        // Every producer stamps source_type today. Treating a missing one as foreign would
+        // silently drop a real document result to tidy up logs — the wrong way round.
+        var documentId = Guid.NewGuid();
+        var document = new WorkspaceDocument
+        {
+            Id = documentId,
+            WorkspaceId = Guid.NewGuid(),
+            IsAiAllowed = true,
+            ConfidentialityLevel = "public_internal",
+            Status = WorkspaceDocumentStatus.@public.ToString(),
+            IngestionStatus = WorkspaceDocumentIngestionStatus.processing.ToString()
+        };
+        _documentRepository.GetByIdAsync(documentId, Arg.Any<CancellationToken>()).Returns(document);
+
+        await _processor.ProcessResultAsync(new Dictionary<string, string>
+        {
+            ["job_id"] = "job-y",
+            ["source_id"] = documentId.ToString(),
+            ["status"] = "indexed",
+            ["provider"] = "openai",
+            ["model"] = "text-embedding-3-small",
+            ["dimensions"] = "1536"
+        }, CancellationToken.None);
+
+        Assert.Equal(WorkspaceDocumentIngestionStatus.completed.ToString(), document.IngestionStatus);
+    }
+
     [Fact]
     public async Task ProcessEmbeddingResultAsync_ShouldNotReenableAi_WhenDocumentWasRejected()
     {

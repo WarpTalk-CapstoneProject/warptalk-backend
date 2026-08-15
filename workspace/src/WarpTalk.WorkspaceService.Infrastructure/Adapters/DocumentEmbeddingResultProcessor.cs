@@ -30,8 +30,26 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         _logger = logger;
     }
 
+    /// <summary>What RedisEmbeddingIndexPublisher stamps on a workspace-document request.</summary>
+    private const string DocumentSourceType = "document";
+
     public async Task ProcessResultAsync(Dictionary<string, string> values, CancellationToken ct = default)
     {
+        // embedding:index_results is SHARED. Production carried 203 transcript results, 3
+        // meeting summaries and 3 glossary terms in one window and no documents at all, yet this
+        // group is the only consumer on the stream — so nearly everything arriving here belongs
+        // to somebody else. Ignoring it by source_type is quiet and exact; the previous path
+        // looked each id up as a document, failed to find one, and logged a warning per message.
+        //
+        // A missing source_type is treated as ours: every producer sets it today, and dropping a
+        // real document result to tidy up logs would be the worse trade.
+        var sourceType = values.GetValueOrDefault("source_type");
+        if (!string.IsNullOrEmpty(sourceType)
+            && !string.Equals(sourceType, DocumentSourceType, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var sourceId = values.GetValueOrDefault("source_id");
         if (!Guid.TryParse(sourceId, out var documentId))
         {
