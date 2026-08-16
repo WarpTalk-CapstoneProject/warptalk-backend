@@ -501,22 +501,20 @@ public class WorkspaceService : IWorkspaceService
                 }
             }
 
-            var newConfig = settings.ToConfiguration();
-            var updated = await _unitOfWork.WorkspaceRepository.UpdateSettingsAsync(workspaceId, newConfig, userId, ct);
-            if (!updated)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
-            }
-
-            await _unitOfWork.SaveChangesAsync(ct);
-
             // WT-263: max_active_rooms is an entitlement, so the owner's chosen value has to reach
             // the resolver — it is the only code that knows the plan ceiling and therefore the only
             // code that can enforce "a workspace may tighten but never loosen". Billing rejects a
             // loosening value and the settings save is refused with billing's own reason.
             //
-            // The JSON copy above is still written. It is what every existing workspace's number
-            // lives in, and it remains the cold-start fallback until a snapshot arrives.
+            // WT-430: THIS RUNS BEFORE THE WRITE, and the order is the fix. It used to sit after
+            // UpdateSettingsAsync and SaveChangesAsync, so a value billing refused had already been
+            // committed by the time the refusal was returned: production carried a stored
+            // MaxActiveRooms of 20 against a ceiling of 5, and the enforcement error had to quote
+            // both — "the workspace setting of 20 cannot raise it". The caller saw a failure while
+            // the database kept the number.
+            //
+            // A billing outage still returns null (accepted) by design — see the client. That is a
+            // tightening-only write, so an unreachable billing service cannot grant anything.
             if (_billingSubscriptionClient is not null && settings.MaxActiveRooms > 0)
             {
                 var rejection = await _billingSubscriptionClient.ApplyWorkspaceEntitlementOverridesAsync(
@@ -533,6 +531,17 @@ public class WorkspaceService : IWorkspaceService
                     return Result.Failure(rejection, ErrorCodes.ValidationError);
                 }
             }
+
+            // The JSON copy is still written. It is what every existing workspace's number lives in,
+            // and it remains the cold-start fallback until a snapshot arrives.
+            var newConfig = settings.ToConfiguration();
+            var updated = await _unitOfWork.WorkspaceRepository.UpdateSettingsAsync(workspaceId, newConfig, userId, ct);
+            if (!updated)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
 
             return Result.Success();
         }

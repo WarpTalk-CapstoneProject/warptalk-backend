@@ -110,12 +110,10 @@ public sealed class EntitlementResolver : IEntitlementResolver
             plan = await _unitOfWork.Plans.GetByIdAsync(subscription.PlanId, ct);
         }
 
-        // Identical liveness test to GrpcBillingMapper.ToFeatureAccessResponse, kept in step on
-        // purpose: a subscription that is not in force must not put its plan's numbers in force.
-        var hasActiveSubscription = subscription != null
-                                    && subscription.IsActive
-                                    && subscription.Status == SubscriptionConstants.SubscriptionStatuses.Active
-                                    && subscription.CurrentPeriodEnd >= nowUtc;
+        // WT-430: one definition, on the entity. This used to be spelled out here and again in
+        // GrpcBillingMapper.ToFeatureAccessResponse, with a comment asking the reader to keep the
+        // two in step by hand — which is not a mechanism.
+        var hasActiveSubscription = subscription?.GrantsPlanEntitlements(nowUtc) == true;
 
         var overrides = await _unitOfWork.WorkspaceEntitlementOverrides.GetForWorkspaceAsync(workspaceId, ct);
 

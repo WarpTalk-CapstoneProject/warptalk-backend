@@ -178,6 +178,10 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
     builder.Services.AddHostedService<BillingAggregationWorker>();
     builder.Services.AddHostedService<BillingOutboxWorker>();
     builder.Services.AddHostedService<BillingRedisSubscriberService>();
+    // WT-430: republishes every workspace's entitlements on a slow interval, so a consumer's
+    // snapshot cannot stay silently stale after a change that did not go through billing's own
+    // write paths. Disabled by setting Billing:Workers:EntitlementReconcileIntervalMinutes to 0.
+    builder.Services.AddHostedService<EntitlementReconcileWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>
