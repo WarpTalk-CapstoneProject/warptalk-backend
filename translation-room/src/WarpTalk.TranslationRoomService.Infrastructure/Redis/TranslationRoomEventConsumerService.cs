@@ -169,6 +169,17 @@ public class TranslationRoomEventConsumerService : BackgroundService
                         lastError = result.Error ?? "Unknown event processing error";
                         _logger.LogWarning("Attempt {Attempt}/{MaxRetries} failed to process event {EventType} for room {RoomId}. Error: {Error}",
                             attempt, maxRetries, eventTypeStr, roomId, lastError);
+
+                        // WT-429. A validation failure — an unrecognised event type, a payload
+                        // that will not parse — cannot succeed by being tried again. Retrying it
+                        // three times costs 600ms of backoff on this thread, SERIALLY, inside a
+                        // loop that processes ten messages at a time and carries real events like
+                        // room_pause and participant_language_changed behind it. Production put
+                        // 497 such messages through that loop, 253 of them on one day.
+                        if (string.Equals(result.ErrorCode, ErrorCodes.ValidationError, StringComparison.Ordinal))
+                        {
+                            break;
+                        }
                     }
                 }
                 else
