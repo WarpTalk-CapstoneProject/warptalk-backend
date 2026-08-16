@@ -54,7 +54,7 @@ public class VoiceCloneSeedingTests
             {
                 Id = _roomId,
                 SourceLanguage = "vi",
-                TargetLanguages = "en",
+                TargetLanguages = """["en"]""",
             });
         _participants
             .Setup(r => r.GetByRoomIdAsync(_roomId, It.IsAny<CancellationToken>()))
