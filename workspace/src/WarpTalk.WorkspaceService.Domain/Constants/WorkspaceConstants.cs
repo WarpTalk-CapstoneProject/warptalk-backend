@@ -25,6 +25,7 @@ public static class WorkspaceConstants
         public const string UserNotFound = "User not found.";
         public const string InvalidUserEmail = "Invalid user email.";
         public const string UserAlreadyInternalElsewhere = "User is already an internal member of another Enterprise Workspace.";
+        public const string UserAlreadyOwnsWorkspace = "You already own a workspace. Each account may own only one — join other workspaces as a member instead.";
         public const string DomainRegisteredElsewhere = "This email belongs to a corporate domain registered with another workspace.";
         public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
         public const string PublicEmailDomainCannotCreateWorkspace = "A public email domain cannot create a workspace. Use a business email address, or join an existing workspace by invitation.";
