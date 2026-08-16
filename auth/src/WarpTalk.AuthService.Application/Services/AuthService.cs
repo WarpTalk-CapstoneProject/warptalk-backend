@@ -86,7 +86,13 @@ public class AuthService : IAuthService
 
             // Every user needs a user_settings row — RegisterInvitedAsync already does
             // this; self-registration was silently skipping it.
-            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            //
+            // The languages the wizard asked for land here, at account creation, because this is
+            // the last authenticated-server moment before the account goes dark: registration
+            // returns no session (BR-02), so the client cannot save them afterwards. Absent, they
+            // fall back to the platform defaults.
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(
+                user.Id, request.DefaultSpeakLanguage, request.DefaultListenLanguage);
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
@@ -311,8 +317,11 @@ public class AuthService : IAuthService
 
             await _userRepository.AddAsync(user, ct);
 
-            // Create default user settings
-            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            // Create default user settings, with whatever the sign-up wizard asked for. An
+            // invited account goes through the same three steps as a self-registered one — the
+            // invitation only removes the email step, not the question about languages.
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(
+                user.Id, request.DefaultSpeakLanguage, request.DefaultListenLanguage);
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);

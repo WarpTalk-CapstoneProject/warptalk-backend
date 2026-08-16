@@ -2808,9 +2808,21 @@ public class TranslationRoomService : ITranslationRoomService
         );
     }
 
+    /// <summary>
+    /// The artifact's name as a person sees it.
+    ///
+    /// The format in the title is the format they will GET, not the one the row is stored as.
+    /// Those differ for the transcript and the summary — stored as markdown and JSON, both served
+    /// as plain text (see <see cref="ArtifactPlainText"/>) — and the title said MARKDOWN and JSON
+    /// while the download handed over a .txt. The storage shape is an implementation detail of the
+    /// summary parser and the knowledge indexer; a title is a promise about the file.
+    /// </summary>
     private static string BuildArtifactTitle(string type, string? format)
     {
         var label = type.ToLowerInvariant().Replace('_', ' ');
+
+        if (ArtifactPlainText.IsTextExport(type)) return $"{label} (TXT)";
+
         return string.IsNullOrWhiteSpace(format) ? label : $"{label} ({format.ToUpperInvariant()})";
     }
 
