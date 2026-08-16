@@ -81,6 +81,9 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
 
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
+    // WT-429: without this, "CreditTopUp" matched no handler and the payment completed having
+    // granted nothing — the incident that switched the top-up button off.
+    builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 
     builder.Services.AddScoped<IUsageService, UsageService>();

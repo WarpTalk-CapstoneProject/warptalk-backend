@@ -103,7 +103,11 @@ public class StripeWebhookService : IStripeWebhookService
                          PaymentType: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PaymentType) ? session.Metadata[PaymentConstants.StripeMetadata.PaymentType] : string.Empty,
                          Status: PaymentConstants.PaymentStatuses.Paid,
                          PlanSlug: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? session.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                         BillingCycle: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? session.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                         BillingCycle: session.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? session.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: session.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var sessionCredits)
+                            && int.TryParse(sessionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sessionCreditCount)
+                            ? sessionCreditCount : 0
                     ));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -123,7 +127,11 @@ public class StripeWebhookService : IStripeWebhookService
                         Status: PaymentConstants.PaymentStatuses.Failed,
                         FailureReason: intent.LastPaymentError?.Message ?? PaymentConstants.StripePlaceholders.DefaultPaymentFailureReason,
                         PlanSlug: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? intent.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? intent.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                        BillingCycle: intent.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? intent.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: intent.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var intentCredits)
+                            && int.TryParse(intentCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var intentCreditCount)
+                            ? intentCreditCount : 0
                     ));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -142,7 +150,11 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentType: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PaymentType) ? charge.Metadata[PaymentConstants.StripeMetadata.PaymentType] : string.Empty,
                         Status: PaymentConstants.PaymentStatuses.Refunded,
                         PlanSlug: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? charge.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? charge.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                        BillingCycle: charge.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? charge.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: charge.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var chargeCredits)
+                            && int.TryParse(chargeCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var chargeCreditCount)
+                            ? chargeCreditCount : 0
                     ));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -178,7 +190,11 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentType: PaymentConstants.PaymentTypes.SubscriptionUpdate,
                         Status: PaymentConstants.PaymentStatuses.SubscriptionUpdated,
                         PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
+                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
+                            ? subscriptionCreditCount : 0
                     ));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -197,7 +213,11 @@ public class StripeWebhookService : IStripeWebhookService
                         PaymentType: PaymentConstants.PaymentTypes.Subscription,
                         Status: PaymentConstants.PaymentStatuses.Cancelled,
                         PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                        BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
+                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
+                            ? subscriptionCreditCount : 0
                     ));
                     if (!result.IsSuccess) processingFailure = Capture(result, type);
                 }
@@ -226,7 +246,11 @@ public class StripeWebhookService : IStripeWebhookService
                             InvoiceUrl: invoice.HostedInvoiceUrl,
                             InvoicePdf: invoice.InvoicePdf,
                             PlanSlug: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.PlanSlug) ? subscription.Metadata[PaymentConstants.StripeMetadata.PlanSlug] : string.Empty,
-                            BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty
+                            BillingCycle: subscription.Metadata.ContainsKey(PaymentConstants.StripeMetadata.BillingCycle) ? subscription.Metadata[PaymentConstants.StripeMetadata.BillingCycle] : string.Empty,
+                        // WT-429: credits to grant, decided server-side at checkout creation.
+                        Credits: subscription.Metadata.TryGetValue(PaymentConstants.StripeMetadata.Credits, out var subscriptionCredits)
+                            && int.TryParse(subscriptionCredits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var subscriptionCreditCount)
+                            ? subscriptionCreditCount : 0
                         ));
                         if (!result.IsSuccess) processingFailure = Capture(result, type);
                     }
