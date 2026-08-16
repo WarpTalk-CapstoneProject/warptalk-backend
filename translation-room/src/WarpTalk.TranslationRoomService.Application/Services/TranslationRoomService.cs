@@ -102,6 +102,17 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private const string MeetingInvitedEventType = "MeetingInvited";
 
+    /// <summary>
+    /// The invitation states this service writes. PENDING is set at creation; ACCEPTED is the
+    /// invitee's own answer. Both are already in
+    /// <see cref="RoomReadAccess.InvitationStatusesGrantingRead"/>, so accepting never changes
+    /// what a person can see — it records that they said yes.
+    /// </summary>
+    private const string InvitationAcceptedStatus = "ACCEPTED";
+
+    /// <summary>Written by nothing today; read here so Accept fails closed if it ever is.</summary>
+    private const string InvitationDeclinedStatus = "DECLINED";
+
     public TranslationRoomService(
         IUnitOfWork unitOfWork,
         ILanguagePolicy languagePolicy,
@@ -576,6 +587,74 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while fetching invitations for TranslationRoomId: {TranslationRoomId}", translationRoomId);
             return Result.Failure<IEnumerable<TranslationRoomInvitationDto>>("An unexpected error occurred while fetching invitations.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TranslationRoomInvitationDto>> AcceptTranslationRoomInvitationAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var email = RoomReadAccess.NormalizeEmail(userEmail);
+            if (email is null)
+            {
+                // No email claim means there is no way to match an invitation row at all — the
+                // rows are keyed by address, not by user id. Same refusal as "no invitation":
+                // this endpoint must not become a way to probe which room ids exist.
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
+            var invitation = await invitationRepo.FirstOrDefaultAsync(
+                i => i.TranslationRoomId == translationRoomId && i.Email == email, ct: ct);
+
+            if (invitation is null)
+            {
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            // DECLINED is the one state Accept may not walk back: the host has already been told
+            // this person is not coming, and reversing it silently would make the roster lie.
+            // (Nothing writes DECLINED today; this fails closed for when something does.)
+            if (string.Equals(invitation.Status, InvitationDeclinedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationDeclined, ErrorCodes.InvalidState);
+            }
+
+            if (!string.Equals(invitation.Status, InvitationAcceptedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                invitation.Status = InvitationAcceptedStatus;
+                invitation.UpdatedAt = DateTime.UtcNow;
+                invitationRepo.Update(invitation);
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+
+            _logger.LogInformation(
+                "invitation_accepted: RoomId={RoomId} UserId={UserId}", translationRoomId, userId);
+
+            return Result.Success(new TranslationRoomInvitationDto(
+                invitation.Id,
+                invitation.TranslationRoomId,
+                invitation.Email,
+                invitation.Status,
+                invitation.CreatedAt,
+                invitation.UpdatedAt));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error occurred while accepting the invitation for TranslationRoomId: {TranslationRoomId}",
+                translationRoomId);
+            return Result.Failure<TranslationRoomInvitationDto>(
+                "An unexpected error occurred while accepting the invitation.", ErrorCodes.InternalServerError);
         }
     }
 

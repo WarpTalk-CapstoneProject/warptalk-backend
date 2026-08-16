@@ -48,6 +48,13 @@ public static class TranslationRoomConstants
     public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
 
+    /// <summary>
+    /// Covers both "no such room" and "no invitation for you" on purpose — an uninvited caller
+    /// must not be able to tell those two apart, or this endpoint becomes a room-id oracle.
+    /// </summary>
+    public const string ErrorInvitationNotFound = "No invitation to this meeting was found for your account.";
+    public const string ErrorInvitationDeclined = "This invitation was already declined.";
+
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";
     public const string ErrorInvalidTransitionToInProgress = "Room must be WAITING or PAUSED to start or resume.";
