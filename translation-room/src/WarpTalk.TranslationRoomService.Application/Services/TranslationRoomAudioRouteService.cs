@@ -126,8 +126,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             var newRoutes = new List<TranslationRoomAudioRoute>();
 
             var sourceLanguage = room.SourceLanguage;
-            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var targetLanguagesList = LanguageHelper.ParseTargetLanguages(room.TargetLanguages).ToArray();
             var voiceCloneSeeds = new Dictionary<Guid, bool>();
+
+            // WT-433: pairs that turned out NOT to need translation. Their routes, if any exist
+            // from an earlier language configuration, are stale and must go — see below.
+            var unneededPairs = new List<(Guid SpeakerId, Guid ListenerId)>();
 
             // Generate full-mesh audio routing pathways
             foreach (var speaker in participants)
@@ -139,7 +143,14 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                     var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
                     var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
 
-                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue; // Direct audio routing handles same languages bypasses MT
+                    // Direct audio routing handles same languages and bypasses MT — but a route
+                    // may already EXIST for this pair from when they did need translation, and
+                    // this `continue` used to abandon it. See the sweep after the loop.
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang))
+                    {
+                        unneededPairs.Add((speaker.Id, listener.Id));
+                        continue;
+                    }
 
                     var existingRoute = existingRoutes.FirstOrDefault(r =>
                         r.SourceParticipantId == speaker.Id &&
@@ -181,9 +192,30 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             }
 
             // Remove obsolete routes (e.g. participants left the room)
+            //
+            // WT-433 — and pairs that no longer need translating at all.
+            //
+            // The staleness check above only ever ran for a pair that STILL needs translation.
+            // A pair whose languages converged hit the `continue` and kept its old row verbatim,
+            // permanently. In production this left a route saying en→vi for a speaker who had
+            // switched to Vietnamese and a listener already on Vietnamese, in the same batch that
+            // wrote a correct vi→en row for that same speaker — one participant, two contradictory
+            // source languages.
+            //
+            // Three visible symptoms, one cause. The AI pipeline reads SourceLanguage as the STT
+            // hint, so Vietnamese speech was transcribed as English and came back as Whisper's
+            // usual hallucinations on a wrong-language hint ("Hello.", "Um."). It reads
+            // TargetLanguage to decide which dub to synthesize, so a speaker whose only remaining
+            // routes pointed at one language got exactly one interpreter track — and the listener
+            // on the other language, whose client subscribes by
+            // `ai-interpreter-{theirLanguage}-{speaker}`, heard nothing at all while everyone else
+            // heard the dub.
             var activeParticipantIds = participants.Select(p => p.Id).ToHashSet();
+            var unneededPairSet = unneededPairs.ToHashSet();
             var obsoleteRoutes = existingRoutes
-                .Where(r => !activeParticipantIds.Contains(r.SourceParticipantId) || !activeParticipantIds.Contains(r.TargetParticipantId))
+                .Where(r => !activeParticipantIds.Contains(r.SourceParticipantId)
+                            || !activeParticipantIds.Contains(r.TargetParticipantId)
+                            || unneededPairSet.Contains((r.SourceParticipantId, r.TargetParticipantId)))
                 .ToList();
 
             if (newRoutes.Any())
@@ -264,7 +296,8 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             var existingRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
             var sourceLanguage = room.SourceLanguage;
-            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var targetLanguagesList = LanguageHelper.ParseTargetLanguages(room.TargetLanguages).ToArray();
+            var unneededPairs = new List<(Guid SpeakerId, Guid ListenerId)>();
 
             var newRoutes = new List<TranslationRoomAudioRoute>();
             var updatedRoutes = new List<TranslationRoomAudioRoute>();
@@ -279,7 +312,15 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                     var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
                     var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
 
-                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue;
+                    // WT-433: the rejoin case below is exactly why this cannot simply `continue`.
+                    // If the pair no longer needs translation, a route left over from the last
+                    // time they were here is now WRONG, not merely unnecessary, and the AI reads
+                    // it as the STT hint and the dub target.
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang))
+                    {
+                        unneededPairs.Add((speaker.Id, listener.Id));
+                        continue;
+                    }
 
                     var existingRoute = existingRoutes.FirstOrDefault(r =>
                         r.SourceParticipantId == speaker.Id &&
@@ -320,6 +361,13 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 }
             }
 
+            // WT-433: only this participant's own pairs — this method deliberately never touches
+            // anyone else's, and a pair it did not evaluate must not be deleted here.
+            var unneededPairSet = unneededPairs.ToHashSet();
+            var staleRoutes = existingRoutes
+                .Where(r => unneededPairSet.Contains((r.SourceParticipantId, r.TargetParticipantId)))
+                .ToList();
+
             if (newRoutes.Any())
             {
                 await _translationRoomAudioRouteRepository.AddRoutesAsync(newRoutes, ct);
@@ -330,7 +378,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 await _translationRoomAudioRouteRepository.UpdateRoutesAsync(updatedRoutes, ct);
             }
 
-            if (newRoutes.Any() || updatedRoutes.Any())
+            if (staleRoutes.Any())
+            {
+                await _translationRoomAudioRouteRepository.RemoveRoutesAsync(staleRoutes, ct);
+            }
+
+            if (newRoutes.Any() || updatedRoutes.Any() || staleRoutes.Any())
             {
                 await _unitOfWork.SaveChangesAsync(ct);
                 // The AI workers' only source of route rows. Without this publish the rows exist

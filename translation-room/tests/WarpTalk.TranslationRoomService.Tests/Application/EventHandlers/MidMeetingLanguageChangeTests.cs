@@ -266,7 +266,7 @@ public class MidMeetingLanguageChangeTests
             {
                 Id = RoomId,
                 SourceLanguage = "en",
-                TargetLanguages = "en,vi",
+                TargetLanguages = """["en","vi"]""",
             });
 
         var unitOfWork = new Mock<IUnitOfWork>();

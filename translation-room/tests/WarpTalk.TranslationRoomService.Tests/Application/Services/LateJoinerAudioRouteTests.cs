@@ -69,7 +69,7 @@ public class LateJoinerAudioRouteTests
                 Id = _roomId,
                 Status = "IN_PROGRESS",
                 SourceLanguage = "en",
-                TargetLanguages = "vi,ja",
+                TargetLanguages = """["vi","ja"]""",
             });
     }
 
