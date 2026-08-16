@@ -169,11 +169,14 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     ErrorCodes.InvalidState);
             }
 
+            // WT-432: LegacyMarkdownMime is here for the rows the finalizer wrote before it
+            // learned to store a token instead of a MIME type. Without it those fall to the
+            // default and download as .txt — which is what every artifact in production did.
             var extension = artifact.FileFormat?.ToLowerInvariant() switch
             {
-                "markdown" => "md",
-                "json" => "json",
-                "text/plain" => "txt",
+                ArtifactFileFormats.Markdown or ArtifactFileFormats.LegacyMarkdownMime => "md",
+                ArtifactFileFormats.Json => "json",
+                ArtifactFileFormats.PlainText => "txt",
                 "mp4" => "mp4",
                 "webm" => "webm",
                 "wav" => "wav",
@@ -181,9 +184,9 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             };
             var contentType = artifact.FileFormat?.ToLowerInvariant() switch
             {
-                "markdown" => "text/markdown",
-                "json" => "application/json",
-                "text/plain" => "text/plain",
+                ArtifactFileFormats.Markdown or ArtifactFileFormats.LegacyMarkdownMime => "text/markdown",
+                ArtifactFileFormats.Json => "application/json",
+                ArtifactFileFormats.PlainText => "text/plain",
                 "mp4" => "video/mp4",
                 "webm" => "video/webm",
                 "wav" => "audio/wav",

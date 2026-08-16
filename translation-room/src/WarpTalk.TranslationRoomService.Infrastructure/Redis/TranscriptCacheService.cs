@@ -1,5 +1,4 @@
-using System;
-using System.Text;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using StackExchange.Redis;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
@@ -15,29 +14,25 @@ public class TranscriptCacheService : ITranscriptCacheService
         _redis = redis;
     }
 
-    public async Task<string> AssembleTranscriptAsync(Guid roomId, string redisKey)
+    public async Task<IReadOnlyList<string>> ReadCachedSegmentsAsync(string redisKey)
     {
         var db = _redis.GetDatabase();
-        var transcriptCount = await db.ListLengthAsync(redisKey);
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# WarpTalk Transcription Room - Room: {roomId}");
-        sb.AppendLine($"Generated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
-        sb.AppendLine("---");
-
-        if (transcriptCount > 0)
+        var values = await db.ListRangeAsync(redisKey);
+        if (values.Length == 0)
         {
-            var values = await db.ListRangeAsync(redisKey);
-            foreach (var val in values)
+            return [];
+        }
+
+        var lines = new List<string>(values.Length);
+        foreach (var value in values)
+        {
+            var line = value.ToString();
+            if (!string.IsNullOrWhiteSpace(line))
             {
-                sb.AppendLine(val.ToString());
+                lines.Add(line);
             }
         }
-        else
-        {
-            sb.AppendLine("*No speech transcription recorded.*");
-        }
 
-        return sb.ToString();
+        return lines;
     }
 }

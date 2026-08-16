@@ -105,7 +105,7 @@ builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>(
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
-        var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50053";
+        var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50054";
         o.Address = new Uri(url);
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
