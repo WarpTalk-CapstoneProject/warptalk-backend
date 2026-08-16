@@ -115,6 +115,34 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.UserAlreadyInternalElsewhere, ErrorCodes.ValidationError);
             }
 
+            // WT-437 (Linear): one OWNED workspace per account, full stop.
+            //
+            // The Enterprise-home rule above only counts workspaces whose config has
+            // RequireVerifiedDomainForInternal — a workspace founded without verified domains
+            // (every public-domain founder since WT-417) sets it false, so its owner passed this
+            // guard indefinitely and could found workspaces without limit. The business rule is
+            // about OWNERSHIP, not about the internal-membership tier, so it is checked on the
+            // Owner role directly.
+            // Resolved once here and reused for the owner-membership row below — this method
+            // needed the Owner role id anyway, the guard just needs it earlier.
+            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+            if (!ownerRoleId.HasValue)
+            {
+                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
+            }
+
+            var alreadyOwnsWorkspace = await _unitOfWork.WorkspaceMemberRepository.AnyAsync(
+                m => m.UserId == userId
+                     && m.RemovedAt == null
+                     && m.RoleId == ownerRoleId.Value
+                     && m.Workspace.DeletedAt == null,
+                ct);
+            if (alreadyOwnsWorkspace)
+            {
+                return Result.Failure<WorkspaceDto>(
+                    WorkspaceConstants.Errors.UserAlreadyOwnsWorkspace, ErrorCodes.ValidationError);
+            }
+
             var domainsToVerify = new List<string>();
             bool requireVerified;
 
@@ -182,12 +210,7 @@ public class WorkspaceService : IWorkspaceService
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);
 
-            var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
-            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
-            if (!ownerRoleId.HasValue)
-            {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
-            }
+            // ownerRoleId was resolved (and null-checked) by the WT-437 ownership guard above.
             var workspaceMember = WorkspaceMemberMapper.CreateOwnerMember(workspace.Id, userId, ownerRoleId.Value);
 
             await _unitOfWork.WorkspaceRepository.AddAsync(workspace, ct);
@@ -594,9 +617,19 @@ public class WorkspaceService : IWorkspaceService
             var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
             foreach (var member in members)
             {
-                member.RemovedAt = deletedAt;
-                member.RemovedBy = userId;
-                _unitOfWork.WorkspaceMemberRepository.Update(member);
+                // WT-434 (Linear): GetActiveMembersByWorkspaceAsync is AsNoTracking, but
+                // `executingMember` above came through the tracked FirstOrDefaultAsync — and the
+                // OWNER is always in both. Update() on the detached copy of a row the context
+                // already tracks throws the EF identity-map InvalidOperationException, the catch
+                // below converts it to UnexpectedError, and the controller (which had no 500
+                // branch) surfaced it as 400 Bad Request. Deleting a workspace therefore failed
+                // 100% of the time, for exactly the one role allowed to try.
+                // Matched on UserId, not Id: (workspace_id, user_id) is UNIQUE so it identifies
+                // the row, and unlike Id it can never be an unset Guid.Empty on both sides.
+                var target = member.UserId == executingMember.UserId ? executingMember : member;
+                target.RemovedAt = deletedAt;
+                target.RemovedBy = userId;
+                _unitOfWork.WorkspaceMemberRepository.Update(target);
             }
 
             _unitOfWork.WorkspaceRepository.Update(workspace);

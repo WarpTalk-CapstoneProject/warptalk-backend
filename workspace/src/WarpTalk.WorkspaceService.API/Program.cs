@@ -64,6 +64,17 @@ builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Env
 builder.Services.AddAuthorization();
 builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
+// WT-431 (Linear): workspace was the one service in the mesh with no notification client, so a
+// member whose role was changed learned about it by reloading the page. Same registration shape
+// as translation-room's.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:NotificationServiceUrl",
+        "http://localhost:50054");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 

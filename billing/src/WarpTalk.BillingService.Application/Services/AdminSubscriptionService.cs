@@ -49,6 +49,11 @@ public class AdminSubscriptionService : IAdminSubscriptionService
         CancellationToken ct = default)
     {
         var status = Normalize(query.Status);
+        // WT-439: "all" is the web's explicit spelling of "no filter" — the admin subscriptions
+        // page sends status=all on its default load, and the sibling AdminUserService already
+        // accepts it. Rejecting it made the page 400 on first open, every time, with an error
+        // message that pointed at the sort parameter's neighbourhood instead of the status.
+        if (status == "all") status = null;
         if (status != null && !Statuses.Contains(status, StringComparer.Ordinal))
         {
             return Result.Failure<AdminPagedResult<AdminSubscriptionSummaryDto>>(
