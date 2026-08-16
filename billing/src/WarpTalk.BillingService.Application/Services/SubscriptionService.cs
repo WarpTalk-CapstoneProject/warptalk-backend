@@ -481,6 +481,10 @@ public class SubscriptionService : ISubscriptionService
         Guid workspaceId,
         CancellationToken cancellationToken)
     {
+        // WT-430: deliberately BROADER than Subscription.GrantsPlanEntitlements, and left that way.
+        // This finds the subscription to bill or credit, not the one that grants plan quotas — a
+        // cancelled subscription still inside its paid period keeps its credits until the period
+        // ends, so narrowing this to the entitlement test would take money handling with it.
         var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
             s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
             cancellationToken);

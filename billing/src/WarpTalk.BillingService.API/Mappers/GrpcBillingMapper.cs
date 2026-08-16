@@ -202,9 +202,8 @@ internal static class GrpcBillingMapper
     /// </summary>
     public static Protos.GetFeatureAccessResponse ToFeatureAccessResponse(this Subscription sub, Plan? plan)
     {
-        bool hasActiveSubscription = sub.IsActive &&
-                                     sub.Status == SubscriptionConstants.SubscriptionStatuses.Active &&
-                                     sub.CurrentPeriodEnd >= DateTime.UtcNow;
+        // WT-430: shares its definition with EntitlementResolver rather than restating it.
+        bool hasActiveSubscription = sub.GrantsPlanEntitlements(DateTime.UtcNow);
 
         return new Protos.GetFeatureAccessResponse
         {
