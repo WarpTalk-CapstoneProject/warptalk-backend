@@ -221,7 +221,11 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.Transcri
     o.Address = builder.Configuration.GetRequiredServiceUri(
         builder.Environment,
         "GrpcSettings:TranscriptServiceUrl",
-        "http://localhost:50055");
+        // 50053, not 50055. TranscriptService binds 50053 (its API Program.cs); 50055 belongs to
+        // MeetingService. Dialling 50055 here was refused on every single call, and because
+        // FinalizeTranscriptAsync caught that and fell back to a cache, it surfaced as "no speech
+        // recorded" on 135 of 135 transcript exports rather than as an error (WT-431).
+        "http://localhost:50053");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 // WT-188: resolves the caller's workspace role so a workspace Owner/Admin can admit participants

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using System;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Helpers;
@@ -297,6 +298,15 @@ public class ArtifactsReconciliationWorker : BackgroundService
             }
 
             artifact.Content = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+
+            // WT-432. A recovered summary and a first-try summary are the same artifact seen at
+            // two different times — the reason SummaryContentBuilder was extracted at all — so the
+            // metadata has to match too, not just the payload. The row being repaired here was
+            // written by the finalizer before this fix and still carries the markdown label and a
+            // size measured from a document that was never stored.
+            artifact.FileFormat = ArtifactFileFormats.Json;
+            artifact.FileSizeBytes = Encoding.UTF8.GetByteCount(artifact.Content);
+
             unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
             await unitOfWork.SaveChangesAsync(ct);
 
