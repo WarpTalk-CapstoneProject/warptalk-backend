@@ -56,4 +56,35 @@ public sealed class WorkspaceMemberGrpcDirectory : IWorkspaceMemberDirectory
             return false;
         }
     }
+
+    public async Task<bool> IsMemberAsync(
+        Guid workspaceId,
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetWorkspaceMemberDetailsAsync(
+                new GetWorkspaceMemberRequest
+                {
+                    WorkspaceId = workspaceId.ToString(),
+                    UserId = userId.ToString()
+                },
+                cancellationToken: ct);
+
+            return response.IsMember && response.IsActive;
+        }
+        catch (Exception ex)
+        {
+            // WT-433: false on failure keeps the join-by-id gate FAIL-CLOSED — an unreachable
+            // WorkspaceService means the link-arriving caller sees NotFound, the same answer a
+            // non-member gets, rather than being admitted on an unverifiable claim.
+            _logger.LogWarning(
+                ex,
+                "Failed to resolve workspace membership for join-by-id. WorkspaceId: {WorkspaceId}, UserId: {UserId}",
+                workspaceId,
+                userId);
+            return false;
+        }
+    }
 }

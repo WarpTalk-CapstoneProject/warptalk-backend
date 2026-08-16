@@ -44,7 +44,10 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             Status = result.Value!.Status.ToString(),
             StartedAt = result.Value!.StartedAt?.ToString("O") ?? string.Empty,
             EndedAt = result.Value!.EndedAt?.ToString("O") ?? string.Empty,
-            ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty
+            ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty,
+            // WT-428: Meeting Service gates its lobby on this. The DTO's Settings already carry
+            // the resolved value (ReadSettings defaults it TRUE when absent from the JSON).
+            RequiresApproval = result.Value!.Settings.RequiresApproval
         };
     }
 

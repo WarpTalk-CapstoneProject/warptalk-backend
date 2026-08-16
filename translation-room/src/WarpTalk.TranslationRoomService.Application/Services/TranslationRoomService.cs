@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.Json;
+using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -195,16 +196,34 @@ public class TranslationRoomService : ITranslationRoomService
 
         try
         {
-            var user = await _userClient.GetUserByEmailAsync(
-                new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email },
-                cancellationToken: ct);
+            WarpTalk.Shared.Protos.GetUserResponse? user;
+            try
+            {
+                user = await _userClient.GetUserByEmailAsync(
+                    new WarpTalk.Shared.Protos.GetUserByEmailRequest
+                    {
+                        // Invitations store the address as typed; accounts are matched
+                        // case-insensitively upstream, but trimming here removes the one
+                        // difference a pasted address reliably introduces.
+                        Email = email.Trim(),
+                    },
+                    cancellationToken: ct);
+            }
+            catch (RpcException notFound) when (notFound.StatusCode == StatusCode.NotFound)
+            {
+                // UserServiceGrpc.GetUserByEmail THROWS NotFound for an unknown address — it does
+                // not answer with an empty id. The `user?.Id` check below was therefore
+                // unreachable for its own case, and every invitee without an account fell into
+                // the outer catch and was logged as a FAILURE of the notification system. It is
+                // not a failure: their invitation email is the correct and only channel.
+                _logger.LogInformation(
+                    "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
+                    room.Id);
+                return;
+            }
 
             if (string.IsNullOrWhiteSpace(user?.Id))
             {
-                // No account yet. The invitation email is their only channel, by design — so
-                // this one is Information, not Warning. It is still logged, because "everybody
-                // we invited happens to have no account" and "the lookup is broken" produce the
-                // same silence, and only the count over time tells them apart.
                 _logger.LogInformation(
                     "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
                     room.Id);
@@ -485,6 +504,11 @@ public class TranslationRoomService : ITranslationRoomService
                     // Same gate as the email, for the same reason: one daily standup must not
                     // deliver thirty notifications. NotifyInvitedUserAsync skips anyone without an
                     // account and never throws, so this cannot fail a room creation.
+                    // Both gated together, and correctly so: EVERY occurrence of a series gets
+                    // invitation rows (WT-327 — otherwise days 2..N are invisible in the
+                    // invitee's list), so announcing per row would mean thirty notifications for
+                    // one daily booking. `sendInvitationEmails` is true only for a plain room or
+                    // the series' first occurrence, which is exactly "announce this once".
                     if (sendInvitationEmails)
                     {
                         emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
@@ -886,6 +910,14 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            // WT-428: the knock. A row that just landed WAITING is invisible to the host until
+            // the 3s roster poll happens to run — this rings them the moment somebody is actually
+            // standing at the door. Best-effort like every realtime publish on this path.
+            if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
+            {
+                await PublishParticipantWaitingAsync(translationRoom.Id, userId, participant.DisplayName);
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -897,6 +929,79 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-433 (Linear): join a room by its ID — the shape a shared LINK produces — for callers who
+    /// are members of the room's workspace.
+    ///
+    /// The by-code path performs no read authorization at all: possession of the code is the
+    /// entitlement. A link is weaker (it appears in address bars, chat logs and screenshots), so
+    /// this path demands workspace membership before delegating — and answers NotFound rather
+    /// than Forbidden for a non-member, indistinguishable from a missing room, exactly like the
+    /// detail read (WT-334).
+    ///
+    /// Delegation reuses the by-code body verbatim, so requires_approval still lands the row at
+    /// WAITING and the host still gets the knock — this endpoint is how an uninvited teammate
+    /// reaches the waiting room instead of "Room information is unavailable."
+    /// </summary>
+    public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(
+        Guid translationRoomId,
+        JoinTranslationRoomRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default)
+    {
+        var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (translationRoom == null || translationRoom.DeletedAt != null)
+        {
+            return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+        }
+
+        var isMember = await _workspaceMemberDirectory.IsMemberAsync(translationRoom.WorkspaceId, userId, ct);
+        if (!isMember)
+        {
+            return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+        }
+
+        return await JoinTranslationRoomAsync(
+            request with { TranslationRoomCode = translationRoom.TranslationRoomCode },
+            userId,
+            userEmail,
+            ct);
+    }
+
+    /// <summary>
+    /// Tells the gateway somebody is waiting for admission, so the HOST learns in realtime
+    /// instead of on the next roster poll. Mirrors PublishParticipantAdmittedAsync's channel and
+    /// failure posture: a lost knock costs immediacy only — the poll still shows the row.
+    /// </summary>
+    private async Task PublishParticipantWaitingAsync(Guid translationRoomId, Guid waitingUserId, string? displayName)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantWaiting",
+                RoomId = translationRoomId.ToString(),
+                UserId = waitingUserId.ToString(),
+                DisplayName = displayName ?? string.Empty
+            });
+
+            await _redisStateRepository.PublishAsync("warptalk:translation-room:commands", payload);
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogWarning(
+                publishEx,
+                "Failed to publish ParticipantWaiting for RoomId: {RoomId}, UserId: {UserId}; the host will see them on the next roster poll.",
+                translationRoomId, waitingUserId);
         }
     }
 

@@ -36,6 +36,12 @@ message GetTranslationRoomResponse {
   string scheduled_start_time = 8;
   bool is_profanity_filter_enabled = 9;
   string description = 10;
+  // WT-428: whether joins must pass host approval. Meeting Service gates its lobby on this;
+  // before the field existed it keyed the lobby on room STATUS, so an IN_PROGRESS room admitted
+  // anyone. Note proto3's default is FALSE while the room-settings default is TRUE — readers
+  // must treat a response from an older server (or a stale cached proto) as fail-open and
+  // re-fetch rather than trust the default.
+  bool requires_approval = 11;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

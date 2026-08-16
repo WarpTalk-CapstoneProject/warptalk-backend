@@ -109,6 +109,19 @@ public class TranslationRoomRedisSubscriberService : BackgroundService
                     await _hubContext.Clients.Group(groupName).SendAsync("ParticipantAdmitted", payload.UserId, stoppingToken);
                     _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantAdmitted to room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
                 }
+                // WT-428: the knock — somebody just landed in the waiting room. Broadcast to the
+                // whole room group like ParticipantAdmitted above; only hosts act on it (the web
+                // client checks its own role), and the alternative — a userId→connection map for
+                // the host alone — is state this relay deliberately does not keep.
+                else if (payload.Command == "ParticipantWaiting"
+                    && !string.IsNullOrEmpty(payload.RoomId)
+                    && !string.IsNullOrEmpty(payload.UserId))
+                {
+                    var groupName = $"translationRoom:{payload.RoomId}";
+                    await _hubContext.Clients.Group(groupName).SendAsync(
+                        "ParticipantWaiting", payload.UserId, payload.DisplayName ?? string.Empty, stoppingToken);
+                    _logger.LogDebug("RedisSubscriber: Broadcasted ParticipantWaiting to room {RoomId} for user {UserId}", payload.RoomId, payload.UserId);
+                }
                 else if (payload.Command == "Kick" && !string.IsNullOrEmpty(payload.UserId))
                 {
                     // Assuming ConnectionManager tracks users and we can broadcast to the user's specific connection.
@@ -251,6 +264,10 @@ public class TranslationRoomCommandMessage
     public string Command { get; set; } = string.Empty;
     public string RoomId { get; set; } = string.Empty;
     public string UserId { get; set; } = string.Empty;
+
+    // WT-428: carried by ParticipantWaiting so the host's knock toast can say WHO is at the door
+    // without a roster round-trip.
+    public string? DisplayName { get; set; }
 
     // WT-04
     public bool? Locked { get; set; }

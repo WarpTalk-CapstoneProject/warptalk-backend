@@ -18,4 +18,15 @@ public interface IWorkspaceMemberDirectory
         Guid workspaceId,
         Guid userId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// True when <paramref name="userId"/> is an ACTIVE member of <paramref name="workspaceId"/>,
+    /// any role. WT-433: the join-by-id path (a shared room LINK) is gated on this — a link is a
+    /// weaker credential than a room code, so mere possession is not enough. Same never-throws
+    /// posture as IsOwnerOrAdminAsync: an unreachable WorkspaceService answers false.
+    /// </summary>
+    Task<bool> IsMemberAsync(
+        Guid workspaceId,
+        Guid userId,
+        CancellationToken ct = default);
 }
