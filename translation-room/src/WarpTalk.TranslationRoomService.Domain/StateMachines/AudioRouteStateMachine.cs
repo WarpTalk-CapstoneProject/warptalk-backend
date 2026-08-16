@@ -186,13 +186,27 @@ public class AudioRouteStateMachine : IAudioRouteStateMachine
         };
 
         // 5. Silent Acceptance Rule for telemetry events
-        if (!transitionResult.IsSuccess && IsHighFrequencyTelemetryEvent(eventType))
+        if (!transitionResult.IsSuccess
+            && (IsHighFrequencyTelemetryEvent(eventType) || IsInformationalEvent(eventType)))
         {
             // Silently return success with the current state to prevent error pollution in logs
             return Result.Success(currentState);
         }
 
         return transitionResult;
+    }
+
+    /// <summary>
+    /// Events that report progress and are never meant to move a route.
+    ///
+    /// WT-429. Separate from <see cref="IsHighFrequencyTelemetryEvent"/> because these are not
+    /// telemetry and calling them that would make the next reader look for a degradation they
+    /// would not find — but they need the same silent acceptance, or every one of them logs a
+    /// rejected transition per route.
+    /// </summary>
+    private bool IsInformationalEvent(AudioRoutingEventType eventType)
+    {
+        return eventType == AudioRoutingEventType.final_chunk_processed;
     }
 
     private bool IsHighFrequencyTelemetryEvent(AudioRoutingEventType eventType)
