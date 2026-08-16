@@ -169,6 +169,25 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     ErrorCodes.InvalidState);
             }
 
+            // The transcript and the summary go out as plain text, whatever they are stored as.
+            //
+            // Their storage shapes are markdown and structured JSON, and both are right for the
+            // things that READ them — the web client parses the summary JSON into prose and the
+            // knowledge indexer reads the same field. Neither is right for a person who clicked
+            // Download and got `**[Nam (VI)]**: xin chào` or a wall of `{"summary":…}`. Rendering
+            // on the way out rather than changing the writer also fixes every artifact already in
+            // the database; those rows are never rewritten.
+            if (ArtifactPlainText.IsTextExport(artifact.ArtifactType))
+            {
+                return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
+                    // A text export never has a file behind it — the content IS the artifact — so
+                    // there is no signed URL to produce here.
+                    null,
+                    ArtifactPlainText.Render(artifact.ArtifactType, artifact.Content),
+                    $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.txt",
+                    "text/plain"));
+            }
+
             // WT-432: LegacyMarkdownMime is here for the rows the finalizer wrote before it
             // learned to store a token instead of a MIME type. Without it those fall to the
             // default and download as .txt — which is what every artifact in production did.
