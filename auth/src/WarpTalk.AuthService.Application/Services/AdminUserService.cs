@@ -8,7 +8,9 @@ using WarpTalk.AuthService.Application.DTOs.Admin;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Domain.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Contracts.Admin;
+using WarpTalk.Shared.Events;
 
 namespace WarpTalk.AuthService.Application.Services;
 
@@ -27,12 +29,20 @@ public class AdminUserService : IAdminUserService
         ["created_desc", "created_asc", "name_asc", "name_desc", "last_login_desc", "last_login_asc"];
 
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IAdminAuditRecorder _audit;
+    private readonly TimeProvider _timeProvider;
     private readonly ILogger<AdminUserService> _logger;
 
-    public AdminUserService(IUnitOfWork unitOfWork, ILogger<AdminUserService> logger)
+    public AdminUserService(
+        IUnitOfWork unitOfWork,
+        IAdminAuditRecorder audit,
+        ILogger<AdminUserService> logger,
+        TimeProvider? timeProvider = null)
     {
         _unitOfWork = unitOfWork;
+        _audit = audit;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<Result<AdminPagedResult<AdminUserSummaryDto>>> GetDirectoryAsync(
@@ -104,6 +114,178 @@ public class AdminUserService : IAdminUserService
                 "An unexpected error occurred while reading the user.",
                 ErrorCodes.InternalServerError);
         }
+    }
+
+    public Task<Result<AdminUserDetailDto>> RevokeSessionsAsync(
+        Guid userId,
+        AdminActorContext actor,
+        AdminUserActionRequest request,
+        CancellationToken ct = default)
+        => PerformAsync(
+            userId,
+            actor,
+            request,
+            AdminAuditUserActions.SessionsRevoked,
+            async (user, before) =>
+            {
+                await _unitOfWork.RefreshTokenRepository.RevokeAllForUserAsync(user.Id, ct);
+                // The count is read BEFORE the revoke, in `before`. Reading it after would record
+                // zero sessions ended on every entry.
+                return new Dictionary<string, string?> { ["active_sessions"] = "0" };
+            },
+            ct);
+
+    public Task<Result<AdminUserDetailDto>> SetAccountActiveAsync(
+        Guid userId,
+        bool isActive,
+        AdminActorContext actor,
+        AdminUserActionRequest request,
+        CancellationToken ct = default)
+        => PerformAsync(
+            userId,
+            actor,
+            request,
+            isActive ? AdminAuditUserActions.Reactivated : AdminAuditUserActions.Deactivated,
+            async (user, before) =>
+            {
+                user.IsActive = isActive;
+                user.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                user.UpdatedBy = actor.ActorId;
+                _unitOfWork.UserRepository.Update(user);
+
+                var after = new Dictionary<string, string?>
+                {
+                    ["is_active"] = isActive.ToString(),
+                };
+
+                if (!isActive)
+                {
+                    // A deactivated account with live sessions is still a usable account until
+                    // each refresh token happens to expire.
+                    await _unitOfWork.RefreshTokenRepository.RevokeAllForUserAsync(user.Id, ct);
+                    after["active_sessions"] = "0";
+                }
+
+                return after;
+            },
+            ct);
+
+    public Task<Result<AdminUserDetailDto>> UnlockAsync(
+        Guid userId,
+        AdminActorContext actor,
+        AdminUserActionRequest request,
+        CancellationToken ct = default)
+        => PerformAsync(
+            userId,
+            actor,
+            request,
+            AdminAuditUserActions.Unlocked,
+            (user, before) =>
+            {
+                user.IsLocked = false;
+                user.LockedUntil = null;
+                // Cleared as well as unlocked. Leaving the counter at its limit would re-lock the
+                // account on the next single mistyped password, which is not what "unlocked" says.
+                user.FailedLoginAttempts = 0;
+                user.UpdatedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                user.UpdatedBy = actor.ActorId;
+                _unitOfWork.UserRepository.Update(user);
+
+                return Task.FromResult<Dictionary<string, string?>>(new()
+                {
+                    ["is_locked"] = "False",
+                    ["locked_until"] = null,
+                    ["failed_login_attempts"] = "0",
+                });
+            },
+            ct);
+
+    /// <summary>
+    /// The shape all three privileged actions share: change, record, and only then commit.
+    ///
+    /// The ordering is the point. `mutate` runs and is flushed inside a transaction, the audit
+    /// entry goes to the workspace service, and the transaction is committed only once that
+    /// entry is stored. A failure to record rolls the change back and reports it, so an
+    /// unrecorded session revocation cannot happen — which is the reason these endpoints did not
+    /// exist before there was a transport that could refuse.
+    ///
+    /// The audit call is made INSIDE the transaction rather than after committing, and it costs a
+    /// network round-trip's worth of open transaction to do so. That is the price of the
+    /// guarantee; these actions are rare and single-row.
+    /// </summary>
+    private async Task<Result<AdminUserDetailDto>> PerformAsync(
+        Guid userId,
+        AdminActorContext actor,
+        AdminUserActionRequest request,
+        string action,
+        Func<Domain.Entities.User, IReadOnlyDictionary<string, string?>, Task<Dictionary<string, string?>>> mutate,
+        CancellationToken ct)
+    {
+        var reason = Normalize(request?.Reason);
+        if (reason is null)
+        {
+            return Result.Failure<AdminUserDetailDto>(
+                "A reason is required. It is the only record of why this was done.",
+                ErrorCodes.ValidationError);
+        }
+
+        var user = await _unitOfWork.UserRepository.GetByIdAsync(userId, ct);
+        if (user is null || user.DeletedAt is not null)
+        {
+            return Result.Failure<AdminUserDetailDto>("No such user.", ErrorCodes.NotFound);
+        }
+
+        var sessionsBefore = await _unitOfWork.UserRepository.GetActiveSessionsAsync(userId, ct);
+        var before = new Dictionary<string, string?>
+        {
+            ["is_active"] = user.IsActive.ToString(),
+            ["is_locked"] = user.IsLocked.ToString(),
+            ["active_sessions"] = sessionsBefore.Count.ToString(),
+        };
+
+        await _unitOfWork.BeginTransactionAsync(ct);
+        try
+        {
+            var after = await mutate(user, before);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            var recorded = await _audit.RecordAsync(
+                action,
+                userId,
+                actor.ActorId,
+                reason,
+                actor.CorrelationId,
+                before,
+                after,
+                ct);
+
+            if (!recorded.IsSuccess)
+            {
+                await _unitOfWork.RollbackTransactionAsync(ct);
+                _logger.LogWarning(
+                    "Admin user action abandoned because it could not be audited. Action: {Action}, UserId: {UserId}",
+                    action,
+                    userId);
+                return Result.Failure<AdminUserDetailDto>(
+                    recorded.Error ?? "The action was not performed because it could not be audited.",
+                    recorded.ErrorCode ?? ErrorCodes.InternalServerError);
+            }
+
+            await _unitOfWork.CommitTransactionAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            await _unitOfWork.RollbackTransactionAsync(ct);
+            _logger.LogError(ex, "Admin user action failed. Action: {Action}, UserId: {UserId}", action, userId);
+            return Result.Failure<AdminUserDetailDto>(
+                "An unexpected error occurred while performing the action.",
+                ErrorCodes.InternalServerError);
+        }
+
+        // Re-read rather than mapped from the entity in hand: the caller renders this straight
+        // onto the row, and the derived status the directory shows is computed from columns the
+        // mutation may have moved.
+        return await GetDetailAsync(userId, ct);
     }
 
     private static string? Normalize(string? value)
