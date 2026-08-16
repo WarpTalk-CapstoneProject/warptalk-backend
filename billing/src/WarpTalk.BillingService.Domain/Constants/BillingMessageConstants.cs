@@ -5,7 +5,26 @@ public static class BillingMessageConstants
     public static class SuccessMessages
     {
         public const string SubscriptionPlanActivationTemplate = "Subscription Plan Activation: {0}";
+
+        /// <summary>WT-429: the ledger line for a purchased credit top-up.</summary>
+        public const string CreditTopUpGrantedTemplate = "Credit top-up: {0} credits purchased";
         public const string SubscriptionPlanRenewalTemplate = "{0} — Renewal {1:yyyy-MM-dd}";
+    }
+
+    /// <summary>WT-429: refusals on the credit top-up grant path.</summary>
+    public static class ErrorMessages
+    {
+        public const string CreditTopUpMissingCreditCount =
+            "This top-up carried no credit count, so nothing could be granted. Contact support with the payment reference.";
+
+        public const string CreditTopUpNoSubscription =
+            "This workspace has no active subscription to credit. Contact support with the payment reference.";
+
+        public const string CreditTopUpBelowMinimum =
+            "The smallest credit top-up is {0} credits.";
+
+        public const string CreditTopUpRateUnavailable =
+            "Credit pricing is not configured, so a top-up cannot be priced right now.";
     }
 
     public static class NotificationTitles

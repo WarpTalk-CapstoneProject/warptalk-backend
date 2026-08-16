@@ -124,7 +124,8 @@ public class PaymentAppServiceTests
             Mock.Of<ILogger<PaymentAppService>>(),
             _messagePublisher.Object,
             Array.Empty<IPaymentEventHandler>(),
-            workspaceClient.Object);
+            workspaceClient.Object,
+            Mock.Of<IUsageRateCardRepository>());
 
         var result = await service.GetAndProcessCheckoutSessionAsync("cs_test_buyer", buyerId, isSystemAdmin: false);
 
@@ -144,7 +145,8 @@ public class PaymentAppServiceTests
             Mock.Of<ILogger<PaymentAppService>>(),
             _messagePublisher.Object,
             handlers,
-            new Mock<IWorkspaceClient>().Object);
+            new Mock<IWorkspaceClient>().Object,
+            Mock.Of<IUsageRateCardRepository>());
 
     private static StripePaymentEventRequest CreateEvent(string paymentType)
         => new(

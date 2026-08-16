@@ -63,6 +63,14 @@ public class StripePaymentService : IStripePaymentService
             if (!string.IsNullOrWhiteSpace(request.BillingCycle))
                 metadata[PaymentConstants.StripeMetadata.BillingCycle] = request.BillingCycle;
 
+            // WT-429: the credit count rides on the session so both completion paths — the
+            // webhook and the return-page read — grant the SAME number without re-deriving it
+            // from the amount. Written for top-ups only; the value was already validated and
+            // priced server-side by PaymentAppService.
+            if (request.Credits > 0)
+                metadata[PaymentConstants.StripeMetadata.Credits] =
+                    request.Credits.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
             SessionCreateOptions options = new SessionCreateOptions
             {
                 PaymentMethodTypes = new List<string> { PaymentConstants.PaymentMethods.Card },
