@@ -145,6 +145,33 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    /// <summary>
+    /// WT-433 (Linear): join by room id — what a shared LINK produces. A workspace member who was
+    /// never invited used to dead-end on "Room information is unavailable" (the detail read
+    /// correctly refuses them); this endpoint is their path into the waiting room instead.
+    /// </summary>
+    [HttpPost("{id:guid}/join")]
+    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+
+        var result = await _translationRoomService.JoinTranslationRoomByIdAsync(id, request, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
     [HttpPost("{id}/waiting")]
     public async Task<IActionResult> OpenWaitingRoom(Guid id, CancellationToken ct)
     {

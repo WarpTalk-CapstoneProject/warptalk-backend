@@ -69,6 +69,13 @@ public interface ITranslationRoomService
 
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-433: join by room ID — the shape a shared LINK produces — gated on membership of the
+    /// room's workspace, then identical to the by-code join (a requires-approval room lands the
+    /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.
+    /// </summary>
+    Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(Guid translationRoomId, JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-341: takes a room live. The caller is no longer required to be the host.
     ///

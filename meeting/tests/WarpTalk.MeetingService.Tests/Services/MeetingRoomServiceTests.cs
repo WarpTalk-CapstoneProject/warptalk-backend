@@ -204,7 +204,9 @@ public class MeetingRoomServiceTests
                 {
                     HostId = hostId.ToString(),
                     Status = "WAITING",
-                    WorkspaceId = Guid.NewGuid().ToString()
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    // WT-428: the lobby now keys on this setting, not on room status.
+                    RequiresApproval = true
                 }));
         SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
 
@@ -934,7 +936,9 @@ public class MeetingRoomServiceTests
                 {
                     HostId = hostId.ToString(),
                     Status = "IN_PROGRESS",
-                    WorkspaceId = Guid.NewGuid().ToString()
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    // WT-428: the lobby now keys on this setting, not on room status.
+                    RequiresApproval = true
                 }));
 
         var meetingRoom = new MeetingRoom
@@ -1017,7 +1021,9 @@ public class MeetingRoomServiceTests
                 {
                     HostId = hostId.ToString(),
                     Status = "IN_PROGRESS",
-                    WorkspaceId = Guid.NewGuid().ToString()
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    // WT-428: the lobby now keys on this setting, not on room status.
+                    RequiresApproval = true
                 }));
 
         var meetingRoom = new MeetingRoom
@@ -1057,6 +1063,19 @@ public class MeetingRoomServiceTests
             .ReturnsAsync((MeetingInvitation?)null);
         _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
 
+        // WT-428: the lobby gate is now unconditional for a requires-approval room, so being
+        // "admitted" is no longer implied by the room being IN_PROGRESS — the translation-room
+        // roster has to actually say so, exactly as it does in production once the host approves.
+        var admittedRoster = new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse();
+        admittedRoster.Participants.Add(new WarpTalk.Shared.Protos.Participant
+        {
+            Id = participantUserId.ToString(),
+            IsActive = true,
+        });
+        _grpcServiceMock
+            .Setup(g => g.GetParticipantsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(admittedRoster));
+
         _tokenServiceMock
             .Setup(service => service.GenerateToken(
                 translationRoomId.ToString(),
@@ -1071,6 +1090,77 @@ public class MeetingRoomServiceTests
         Assert.True(result.IsSuccess);
         Assert.False(result.Value!.IsWaitingRoom);
         Assert.Equal(expectedRecording, result.Value.Recording);
+    }
+
+    /// <summary>
+    /// WT-428 (Linear) — the production bypass, verbatim. The lobby used to be keyed on room
+    /// status (SCHEDULED/WAITING only), so the moment a requires-approval room went IN_PROGRESS,
+    /// an invitee who pressed Join was handed a LiveKit token the host never approved. The
+    /// display name is deliberately PROVIDED here: the only other admission check lived inside
+    /// the empty-display-name branch, which the web client never enters.
+    /// </summary>
+    [Fact]
+    public async Task JoinMeetingAsync_HoldsUnapprovedInviteeInLobby_EvenWhenRoomIsInProgress()
+    {
+        var translationRoomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var participantUserId = Guid.NewGuid();
+
+        _redisServiceMock
+            .Setup(r => r.GetCacheAsync<WarpTalk.Shared.Protos.GetTranslationRoomResponse>(It.IsAny<string>()))
+            .ReturnsAsync(Result.Success<WarpTalk.Shared.Protos.GetTranslationRoomResponse?>(
+                new WarpTalk.Shared.Protos.GetTranslationRoomResponse
+                {
+                    HostId = hostId.ToString(),
+                    Status = "IN_PROGRESS",
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    RequiresApproval = true
+                }));
+
+        var meetingRoom = new MeetingRoom
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = translationRoomId,
+            ProviderRoomName = translationRoomId.ToString(),
+            Status = "IN_PROGRESS",
+            ActiveHostId = hostId,
+        };
+        SetupMeetingRoomRepository(_unitOfWorkMock, meetingRoom);
+
+        var participantRepoMock = new Mock<IMeetingParticipantRepository>();
+        participantRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingParticipant, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((MeetingParticipant?)null);
+        _unitOfWorkMock.Setup(u => u.MeetingParticipantRepository).Returns(participantRepoMock.Object);
+
+        var invitationRepoMock = new Mock<IMeetingInvitationRepository>();
+        invitationRepoMock
+            .Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<Expression<Func<MeetingInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MeetingInvitation
+            {
+                Id = Guid.NewGuid(),
+                MeetingRoomId = meetingRoom.Id,
+                InviteeUserId = participantUserId,
+                Status = "PENDING",
+            });
+        _unitOfWorkMock.Setup(u => u.MeetingInvitationRepository).Returns(invitationRepoMock.Object);
+
+        // The translation-room roster does NOT show them admitted — the host never approved.
+        _grpcServiceMock
+            .Setup(g => g.GetParticipantsAsync(translationRoomId))
+            .ReturnsAsync(Result.Success(new WarpTalk.Shared.Protos.GetParticipantsByRoomIdResponse()));
+
+        var result = await _sut.JoinMeetingAsync(translationRoomId, participantUserId, "Invitee Name");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsWaitingRoom, "an unapproved invitee must be held in the lobby, not handed a token");
+        Assert.Equal(string.Empty, result.Value.Token);
     }
 
     // WT-283: the lobby response is built at its own construction site, so a participant held in
@@ -1090,7 +1180,9 @@ public class MeetingRoomServiceTests
                 {
                     HostId = hostId.ToString(),
                     Status = "WAITING",
-                    WorkspaceId = Guid.NewGuid().ToString()
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    // WT-428: the lobby now keys on this setting, not on room status.
+                    RequiresApproval = true
                 }));
 
         var meetingRoom = new MeetingRoom
@@ -1159,7 +1251,9 @@ public class MeetingRoomServiceTests
                 {
                     HostId = hostId.ToString(),
                     Status = "IN_PROGRESS",
-                    WorkspaceId = Guid.NewGuid().ToString()
+                    WorkspaceId = Guid.NewGuid().ToString(),
+                    // WT-428: the lobby now keys on this setting, not on room status.
+                    RequiresApproval = true
                 }));
 
         var meetingRoom = new MeetingRoom
