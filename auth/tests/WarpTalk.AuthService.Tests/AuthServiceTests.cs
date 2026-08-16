@@ -110,6 +110,58 @@ public class AuthServiceTests
     }
 
     /// <summary>
+    /// The sign-up wizard's third step has to land somewhere, and this is the only place it can.
+    ///
+    /// Registration returns no session (BR-02), so there is no authenticated moment between
+    /// "account created" and "first meeting" in which the client could save these. Before the
+    /// wizard existed, every new account's first meeting ran on the platform default speak/listen
+    /// pair — TranslationRoomService reads exactly this row when somebody joins — and the only way
+    /// to discover that was to notice it mid-meeting.
+    /// </summary>
+    [Fact]
+    public async Task RegisterAsync_ShouldPersistTheLanguagesTheWizardAskedFor()
+    {
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        UserSetting? persisted = null;
+        await _userSettingRepository.AddAsync(
+            Arg.Do<UserSetting>(setting => persisted = setting),
+            Arg.Any<CancellationToken>());
+
+        var result = await _authService.RegisterAsync(new RegisterRequest(
+            "vi-user@warptalk.vn", "Password123!", "Vi User", "vi-VN", "en-US"));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        Assert.Equal("vi-VN", persisted!.DefaultSpeakLanguage);
+        Assert.Equal("en-US", persisted.DefaultListenLanguage);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ShouldFallBackToPlatformDefaults_WhenNoLanguagesWereAsked()
+    {
+        // The Google path and any older client send no languages at all. A missing answer is not
+        // an invalid one — it must produce a usable row, not an empty column.
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        UserSetting? persisted = null;
+        await _userSettingRepository.AddAsync(
+            Arg.Do<UserSetting>(setting => persisted = setting),
+            Arg.Any<CancellationToken>());
+
+        await _authService.RegisterAsync(
+            new RegisterRequest("plain@warptalk.vn", "Password123!", "Plain User"));
+
+        Assert.NotNull(persisted);
+        Assert.Equal(UserConstants.DefaultSpeakLanguage, persisted!.DefaultSpeakLanguage);
+        Assert.Equal(UserConstants.DefaultListenLanguage, persisted.DefaultListenLanguage);
+    }
+
+    /// <summary>
     /// The spec-137 anti-takeover guard. <c>AutoVerifySelfRegistration</c> defaulted to true and
     /// was set nowhere, so every self-registered address was treated as proven — which meant
     /// someone could register an address they did not control and be trusted as its owner.
