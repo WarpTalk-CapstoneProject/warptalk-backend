@@ -377,6 +377,30 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    /// <summary>
+    /// The invitee accepts their own invitation. Not a join: the meeting is usually still ahead,
+    /// and this is the only action the invitation notification can offer when it arrives.
+    /// </summary>
+    [HttpPost("{id}/invitations/accept")]
+    public async Task<IActionResult> AcceptTranslationRoomInvitation(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.AcceptTranslationRoomInvitationAsync(
+            id, userId.Value, User.GetEmail(), ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
     [HttpGet("{id}/feedback/me")]
     public async Task<IActionResult> GetMyFeedback(Guid id, CancellationToken ct)
     {

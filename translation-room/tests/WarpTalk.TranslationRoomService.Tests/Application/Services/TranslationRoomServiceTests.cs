@@ -1627,4 +1627,123 @@ public class TranslationRoomServiceTests
 
         emitted.Should().Equal(AudioRoutingEventType.config_ready.ToString());
     }
+
+    // ── Accepting an invitation ────────────────────────────────────────────────────────────────
+    //
+    // An invitation existed as an email and a PENDING row and nothing in the app could answer it.
+    // Accept is the invitee's RSVP and is deliberately NOT a join: the meeting is usually still
+    // ahead of them, so joining would put them in a room that has not opened.
+
+    private Mock<ITranslationRoomInvitationRepository> ArrangeInvitationLookup(
+        TranslationRoomInvitation? found)
+    {
+        var repo = new Mock<ITranslationRoomInvitationRepository>();
+        repo.Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(found);
+        _mockUow.Setup(u => u.TranslationRoomInvitationRepository).Returns(repo.Object);
+        return repo;
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_FlipsPendingToAccepted()
+    {
+        var roomId = Guid.NewGuid();
+        var invitation = new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "PENDING"
+        };
+        var repo = ArrangeInvitationLookup(invitation);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Status.Should().Be("ACCEPTED");
+        invitation.Status.Should().Be("ACCEPTED");
+        repo.Verify(r => r.Update(invitation), Times.Once);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_IsIdempotent()
+    {
+        // The same notification carries an Accept button in two places — the popup and the bell —
+        // so being clicked twice is ordinary use, not an error to report back to the invitee.
+        var roomId = Guid.NewGuid();
+        ArrangeInvitationLookup(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "ACCEPTED"
+        });
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        result.IsSuccess.Should().BeTrue();
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_RefusesWhenNoInvitationIsAddressedToTheCaller()
+    {
+        ArrangeInvitationLookup(null);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            Guid.NewGuid(), Guid.NewGuid(), "stranger@example.com");
+
+        // NotFound rather than Forbidden: a caller with no invitation must not learn from this
+        // endpoint whether a room with that id exists.
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_RefusesWithoutAnEmailClaim()
+    {
+        // Invitations are keyed by ADDRESS. With no email there is nothing to match, and probing
+        // the repository with an empty string would match nothing only by luck.
+        var repo = ArrangeInvitationLookup(null);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            Guid.NewGuid(), Guid.NewGuid(), "   ");
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        repo.Verify(r => r.FirstOrDefaultAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_WillNotReverseADecline()
+    {
+        var roomId = Guid.NewGuid();
+        ArrangeInvitationLookup(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "DECLINED"
+        });
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        // Nothing writes DECLINED today. This is the guard for when something does: the host has
+        // already been told this person is not coming.
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.InvalidState);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

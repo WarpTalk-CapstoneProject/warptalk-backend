@@ -68,6 +68,29 @@ public interface ITranslationRoomService
         CancellationToken ct = default);
 
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The invitee's own answer to "you were invited": flips their PENDING invitation to ACCEPTED.
+    ///
+    /// Deliberately NOT the same act as joining. Joining seats you in the room and needs the room
+    /// to be live; accepting is an RSVP to a meeting that is usually still in the future, and it is
+    /// the only thing the invitation notification can offer at the moment it arrives.
+    ///
+    /// Keyed by the caller's EMAIL claim, because invitations are stored by email and an invitee
+    /// may have no participant row and no workspace membership — the same identity
+    /// <see cref="Domain.Authorization.RoomReadAccess"/> already resolves them by. A caller with no
+    /// invitation of their own gets NotFound rather than Forbidden: whether a room exists is not
+    /// something an uninvited caller may learn from this endpoint.
+    ///
+    /// Idempotent. Accepting an already-ACCEPTED invitation succeeds and returns the same row,
+    /// because the button lives in a notification that can legitimately be clicked twice — from
+    /// the popup and again from the bell.
+    /// </summary>
+    Task<Result<TranslationRoomInvitationDto>> AcceptTranslationRoomInvitationAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
     /// <summary>

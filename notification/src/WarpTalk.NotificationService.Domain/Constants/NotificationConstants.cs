@@ -8,6 +8,20 @@ public static class NotificationConstants
     // Notification Types
     public const string TypeSystemAlert = "SYSTEM_ALERT";
     public const string TypeMeetingInvite = "MEETING_INVITE";
+    /// <summary>
+    /// The type translation-room ACTUALLY sends when somebody is invited to a room
+    /// (TranslationRoomService.MeetingInvitedNotificationType). It is NOT
+    /// <see cref="TypeMeetingInvite"/>: that constant is a different string ("MEETING_INVITE")
+    /// with a different payload schema (meeting_id + inviter_name) and no producer anywhere.
+    ///
+    /// The past tense is what broke it. "MEETING_INVITED" was absent from the validator's schema
+    /// table, so every invitation notification arrived as an UNKNOWN type carrying a payload and
+    /// was rejected with UNSUPPORTED_NOTIFICATION_TYPE — the same failure MEETING_STARTED and
+    /// MEETING_SUMMARY_READY had, and for the same reason. The producer does not read the reply,
+    /// so it logged "invite_notification_sent" and nothing was ever created: zero MEETING_INVITED
+    /// rows against 538 invitations, while its siblings persisted normally.
+    /// </summary>
+    public const string TypeMeetingInvited = "MEETING_INVITED";
     // WT-14: scheduled-meeting reminders (T-10min / T-1min), sent by the translation-room
     // service's ReminderNotificationWorker via SendNotification.
     public const string TypeMeetingReminder = "MEETING_REMINDER";
