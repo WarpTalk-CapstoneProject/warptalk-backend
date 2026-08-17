@@ -51,6 +51,16 @@ public sealed class EgressCompletion : IEgressCompletion
             }
         }
 
+        // WT-473: when the recording STARTED, which LiveKit has been sending all along and this
+        // handler discarded.
+        //
+        // It is the field that makes "click a transcript line, seek the video" possible at all.
+        // Transcript offsets are measured from the first audio chunk the STT pipeline saw
+        // (stt_worker._elapsed_ms), and a recording starts whenever the host switched it on — so
+        // without a recording origin the two clocks cannot be reconciled, and every seek lands at
+        // an offset that varies per meeting.
+        var startedAt = ReadEgressStartedAt(egressInfo);
+
         // A failed or empty egress has no recording artifact. Clearing the id is still correct —
         // the room is not recording any more — but there is nothing to publish.
         if (string.IsNullOrWhiteSpace(egressId) || string.IsNullOrWhiteSpace(fileUrl))
@@ -67,7 +77,8 @@ public sealed class EgressCompletion : IEgressCompletion
                 GetFileFormat(fileUrl),
                 fileSizeBytes,
                 ContainsRawAudio: true,
-                ContainsRawVideo: true));
+                ContainsRawVideo: true,
+                StartedAt: startedAt));
 
         // Publishing the SAME egress id twice — once from the webhook, once from the sweep — is
         // safe and expected: RecordingCompletedEventProcessor treats an artifact that already
@@ -90,6 +101,44 @@ public sealed class EgressCompletion : IEgressCompletion
         return EgressCompletionOutcome.Published;
     }
 
+    /// <summary>
+    /// WT-473: LiveKit's egress start time, as UTC.
+    ///
+    /// EgressInfo carries it as a UNIX timestamp in NANOSECONDS — a proto int64, not seconds and
+    /// not milliseconds. Reading it as either would put the recording in 1970 or in the year
+    /// 56000, and both are the kind of wrong that renders as a plausible-looking date rather than
+    /// an error.
+    ///
+    /// Both spellings are accepted for the same reason the rest of this file accepts both: LiveKit's
+    /// Twirp JSON emits camelCase, the proto field names are snake_case, and some deployments send
+    /// those. It also tolerates a STRING, because JSON cannot hold an int64 losslessly and some
+    /// emitters quote large numbers rather than risk it.
+    ///
+    /// Returns null rather than a guess when the field is absent or unreadable. A recording with no
+    /// known start is un-seekable, which is a state the UI can show honestly; a fabricated start is
+    /// a seek that is silently wrong.
+    /// </summary>
+    private static DateTime? ReadEgressStartedAt(JsonElement egressInfo)
+    {
+        var nanoseconds = TryGetInt64(egressInfo, "startedAt")
+            ?? TryGetInt64(egressInfo, "started_at")
+            ?? TryGetInt64FromString(egressInfo, "startedAt")
+            ?? TryGetInt64FromString(egressInfo, "started_at");
+
+        // 0 is LiveKit's "not set", not the epoch. An egress that never started reports it, and
+        // storing 1970-01-01 would be indistinguishable from a real value downstream.
+        if (nanoseconds is null || nanoseconds <= 0) return null;
+
+        return DateTimeOffset.FromUnixTimeMilliseconds(nanoseconds.Value / 1_000_000).UtcDateTime;
+    }
+
+    private static long? TryGetInt64FromString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind == JsonValueKind.String
+        && long.TryParse(value.GetString(), out var number)
+            ? number
+            : null;
+
     private static JsonElement? TryGetArray(JsonElement element, string propertyName) =>
         element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.Array
             ? value
@@ -100,8 +149,22 @@ public sealed class EgressCompletion : IEgressCompletion
             ? value.GetString()
             : null;
 
+    /// <summary>
+    /// WT-473: guarded on <c>ValueKind == Number</c>, and that guard is a bug fix.
+    ///
+    /// <c>JsonElement.TryGetInt64</c> does NOT return false for a quoted number — it THROWS
+    /// InvalidOperationException. So a LiveKit payload that quotes an int64 (which emitters do,
+    /// because JSON cannot hold one losslessly) took the whole webhook down through this helper,
+    /// and a thrown webhook means the recording artifact is never created at all. The field being
+    /// unreadable is a small loss; losing the recording is not.
+    ///
+    /// This applied to <c>size</c>/<c>fileSize</c> before <c>startedAt</c> existed — the crash was
+    /// latent, waiting for a deployment that quoted a file size.
+    /// </summary>
     private static long? TryGetInt64(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var number)
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt64(out var number)
             ? number
             : null;
 

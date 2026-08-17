@@ -43,6 +43,177 @@ public sealed class MeetingWebhookRecordingTests
         Assert.Null(room.EndedAt);
     }
 
+    /// <summary>
+    /// WT-473. LiveKit reports the egress start as a UNIX timestamp in NANOSECONDS — a proto int64.
+    ///
+    /// Reading it as seconds puts the recording in the year 56000; reading it as milliseconds puts
+    /// it 50,000 years early. Both render as a plausible-looking date rather than an error, which is
+    /// exactly why this needs a test with a literal expected instant rather than a round-trip.
+    /// </summary>
+    [Fact]
+    public async Task EgressEnded_PublishesTheRecordingStartAsUtc()
+    {
+        var room = NewRecordingRoom();
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        // 2026-08-17T10:24:00Z expressed in nanoseconds.
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egressId": "EG_123",
+                "roomName": "room-123",
+                "startedAt": 1786962240000000000,
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4", "size": 4096 } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        var envelope = ReadEnvelope(published);
+        Assert.Equal(
+            new DateTime(2026, 8, 17, 10, 24, 0, DateTimeKind.Utc),
+            envelope.Payload.StartedAt);
+    }
+
+    /// <summary>
+    /// snake_case as well as camelCase, for the reason the rest of this handler accepts both:
+    /// LiveKit's Twirp JSON emits camelCase, the proto field names are snake_case, and some
+    /// deployments send those. Reading only one spelling is a silently un-seekable recording.
+    /// </summary>
+    [Fact]
+    public async Task EgressEnded_ReadsTheRecordingStartFromSnakeCase()
+    {
+        var room = NewRecordingRoom();
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egress_id": "EG_123",
+                "room_name": "room-123",
+                "started_at": 1786962240000000000,
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4" } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            new DateTime(2026, 8, 17, 10, 24, 0, DateTimeKind.Utc),
+            ReadEnvelope(published).Payload.StartedAt);
+    }
+
+    /// <summary>
+    /// JSON cannot hold an int64 losslessly, so some emitters quote large numbers. A quoted start
+    /// must not be read as "absent".
+    /// </summary>
+    [Fact]
+    public async Task EgressEnded_AcceptsAQuotedRecordingStart()
+    {
+        var room = NewRecordingRoom();
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egressId": "EG_123",
+                "roomName": "room-123",
+                "startedAt": "1786962240000000000",
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4" } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(
+            new DateTime(2026, 8, 17, 10, 24, 0, DateTimeKind.Utc),
+            ReadEnvelope(published).Payload.StartedAt);
+    }
+
+    /// <summary>
+    /// Absent and zero both mean "not known". LiveKit reports 0 for an egress that never started,
+    /// and storing 1970-01-01 would be indistinguishable downstream from a real recording made then
+    /// — a seek that is confidently wrong rather than declared un-seekable.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("\"startedAt\": 0,")]
+    public async Task EgressEnded_LeavesTheRecordingStartNull_WhenItIsAbsentOrZero(string startedAtLine)
+    {
+        var room = NewRecordingRoom();
+        var unitOfWork = CreateUnitOfWork(room);
+        var (redis, published) = CaptureRedis();
+        var sut = CreateService(unitOfWork.Object, redis.Object);
+
+        using var payload = JsonDocument.Parse(
+            $$"""
+            {
+              "event": "egress_ended",
+              "egressInfo": {
+                "egressId": "EG_123",
+                "roomName": "room-123",
+                {{startedAtLine}}
+                "fileResults": [ { "location": "s3://recordings/room-123.mp4" } ]
+              }
+            }
+            """);
+
+        var result = await sut.ProcessWebhookAsync(payload.RootElement);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(ReadEnvelope(published).Payload.StartedAt);
+    }
+
+    private static MeetingRoom NewRecordingRoom() => new()
+    {
+        Id = Guid.NewGuid(),
+        TranslationRoomId = Guid.NewGuid(),
+        ProviderRoomName = "room-123",
+        ActiveEgressId = "EG_123",
+        Status = "Active",
+    };
+
+    private static (Mock<IRedisService> Redis, Func<Dictionary<string, string>?> Published) CaptureRedis()
+    {
+        Dictionary<string, string>? fields = null;
+        var redis = new Mock<IRedisService>();
+        redis.Setup(service => service.PublishStreamMessageAsync(
+                "meeting:domain-events",
+                It.IsAny<Dictionary<string, string>>()))
+            .Callback<string, Dictionary<string, string>>((_, published) => fields = published)
+            .ReturnsAsync(Result.Success());
+        return (redis, () => fields);
+    }
+
+    private static EventEnvelope<MeetingRecordingCompletedEventPayload> ReadEnvelope(
+        Func<Dictionary<string, string>?> published)
+    {
+        var fields = published();
+        Assert.NotNull(fields);
+        var envelope = JsonSerializer.Deserialize<EventEnvelope<MeetingRecordingCompletedEventPayload>>(
+            fields!["envelope"]);
+        Assert.NotNull(envelope);
+        return envelope!;
+    }
+
     [Fact]
     public async Task EgressEnded_PublishesVersionedDurableRecordingEvent()
     {

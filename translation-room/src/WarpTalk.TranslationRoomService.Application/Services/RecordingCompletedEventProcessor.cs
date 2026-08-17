@@ -66,7 +66,10 @@ public sealed class RecordingCompletedEventProcessor : IRecordingCompletedEventP
             ContainsRawVideo = payload.ContainsRawVideo,
             ConsentRequired = true,
             Status = ArtifactStatus.Completed.ToString().ToUpperInvariant(),
-            CreatedAt = envelope.OccurredAt.ToUniversalTime()
+            CreatedAt = envelope.OccurredAt.ToUniversalTime(),
+            // WT-473. Null when the event predates the field or LiveKit did not report it; the UI
+            // reads that as "not seekable" rather than substituting zero.
+            RecordingStartedAt = payload.StartedAt?.ToUniversalTime()
         };
 
         await _unitOfWork.TranslationRoomArtifactRepository.AddAsync(artifact, ct);
