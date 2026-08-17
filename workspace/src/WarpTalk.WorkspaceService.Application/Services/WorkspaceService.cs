@@ -108,32 +108,21 @@ public class WorkspaceService : IWorkspaceService
             }
 
             // ── Which membership policy is being asked for ────────────────────────
-            var domainsToVerify = new List<string>();
-            bool requireVerified;
+            var domainsToVerify = (request.VerifiedDomains ?? new List<string>())
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Select(d => d.Trim().ToLowerInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-            if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
+            if (domainsToVerify.Count == 0)
             {
-                domainsToVerify = request.VerifiedDomains
-                    .Where(d => !string.IsNullOrWhiteSpace(d))
-                    .Select(d => d.Trim().ToLowerInvariant())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
-            }
-            else
-            {
-                if (request.RequireVerifiedDomainForInternal == true)
+                if (request.RequireVerifiedDomainForInternal == true || (request.RequireVerifiedDomainForInternal == null && !emailAddress.IsPublicDomain))
                 {
-                    domainsToVerify = new List<string> { emailAddress.Domain };
-                    requireVerified = true;
-                }
-                else
-                {
-                    requireVerified = false;
+                    domainsToVerify.Add(emailAddress.Domain);
                 }
             }
 
-            requireVerified = domainsToVerify.Count > 0;
+            var requireVerified = domainsToVerify.Count > 0;
 
             // ── Domain claims ─────────────────────────────────────────────────────
             foreach (var domain in domainsToVerify)
