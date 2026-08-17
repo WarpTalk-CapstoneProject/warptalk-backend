@@ -108,29 +108,41 @@ public class WorkspaceService : IWorkspaceService
             }
 
             // ── Which membership policy is being asked for ────────────────────────
-            var requireVerified = request.RequireVerifiedDomainForInternal ?? true;
+            var domainsToVerify = new List<string>();
+            bool requireVerified;
 
-            var domainsToVerify = (request.VerifiedDomains ?? new List<string>())
-                .Where(d => !string.IsNullOrWhiteSpace(d))
-                .Select(d => d.Trim().ToLowerInvariant())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (requireVerified && domainsToVerify.Count == 0 && !emailAddress.IsPublicDomain)
+            if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
             {
-                domainsToVerify.Add(emailAddress.Domain);
+                domainsToVerify = request.VerifiedDomains
+                    .Where(d => !string.IsNullOrWhiteSpace(d))
+                    .Select(d => d.Trim().ToLowerInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
+            }
+            else
+            {
+                if (request.RequireVerifiedDomainForInternal == true)
+                {
+                    domainsToVerify = new List<string> { emailAddress.Domain };
+                    requireVerified = true;
+                }
+                else
+                {
+                    requireVerified = false;
+                }
             }
 
             requireVerified = domainsToVerify.Count > 0;
 
-            if (requireVerified && emailAddress.IsPublicDomain)
-            {
-                return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, ErrorCodes.ValidationError);
-            }
-
             // ── Domain claims ─────────────────────────────────────────────────────
             foreach (var domain in domainsToVerify)
             {
+                if (!string.Equals(domain, emailAddress.Domain, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, ErrorCodes.Forbidden);
+                }
+
                 if (EmailAddress.IsPublicDomainName(domain))
                 {
                     return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
