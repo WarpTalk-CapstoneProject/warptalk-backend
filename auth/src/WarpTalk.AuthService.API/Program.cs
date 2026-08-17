@@ -124,6 +124,22 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IWorkspaceInvitationClient, WorkspaceInvitationGrpcClient>();
 
+// The platform audit log lives in the workspace service, and auth has no bus to publish onto.
+// Same address as the invitation client above — one workspace service, two contracts on it.
+//
+// Synchronous by design: AdminUserService records an action before committing it and abandons the
+// change when the record fails, which is the only ordering under which "every privileged action
+// on an account is audited" is a guarantee rather than a hope.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
+
 // Clean & Secure JWT Authentication
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();

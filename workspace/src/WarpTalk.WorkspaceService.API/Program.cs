@@ -87,6 +87,9 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceInvitationGrpcService>();
 app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceGrpcService>();
+// The append path into the audit log for services with no bus. Hosted here because this service
+// owns the store — the same reason it consumes admin.action_recorded.
+app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.AdminAuditGrpcService>();
 app.MapWarpTalkServiceHealthChecks();
 
 app.MapGet("/", () => "WarpTalk Workspace Service is running.");

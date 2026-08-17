@@ -503,6 +503,69 @@ public class SubscriptionService : ISubscriptionService
         return (sub, plan, null);
     }
 
+    public async Task<Result<SubscriptionDto>> AdminChangePlanAsync(
+        Guid workspaceId,
+        Guid planId,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (sub.PlanId == planId)
+                return Result.Failure<SubscriptionDto>(
+                    "The subscription is already on this plan.",
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
+                p => p.Id == planId && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                    ErrorCodes.BillingPlanNotFound);
+
+            // A hidden plan is retired from sale; moving a customer ONTO one recreates it by the
+            // back door and puts numbers in force that no price page describes.
+            if (!plan.IsActive)
+                return Result.Failure<SubscriptionDto>(
+                    "The target plan is deactivated. Reactivate it before moving a subscription onto it.",
+                    ErrorCodes.ValidationError);
+
+            sub.PlanId = plan.Id;
+            sub.UpdatedAt = DateTime.UtcNow;
+            sub.UpdatedBy = adminUserId;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Layer 2 of the resolution order just moved for this workspace.
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.PlanChanged,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "System admin {AdminUserId} moved workspace {WorkspaceId} subscription {SubscriptionId} to plan {PlanId} ({PlanName})",
+                adminUserId, workspaceId, sub.Id, plan.Id, plan.Name);
+
+            return Result.Success(sub.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error changing plan for workspace {WorkspaceId} to plan {PlanId}", workspaceId, planId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<SubscriptionDto>> UpdateContractTermsAsync(
         Guid workspaceId,
         UpdateSubscriptionContractTermsRequest request,

@@ -404,12 +404,14 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
             }
 
-            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
-            if (!roleName.IsOwnerOrAdmin())
-            {
-                return Result.Failure<WorkspaceSettingsDto>(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
-            }
-
+            // Any active member may READ. The Owner/Admin gate that used to sit here was an
+            // UPDATE-era rule applied to GET — its own error constant is named
+            // OnlyOwnerAdminCanUpdateSettings — and the read's consumers are ordinary members:
+            // the join page and the create-room dialog both ask for these settings to learn the
+            // workspace's language policy and defaults, so every plain Member got a 403 the
+            // moment either surface loaded ("sao nó báo ws/setting 403 v"). Nothing in this
+            // document is a secret from the workspace's own members — it is the rules they are
+            // being asked to follow. Writing stays Owner/Admin-only in UpdateWorkspaceSettings.
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
 
             // The ceiling travels WITH the setting, because the setting alone is not the rule.

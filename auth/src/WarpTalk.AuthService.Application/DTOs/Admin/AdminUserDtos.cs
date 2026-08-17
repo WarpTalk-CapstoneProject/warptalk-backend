@@ -75,3 +75,13 @@ public record AdminUserSessionDto(
     DateTime CreatedAt,
     DateTime ExpiresAt);
 
+
+/// <summary>
+/// What every privileged action on an account carries.
+///
+/// The reason is required and is not decoration: it is written to the platform audit log, and it
+/// is the only place the answer to "why did somebody at WarpTalk end this person's sessions" ever
+/// exists. The actor is NEVER taken from here — it comes from the authenticated claims, because a
+/// client-supplied actor would make the trail forgeable.
+/// </summary>
+public record AdminUserActionRequest(string Reason);

@@ -49,6 +49,69 @@ public class AdminUsersController : ControllerBase
         return ToActionResult(result);
     }
 
+    /// <summary>
+    /// Ends every session this account has open.
+    ///
+    /// POST rather than DELETE: nothing is removed. The refresh tokens stay as rows with a
+    /// revocation time on them, which is what lets the account's history still show that it was
+    /// signed in and when that stopped.
+    /// </summary>
+    [HttpPost("{id:guid}/revoke-sessions")]
+    public async Task<IActionResult> RevokeSessions(
+        Guid id,
+        [FromBody] AdminUserActionRequest request,
+        CancellationToken ct)
+    {
+        if (!TryResolveActor(out var actor)) return UnauthorizedActor();
+        return ToActionResult(await _adminUserService.RevokeSessionsAsync(id, actor, request, ct));
+    }
+
+    [HttpPost("{id:guid}/deactivate")]
+    public async Task<IActionResult> Deactivate(
+        Guid id,
+        [FromBody] AdminUserActionRequest request,
+        CancellationToken ct)
+    {
+        if (!TryResolveActor(out var actor)) return UnauthorizedActor();
+        return ToActionResult(
+            await _adminUserService.SetAccountActiveAsync(id, isActive: false, actor, request, ct));
+    }
+
+    [HttpPost("{id:guid}/reactivate")]
+    public async Task<IActionResult> Reactivate(
+        Guid id,
+        [FromBody] AdminUserActionRequest request,
+        CancellationToken ct)
+    {
+        if (!TryResolveActor(out var actor)) return UnauthorizedActor();
+        return ToActionResult(
+            await _adminUserService.SetAccountActiveAsync(id, isActive: true, actor, request, ct));
+    }
+
+    /// <summary>Clears a failed-login lockout. Separate from reactivate: they are different states.</summary>
+    [HttpPost("{id:guid}/unlock")]
+    public async Task<IActionResult> Unlock(
+        Guid id,
+        [FromBody] AdminUserActionRequest request,
+        CancellationToken ct)
+    {
+        if (!TryResolveActor(out var actor)) return UnauthorizedActor();
+        return ToActionResult(await _adminUserService.UnlockAsync(id, actor, request, ct));
+    }
+
+    /// <summary>
+    /// The actor, from the token and never from the request.
+    ///
+    /// A token that passed the admin policy but carries no usable subject is a 401, not a
+    /// placeholder actor: an audit entry naming the wrong person is worse than no action at all.
+    /// </summary>
+    private bool TryResolveActor(out AdminActorContext actor) =>
+        AdminActorContext.TryResolve(User, HttpContext, out actor);
+
+    private IActionResult UnauthorizedActor() =>
+        Unauthorized(new ApiErrorResponse(
+            "The token carries no usable subject.", ErrorCodes.Unauthorized));
+
     private IActionResult ToActionResult<T>(Result<T> result)
     {
         if (result.IsSuccess) return Ok(result.Value);

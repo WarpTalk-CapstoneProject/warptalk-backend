@@ -80,3 +80,21 @@ public record AdminWorkspaceLifecycleEventDto(
     DateTime PerformedAt);
 
 public record AdminWorkspaceLifecycleRequest(string Reason);
+
+/// <summary>
+/// One row of the roster an admin sees: who is in the workspace and in what capacity — the
+/// operational facts. The tenant's content (documents, knowledge, meetings) stays out of the
+/// admin portal on purpose; membership is platform bookkeeping, not workspace-private data.
+/// </summary>
+/// <param name="Resolved">False when Auth could not resolve the account; the row still renders.</param>
+public record AdminWorkspaceMemberDto(
+    Guid UserId,
+    string? FullName,
+    string? Email,
+    string? AvatarUrl,
+    bool Resolved,
+    string Role,
+    string MembershipType,
+    string Status,
+    bool CanCreateMeetings,
+    DateTime JoinedAt);

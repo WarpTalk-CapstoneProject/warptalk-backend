@@ -296,19 +296,8 @@ public class WorkspaceKnowledgeServiceTests
         Assert.Equal(ErrorCodes.InternalServerError, result.ErrorCode);
     }
 
-    [Fact]
-    public async Task GetKnowledgeForAdminAsync_ConsultsNoMembership()
-    {
-        GivenNoMembership();
-        GivenChunks(DocumentChunk());
-
-        var result = await _service.GetKnowledgeForAdminAsync(
-            _workspaceId, new GetWorkspaceKnowledgeQuery());
-
-        Assert.True(result.IsSuccess);
-        Assert.Single(result.Value!.Items);
-        await _authIdentity.DidNotReceiveWithAnyArgs().GetRoleByIdAsync(default, default);
-    }
+    // GetKnowledgeForAdminAsync and its test are gone with the admin knowledge endpoint:
+    // tenant content stays out of the admin portal (2026-08-17).
 
     // ── Correcting and removing what was indexed ─────────────────────────────────────────
     //

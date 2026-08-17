@@ -7,6 +7,7 @@ using WarpTalk.BillingService.API.Authorization;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.Shared;
+using WarpTalk.Shared.Extensions;
 
 namespace WarpTalk.BillingService.API.Controllers;
 
@@ -27,6 +28,28 @@ public class CreditsController : ControllerBase
     public async Task<ActionResult<CreditBalanceDto>> GetWorkspaceCredits(Guid workspaceId, CancellationToken cancellationToken)
     {
         var result = await _creditService.GetWorkspaceCreditsAsync(workspaceId, cancellationToken);
+        return this.ToActionResult(result);
+    }
+
+    /// <summary>
+    /// Manual credit adjustment, platform admin only. The service method existed, unit-tested,
+    /// for weeks with no route in front of it — the portal's Adjust Credit button posted here and
+    /// 404'd. The actor comes from the token, never the body, because the adjustment is written
+    /// into the audit trail under their id.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId}/adjust")]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<CreditTransactionDto>> AdjustWorkspaceCredits(
+        Guid workspaceId,
+        [FromBody] AdjustCreditsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var adminUserId = User.GetUserId();
+        if (adminUserId == null)
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+
+        var result = await _creditService.AdjustWorkspaceCreditsAsync(
+            workspaceId, request, adminUserId.Value, cancellationToken);
         return this.ToActionResult(result);
     }
 

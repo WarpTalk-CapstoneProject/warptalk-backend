@@ -33,4 +33,21 @@ public interface IAdminWorkspaceService
         Guid actorId,
         string? correlationId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Soft delete with the same member semantics as the Owner's own delete (WT-417): the
+    /// membership rows go with the workspace, so nothing is left holding a UNIQUE slot against a
+    /// future rejoin. Records an audit row in the same transaction. Irreversible from this API.
+    /// </summary>
+    Task<Result<AdminWorkspaceDetailDto>> DeleteAsync(
+        Guid workspaceId,
+        string reason,
+        Guid actorId,
+        string? correlationId,
+        CancellationToken ct = default);
+
+    /// <summary>Active member roster with identities resolved from Auth. Read-only.</summary>
+    Task<Result<System.Collections.Generic.IReadOnlyList<AdminWorkspaceMemberDto>>> GetMembersAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
 }
