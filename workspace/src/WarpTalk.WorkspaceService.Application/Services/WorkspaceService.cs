@@ -153,7 +153,7 @@ public class WorkspaceService : IWorkspaceService
                     .Select(d => d.Trim().ToLowerInvariant())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
+                requireVerified = domainsToVerify.Count > 0;
             }
             else
             {
