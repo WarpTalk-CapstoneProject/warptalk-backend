@@ -41,32 +41,22 @@ public static class VoiceProfileConsentContract
     {
         if (headerBytes is null || headerBytes.Length < 4) return false;
 
-        // WAV: "RIFF" (0x52, 0x49, 0x46, 0x46)
-        if (headerBytes[0] == 0x52 && headerBytes[1] == 0x49 && headerBytes[2] == 0x46 && headerBytes[3] == 0x46)
-            return true;
-
-        // OGG: "OggS" (0x4F, 0x67, 0x67, 0x53)
-        if (headerBytes[0] == 0x4F && headerBytes[1] == 0x67 && headerBytes[2] == 0x67 && headerBytes[3] == 0x53)
-            return true;
-
-        // MP3 with ID3 header: "ID3" (0x49, 0x44, 0x33)
-        if (headerBytes[0] == 0x49 && headerBytes[1] == 0x44 && headerBytes[2] == 0x33)
-            return true;
-
-        // MP3 frame sync header: 0xFF 0xFB, 0xFF 0xFA, 0xFF 0xF3, 0xFF 0xF2
-        if (headerBytes[0] == 0xFF && (headerBytes[1] & 0xE0) == 0xE0)
-            return true;
-
-        // WebM / EBML: 0x1A 0x45 0xDF 0xA3
-        if (headerBytes[0] == 0x1A && headerBytes[1] == 0x45 && headerBytes[2] == 0xDF && headerBytes[3] == 0xA3)
-            return true;
-
-        // M4A / MP4: "ftyp" box at offset 4 (bytes 4-7: 0x66, 0x74, 0x79, 0x70)
-        if (headerBytes.Length >= 8 &&
-            headerBytes[4] == 0x66 && headerBytes[5] == 0x74 && headerBytes[6] == 0x79 && headerBytes[7] == 0x70)
-            return true;
-
-        return false;
+        return headerBytes switch
+        {
+            // WAV: "RIFF"
+            [0x52, 0x49, 0x46, 0x46, ..] => true,
+            // OGG: "OggS"
+            [0x4F, 0x67, 0x67, 0x53, ..] => true,
+            // MP3 ID3 header: "ID3"
+            [0x49, 0x44, 0x33, ..] => true,
+            // WebM / EBML: 0x1A 0x45 0xDF 0xA3
+            [0x1A, 0x45, 0xDF, 0xA3, ..] => true,
+            // MP3 frame sync header (0xFF followed by 0xE0 mask)
+            [0xFF, var b2, ..] when (b2 & 0xE0) == 0xE0 => true,
+            // M4A / MP4: "ftyp" box at offset 4
+            [_, _, _, _, 0x66, 0x74, 0x79, 0x70, ..] => true,
+            _ => false
+        };
     }
 
     /// <summary>
