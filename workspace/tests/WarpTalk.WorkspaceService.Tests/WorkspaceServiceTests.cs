@@ -239,36 +239,55 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task CreateWorkspaceAsync_ShouldSucceed_WithoutVerifiedDomain_WhenNoDomainProvided()
+    public async Task CreateWorkspaceAsync_ShouldClaimCallerDomain_WhenPolicyOmitted()
     {
-        // Arrange
-        // NOTE: this test used to sign in as owner@gmail.com and assert success, which
-        // pinned the public-domain hole in place rather than any intended behaviour.
-        // A corporate account opting out of verified-domain classification is the real
-        // case it was meant to cover, and that still works.
+        // Omitting requireVerifiedDomainForInternal now means domain-verified, claiming the
+        // caller's own email domain. It used to mean the opposite — no policy, no domain.
+        //
+        // The default moved because "no policy" is the weaker of the two and should be
+        // chosen on purpose, not fallen into by leaving a field out. It also matches the
+        // database default and spec 139, which treats domain-verified as the model.
         var userId = Guid.NewGuid();
         var user = new User { Id = userId, Email = "owner@corp-example.com" };
-        var request = new CreateWorkspaceRequest("Personal Team", "https://cdn.com/logo.png"); // No verified domains, RequireVerifiedDomainForInternal = null
+        var request = new CreateWorkspaceRequest("Personal Team", "https://cdn.com/logo.png");
 
         StubUser(userId, user);
         var ownerRole = new Role { Id = Guid.NewGuid(), Name = "Owner" };
         StubRoleByName("Owner", ownerRole);
 
-        // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
-        // Assert
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Value);
         Assert.Equal("Personal Team", result.Value.Name);
 
-        // Verify we saved the workspace with empty verified domains and RequireVerifiedDomainForInternal = false
+        await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
+            w.Settings.Contains("\"RequireVerifiedDomainForInternal\":true") &&
+            w.Settings.Contains("\"VerifiedDomains\":[\"corp-example.com\"]")), Arg.Any<CancellationToken>());
+
+        await _workspaceVerifiedDomainRepository.Received(1).AddAsync(
+            Arg.Is<WorkspaceVerifiedDomain>(d => d.Domain == "corp-example.com"), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldClaimNoDomain_WhenPolicyExplicitlyOff()
+    {
+        // The opt-out the previous test used to cover, now stated explicitly.
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "owner@corp-example.com" };
+        var request = new CreateWorkspaceRequest("Personal Team", null, RequireVerifiedDomainForInternal: false);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        Assert.True(result.IsSuccess);
         await _workspaceRepository.Received(1).AddAsync(Arg.Is<Workspace>(w =>
             w.Settings.Contains("\"RequireVerifiedDomainForInternal\":false") &&
             w.Settings.Contains("\"VerifiedDomains\":[]")), Arg.Any<CancellationToken>());
-
-        // Verify we did NOT add any WorkspaceVerifiedDomain records
-        await _workspaceVerifiedDomainRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
+        await _workspaceVerifiedDomainRepository.DidNotReceiveWithAnyArgs()
+            .AddAsync(Arg.Any<WorkspaceVerifiedDomain>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -348,7 +367,6 @@ public class WorkspaceServiceTests
     /// of the body flag that used to be the bypass.
     /// </summary>
     [Theory]
-    [InlineData(null)]
     [InlineData(false)]
     public async Task CreateWorkspaceAsync_ShouldSucceed_ForPublicEmailDomain(bool? requireVerified)
     {
@@ -1295,6 +1313,18 @@ public class WorkspaceServiceTests
         _workspaceRepository.UpdateSettingsAsync(workspaceId, Arg.Any<WorkspaceConfiguration>(), userId, Arg.Any<CancellationToken>())
             .Returns(true);
 
+        // These settings ask for RequireVerifiedDomainForInternal, which is now satisfiable only
+        // by a row in workspace_verified_domains. The VerifiedDomains list carried in the DTO is
+        // a display mirror and no longer counts as evidence that a domain exists.
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new() { Domain = "warptalk.vn", Status = "verified", VerifiedAt = DateTime.UtcNow }
+            });
+
         // Act
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
 
@@ -1426,49 +1456,6 @@ public class WorkspaceServiceTests
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenDomainIsPublicDomain()
-    {
-        // Arrange
-        var userId = Guid.NewGuid();
-        var workspaceId = Guid.NewGuid();
-        var newSettings = new WorkspaceSettingsDto(
-            "vi",
-            "Asia/Ho_Chi_Minh",
-            new List<string>(),
-            false,
-            5,
-            30,
-            new List<string> { "yahoo.com" }, // Public domain
-            true,
-            true,
-            null,
-            false
-        );
-
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
-            .Returns(new Workspace { Id = workspaceId });
-        _authIdentity.GetUserByIdAsync(userId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = userId, Email = "admin@warptalk.vn" });
-
-        var memberRoleId = Guid.NewGuid();
-        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = memberRoleId };
-        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(member);
-
-        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = memberRoleId, Name = "Owner" });
-
-        // Act
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, newSettings, userId);
-
-        // Assert
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
-        await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
     public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenStrictDomainVerificationHasNoDomains()
     {
         var userId = Guid.NewGuid();
@@ -1497,58 +1484,63 @@ public class WorkspaceServiceTests
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
 
+        // The workspace has no rows in workspace_verified_domains, so its derived policy is
+        // "no domain requirement" and asking to turn the requirement on is not a thing this
+        // endpoint can do — a domain has to be added first, through VerifiedDomainService.
+        //
+        // Note which error comes back. The validator's VerifiedDomainsRequired rule can no
+        // longer be reached from here: the derived-value check refuses the mismatch before the
+        // validator sees it. That rule stays as defense-in-depth for any future caller, but
+        // this path is now structurally incapable of violating it.
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
         var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.VerifiedDomainsRequired, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenRemovedDomainHasActiveInternalMembers()
+    public async Task UpdateWorkspaceSettingsAsync_ShouldFail_WhenAdminTriesToChangeDomainPolicy()
     {
+        // Before this, an Admin could PATCH requireVerifiedDomainForInternal and switch the whole
+        // workspace's membership policy — verified-domain CRUD was Owner-only, but the switch that
+        // gives those domains meaning was not. It is now nobody's to set: the value is derived.
         var userId = Guid.NewGuid();
-        var activeMemberUserId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
-        var ownerRoleId = Guid.NewGuid();
-        var owner = new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = ownerRoleId };
-        var activeInternalMember = new WorkspaceMember
-        {
-            WorkspaceId = workspaceId,
-            UserId = activeMemberUserId,
-            MembershipType = MembershipType.Internal.ToString()
-        };
-        var workspace = new Workspace
-        {
-            Id = workspaceId,
-            AllowExternalCollaboration = true,
-            Settings = "{\"VerifiedDomains\":[\"company.com\"],\"AllowExternalCollaboration\":true}"
-        };
-        var requested = new WorkspaceSettingsDto(
+        var adminRoleId = Guid.NewGuid();
+        var settings = new WorkspaceSettingsDto(
             "en", "UTC", new List<string>(), true, 5, 30,
-            new List<string>(), false, false, null, false);
+            new List<string>(), true,
+            /* requireVerifiedDomainForInternal: */ true,
+            null, false);
 
-        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new Workspace { Id = workspaceId, AllowExternalCollaboration = true });
         _workspaceMemberRepository.FirstOrDefaultAsync(
-                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(owner);
-        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
-            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
-        _workspaceMemberRepository.FindAsync(
                 Arg.Any<Expression<Func<WorkspaceMember, bool>>>(),
                 Arg.Any<string>(),
                 Arg.Any<CancellationToken>())
-            .Returns(new List<WorkspaceMember> { activeInternalMember });
-        _authIdentity.GetUserByIdAsync(activeMemberUserId, Arg.Any<CancellationToken>())
-            .Returns(new User { Id = activeMemberUserId, Email = "member@company.com" });
+            .Returns(new WorkspaceMember { WorkspaceId = workspaceId, UserId = userId, RoleId = adminRoleId });
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminRoleId, Name = "Admin" });
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
-        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, requested, userId);
+        var result = await _workspaceService.UpdateWorkspaceSettingsAsync(workspaceId, settings, userId);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.CannotRevokeDomainWithActiveMembers, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, result.Error);
         await _workspaceRepository.DidNotReceive().UpdateSettingsAsync(
             Arg.Any<Guid>(), Arg.Any<WorkspaceConfiguration>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
