@@ -202,6 +202,37 @@ public class PlanService : IPlanService
                     return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingDuplicatePlanSlug, ErrorCodes.BillingDuplicatePlanSlug);
             }
 
+            // WT-481: a plan somebody can already buy is not a draft.
+            //
+            // Locked when it is PUBLISHED (visible in the buy area) or when anyone is SUBSCRIBED to
+            // it — the second case matters on its own, because hiding a plan does not end the
+            // subscriptions already running on it, and those are exactly the workspaces a silent
+            // price change would hit.
+            //
+            // Refused rather than ignored. Dropping the offending fields would leave the
+            // administrator looking at a success message and a form that still shows what they
+            // typed, which is how you learn about it from a customer instead of from the screen.
+            // SubscriptionRepository, not the `Subscriptions` alias: the alias is a default
+            // interface member, and a mocked IUnitOfWork intercepts the property rather than
+            // running the default body, so it answers null. PublishEntitlementsForPlanAsync
+            // below already reaches for the same member for the same reason.
+            var hasSubscribers = await _unitOfWork.SubscriptionRepository.AnyAsync(
+                s => s.PlanId == id && s.DeletedAt == null,
+                cancellationToken);
+
+            if (plan.IsActive || hasSubscribers)
+            {
+                var lockedChanges = PlanEditPolicy.LockedFieldChanges(plan, request);
+                if (lockedChanges.Count > 0)
+                {
+                    return Result.Failure<PlanDto>(
+                        string.Format(
+                            ApiMessageConstants.ErrorMessages.BillingPlanCommercialTermsLocked,
+                            string.Join(", ", lockedChanges)),
+                        ErrorCodes.BillingPlanCommercialTermsLocked);
+                }
+            }
+
             var changes = new List<string>();
 
             if (plan.Price != request.Price)
