@@ -24,5 +24,11 @@ public interface IAssistantChatRequestPublisher
         IReadOnlyList<ChatTurnDto> history,
         string? pageContextJson = null,
         string? mentionsJson = null,
+        /// <summary>
+        /// WT-474: attachments for this turn, as a JSON array of {dataUrl,name,mimeType}. Not
+        /// persisted — see SendAssistantMessageRequest.Attachments. The Redis field keeps the name
+        /// images_json for wire compatibility with what the worker already reads.
+        /// </summary>
+        string? attachmentsJson = null,
         CancellationToken ct = default);
 }
