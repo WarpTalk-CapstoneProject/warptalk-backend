@@ -153,16 +153,28 @@ public class TranslationRoomsController : ControllerBase
     /// rule before because it holds a code and nothing else, so it read the joiner's own workspace
     /// settings — and someone in workspace A joining a room in workspace B got A's language list.
     ///
-    /// Always 200. An unknown or half-typed code answers with an empty list, which every consumer
+    /// Always 200. An unknown or half-typed code answers with empty lists, which every consumer
     /// reads as "no restriction", because this is called while the user is still typing. It is
     /// therefore not a room-existence probe either. The join endpoint remains the one place a bad
     /// code is reported.
+    ///
+    /// WT-490 added <c>roomLanguages</c>: the set the ROOM declares. The workspace policy alone was
+    /// never enough — a workspace permitting four languages and a room declaring two offered four,
+    /// so a joiner could pick a language nobody in the room would speak. The two limits are sent
+    /// separately and intersected by the caller, because an empty list has to keep meaning
+    /// "unrestricted from this source" rather than "offer nothing".
     /// </summary>
     [HttpGet("join-language-policy/{code}")]
     public async Task<IActionResult> GetJoinLanguagePolicy(string code, CancellationToken ct)
     {
         var result = await _translationRoomService.GetJoinLanguagePolicyByCodeAsync(code, ct);
-        return Ok(new { allowedTargetLanguages = result.Value ?? Array.Empty<string>() });
+        // Spelled out rather than returning the record, so the wire names are pinned here: the
+        // pre-join screen reads exactly these two keys and `allowedTargetLanguages` predates this.
+        return Ok(new
+        {
+            allowedTargetLanguages = result.Value?.AllowedTargetLanguages ?? Array.Empty<string>(),
+            roomLanguages = result.Value?.RoomLanguages ?? Array.Empty<string>(),
+        });
     }
 
     /// <summary>
