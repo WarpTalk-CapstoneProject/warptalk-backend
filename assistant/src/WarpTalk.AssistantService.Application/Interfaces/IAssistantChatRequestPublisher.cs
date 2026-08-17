@@ -24,5 +24,10 @@ public interface IAssistantChatRequestPublisher
         IReadOnlyList<ChatTurnDto> history,
         string? pageContextJson = null,
         string? mentionsJson = null,
+        /// <summary>
+        /// WT-474: pasted images for this turn, as a JSON array of data URLs. Not persisted — see
+        /// SendAssistantMessageRequest.Images.
+        /// </summary>
+        string? imagesJson = null,
         CancellationToken ct = default);
 }

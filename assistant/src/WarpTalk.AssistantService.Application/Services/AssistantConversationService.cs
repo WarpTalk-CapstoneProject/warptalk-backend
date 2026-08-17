@@ -121,12 +121,48 @@ public class AssistantConversationService : IAssistantConversationService
 
         var pageContextJson = SerializePageContext(request.PageContext, conversation.WorkspaceId);
         var mentionsJson = SerializeMentions(request.Mentions, conversation.WorkspaceId);
+        var imagesJson = SerializeImages(request.Images);
 
         await _chatRequestPublisher.PublishAsync(
-            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, ct);
+            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, imagesJson, ct);
 
         return Result.Success(new SendAssistantMessageResponse(userMessage.Id, assistantMessage.Id));
     }
+
+    /// <summary>
+    /// WT-474: the pasted images for this turn, validated before they leave this service.
+    ///
+    /// This is the one field of the request that can be megabytes long, and it is the only one a
+    /// caller can fill with arbitrary bytes, so the limits are enforced here rather than trusted to
+    /// the browser. The worker enforces them again — the browser's copy is a courtesy to the user,
+    /// these two are what protect the system.
+    ///
+    /// Bad entries are DROPPED, not rejected: the user's question is still a question, and failing
+    /// the whole message because one attachment was a PDF loses the text they typed. If nothing
+    /// survives, the turn proceeds as a plain text message.
+    ///
+    /// Only `data:image/...;base64,` is accepted. An http(s) URL would make the worker fetch a
+    /// caller-supplied address, which is a request forgery primitive, not a feature.
+    /// </summary>
+    private static string? SerializeImages(List<string>? images)
+    {
+        if (images == null || images.Count == 0) return null;
+
+        var accepted = images
+            .Where(image => !string.IsNullOrWhiteSpace(image))
+            .Where(image => image.StartsWith("data:image/", StringComparison.Ordinal))
+            .Where(image => image.Length <= MaxImageDataUrlChars)
+            .Take(MaxImagesPerTurn)
+            .ToList();
+
+        return accepted.Count == 0 ? null : JsonSerializer.Serialize(accepted);
+    }
+
+    /// <summary>At most four screenshots in one question; past that it is a document, not a hint.</summary>
+    private const int MaxImagesPerTurn = 4;
+
+    /// <summary>~7MB of base64, a little over 5MB of image. Larger is likelier to be refused by the model than answered.</summary>
+    private const int MaxImageDataUrlChars = 7_000_000;
 
     /// <summary>
     /// Serializes the frontend's ambient page-context hint for the Python worker, scoping it

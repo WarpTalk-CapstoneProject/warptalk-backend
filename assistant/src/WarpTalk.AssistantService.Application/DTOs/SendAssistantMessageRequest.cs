@@ -33,7 +33,21 @@ public record AssistantMentionDto(
 public record SendAssistantMessageRequest(
     [Required] string Content,
     AssistantPageContextDto? PageContext = null,
-    List<AssistantMentionDto>? Mentions = null
+    List<AssistantMentionDto>? Mentions = null,
+    /// <summary>
+    /// WT-474: screenshots pasted into the chat box, as `data:image/...;base64,...` strings.
+    ///
+    /// They belong to THIS TURN. Nothing stores them: they are forwarded to the worker with the
+    /// request and are not written to AssistantMessage.Content, so a follow-up question cannot see
+    /// the picture. That is deliberate — an image kept against a conversation becomes a new kind of
+    /// workspace content, and every kind of workspace content has to answer to the visibility model
+    /// WT-463 is still defining.
+    ///
+    /// Validated, not trusted. ValidateImages rejects anything that is not an image data URL, caps
+    /// the count and caps the size, because this field is the one part of the request that can be
+    /// megabytes long.
+    /// </summary>
+    List<string>? Images = null
 );
 
 public record SendAssistantMessageResponse(
