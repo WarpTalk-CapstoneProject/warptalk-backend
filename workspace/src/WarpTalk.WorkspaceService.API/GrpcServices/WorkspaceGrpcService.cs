@@ -156,7 +156,7 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             request.TargetLanguages?.ToArray() ?? Array.Empty<string>();
 
         var result = await _workspaceDirectory.ValidateMeetingCreationAsync(
-            workspaceId, userId, targetLanguages, context.CancellationToken);
+            workspaceId, userId, targetLanguages, request.SourceLanguage, context.CancellationToken);
 
         // Fail closed: an unusable decision must never read as permission granted.
         if (!result.IsSuccess || result.Value is null)
@@ -190,7 +190,7 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
         }
 
         var settings = result.Value!;
-        return new GetWorkspaceSettingsResponse
+        var response = new GetWorkspaceSettingsResponse
         {
             ArtifactRetentionDays = settings.ArtifactRetentionDays,
             AllowExternalCollaboration = settings.AllowExternalCollaboration,
@@ -198,6 +198,8 @@ public class WorkspaceGrpcService : WarpTalk.Shared.Protos.WorkspaceService.Work
             AllowExternalLlm = settings.AllowExternalLlm,
             UseGlobalGlossary = settings.UseGlobalGlossary
         };
+        response.AllowedTargetLanguages.AddRange(settings.AllowedTargetLanguages);
+        return response;
     }
 
     public override async Task<GetWorkspacePreflightResponse> GetWorkspacePreflightDetails(
