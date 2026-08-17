@@ -1202,8 +1202,18 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 
+    /// <summary>
+    /// The reversal of the test that used to sit here (ShouldFail_WhenUserIsRegularMember).
+    ///
+    /// The Owner/Admin gate on the READ was an UPDATE-era rule applied to GET — its own error
+    /// constant is named OnlyOwnerAdminCanUpdateSettings — and the read's consumers are ordinary
+    /// members: the join page and the create-room dialog fetch these settings to learn the
+    /// workspace's language policy, so every plain Member got a 403 the moment either surface
+    /// loaded. Reading is for every active member now; the write keeps its gate (see the
+    /// UpdateWorkspaceSettingsAsync tests below).
+    /// </summary>
     [Fact]
-    public async Task GetWorkspaceSettingsAsync_ShouldFail_WhenUserIsRegularMember()
+    public async Task GetWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsRegularMember()
     {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
@@ -1222,13 +1232,20 @@ public class WorkspaceServiceTests
             .Returns(member);
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = roleId, Name = "Member" });
+        _workspaceRepository.GetSettingsAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceConfiguration
+            {
+                DefaultLanguage = "vi",
+                Timezone = "Asia/Ho_Chi_Minh",
+                VoiceCloningEnabled = false
+            });
 
         var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-        await _workspaceRepository.DidNotReceive()
-            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        Assert.True(result.IsSuccess);
+        Assert.Equal("vi", result.Value!.DefaultLanguage);
+        // The role service was not even consulted: membership alone authorizes the read.
+        await _authIdentity.DidNotReceive().GetRoleByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
