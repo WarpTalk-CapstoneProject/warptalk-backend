@@ -164,6 +164,35 @@ public class TranslationRoomsController : ControllerBase
     /// separately and intersected by the caller, because an empty list has to keep meaning
     /// "unrestricted from this source" rather than "offer nothing".
     /// </summary>
+    /// <summary>
+    /// WT-480: share this meeting's record with the people who took part, or take it back.
+    ///
+    /// Writes the room's <c>ArtifactAccess</c> policy, which already governs the transcript, the AI
+    /// summary and the recording together — so this one control shares all three, and the button
+    /// that calls it says so.
+    ///
+    /// Its own route rather than a field on the settings PUT, because that endpoint refuses any
+    /// room past WAITING and this act only makes sense after the meeting has ended.
+    /// </summary>
+    [HttpPut("{id:guid}/artifact-access")]
+    public async Task<IActionResult> SetArtifactAccess(Guid id, [FromBody] SetArtifactAccessRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.SetArtifactAccessAsync(id, userId.Value, request.Level, ct);
+        if (result.IsSuccess)
+            return NoContent();
+
+        return result.ErrorCode switch
+        {
+            ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Unauthorized => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+        };
+    }
+
     [HttpGet("join-language-policy/{code}")]
     public async Task<IActionResult> GetJoinLanguagePolicy(string code, CancellationToken ct)
     {
