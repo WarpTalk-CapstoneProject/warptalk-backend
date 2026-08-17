@@ -399,7 +399,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (workspaceId == Guid.Empty)
                 return Result.Failure<TranslationRoomDto>(ApiMessageConstants.ValidationMessages.WorkspaceRequired, ErrorCodes.ValidationError);
 
-            var policy = await _workspaceMeetingPolicy.ValidateMeetingCreationAsync(workspaceId, hostId, targetLangs, ct);
+            // WT-466: sourceLang goes with the targets. The workspace whitelist used to see only
+            // the targets, so a workspace narrowed to vi/en/ja happily created a room whose host
+            // spoke Spanish — the setting appeared to do nothing on the one language every
+            // participant hears first.
+            var policy = await _workspaceMeetingPolicy.ValidateMeetingCreationAsync(
+                workspaceId, hostId, targetLangs, sourceLang, ct);
             if (!policy.IsSuccess)
             {
                 // The workspace owns the wording, but it is free to deny without one.
@@ -799,6 +804,42 @@ public class TranslationRoomService : ITranslationRoomService
             _logger.LogError(ex, "Error occurred while listing occurrences of series {SeriesId}.", seriesId);
             return Result.Failure<List<TranslationRoomListItemDto>>(
                 "An unexpected error occurred while reading the repeating schedule.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(roomCode))
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var room = await _translationRoomRepository.GetByCodeAsync(roomCode.Trim(), null, ct);
+
+            // A code that resolves to nothing answers "no restriction" rather than 404. This
+            // endpoint exists to populate a picker while the user is still TYPING a code, so a
+            // not-found must not paint an error over a half-typed one — and it must not become a
+            // way to probe which codes exist. The join itself is where a bad code is reported.
+            if (room == null || room.WorkspaceId == Guid.Empty)
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var policy = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+
+            // Fails OPEN, unlike the enforcement paths. This one only decides what to OFFER, and
+            // the server still refuses a forbidden language at join. A WorkspaceService blip that
+            // widened a picker for a moment is a far smaller harm than a pre-join screen that
+            // cannot be filled in at all — which is the bug this ticket is about.
+            return policy.IsSuccess
+                ? policy
+                : Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not resolve the join language policy for a room code.");
+            return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
         }
     }
 
@@ -2121,27 +2162,55 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // WT-65: Update and Validate Source Language
+            string? normSourceLang = null;
             if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
             {
-                var normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
                 if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
                     return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
-
-                translationRoom.SourceLanguage = normSourceLang;
             }
 
             // WT-65: Update and Validate Target Languages
+            List<string>? normTargetLangs = null;
             if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
             {
-                var normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
+                normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
                 foreach (var lang in normTargetLangs)
                 {
                     if (!await _languagePolicy.IsSupportedAsync(lang))
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
-
-                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
             }
+
+            // WT-466: the workspace's whitelist applies to an EDIT as well.
+            //
+            // Everything above this line checks only that the PLATFORM supports the code. That was
+            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
+            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
+            // setting once, and every subsequent write ignored it. Both values are validated
+            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
+            // as it was rather than half-applied.
+            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
+            // there is no whitelist to apply and asking would only produce a lookup that fails.
+            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    normSourceLang,
+                    normTargetLangs ?? Enumerable.Empty<string>(),
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure(
+                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
+                        languagePolicy.ErrorCode);
+            }
+
+            if (normSourceLang != null)
+                translationRoom.SourceLanguage = normSourceLang;
+
+            if (normTargetLangs != null)
+                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
 
             // Update settings. Every field is nullable, so this is a PATCH: an omitted field
             // keeps whatever the room already has rather than being reset to a default. Before

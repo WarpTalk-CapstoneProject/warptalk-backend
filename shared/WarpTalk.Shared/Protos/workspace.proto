@@ -63,6 +63,13 @@ message ValidateMeetingCreationRequest {
   string workspace_id = 1;
   string user_id = 2;
   repeated string target_languages = 3;
+  // WT-466: the room's SOURCE language, which the workspace policy never used to see.
+  //
+  // AllowedTargetLanguages was applied to target_languages alone, so a workspace that had
+  // narrowed itself to vi/en/ja still accepted a room CREATED IN Spanish -- the host's own
+  // speaking language was outside the policy and nothing looked at it. Optional: an empty
+  // string means "not stated", and is not treated as a violation.
+  string source_language = 4;
 }
 
 message ValidateMeetingCreationResponse {
@@ -95,6 +102,19 @@ message GetWorkspaceSettingsResponse {
   // compiles cleanly on both sides.
   reserved 6;
   reserved "enforce_host_approval_default";
+  // WT-466: the workspace's allowed-language whitelist, so a caller can apply the policy on a
+  // path that is not meeting CREATION.
+  //
+  // ValidateMeetingCreation is the only gate that ever enforced this list, and it runs once, at
+  // create. Editing a room (PATCH /translation-rooms/{id}) rewrites source_language and
+  // target_languages after checking nothing but global platform support -- so a room created
+  // within policy could be edited straight back out of it. This field is what lets the edit
+  // path apply the same rule without borrowing a permission-and-quota gate that would also
+  // re-count active rooms and deny the edit for the room being edited.
+  //
+  // EMPTY MEANS UNRESTRICTED, exactly as it does on the workspace side. A caller must branch on
+  // "no entries" before filtering, or every workspace that never set a policy is locked out.
+  repeated string allowed_target_languages = 7;
 }
 
 message GetWorkspacePreflightRequest {

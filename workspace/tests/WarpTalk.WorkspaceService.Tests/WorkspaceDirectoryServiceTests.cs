@@ -203,6 +203,73 @@ public class WorkspaceDirectoryServiceTests
         Assert.Contains("not allowed", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// WT-466. The whitelist was applied to target_languages and to nothing else, so a workspace
+    /// that had narrowed itself to vi/en/ja accepted a room whose SOURCE language was Spanish —
+    /// the language every participant is translated FROM, and the only one the host actually
+    /// speaks. To the owner the setting looked as though it did nothing.
+    ///
+    /// The targets here are inside the policy on purpose: this test fails on the old code, where
+    /// the only rejecting branch is the target loop.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Denies_WhenSourceLanguageNotAllowed()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi\",\"en\",\"ja\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en" }, sourceLanguage: "es");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("source language", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The other half of the same rule: an empty policy means UNRESTRICTED. Reading it the other
+    /// way would refuse every room in every workspace that never configured languages, which is
+    /// most of them.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_AnySourceLanguage_WhenThePolicyIsEmpty()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "es" }, sourceLanguage: "es");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
     [Fact]
     public async Task ValidateMeetingCreationAsync_Denies_WhenActiveRoomLimitReached()
     {

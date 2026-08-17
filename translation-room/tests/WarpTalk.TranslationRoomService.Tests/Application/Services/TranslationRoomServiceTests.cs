@@ -71,7 +71,7 @@ public class TranslationRoomServiceTests
 
         // The workspace permits meeting creation unless a test says otherwise (WT-249).
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // ...and the tenant itself is live unless a test suspends it.
@@ -875,7 +875,7 @@ public class TranslationRoomServiceTests
     public async Task CreateTranslationRoomAsync_Denies_WhenTheWorkspaceRefusesTheCaller()
     {
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure("User does not have permission to create meetings.", ErrorCodes.Forbidden));
 
         var request = new CreateTranslationRoomRequest(
@@ -897,7 +897,7 @@ public class TranslationRoomServiceTests
     public async Task CreateTranslationRoomAsync_FailsClosed_WhenTheWorkspaceCannotBeReached()
     {
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure("Could not verify.", ErrorCodes.ServiceUnavailable));
 
         var request = new CreateTranslationRoomRequest(
@@ -937,6 +937,11 @@ public class TranslationRoomServiceTests
                 workspaceId,
                 hostId,
                 It.Is<IEnumerable<string>>(langs => langs.SequenceEqual(new[] { "en", "ja" })),
+                // WT-466: and the SOURCE language, normalized the same way. It used not to be
+                // passed at all, so a workspace whitelist that excluded "vi" still let this room
+                // be created — the one language the host actually speaks was the one the policy
+                // never saw. Asserting the literal, not It.IsAny, is the point of the test.
+                "vi",
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }

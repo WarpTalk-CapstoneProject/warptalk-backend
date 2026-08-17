@@ -116,7 +116,7 @@ public class WorkspaceGrpcServiceTests
     {
         _workspaceDirectory
             .ValidateMeetingCreationAsync(
-                Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<CancellationToken>())
+                Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Result.Success(MeetingCreationDecisionDto.Denied("User does not have permission to create meetings.")));
 
         var response = await _service.ValidateMeetingCreation(
@@ -136,7 +136,7 @@ public class WorkspaceGrpcServiceTests
     {
         _workspaceDirectory
             .ValidateMeetingCreationAsync(
-                Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<CancellationToken>())
+                Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<IReadOnlyCollection<string>>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(Result.Failure<MeetingCreationDecisionDto>("Workspace lookup failed."));
 
         var response = await _service.ValidateMeetingCreation(
@@ -166,7 +166,7 @@ public class WorkspaceGrpcServiceTests
     {
         _workspaceDirectory
             .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(15, true, false, true, true)));
+            .Returns(Result.Success(new WorkspaceSettingsSnapshotDto(15, true, false, true, true, new[] { "vi", "en" })));
 
         var response = await _service.GetWorkspaceSettings(
             new GetWorkspaceSettingsRequest { WorkspaceId = Guid.NewGuid().ToString() },
