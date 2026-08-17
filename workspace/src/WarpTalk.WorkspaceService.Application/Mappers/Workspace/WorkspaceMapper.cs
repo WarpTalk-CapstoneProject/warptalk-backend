@@ -43,6 +43,8 @@ public static class WorkspaceMapper
             Slug = slug,
             LogoUrl = request.LogoUrl,
             OwnerId = ownerId,
+            RequireVerifiedDomainForInternal = request.RequireVerifiedDomainForInternal ?? (request.VerifiedDomains != null && request.VerifiedDomains.Any()),
+            AllowExternalCollaboration = true,
             Settings = settingsJson,
             IsActive = true,
             CreatedAt = now,

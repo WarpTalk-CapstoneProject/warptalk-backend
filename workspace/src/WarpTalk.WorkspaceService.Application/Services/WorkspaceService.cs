@@ -209,6 +209,7 @@ public class WorkspaceService : IWorkspaceService
             };
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);
+            workspace.RequireVerifiedDomainForInternal = requireVerified;
 
             // ownerRoleId was resolved (and null-checked) by the WT-437 ownership guard above.
             var workspaceMember = WorkspaceMemberMapper.CreateOwnerMember(workspace.Id, userId, ownerRoleId.Value);
