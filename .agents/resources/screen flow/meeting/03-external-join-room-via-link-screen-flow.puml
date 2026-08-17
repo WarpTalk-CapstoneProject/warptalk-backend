@@ -19,24 +19,24 @@ rectangle "Waiting Room Page" as WaitingRoomPage
 rectangle "Active Meeting Room Page" as ActiveMeetingRoomPage
 
 ' 1. Unauthenticated Guest Room Link Access & Preflight Redirect
-JoinMeetingPage --> WorkspaceJoinPage : Preflight check (Unauthenticated / Requires workspace access)
+JoinMeetingPage --> WorkspaceJoinPage
 
 ' 2. Authentication & Workspace Access Resolution Sub-Flows
-WorkspaceJoinPage --> LoginPage : Click "Login / Register" (Unauthenticated user)
-LoginPage --> WorkspaceJoinPage : Submit Credentials (Logged in successfully)
-WorkspaceJoinPage --> RoomInformationPage : Click "Request Access" (Workspace access granted as External Member)
+WorkspaceJoinPage --> LoginPage
+LoginPage --> WorkspaceJoinPage
+WorkspaceJoinPage --> RoomInformationPage
 
 ' 3. Authenticated External Member Flow
-JoinMeetingPage --> RoomInformationPage : Preflight check (User is already External Workspace Member)
+JoinMeetingPage --> RoomInformationPage
 
 ' 4. Pre-meeting Setup & Details
-RoomInformationPage --> RoomSetupModal : Click "Join / Configure"
+RoomInformationPage --> RoomSetupModal
 
 ' 5. Waiting Room Lobby & Final Entry to Active Meeting
-RoomInformationPage --> WaitingRoomPage : Participant enters before host opens room
-WaitingRoomPage --> ActiveMeetingRoomPage : Host opens room / approves participant
+RoomInformationPage --> WaitingRoomPage
+WaitingRoomPage --> ActiveMeetingRoomPage
 
-RoomSetupModal --> ActiveMeetingRoomPage : Click "Join Meeting"
-JoinMeetingPage --> ActiveMeetingRoomPage : Click "Join Room" (Direct entry)
+RoomSetupModal --> ActiveMeetingRoomPage
+JoinMeetingPage --> ActiveMeetingRoomPage
 
 @enduml

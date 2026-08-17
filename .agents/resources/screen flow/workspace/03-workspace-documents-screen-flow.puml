@@ -16,10 +16,10 @@ rectangle "Document View & Chunks Page" as DocumentViewPage
 rectangle "Upload Document Modal" as UploadDocumentModal
 
 ' Workspace Documents Management Flow
-WorkspaceHome --> DocumentsPage : Click "Workspace Documents"
-DocumentsPage --> UploadDocumentModal : Click "Upload Document"
-UploadDocumentModal --> DocumentsPage : Upload PDF / DOCX (RAG Ingestion Queued)
-DocumentsPage --> DocumentViewPage : Click "Select Document"
-DocumentViewPage --> DocumentsPage : Click "Back to Documents List"
+WorkspaceHome --> DocumentsPage
+DocumentsPage --> UploadDocumentModal
+UploadDocumentModal --> DocumentsPage
+DocumentsPage --> DocumentViewPage
+DocumentViewPage --> DocumentsPage
 
 @enduml

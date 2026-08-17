@@ -16,7 +16,7 @@ actor "Participant" as User
 boundary "MeetingRoomPage" as Web
 control "API Gateway" as Gateway
 queue "Redis Audio Pipeline Stream" as Stream
-database "Redis State Store" as Redis
+queue "Redis State Store" as Redis
 
 box "Transcript Service" #LightBlue
 participant ":TranscriptSegmentRecorderConsumer" as RecorderConsumer <<boundary>>
@@ -32,7 +32,7 @@ end box
 
 participant "OpenAI API" as OpenAI <<external system>>
 
-== PHASE 1: BACKGROUND TRANSLATION RECORDING ==
+== PHASE 1: BACKGROUND TRANSCRIPT SEGMENT RECORDING ==
 
 [-> Stream : Publish 'TextTranslatedEvent'
 
@@ -110,9 +110,10 @@ deactivate AiWorker
 
 Stream ->> Gateway : Consume 'ai_assistant:results'
 activate Gateway
-Gateway -> Web : SignalR broadcast: 'AiAssistantResult' [summary / action_items]
+Gateway ->> Web : SignalR broadcast: 'AiAssistantResult' [summary / action_items]
+deactivate Gateway
+
 activate Web
 Web --> User : Display AI Meeting Summary & Action Items
 deactivate Web
-deactivate Gateway
 @enduml

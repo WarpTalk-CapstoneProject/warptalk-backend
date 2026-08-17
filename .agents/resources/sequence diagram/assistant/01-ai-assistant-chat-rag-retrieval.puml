@@ -1,0 +1,166 @@
+@startuml
+title WarpTalk - AI Assistant Chat & RAG Retrieval
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 130
+
+actor "Workspace Member" as Actor
+boundary "WarpBotChatUI" as Web
+control "API Gateway" as Gateway
+queue "Redis Event Bus" as Redis
+database "Qdrant Vector DB" as VectorDb
+
+box "Assistant Service" #LightSalmon
+participant ":AssistantController" as Controller <<boundary>>
+participant ":AssistantService" as Service <<service>>
+participant ":AssistantRepository" as AssistantRepo <<control>>
+database "Assistant DB" as AssistantDb
+end box
+
+box "AI Assistant Microservices (warptalk-ai)" #LightYellow
+participant ":AiAssistantWorker" as AiWorker <<boundary>>
+participant ":SuggestionWorker" as SuggestionWorker <<boundary>>
+participant ":MeetingAssistant" as Assistant <<service>>
+end box
+
+box "Transcript Service" #LightBlue
+participant ":TranscriptServiceGrpc" as TranscriptGrpc <<boundary>>
+participant ":TranscriptService" as TranscriptService <<service>>
+database "Transcript DB" as TranscriptDb
+end box
+
+participant "OpenAI API" as OpenAI <<external system>>
+
+== PHASE 1: MEMBER CHAT QUERY TO WARPBOT (@MENTIONS) ==
+
+Actor -> Web : Type "@warpbot" question with context selection
+activate Web
+Web -> Gateway : POST /api/v1/assistant/chat\n[WorkspaceId, Prompt, SelectedContext]
+activate Gateway
+Gateway -> Controller : ProcessChatQuery(request)
+activate Controller
+Controller -> Service : CreateChatRequestAsync(request)
+activate Service
+
+Service -> AssistantRepo : SaveRequestAsync(requestEntity)
+activate AssistantRepo
+AssistantRepo -> AssistantDb : INSERT INTO assistant_requests
+activate AssistantDb
+AssistantDb --> AssistantRepo : Saved
+deactivate AssistantDb
+AssistantRepo --> Service : Request persisted
+deactivate AssistantRepo
+
+Service -> Redis : PublishEventAsync("workspace.chat.assistant_requested", payload)
+activate Redis
+Redis --> Service : Acknowledged
+deactivate Redis
+
+Service --> Controller : Success (202 Accepted)
+deactivate Service
+Controller --> Gateway : 202 Accepted
+deactivate Controller
+Gateway --> Web : 202 Accepted
+deactivate Gateway
+deactivate Web
+
+== PHASE 2: PROACTIVE REAL-TIME SUGGESTION & ACTION ITEM DETECTION ==
+
+Redis ->> SuggestionWorker : XREADGROUP stt:results (Live STT transcript segment)
+activate SuggestionWorker
+SuggestionWorker -> SuggestionWorker : Evaluate Stage 0 heuristics\n(action verbs, questions, budget limits)
+
+alt Stage 0 Trigger Met (Action Item / Text Suggestion)
+  SuggestionWorker -> VectorDb : SearchSimilarChunksAsync(queryText, workspaceId)
+  activate VectorDb
+  VectorDb --> SuggestionWorker : Relevant document context chunks
+  deactivate VectorDb
+
+  SuggestionWorker -> OpenAI : POST /v1/chat/completions (Generate suggestion/action item)
+  activate OpenAI
+  OpenAI --> SuggestionWorker : Suggestion payload
+  deactivate OpenAI
+
+  SuggestionWorker -> Redis : XADD ai_assistant:results { type: "suggestion", payload }
+  activate Redis
+  Redis --> SuggestionWorker : Queued
+  deactivate Redis
+end
+deactivate SuggestionWorker
+
+== PHASE 3: CONTEXT RETRIEVAL & LLM GENERATION FOR CHAT QUERY ==
+
+AiWorker -> Redis : Subscribe & consume "workspace.chat.assistant_requested"
+activate Redis
+activate AiWorker
+Redis --> AiWorker : Event payload (workspaceId, query, selectedContext, requestId)
+deactivate Redis
+
+alt selectedContext.type == 'document'
+    AiWorker -> VectorDb : Vector similarity search on document chunks
+    activate VectorDb
+    VectorDb --> AiWorker : Relevant document text chunks
+    deactivate VectorDb
+
+else selectedContext.type == 'meeting'
+    AiWorker -> Redis : Check if meeting:{roomId}:context_snapshot exists
+    activate Redis
+    
+    alt Meeting is IN_PROGRESS (snapshot in Redis)
+        Redis --> AiWorker : Active transcript snapshot
+        deactivate Redis
+    else Meeting is COMPLETED
+        Redis --> AiWorker : Key not found
+        AiWorker -> TranscriptGrpc : gRPC: GetTranscriptSegments(meetingId)
+        activate TranscriptGrpc
+        TranscriptGrpc -> TranscriptService : GetSegmentsAsync(meetingId)
+        activate TranscriptService
+        TranscriptService -> TranscriptDb : SELECT * FROM transcript_segments
+        activate TranscriptDb
+        TranscriptDb --> TranscriptService : Segments list
+        deactivate TranscriptDb
+        TranscriptService --> TranscriptGrpc : Segments list
+        deactivate TranscriptService
+        TranscriptGrpc --> AiWorker : Historical transcript segments
+        deactivate TranscriptGrpc
+    end
+end
+
+AiWorker -> Assistant : generate_response(query, context)
+activate Assistant
+Assistant -> OpenAI : POST /v1/chat/completions (Generate Answer)
+activate OpenAI
+OpenAI --> Assistant : Answer text
+deactivate OpenAI
+Assistant --> AiWorker : Answer text
+deactivate Assistant
+
+AiWorker -> Redis : PublishEventAsync("workspace.chat.response_ready", payload)
+activate Redis
+Redis --> AiWorker : Acknowledged
+deactivate Redis
+deactivate AiWorker
+
+== PHASE 4: REAL-TIME BROADCAST VIA GATEWAY TO WEB CLIENT ==
+
+Redis ->> Gateway : Consume 'workspace.chat.response_ready' & 'ai_assistant:results'
+activate Gateway
+Gateway ->> Web : Push SignalR: ReceiveWorkspaceChatResult / AiSuggestionReceived
+deactivate Gateway
+
+activate Web
+Web --> Actor : Render WarpBot Chat Response & Inline Action Item Pills
+deactivate Web
+@enduml

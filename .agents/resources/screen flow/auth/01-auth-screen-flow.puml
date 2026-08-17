@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam rectangle {
@@ -20,25 +21,25 @@ rectangle "Accept Invitation Page" as AcceptInvitationPage
 rectangle "Workspace Selection Page" as WorkspaceSelectionPage
 
 ' Authentication Flow
-LandingPage --> LoginPage : Click "Login"
-LandingPage --> RegisterPage : Click "Sign Up"
+LandingPage --> LoginPage
+LandingPage --> RegisterPage
 
-LoginPage --> RegisterPage : Click "Create an account"
-RegisterPage --> LoginPage : Click "Already have an account"
+LoginPage --> RegisterPage
+RegisterPage --> LoginPage
 
-LoginPage --> ForgotPasswordPage : Click "Forgot Password?"
-ForgotPasswordPage --> LoginPage : Click "Back to Login"
-ForgotPasswordPage --> ResetPasswordPage : Click "Send Reset Link" (check email)
-ResetPasswordPage --> LoginPage : Click "Reset Password" (success)
+LoginPage --> ForgotPasswordPage
+ForgotPasswordPage --> LoginPage
+ForgotPasswordPage --> ResetPasswordPage
+ResetPasswordPage --> LoginPage
 
-RegisterPage --> VerifyEmailPage : Click "Sign Up" (requires verification)
-VerifyEmailPage --> LoginPage : Click "Verify Email" (token valid)
+RegisterPage --> VerifyEmailPage
+VerifyEmailPage --> LoginPage
 
 ' Login Success Redirection
-LoginPage --> WorkspaceSelectionPage : Click "Submit" (with valid credentials)
+LoginPage --> WorkspaceSelectionPage
 
 ' Invite Acceptance Flow
-AcceptInvitationPage --> LoginPage : Token valid (unauthenticated)
-LoginPage --> WorkspaceSelectionPage : Login success (auto join workspace)
+AcceptInvitationPage --> LoginPage
+LoginPage --> WorkspaceSelectionPage
 
 @enduml

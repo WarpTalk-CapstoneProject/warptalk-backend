@@ -18,15 +18,15 @@ rectangle "Account Preferences Page" as AccountPreferencesPage
 rectangle "Account Profile Page" as AccountProfilePage
 rectangle "Voice Profiles Page" as VoiceProfilesPage
 
-WorkspaceSelectionPage --> WorkspaceHomePage : Click Workspace Card
-WorkspaceSelectionPage --> WorkspaceCreationPage : Click "Create workspace"
-WorkspaceSelectionPage --> WorkspaceJoinRequestPage : Click "Join workspace"
+WorkspaceSelectionPage --> WorkspaceHomePage
+WorkspaceSelectionPage --> WorkspaceCreationPage
+WorkspaceSelectionPage --> WorkspaceJoinRequestPage
 
-WorkspaceCreationPage --> WorkspaceHomePage : Click "Create Workspace"
-WorkspaceJoinRequestPage --> JoinTranslationRoomPage : Click "Back to room join"
+WorkspaceCreationPage --> WorkspaceHomePage
+WorkspaceJoinRequestPage --> JoinTranslationRoomPage
 
-WorkspaceHomePage --> AccountPreferencesPage : Click "Preferences"
-WorkspaceHomePage --> AccountProfilePage : Click "Profile"
-WorkspaceHomePage --> VoiceProfilesPage : Click "Voice Profiles"
+WorkspaceHomePage --> AccountPreferencesPage
+WorkspaceHomePage --> AccountProfilePage
+WorkspaceHomePage --> VoiceProfilesPage
 
 @enduml

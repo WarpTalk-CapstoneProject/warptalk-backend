@@ -26,13 +26,15 @@ participant ":GlobalGlossaryService" as Service <<control>>
 participant ":GlobalGlossaryTermsRepository" as TermsRepository <<entity>>
 participant ":GlobalGlossaryAuditsRepository" as AuditsRepository <<entity>>
 database "Transcript Database" as TranscriptDb
-queue "Redis Stream\nembedding:index_requests" as EmbeddingRequests
 end box
+
+queue "Redis Stream\nembedding:index_requests" as EmbeddingRequests
 
 box "AI Service" #LightYellow
 participant ":EmbeddingWorker" as EmbeddingWorker <<external>>
-database "Qdrant Vector DB" as Qdrant <<external>>
 end box
+
+database "Qdrant Vector DB" as Qdrant <<external system>>
 
 == BULK IMPORT GLOBAL TERMS ==
 

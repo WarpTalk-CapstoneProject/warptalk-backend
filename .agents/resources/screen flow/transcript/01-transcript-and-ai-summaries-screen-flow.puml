@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam rectangle {
@@ -11,16 +12,18 @@ left to right direction
 
 ' Pages
 rectangle "Workspace Home Page" as WorkspaceHome
-rectangle "Workspace Transcript Page" as WorkspaceTranscriptPage
-rectangle "Meeting History Page" as MeetingHistoryPage
-rectangle "AI Summaries Page" as AISummariesPage
+rectangle "History Page" as HistoryPage
+rectangle "Room Information Page" as RoomInformationPage
+rectangle "Meeting Transcript Tab" as MeetingTranscriptTab
+rectangle "Meeting Summary Tab" as MeetingSummaryTab
+rectangle "Meeting Artifacts Tab" as MeetingArtifactsTab
 
 ' Navigation Flow
-WorkspaceHome --> WorkspaceTranscriptPage : Click "Transcripts"
-WorkspaceHome --> MeetingHistoryPage : Click "Meeting History"
-WorkspaceHome --> AISummariesPage : Click "AI Summaries"
+WorkspaceHome --> HistoryPage
+HistoryPage --> RoomInformationPage
 
-MeetingHistoryPage --> WorkspaceTranscriptPage : Click "View Full Transcript"
-WorkspaceTranscriptPage --> AISummariesPage : Click "View AI Summary"
+RoomInformationPage --> MeetingTranscriptTab
+RoomInformationPage --> MeetingSummaryTab
+RoomInformationPage --> MeetingArtifactsTab
 
 @enduml

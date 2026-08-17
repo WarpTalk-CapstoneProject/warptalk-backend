@@ -17,18 +17,18 @@ rectangle "Create Workspace Page" as CreateWorkspacePage
 rectangle "Workspace Home Page" as WorkspaceHome
 
 ' Flow 1: Login First -> Buy Plan -> Create Workspace
-LandingPage --> LoginPage : Click "Login"
-LoginPage --> PricingPage : Click "Submit" (with valid credentials)
-PricingPage --> CheckoutPage : Click "Select Plan"
-CheckoutPage --> CreateWorkspacePage : Click "Pay Now" (payment success)
-CreateWorkspacePage --> WorkspaceHome : Click "Create Workspace"
+LandingPage --> LoginPage
+LoginPage --> PricingPage
+PricingPage --> CheckoutPage
+CheckoutPage --> CreateWorkspacePage
+CreateWorkspacePage --> WorkspaceHome
 
 ' Flow 2: Buy Plan First -> Login -> Create Workspace
-LandingPage --> PricingPage : Click "Buy Plan"
-PricingPage --> LoginPage : Click "Select Plan"
-LoginPage --> CheckoutPage : Click "Submit" (with valid credentials)
+LandingPage --> PricingPage
+PricingPage --> LoginPage
+LoginPage --> CheckoutPage
 
 ' Cancellation / Failure flow
-CheckoutPage --> PricingPage : Click "Cancel" / Payment Failed
+CheckoutPage --> PricingPage
 
 @enduml

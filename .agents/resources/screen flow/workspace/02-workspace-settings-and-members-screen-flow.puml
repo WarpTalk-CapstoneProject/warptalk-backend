@@ -15,10 +15,10 @@ rectangle "Manage Access Page" as ManageAccessPage
 rectangle "Invite Member Modal" as InviteMemberModal
 rectangle "Workspace Selection Page" as WorkspaceSelectionPage
 
-WorkspaceHome --> WorkspaceSettingsPage : Click "Workspace Settings"
-WorkspaceHome --> ManageAccessPage : Click "Manage Members"
-ManageAccessPage --> InviteMemberModal : Click "Invite Member"
-InviteMemberModal --> ManageAccessPage : Click "Send Invite" (invitation sent)
-WorkspaceSettingsPage --> WorkspaceSelectionPage : Click "Leave / Switch Workspace"
+WorkspaceHome --> WorkspaceSettingsPage
+WorkspaceHome --> ManageAccessPage
+ManageAccessPage --> InviteMemberModal
+InviteMemberModal --> ManageAccessPage
+WorkspaceSettingsPage --> WorkspaceSelectionPage
 
 @enduml

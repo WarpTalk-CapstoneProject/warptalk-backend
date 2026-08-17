@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam rectangle {
@@ -12,46 +13,57 @@ left to right direction
 ' Screen Nodes & Modals
 rectangle "Workspace Home Page" as WorkspaceHome
 rectangle "Rooms List Page" as RoomsListPage
+rectangle "Schedules Page" as SchedulesPage
 rectangle "Create Room Modal" as CreateRoomModal
-rectangle "Preflight Check & Device Setup" as PreflightPage
-rectangle "Waiting Room Lobby" as WaitingRoomPage
+rectangle "Setup Room Dialog" as SetupRoomDialog
+rectangle "Room Information Page" as RoomInformationPage
+rectangle "Waiting Room Page" as WaitingRoomPage
 rectangle "Active Meeting Room Page" as MeetingRoomPage
 rectangle "Device & Language Settings Modal" as DeviceSettingsModal
 rectangle "In-Meeting Translated Chat Panel" as MeetingChatPanel
 rectangle "Live Transcript Feed Panel" as LiveTranscriptPanel
 rectangle "WarpBot In-Meeting AI Suggestion Panel" as WarpBotMeetingPanel
-rectangle "Meeting Artifacts & Transcripts" as MeetingArtifactsPage
+rectangle "Room Ended Summary Page" as RoomEndedSummaryPage
+rectangle "Room Artifacts Page" as RoomArtifactsPage
+rectangle "History Page" as HistoryPage
+rectangle "Feedback Page" as FeedbackPage
 
 ' Room Creation & Setup Flow
-WorkspaceHome --> RoomsListPage : Click "Rooms Menu"
-RoomsListPage --> CreateRoomModal : Click "Create / Schedule Room"
-CreateRoomModal --> PreflightPage : Click "Create Room" (room created)
+WorkspaceHome --> RoomsListPage
+WorkspaceHome --> SchedulesPage
+RoomsListPage --> CreateRoomModal
+CreateRoomModal --> SetupRoomDialog
+CreateRoomModal --> RoomInformationPage
 
 ' Preflight & Device Configuration Flow
-RoomsListPage --> PreflightPage : Click "Join Room"
-PreflightPage --> PreflightPage : Configure Camera / Mic / Target Language
+RoomsListPage --> RoomInformationPage
+SchedulesPage --> RoomInformationPage
+RoomInformationPage --> SetupRoomDialog
+SetupRoomDialog --> SetupRoomDialog
 
 ' Room Entry Flow
-PreflightPage --> WaitingRoomPage : Click "Join" (guest requires host approval)
-WaitingRoomPage --> MeetingRoomPage : Host approves entry
-PreflightPage --> MeetingRoomPage : Click "Join Instant Meeting" (host / direct entry)
+RoomInformationPage --> WaitingRoomPage
+WaitingRoomPage --> MeetingRoomPage
+SetupRoomDialog --> MeetingRoomPage
 
 ' Active Meeting In-Room Interactions & Panels
-MeetingRoomPage --> DeviceSettingsModal : Click "Audio / Video / Language Settings"
-DeviceSettingsModal --> MeetingRoomPage : Click "Save Preferences"
+MeetingRoomPage --> DeviceSettingsModal
+DeviceSettingsModal --> MeetingRoomPage
 
-MeetingRoomPage --> MeetingChatPanel : Click "Toggle Translated Chat Drawer"
-MeetingChatPanel --> MeetingRoomPage : Click "Send Message" / "Close Chat"
+MeetingRoomPage --> MeetingChatPanel
+MeetingChatPanel --> MeetingRoomPage
 
-MeetingRoomPage --> LiveTranscriptPanel : Click "Toggle Live Subtitles / Transcript"
-LiveTranscriptPanel --> MeetingRoomPage : View real-time STT & translation
+MeetingRoomPage --> LiveTranscriptPanel
+LiveTranscriptPanel --> MeetingRoomPage
 
 ' WarpBot In-Meeting Real-Time Context Suggestion Flow
-MeetingRoomPage --> WarpBotMeetingPanel : Click "Open WarpBot AI Assistant" / Live Context Trigger
-WarpBotMeetingPanel --> MeetingRoomPage : View Real-Time Context Suggestions / Ask WarpBot
+MeetingRoomPage --> WarpBotMeetingPanel
+WarpBotMeetingPanel --> MeetingRoomPage
 
 ' Meeting Exit & Artifact View Flow
-MeetingRoomPage --> MeetingArtifactsPage : Click "Leave / End Meeting" (view summary & artifacts)
-MeetingArtifactsPage --> WorkspaceHome : Click "Back to Workspace Home Page"
+MeetingRoomPage --> RoomEndedSummaryPage
+RoomEndedSummaryPage --> RoomArtifactsPage
+RoomEndedSummaryPage --> HistoryPage
+RoomEndedSummaryPage --> FeedbackPage
 
 @enduml

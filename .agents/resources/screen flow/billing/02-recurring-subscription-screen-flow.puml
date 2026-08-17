@@ -15,11 +15,11 @@ rectangle "Billing Page" as BillingPage
 rectangle "Plan Upgrade Modal" as PlanUpgradeModal
 rectangle "Checkout Page" as CheckoutPage
 
-WorkspaceHome --> WorkspaceSettingsPage : Click "Workspace Settings"
-WorkspaceSettingsPage --> BillingPage : Click "Billing & Subscription"
-BillingPage --> PlanUpgradeModal : Click "Upgrade / Renew Plan"
-PlanUpgradeModal --> CheckoutPage : Click "Proceed to Checkout"
-CheckoutPage --> BillingPage : Click "Pay Now" (payment success)
-CheckoutPage --> BillingPage : Click "Cancel" / Payment Failed
+WorkspaceHome --> WorkspaceSettingsPage
+WorkspaceSettingsPage --> BillingPage
+BillingPage --> PlanUpgradeModal
+PlanUpgradeModal --> CheckoutPage
+CheckoutPage --> BillingPage
+CheckoutPage --> BillingPage
 
 @enduml
