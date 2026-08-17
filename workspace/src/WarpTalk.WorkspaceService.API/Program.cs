@@ -34,6 +34,7 @@ builder.Services.AddScoped<IVerifiedDomainService, WarpTalk.WorkspaceService.App
 builder.Services.AddScoped<IDocumentAccessEvaluator, DocumentAccessEvaluator>();
 builder.Services.AddScoped<IAdminWorkspaceService, WarpTalk.WorkspaceService.Application.Services.AdminWorkspaceService>();
 builder.Services.AddScoped<IAdminAuditLogService, WarpTalk.WorkspaceService.Application.Services.AdminAuditLogService>();
+builder.Services.AddScoped<IAdminPlatformHealthService, WarpTalk.WorkspaceService.Application.Services.AdminPlatformHealthService>();
 builder.Services.AddScoped<IWorkspaceDirectoryService, WarpTalk.WorkspaceService.Application.Services.WorkspaceDirectoryService>();
 // WT-335: backs the presence query's membership intersection in the Gateway.
 builder.Services.AddScoped<IWorkspaceCoMembershipService, WarpTalk.WorkspaceService.Application.Services.WorkspaceCoMembershipService>();
@@ -63,6 +64,17 @@ builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Env
 builder.Services.AddAuthorization();
 builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddWarpTalkGrpcServer(builder.Configuration, builder.Environment);
+// WT-431 (Linear): workspace was the one service in the mesh with no notification client, so a
+// member whose role was changed learned about it by reloading the page. Same registration shape
+// as translation-room's.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:NotificationServiceUrl",
+        "http://localhost:50054");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
@@ -75,6 +87,9 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceInvitationGrpcService>();
 app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.WorkspaceGrpcService>();
+// The append path into the audit log for services with no bus. Hosted here because this service
+// owns the store — the same reason it consumes admin.action_recorded.
+app.MapGrpcService<WarpTalk.WorkspaceService.API.GrpcServices.AdminAuditGrpcService>();
 app.MapWarpTalkServiceHealthChecks();
 
 app.MapGet("/", () => "WarpTalk Workspace Service is running.");

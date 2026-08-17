@@ -271,12 +271,6 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
         return Result.Success(true);
     }
 
-    public Task<Result<WorkspaceKnowledgePageDto>> GetKnowledgeForAdminAsync(
-        Guid workspaceId,
-        GetWorkspaceKnowledgeQuery query,
-        CancellationToken ct = default)
-        => ReadPageAsync(workspaceId, query, ct);
-
     private async Task<Result<WorkspaceKnowledgePageDto>> ReadPageAsync(
         Guid workspaceId,
         GetWorkspaceKnowledgeQuery query,
@@ -339,7 +333,8 @@ public class WorkspaceKnowledgeService : IWorkspaceKnowledgeService
             record.RetentionState,
             record.DeletionState,
             record.AiRetrieval,
-            record.SourceTitle);
+            record.SourceTitle,
+            record.IndexedAtMs);
 
     private static string? Normalize(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();

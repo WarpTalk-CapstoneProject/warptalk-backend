@@ -19,6 +19,7 @@ using WarpTalk.AuthService.Infrastructure.Security;
 using WarpTalk.AuthService.Infrastructure.Storage;
 using WarpTalk.AuthService.Infrastructure.Extensions;
 using WarpTalk.AuthService.Infrastructure.Services;
+using WarpTalk.Shared.Authorization;
 using WarpTalk.Shared.Extensions;
 using WarpTalk.Shared.Grpc;
 
@@ -69,6 +70,8 @@ if (string.IsNullOrWhiteSpace(redisConnectionString))
 
     builder.Services.AddDistributedMemoryCache();
     builder.Services.AddScoped<IVoiceCatalogDirectory, EmptyVoiceCatalogDirectory>();
+    // No Redis, so no way to hand a recording to the AI side — see NullVoiceCloneRequestQueue.
+    builder.Services.AddScoped<IVoiceCloneRequestQueue, NullVoiceCloneRequestQueue>();
 }
 else
 {
@@ -87,12 +90,14 @@ else
     builder.Services.AddSingleton<IConnectionMultiplexer>(
         _ => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddScoped<IVoiceCatalogDirectory, RedisVoiceCatalogDirectory>();
+    builder.Services.AddScoped<IVoiceCloneRequestQueue, RedisVoiceCloneRequestQueue>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IAuthEmailSender, ResendAuthEmailSender>();
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IProfileService, ProfileService>();
+builder.Services.AddScoped<IAdminUserService, AdminUserService>();
 builder.Services.AddScoped<IUserSettingsService, UserSettingsService>();
 builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
@@ -119,9 +124,29 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.WorkspaceInvitationService
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 builder.Services.AddScoped<IWorkspaceInvitationClient, WorkspaceInvitationGrpcClient>();
 
+// The platform audit log lives in the workspace service, and auth has no bus to publish onto.
+// Same address as the invitation client above — one workspace service, two contracts on it.
+//
+// Synchronous by design: AdminUserService records an action before committing it and abandons the
+// change when the record fails, which is the only ordering under which "every privileged action
+// on an account is audited" is a guarantee rather than a hope.
+builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.AdminAuditService.AdminAuditServiceClient>(o =>
+{
+    o.Address = builder.Configuration.GetRequiredServiceUri(
+        builder.Environment,
+        "GrpcSettings:WorkspaceServiceUrl",
+        "http://localhost:50056");
+})
+.AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
+builder.Services.AddScoped<IAdminAuditRecorder, AdminAuditGrpcClient>();
+
 // Clean & Secure JWT Authentication
 builder.Services.AddWarpTalkJwtAuthentication(builder.Configuration, builder.Environment);
 builder.Services.AddAuthorization();
+// The gate every ~/api/v1/admin/* endpoint shares. Auth is the last service to need it, and
+// AdminUsersController is why: without this registration the policy name resolves to nothing and
+// the attribute throws at request time instead of refusing the caller.
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 
 // Validation & Custom API Behavior
 builder.Services.AddValidatorsFromAssemblyContaining<RegisterRequestValidator>();

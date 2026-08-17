@@ -1,3 +1,6 @@
+using System;
+using System.Linq.Expressions;
+using System.Threading;
 using Moq;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Application.Services;
@@ -68,7 +71,7 @@ public class TranslationRoomServiceTests
 
         // The workspace permits meeting creation unless a test says otherwise (WT-249).
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         // ...and the tenant itself is live unless a test suspends it.
@@ -608,6 +611,99 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    // ── Who may press Start Translation (WT-373) ──────────────────────────────────────────────
+    //
+    // /resume is the only path that opens a TranslationRoomSession, and that row IS
+    // `translation_active` in PublishRoutesUpdateAsync — the flag the AI translation worker gates
+    // every STT result on. So an authorization answer here is not "a 401 the user retries": it is
+    // whether the meeting produces dubbed audio at all.
+    //
+    // WT-371 opened starting to participants and implemented the rule in
+    // TranslationRoomSessionService.CanStartSessionAsync, which serves POST /sessions — an
+    // endpoint the client does not call. This method kept a bare IsHostedBy, so the rule was
+    // enforced where nothing runs and ignored where everything does. Nothing covered this path.
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldLetAParticipantStart_WhenTheRoomOptedIn()
+    {
+        // The reported WT-373 case: the control bar offers the button on exactly this setting, so
+        // before the fix the user was shown a button that could only answer 401.
+        var roomId = Guid.NewGuid();
+        var participantId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.Settings = "{\"participants_can_start_translation\":true}";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, participantId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldRefuseAParticipant_WhenTheRoomHasNotOptedIn()
+    {
+        // The default. Opening translation to the room is a choice a host makes per room.
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldRefuseAStranger_EvenWhenTheRoomOptedIn()
+    {
+        // The setting opens translation to the ROOM, not to anyone holding its id. Without the
+        // membership clause it would let any authenticated stranger start billable AI in it.
+        var roomId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, Guid.NewGuid());
+        room.Status = "IN_PROGRESS";
+        room.Settings = "{\"participants_can_start_translation\":true}";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+        _mockParticipantRepo
+            .Setup(r => r.AnyAsync(It.IsAny<Expression<Func<TranslationRoomParticipant, bool>>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(false);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, Guid.NewGuid());
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ResumeTranslationRoomAsync_ShouldStillLetTheHostStart_WithoutConsultingWorkspaceService()
+    {
+        // Host identity is checked first on purpose: the host path must not depend on
+        // WorkspaceService being reachable, and must not cost a gRPC hop per press.
+        var roomId = Guid.NewGuid();
+        var hostId = Guid.NewGuid();
+        var room = NewStartableRoom(roomId, hostId);
+        room.Status = "IN_PROGRESS";
+
+        _mockRoomRepo.Setup(r => r.GetByIdAsync(roomId, default)).ReturnsAsync(room);
+
+        var result = await _service.ResumeTranslationRoomAsync(roomId, hostId);
+
+        result.IsSuccess.Should().BeTrue(result.Error);
+        _mockWorkspaceMemberDirectory.Verify(
+            d => d.IsOwnerOrAdminAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     private static TranslationRoom NewStartableRoom(Guid roomId, Guid hostId) => new()
     {
         Id = roomId,
@@ -779,7 +875,7 @@ public class TranslationRoomServiceTests
     public async Task CreateTranslationRoomAsync_Denies_WhenTheWorkspaceRefusesTheCaller()
     {
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure("User does not have permission to create meetings.", ErrorCodes.Forbidden));
 
         var request = new CreateTranslationRoomRequest(
@@ -801,7 +897,7 @@ public class TranslationRoomServiceTests
     public async Task CreateTranslationRoomAsync_FailsClosed_WhenTheWorkspaceCannotBeReached()
     {
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure("Could not verify.", ErrorCodes.ServiceUnavailable));
 
         var request = new CreateTranslationRoomRequest(
@@ -841,6 +937,11 @@ public class TranslationRoomServiceTests
                 workspaceId,
                 hostId,
                 It.Is<IEnumerable<string>>(langs => langs.SequenceEqual(new[] { "en", "ja" })),
+                // WT-466: and the SOURCE language, normalized the same way. It used not to be
+                // passed at all, so a workspace whitelist that excluded "vi" still let this room
+                // be created — the one language the host actually speaks was the one the policy
+                // never saw. Asserting the literal, not It.IsAny, is the point of the test.
+                "vi",
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
@@ -873,23 +974,41 @@ public class TranslationRoomServiceTests
             Times.Once);
     }
 
+    /// <summary>
+    /// This test used to assert the opposite — that a room created with no invitees publishes
+    /// NOTHING — and carried no reason for it. That behaviour is the bug: the publish sat inside
+    /// the `if (InvitedEmails.Any())` block, so creating a room the ordinary way (no emails typed,
+    /// workspace members already see each other's meetings) rang no bell and every other client
+    /// had to press F5. It produced two contradictory reports of the same feature on the same
+    /// evening, both correct, about two different ways of creating a room.
+    ///
+    /// Publishing is not a disclosure. The payload only says "this workspace's meeting list
+    /// changed"; what any given member may then SEE is decided server-side by
+    /// GetTranslationRoomsAsync when they refetch. So there is nothing to protect by staying
+    /// silent, and a list that needs a manual refresh to be right is simply wrong.
+    /// </summary>
     [Fact]
-    public async Task CreateTranslationRoomAsync_DoesNotPublish_WhenNobodyIsInvited()
+    public async Task CreateTranslationRoomAsync_Publishes_EvenWhenNobodyIsInvited()
     {
+        var workspaceId = Guid.NewGuid();
         _mockRoomRepo
             .Setup(r => r.ExistsByCodeAsync(It.IsAny<string>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(false);
 
         var request = new CreateTranslationRoomRequest(
-            Guid.NewGuid(), "Solo", null, "INSTANT", 10,
+            workspaceId, "Solo", null, "INSTANT", 10,
             "vi-VN", new List<string> { "en-US" }, null, null, null);
 
         var result = await _service.CreateTranslationRoomAsync(request, Guid.NewGuid());
 
         result.IsSuccess.Should().BeTrue();
         _mockRedisStateRepository.Verify(
-            r => r.PublishAsync(MeetingEventsChannel, It.IsAny<string>()),
-            Times.Never);
+            r => r.PublishAsync(
+                MeetingEventsChannel,
+                It.Is<string>(payload =>
+                    payload.Contains("\"eventType\":\"MeetingInvited\"")
+                    && payload.Contains($"\"workspaceId\":\"{workspaceId}\""))),
+            Times.Once);
     }
 
     [Fact]
@@ -1512,5 +1631,124 @@ public class TranslationRoomServiceTests
             new JoinTranslationRoomRequest(room.TranslationRoomCode, "Early Joiner", "vi", "vi"), userId);
 
         emitted.Should().Equal(AudioRoutingEventType.config_ready.ToString());
+    }
+
+    // ── Accepting an invitation ────────────────────────────────────────────────────────────────
+    //
+    // An invitation existed as an email and a PENDING row and nothing in the app could answer it.
+    // Accept is the invitee's RSVP and is deliberately NOT a join: the meeting is usually still
+    // ahead of them, so joining would put them in a room that has not opened.
+
+    private Mock<ITranslationRoomInvitationRepository> ArrangeInvitationLookup(
+        TranslationRoomInvitation? found)
+    {
+        var repo = new Mock<ITranslationRoomInvitationRepository>();
+        repo.Setup(r => r.FirstOrDefaultAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(found);
+        _mockUow.Setup(u => u.TranslationRoomInvitationRepository).Returns(repo.Object);
+        return repo;
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_FlipsPendingToAccepted()
+    {
+        var roomId = Guid.NewGuid();
+        var invitation = new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "PENDING"
+        };
+        var repo = ArrangeInvitationLookup(invitation);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Status.Should().Be("ACCEPTED");
+        invitation.Status.Should().Be("ACCEPTED");
+        repo.Verify(r => r.Update(invitation), Times.Once);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_IsIdempotent()
+    {
+        // The same notification carries an Accept button in two places — the popup and the bell —
+        // so being clicked twice is ordinary use, not an error to report back to the invitee.
+        var roomId = Guid.NewGuid();
+        ArrangeInvitationLookup(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "ACCEPTED"
+        });
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        result.IsSuccess.Should().BeTrue();
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_RefusesWhenNoInvitationIsAddressedToTheCaller()
+    {
+        ArrangeInvitationLookup(null);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            Guid.NewGuid(), Guid.NewGuid(), "stranger@example.com");
+
+        // NotFound rather than Forbidden: a caller with no invitation must not learn from this
+        // endpoint whether a room with that id exists.
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_RefusesWithoutAnEmailClaim()
+    {
+        // Invitations are keyed by ADDRESS. With no email there is nothing to match, and probing
+        // the repository with an empty string would match nothing only by luck.
+        var repo = ArrangeInvitationLookup(null);
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            Guid.NewGuid(), Guid.NewGuid(), "   ");
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.NotFound);
+        repo.Verify(r => r.FirstOrDefaultAsync(
+                It.IsAny<System.Linq.Expressions.Expression<Func<TranslationRoomInvitation, bool>>>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task AcceptTranslationRoomInvitationAsync_WillNotReverseADecline()
+    {
+        var roomId = Guid.NewGuid();
+        ArrangeInvitationLookup(new TranslationRoomInvitation
+        {
+            Id = Guid.NewGuid(),
+            TranslationRoomId = roomId,
+            Email = "invitee@example.com",
+            Status = "DECLINED"
+        });
+
+        var result = await _service.AcceptTranslationRoomInvitationAsync(
+            roomId, Guid.NewGuid(), "invitee@example.com");
+
+        // Nothing writes DECLINED today. This is the guard for when something does: the host has
+        // already been told this person is not coming.
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.InvalidState);
+        _mockUow.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 }

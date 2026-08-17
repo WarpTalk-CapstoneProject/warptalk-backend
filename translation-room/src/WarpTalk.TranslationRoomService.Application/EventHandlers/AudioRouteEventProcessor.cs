@@ -145,7 +145,25 @@ public class AudioRouteEventProcessor : IAudioRouteEventProcessor
                 await _routeRepository.UpdateRoutesAsync(routesToUpdate, ct);
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.ENDING.ToString()))
+                // Finalization is for a MEETING that ended, not a PARTICIPANT who did.
+                //
+                // session_ends arrives in two shapes: room-scoped (End/Cancel/Expire publish it
+                // with no participant) and participant-scoped (someone left, was kicked, or their
+                // grace period lapsed — "affects any route where they are source or target",
+                // above). Both drive routes to ENDING, and this used to enqueue on either — so
+                // one person dropping out of a live meeting finalized the whole room: transcript
+                // and summary artifacts were written mid-meeting and MEETING_SUMMARY_READY rang
+                // for everyone still sitting in it. That is the "ủa chưa end meeting mà sao có
+                // noti transcript với summary ready" report, and the duplicate "Summary ready"
+                // notifications for one meeting were the same event firing per departure.
+                //
+                // A participant-scoped ENDING still tears the leaver's routes down; it just no
+                // longer speaks for the meeting. The room-scoped publish at the real end reaches
+                // this same line with targetParticipantId == null, and ArtifactsReconciliationWorker
+                // sweeps ENDED rooms with no artifacts as the fallback — so nothing is finalized
+                // late, only nothing is finalized early.
+                if (routesToUpdate.Any(r => r.Status == AudioRouteStatus.ENDING.ToString())
+                    && targetParticipantId == null)
                 {
                     _finalizationQueue.QueueFinalization(roomId);
                 }

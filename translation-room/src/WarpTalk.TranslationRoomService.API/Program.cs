@@ -1,3 +1,4 @@
+using WarpTalk.Shared.Authorization;
 using Npgsql;
 using Npgsql.NameTranslation;
 using Microsoft.EntityFrameworkCore;
@@ -86,6 +87,9 @@ builder.Services.AddScoped<ITranslationRoomFeedbackRepository, TranslationRoomFe
 // is no generic on IUnitOfWork and no Repository<T>() factory.
 builder.Services.AddScoped<ITranslationRoomSeriesRepository, TranslationRoomSeriesRepository>();
 builder.Services.AddScoped<ITranslationRoomService, TranslationRoomAppService>();
+builder.Services.AddScoped<IAdminMeetingService, AdminMeetingService>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddScoped<IAdminFeedbackService, AdminFeedbackService>();
 builder.Services.AddScoped<ITranslationRoomSeriesService, TranslationRoomSeriesService>();
 builder.Services.AddScoped<ITranslationRoomArtifactService, TranslationRoomArtifactService>();
 builder.Services.AddSingleton<IArtifactUrlSigner, S3ArtifactUrlSigner>();
@@ -99,6 +103,10 @@ builder.Services.AddScoped<IAudioRouteCacheService, AudioRouteCacheService>();
 builder.Services.AddSingleton<IAudioRouteStateMachine, AudioRouteStateMachine>();
 builder.Services.AddScoped<IAudioRouteTransitionProcessor, AudioRouteTransitionProcessor>();
 builder.Services.AddScoped<IAudioRouteEventProcessor, AudioRouteEventProcessor>();
+// WT-419. Separate from the processor above because a language change decides which routes should
+// EXIST rather than moving existing ones through a state machine — and because the route service
+// already depends on IAudioRouteEventProcessor, so the reverse edge would be a cycle.
+builder.Services.AddScoped<IParticipantLanguageProcessor, ParticipantLanguageProcessor>();
 builder.Services.AddScoped<ITelemetryStateService, TelemetryStateService>();
 builder.Services.AddScoped<ITelemetryProcessor, TelemetryProcessor>();
 builder.Services.AddScoped<IArtifactsFinalizer, ArtifactsFinalizer>();
@@ -138,6 +146,7 @@ builder.Services.AddScoped<ILanguageRepository, LanguageRepository>();
 builder.Services.AddScoped<ILanguagePolicy, LanguagePolicy>();
 builder.Services.AddScoped<IUserSettingsDirectory, UserSettingsGrpcDirectory>();
 builder.Services.AddScoped<IVoiceConsentDirectory, VoiceConsentGrpcDirectory>();
+builder.Services.AddScoped<IDubVoiceDirectory, DubVoiceGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMemberDirectory, WorkspaceMemberGrpcDirectory>();
 builder.Services.AddScoped<IWorkspaceMeetingPolicy, WorkspaceMeetingPolicyGrpcClient>();
 builder.Services.Configure<WarpTalk.TranslationRoomService.Domain.Configuration.AppSettings>(builder.Configuration.GetSection("App"));
@@ -195,6 +204,10 @@ builder.Services.AddWarpTalkJwtAuthentication(
         };
     });
 builder.Services.AddAuthorization();
+// The gate every ~/api/v1/admin/* endpoint shares. AdminMeetingsController is the first admin
+// surface in this service, and without this the policy name resolves to nothing — the attribute
+// then throws at request time instead of refusing the caller.
+builder.Services.AddWarpTalkSystemAdminAuthorization();
 builder.Services.AddGrpcClient<UserService.UserServiceClient>(o =>
 {
     o.Address = builder.Configuration.GetRequiredServiceUri(
@@ -208,7 +221,11 @@ builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.TranscriptService.Transcri
     o.Address = builder.Configuration.GetRequiredServiceUri(
         builder.Environment,
         "GrpcSettings:TranscriptServiceUrl",
-        "http://localhost:50055");
+        // 50053, not 50055. TranscriptService binds 50053 (its API Program.cs); 50055 belongs to
+        // MeetingService. Dialling 50055 here was refused on every single call, and because
+        // FinalizeTranscriptAsync caught that and fell back to a cache, it surfaced as "no speech
+        // recorded" on 135 of 135 transcript exports rather than as an error (WT-431).
+        "http://localhost:50053");
 })
 .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
 // WT-188: resolves the caller's workspace role so a workspace Owner/Admin can admit participants

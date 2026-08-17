@@ -137,7 +137,16 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             if (artifact == null) return Result.Failure<ArtifactDownloadDto>("Artifact not found.", ErrorCodes.NotFound);
 
             if (!ArtifactAccessHelper.HasAccessToRoomArtifacts(artifact.TranslationRoom, userId))
-                return Result.Failure<ArtifactDownloadDto>("Unauthorized to download this artifact.", ErrorCodes.Unauthorized);
+            {
+                // Named rather than flat — see ArtifactAccessHelper.DescribeArtifactDenial. The
+                // participant roster is already loaded on the room this query returned, so saying
+                // WHICH refusal this is costs nothing beyond the predicate.
+                var wasThere = artifact.TranslationRoom.TranslationRoomParticipants
+                    .Any(participant => participant.UserId == userId);
+                return Result.Failure<ArtifactDownloadDto>(
+                    ArtifactAccessHelper.DescribeArtifactDenial(wasThere),
+                    ErrorCodes.Unauthorized);
+            }
 
             if (artifact.RetentionUntil.HasValue && DateTime.UtcNow > artifact.RetentionUntil.Value)
             {
@@ -160,11 +169,33 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
                     ErrorCodes.InvalidState);
             }
 
+            // The transcript and the summary go out as plain text, whatever they are stored as.
+            //
+            // Their storage shapes are markdown and structured JSON, and both are right for the
+            // things that READ them — the web client parses the summary JSON into prose and the
+            // knowledge indexer reads the same field. Neither is right for a person who clicked
+            // Download and got `**[Nam (VI)]**: xin chào` or a wall of `{"summary":…}`. Rendering
+            // on the way out rather than changing the writer also fixes every artifact already in
+            // the database; those rows are never rewritten.
+            if (ArtifactPlainText.IsTextExport(artifact.ArtifactType))
+            {
+                return Result<ArtifactDownloadDto>.Success(new ArtifactDownloadDto(
+                    // A text export never has a file behind it — the content IS the artifact — so
+                    // there is no signed URL to produce here.
+                    null,
+                    ArtifactPlainText.Render(artifact.ArtifactType, artifact.Content),
+                    $"warptalk-{artifact.ArtifactType.ToLowerInvariant()}-{artifact.Id:N}.txt",
+                    "text/plain"));
+            }
+
+            // WT-432: LegacyMarkdownMime is here for the rows the finalizer wrote before it
+            // learned to store a token instead of a MIME type. Without it those fall to the
+            // default and download as .txt — which is what every artifact in production did.
             var extension = artifact.FileFormat?.ToLowerInvariant() switch
             {
-                "markdown" => "md",
-                "json" => "json",
-                "text/plain" => "txt",
+                ArtifactFileFormats.Markdown or ArtifactFileFormats.LegacyMarkdownMime => "md",
+                ArtifactFileFormats.Json => "json",
+                ArtifactFileFormats.PlainText => "txt",
                 "mp4" => "mp4",
                 "webm" => "webm",
                 "wav" => "wav",
@@ -172,9 +203,9 @@ public class TranslationRoomArtifactService : ITranslationRoomArtifactService
             };
             var contentType = artifact.FileFormat?.ToLowerInvariant() switch
             {
-                "markdown" => "text/markdown",
-                "json" => "application/json",
-                "text/plain" => "text/plain",
+                ArtifactFileFormats.Markdown or ArtifactFileFormats.LegacyMarkdownMime => "text/markdown",
+                ArtifactFileFormats.Json => "application/json",
+                ArtifactFileFormats.PlainText => "text/plain",
                 "mp4" => "video/mp4",
                 "webm" => "video/webm",
                 "wav" => "audio/wav",

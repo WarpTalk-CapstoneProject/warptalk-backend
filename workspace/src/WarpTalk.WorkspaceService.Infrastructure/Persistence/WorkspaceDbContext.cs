@@ -148,6 +148,17 @@ public partial class WorkspaceDbContext : DbContext
             entity.Property(e => e.IndexVersion)
                 .HasMaxLength(50)
                 .HasColumnName("index_version");
+            // WT-411 shipped the property, the DTO, the mapper and the migration — but not this
+            // line. EF has no snake_case convention configured here (every property in this file
+            // names its own column), so the property name went to Postgres verbatim and every
+            // SELECT over workspace_documents failed with
+            //   42703: column w.IngestionFailureReason does not exist
+            // That is the whole of the Documents page 500: the catch-all in
+            // WorkspaceDocumentService.ListDocumentsAsync turned it into "an unexpected error",
+            // so the wrong column name never reached anybody who could read it.
+            entity.Property(e => e.IngestionFailureReason)
+                .HasMaxLength(64)
+                .HasColumnName("ingestion_failure_reason");
             entity.Property(e => e.IngestionStatus)
                 .HasMaxLength(30)
                 .HasDefaultValueSql("'pending'::character varying")

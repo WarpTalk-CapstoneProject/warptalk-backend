@@ -26,5 +26,12 @@ public record TranslationRoomParticipantDto(
     string SpeakLanguage,
     string Status,
     bool IsTranslationAudioEnabled,
-    DateTime? JoinedAt
+    DateTime? JoinedAt,
+    /// <summary>
+    /// WT-446: this person was not a member of the room's workspace when they were let in.
+    /// The roster labels them so nobody has to guess who is a guest, and usage attribution has a
+    /// fact to key on. Trails the record with a default so an older client deserialising this DTO
+    /// is unaffected.
+    /// </summary>
+    bool IsExternal = false
 );

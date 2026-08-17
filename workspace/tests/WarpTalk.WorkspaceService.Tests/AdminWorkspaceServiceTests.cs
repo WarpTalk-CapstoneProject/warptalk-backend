@@ -43,6 +43,7 @@ public class AdminWorkspaceServiceTests
             _unitOfWork,
             _authIdentityClient,
             _adminAuditLogRepository,
+            Substitute.For<IWorkspaceEventPublisher>(),
             Substitute.For<ILogger<AdminWorkspaceService>>(),
             new FixedTimeProvider(Now));
     }

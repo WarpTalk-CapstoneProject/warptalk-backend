@@ -405,6 +405,9 @@ public partial class AuthDbContext : DbContext
                 .HasColumnName("updated_by");
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.VoiceCloneEnabled).HasColumnName("voice_clone_enabled");
+            entity.Property(e => e.DubVoiceId)
+                .HasMaxLength(255)
+                .HasColumnName("dub_voice_id");
 
             entity.HasOne(d => d.UpdatedByNavigation).WithMany(p => p.UserSettings)
                 .HasForeignKey(d => d.UpdatedBy)

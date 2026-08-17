@@ -8,6 +8,7 @@ public static class WorkspaceAdminActionTypes
 {
     public const string Suspend = "suspend";
     public const string Reactivate = "reactivate";
+    public const string Delete = "delete";
 }
 
 /// <summary>

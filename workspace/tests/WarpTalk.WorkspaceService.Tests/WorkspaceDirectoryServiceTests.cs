@@ -203,6 +203,73 @@ public class WorkspaceDirectoryServiceTests
         Assert.Contains("not allowed", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// WT-466. The whitelist was applied to target_languages and to nothing else, so a workspace
+    /// that had narrowed itself to vi/en/ja accepted a room whose SOURCE language was Spanish —
+    /// the language every participant is translated FROM, and the only one the host actually
+    /// speaks. To the owner the setting looked as though it did nothing.
+    ///
+    /// The targets here are inside the policy on purpose: this test fails on the old code, where
+    /// the only rejecting branch is the target loop.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Denies_WhenSourceLanguageNotAllowed()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[\"vi\",\"en\",\"ja\"],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "vi", "en" }, sourceLanguage: "es");
+
+        Assert.True(result.IsSuccess);
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("source language", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The other half of the same rule: an empty policy means UNRESTRICTED. Reading it the other
+    /// way would refuse every room in every workspace that never configured languages, which is
+    /// most of them.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_Allows_AnySourceLanguage_WhenThePolicyIsEmpty()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        StubMember(new WorkspaceMember
+        {
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            Status = "Active",
+            CanCreateMeetings = true
+        });
+        StubWorkspace(workspaceId, new Workspace
+        {
+            Id = workspaceId,
+            IsActive = true,
+            Settings = "{\"AllowedTargetLanguages\":[],\"MaxActiveRooms\":10}"
+        });
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, new[] { "es" }, sourceLanguage: "es");
+
+        Assert.True(result.IsSuccess);
+        Assert.True(result.Value!.IsAllowed);
+    }
+
     [Fact]
     public async Task ValidateMeetingCreationAsync_Denies_WhenActiveRoomLimitReached()
     {
@@ -399,6 +466,63 @@ public class WorkspaceDirectoryServiceTests
 
         Assert.False(result.Value!.IsAllowed);
         Assert.Contains("active room limit (2)", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The workspace's own setting is a TIGHTENING and is applied.
+    ///
+    /// Nothing writes workspace_entitlement_overrides — billing exposes no writer — so the
+    /// Settings page's "Max Active Rooms" never reaches the resolver and the snapshot always
+    /// answered first. A workspace that lowered its own cap to 2 was still allowed 5.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_AppliesTheWorkspaceSetting_WhenItIsTighterThanThePlan()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":2}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "5", "platform_default")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(2);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, Array.Empty<string>());
+
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("active room limit (2)", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("plan allows up to 5", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The reported bug: the settings page reads 20, room creation refuses at 5, and the message
+    /// gave the owner no way to connect the two.
+    ///
+    /// The setting must NOT raise the ceiling — a workspace may only tighten
+    /// (EntitlementConstants.Errors.WorkspaceOverrideLoosens) — but the refusal has to say that
+    /// out loud, and name the layer that decided 5. Here that layer is platform_default, which is
+    /// what an inactive subscription resolves to however grand the plan on the row.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_SaysWhyTheSettingDidNotRaiseTheLimit()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId, "{\"MaxActiveRooms\":20}");
+        ArrangeSnapshot(workspaceId, SnapshotJson(("max_active_rooms", "5", "platform_default")));
+
+        _translationRoomClient
+            .GetActiveRoomCountAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(5);
+
+        var result = await _service.ValidateMeetingCreationAsync(
+            workspaceId, userId, Array.Empty<string>());
+
+        Assert.False(result.Value!.IsAllowed);
+        var message = result.Value.ErrorMessage;
+        Assert.Contains("active room limit (5)", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("platform_default", message, StringComparison.Ordinal);
+        Assert.Contains("20", message, StringComparison.Ordinal);
+        Assert.Contains("cannot raise it", message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

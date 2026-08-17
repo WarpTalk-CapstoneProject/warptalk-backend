@@ -349,45 +349,113 @@ public class WorkspaceServiceTests
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
         // Assert
-        // The caller-eligibility gate now fires first, so the refusal names the account
-        // rather than the claimed domain. Both refusals are still refusals.
+        // WT-417 removed the caller-eligibility gate, so the refusal now comes from the gate
+        // that actually matters here: nobody may claim gmail.com as a workspace's VERIFIED
+        // domain. A verified domain makes every address on it Internal, so verifying gmail.com
+        // would make every Gmail user internal to this workspace.
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
-        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
     }
 
-    // ── Hole 1: the public-email-domain block must not be switchable from the body ──
+    // ── WT-417: a public-domain account may found a workspace ──
 
+    /// <summary>
+    /// This test used to assert the opposite, and its subject was WT-142's "the public-domain
+    /// block must not be switchable from the request body". The block is gone by product
+    /// decision, so what it pins now is that removing it did what was asked — for every value
+    /// of the body flag that used to be the bypass.
+    /// </summary>
     [Theory]
-    [InlineData(null)]
-    [InlineData(true)]
-    public async Task CreateWorkspaceAsync_ShouldFail_ForPublicEmailDomain_WhenClaimingAVerifiedDomain(bool? requireVerified)
+    [InlineData(false)]
+    public async Task CreateWorkspaceAsync_ShouldSucceed_ForPublicEmailDomain(bool? requireVerified)
     {
-        // The bypass this pins: POST /workspaces {"requireVerifiedDomainForInternal": false}
-        // from a gmail.com account used to create a workspace, because BOTH the
-        // public-domain check and the already-Internal-elsewhere check sat inside
-        // `if (requireVerified)` and requireVerified came from the request body.
-        //
-        // The rule is narrower now — see the `false` case below — but it cannot be turned
-        // off from the body any more either: whether a domain gets claimed is decided by
-        // the resulting domain list, not by the flag, and claiming one runs the ownership,
-        // public-domain and uniqueness checks unconditionally.
-        // Arrange
         var userId = Guid.NewGuid();
-        var user = new User { Id = userId, Email = "attacker@gmail.com" };
+        var user = new User { Id = userId, Email = "someone@gmail.com" };
         var request = new CreateWorkspaceRequest("Free Workspace", null, RequireVerifiedDomainForInternal: requireVerified);
 
         StubUser(userId, user);
         StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
 
-        // Act
         var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
 
-        // Assert
+        Assert.True(result.IsSuccess, "a gmail.com account was still refused a workspace");
+        await _workspaceRepository.ReceivedWithAnyArgs(1).AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The one combination a public-domain account still cannot have, and it is not a leftover
+    /// of the removed rule — it is the verified-domain rule doing its job.
+    ///
+    /// Asking for RequireVerifiedDomainForInternal with no explicit domain list makes the
+    /// service claim the CREATOR'S OWN domain. For a Gmail account that is gmail.com, and
+    /// verifying gmail.com would make every Gmail address on earth Internal to this workspace.
+    ///
+    /// Found by this test failing when it was first written to expect success for all three
+    /// flag values — the nuance would otherwise have shipped unnoticed.
+    /// </summary>
+    [Fact]
+    public async Task CreateWorkspaceAsync_ShouldStillRefuse_WhenAPublicDomainAccountAsksToVerifyItsOwnDomain()
+    {
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "someone@gmail.com" };
+        var request = new CreateWorkspaceRequest("Free Workspace", null, RequireVerifiedDomainForInternal: true);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
         Assert.False(result.IsSuccess);
-        Assert.Equal(WorkspaceConstants.Errors.PublicEmailDomainCannotCreateWorkspace, result.Error);
+        Assert.Equal(WorkspaceConstants.Errors.CannotVerifyPublicDomain, result.Error);
         await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
-        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The sibling rule that lived in the SAME `if (requireVerified)` block as the removed
+    /// public-domain check, and which WT-142 made unswitchable. Removing one of the two must not
+    /// have taken the other with it: somebody who is already Internal in an Enterprise workspace
+    /// still cannot found a second one, whatever the request body says.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateWorkspaceAsync_ShouldStillFail_WhenAlreadyInternalElsewhere_WhateverTheBodySays(bool? requireVerified)
+    {
+        var userId = Guid.NewGuid();
+        var user = new User { Id = userId, Email = "person@acme.com" };
+        var request = new CreateWorkspaceRequest("Second Home", null, RequireVerifiedDomainForInternal: requireVerified);
+
+        StubUser(userId, user);
+        StubRoleByName("Owner", new Role { Id = Guid.NewGuid(), Name = "Owner" });
+
+        var enterprise = new Workspace
+        {
+            Id = Guid.NewGuid(),
+            Name = "Acme",
+            Slug = "acme",
+            RequireVerifiedDomainForInternal = true,
+        };
+        _workspaceMemberRepository.FindAsync(
+                Arg.Any<System.Linq.Expressions.Expression<Func<WorkspaceMember, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new()
+                {
+                    WorkspaceId = enterprise.Id,
+                    UserId = userId,
+                    MembershipType = MembershipType.Internal.ToString(),
+                    Workspace = enterprise,
+                },
+            });
+
+        var result = await _workspaceService.CreateWorkspaceAsync(request, userId);
+
+        Assert.False(result.IsSuccess, "the one-Enterprise-home rule was lost with the public-domain gate");
+        await _workspaceRepository.DidNotReceiveWithAnyArgs().AddAsync(Arg.Any<Workspace>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1181,8 +1249,18 @@ public class WorkspaceServiceTests
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
     }
 
+    /// <summary>
+    /// The reversal of the test that used to sit here (ShouldFail_WhenUserIsRegularMember).
+    ///
+    /// The Owner/Admin gate on the READ was an UPDATE-era rule applied to GET — its own error
+    /// constant is named OnlyOwnerAdminCanUpdateSettings — and the read's consumers are ordinary
+    /// members: the join page and the create-room dialog fetch these settings to learn the
+    /// workspace's language policy, so every plain Member got a 403 the moment either surface
+    /// loaded. Reading is for every active member now; the write keeps its gate (see the
+    /// UpdateWorkspaceSettingsAsync tests below).
+    /// </summary>
     [Fact]
-    public async Task GetWorkspaceSettingsAsync_ShouldFail_WhenUserIsRegularMember()
+    public async Task GetWorkspaceSettingsAsync_ShouldSucceed_WhenUserIsRegularMember()
     {
         var userId = Guid.NewGuid();
         var workspaceId = Guid.NewGuid();
@@ -1201,13 +1279,20 @@ public class WorkspaceServiceTests
             .Returns(member);
         _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = roleId, Name = "Member" });
+        _workspaceRepository.GetSettingsAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new WorkspaceConfiguration
+            {
+                DefaultLanguage = "vi",
+                Timezone = "Asia/Ho_Chi_Minh",
+                VoiceCloningEnabled = false
+            });
 
         var result = await _workspaceService.GetWorkspaceSettingsAsync(workspaceId, userId);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
-        await _workspaceRepository.DidNotReceive()
-            .GetSettingsAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        Assert.True(result.IsSuccess);
+        Assert.Equal("vi", result.Value!.DefaultLanguage);
+        // The role service was not even consulted: membership alone authorizes the read.
+        await _authIdentity.DidNotReceive().GetRoleByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1493,6 +1578,92 @@ public class WorkspaceServiceTests
 
     #region SoftDeleteWorkspaceAsync Tests
 
+    /// <summary>
+    /// WT-417 — deleting a workspace must take its memberships with it.
+    ///
+    /// This stamped the workspace and left every membership row untouched, RemovedAt still NULL.
+    /// Those rows then read as LIVE memberships of a workspace that no longer exists: unreachable
+    /// (the workspace is filtered out of every listing by DeletedAt), permanent (nothing
+    /// un-deletes a workspace — ReactivateAsync flips IsActive, not this), and blocking, because
+    /// UNIQUE (workspace_id, user_id) has no `WHERE removed_at IS NULL` and so the orphan holds
+    /// its slot against any future rejoin.
+    ///
+    /// That is the orphan the ticket is named for. Fixing the acceptance guard alone would have
+    /// left this manufacturing a fresh one on every delete.
+    /// </summary>
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldStampEveryMemberRemoved_SoNoOrphanMembershipSurvives()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerUserId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerUserId };
+        var ownerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerUserId, RoleId = ownerRoleId };
+        var otherMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = Guid.NewGuid(), RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(ownerMember);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _workspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { ownerMember, otherMember });
+
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(workspace.DeletedAt);
+
+        // Everybody, including the owner who pressed delete — their own orphan is what blocks
+        // them from recreating or rejoining afterwards.
+        Assert.NotNull(ownerMember.RemovedAt);
+        Assert.NotNull(otherMember.RemovedAt);
+        Assert.Equal(ownerUserId, ownerMember.RemovedBy);
+        Assert.Equal(ownerUserId, otherMember.RemovedBy);
+
+        // Stamped in the same instant as the workspace, so the two cannot be read as separate
+        // events when this is reconstructed later.
+        Assert.Equal(workspace.DeletedAt, ownerMember.RemovedAt);
+
+        _workspaceMemberRepository.Received(1).Update(ownerMember);
+        _workspaceMemberRepository.Received(1).Update(otherMember);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The negative control: a refused delete must not strip anybody's membership. The guards run
+    /// before the stamping, and a non-Owner reaching the member loop would be a worse bug than
+    /// the one being fixed.
+    /// </summary>
+    [Fact]
+    public async Task SoftDeleteWorkspaceAsync_ShouldNotTouchMembers_WhenRequesterIsNotOwner()
+    {
+        var workspaceId = Guid.NewGuid();
+        var memberUserId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = Guid.NewGuid() };
+        var member = new WorkspaceMember { WorkspaceId = workspaceId, UserId = memberUserId, RoleId = memberRoleId };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(member);
+        _authIdentity.GetRoleByIdAsync(memberRoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+
+        var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, memberUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(workspace.DeletedAt);
+        Assert.Null(member.RemovedAt);
+        await _workspaceMemberRepository.DidNotReceive().GetActiveMembersByWorkspaceAsync(
+            Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+    }
+
+
     [Fact]
     public async Task SoftDeleteWorkspaceAsync_ShouldSucceed_AndPublishWorkspaceDeletedEvent_WhenRequesterIsOwner()
     {
@@ -1510,6 +1681,9 @@ public class WorkspaceServiceTests
             .Returns(ownerMember);
         _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>())
             .Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        // WT-417 gave the delete a second dependency: the memberships go with the workspace.
+        _workspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember> { ownerMember });
 
         // Act
         var result = await _workspaceService.SoftDeleteWorkspaceAsync(workspaceId, ownerUserId);

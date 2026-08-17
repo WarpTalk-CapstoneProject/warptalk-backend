@@ -38,4 +38,19 @@ public class TranslationRoomSettings
     /// <summary>Whether breakout rooms are offered at all for this meeting.</summary>
     [JsonPropertyName("breakouts_enabled")]
     public bool BreakoutsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether anyone in the room may start live translation, or only the host.
+    ///
+    /// WT-371 asked for "only the host can start", and WT-341 had deliberately opened the door
+    /// the other way — a busy host must not be able to strand a meeting that is ready to run.
+    /// Both are right for different meetings, and a setting is the only honest answer: a
+    /// customer demo wants one person driving; a daily standup does not want to wait for them.
+    ///
+    /// Defaults to FALSE, which is the stricter reading and matches what WT-371 reported as the
+    /// expected behaviour. A room that wants the open stance now says so explicitly instead of
+    /// inheriting it from whether approval happened to be required.
+    /// </summary>
+    [JsonPropertyName("participants_can_start_translation")]
+    public bool ParticipantsCanStartTranslation { get; set; }
 }

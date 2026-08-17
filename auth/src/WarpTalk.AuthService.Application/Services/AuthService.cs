@@ -57,12 +57,12 @@ public class AuthService : IAuthService
         _authEmailSender = authEmailSender;
     }
 
-    public async Task<Result<AuthResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
+    public async Task<Result<RegisterResponse>> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
     {
         try
         {
             if (await _userRepository.ExistsByEmailAsync(request.Email.ToLowerInvariant().Trim(), ct))
-                return Result.Failure<AuthResponse>(AuthConstants.ErrorEmailExists, ErrorCodes.EmailExists);
+                return Result.Failure<RegisterResponse>(AuthConstants.ErrorEmailExists, ErrorCodes.EmailExists);
 
             var passwordHash = _passwordHasher.Hash(request.Password);
             var user = UserMapper.ToUser(request, passwordHash);
@@ -86,7 +86,13 @@ public class AuthService : IAuthService
 
             // Every user needs a user_settings row — RegisterInvitedAsync already does
             // this; self-registration was silently skipping it.
-            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            //
+            // The languages the wizard asked for land here, at account creation, because this is
+            // the last authenticated-server moment before the account goes dark: registration
+            // returns no session (BR-02), so the client cannot save them afterwards. Absent, they
+            // fall back to the platform defaults.
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(
+                user.Id, request.DefaultSpeakLanguage, request.DefaultListenLanguage);
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);
@@ -109,13 +115,27 @@ public class AuthService : IAuthService
                 }
             }
 
+            // BR-02 — no session until the address is proven.
+            //
+            // `verificationToken is not null` is the same condition that decided whether to send a
+            // verification email, so this cannot drift from it: exactly when we asked the user to
+            // prove the address, we decline to sign them in. When AutoVerifySelfRegistration is on
+            // the account is already verified and a session is correct.
+            //
+            // Issuing tokens here made registration a way around the login gate that
+            // UserStatusHelper puts in front of an unverified account.
+            if (verificationToken is not null)
+            {
+                return Result.Success(new RegisterResponse(EmailVerificationRequired: true, Auth: null));
+            }
+
             var response = await AuthResponseHelper.CreateAuthResponseAsync(user, null, null, _jwtGenerator, _refreshTokenRepository, _unitOfWork, _authSettings.DefaultRole, ct);
-            return Result.Success(response);
+            return Result.Success(new RegisterResponse(EmailVerificationRequired: false, Auth: response));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred during registration. Email: {Email}", request.Email);
-            return Result.Failure<AuthResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
+            return Result.Failure<RegisterResponse>("An unexpected error occurred during registration.", ErrorCodes.InternalServerError);
         }
     }
 
@@ -297,8 +317,11 @@ public class AuthService : IAuthService
 
             await _userRepository.AddAsync(user, ct);
 
-            // Create default user settings
-            var settings = UserSettingsMapper.CreateDefaultUserSettings(user.Id);
+            // Create default user settings, with whatever the sign-up wizard asked for. An
+            // invited account goes through the same three steps as a self-registered one — the
+            // invitation only removes the email step, not the question about languages.
+            var settings = UserSettingsMapper.CreateDefaultUserSettings(
+                user.Id, request.DefaultSpeakLanguage, request.DefaultListenLanguage);
             await _unitOfWork.UserSettingRepository.AddAsync(settings, ct);
 
             await _unitOfWork.SaveChangesAsync(ct);

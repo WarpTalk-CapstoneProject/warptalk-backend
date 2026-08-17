@@ -30,7 +30,12 @@ public record WorkspaceKnowledgeChunkDto(
     /// The meeting's name on a summary row, the term on a glossary row. Null for documents,
     /// which carry <see cref="DocumentName"/> instead.
     /// </summary>
-    string? SourceTitle
+    string? SourceTitle,
+    /// <summary>
+    /// When this chunk was indexed, in epoch milliseconds, or null for a row stored before the
+    /// indexer stamped one. The listing orders by it, newest first, and puts undated rows last.
+    /// </summary>
+    long? IndexedAtMs
 );
 
 /// <summary>

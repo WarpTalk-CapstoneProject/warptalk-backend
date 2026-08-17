@@ -37,7 +37,8 @@ public static class WorkspaceDocumentMapper
             doc.Status,
             downloadUrl,
             doc.CreatedAt,
-            doc.UpdatedAt
+            doc.UpdatedAt,
+            doc.IngestionFailureReason
         );
     }
 

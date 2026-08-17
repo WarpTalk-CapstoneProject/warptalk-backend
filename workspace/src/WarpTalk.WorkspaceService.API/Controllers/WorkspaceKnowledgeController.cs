@@ -105,41 +105,7 @@ public class WorkspaceKnowledgeController : ControllerBase
     }
 }
 
-/// <summary>
-/// The same listing for the System Admin portal.
-///
-/// Routed under ~/api/v1/admin/workspaces, which the gateway already forwards to this
-/// service, and gated by the shared system-admin policy — the platform role "admin" seeded in
-/// init-db.sql, which is distinct from the workspace-scoped "Admin". Workspace roles live in
-/// workspace_members and never reach the token, so no workspace Owner can open this route.
-/// </summary>
-[ApiController]
-[Route("api/v1/admin/workspaces/{workspaceId:guid}/knowledge")]
-[Authorize(Policy = SystemAdminAuthorization.PolicyName)]
-public class AdminWorkspaceKnowledgeController : ControllerBase
-{
-    private readonly IWorkspaceKnowledgeService _knowledgeService;
-
-    public AdminWorkspaceKnowledgeController(IWorkspaceKnowledgeService knowledgeService)
-    {
-        _knowledgeService = knowledgeService;
-    }
-
-    [HttpGet]
-    public async Task<IActionResult> GetKnowledge(
-        Guid workspaceId,
-        [FromQuery] GetWorkspaceKnowledgeQuery query,
-        CancellationToken ct)
-    {
-        var result = await _knowledgeService.GetKnowledgeForAdminAsync(workspaceId, query, ct);
-
-        if (result.IsSuccess) return Ok(result.Value);
-
-        return result.ErrorCode switch
-        {
-            ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
-            ErrorCodes.ValidationError => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
-            _ => StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode)),
-        };
-    }
-}
+// The System Admin listing that used to live here is gone on purpose: what a workspace has
+// indexed — documents, meeting summaries, glossary facts — is tenant content, and the decision
+// of 2026-08-17 is that the admin portal sees a workspace's operational facts (membership,
+// billing, lifecycle) and none of its content. The service method went with it.

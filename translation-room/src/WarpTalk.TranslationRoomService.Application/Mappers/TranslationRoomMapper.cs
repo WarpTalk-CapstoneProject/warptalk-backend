@@ -44,7 +44,8 @@ public static class TranslationRoomMapper
             settings.ArtifactAccess,
             settings.MuteOnEntry,
             settings.AutoRecord,
-            settings.BreakoutsEnabled);
+            settings.BreakoutsEnabled,
+            settings.ParticipantsCanStartTranslation);
     }
 
     /// <summary>
@@ -129,16 +130,27 @@ public static class TranslationRoomMapper
     ///    primarily opened for, the host's global DefaultListenLanguage need not be among this
     ///    room's targets, and null is not an option because listen_language is NOT NULL and the
     ///    audio-route pipeline keys off it. It is a seed, not a lock.
-    ///  - CONNECTED, because that is the one status that holds a seat
-    ///    (TranslationRoomParticipantStatuses.SeatHolding) and every write path in the service
-    ///    stores it.
+    ///  - INVITED, not CONNECTED (WT-450). CONNECTED is the one status that holds a seat, and
+    ///    this row is written when the room is CREATED — so seeding it CONNECTED made every room
+    ///    claim an occupant before anyone had opened it, which blinded both abandoned-room
+    ///    reapers permanently. The host is promoted to CONNECTED on real arrival by
+    ///    TranslationRoomParticipantMapper.UpdateFrom. EXTERNAL_BRIDGE is exempt — see the
+    ///    reasoning at the assignment itself.
     /// </summary>
+    /// <param name="roomType">
+    /// EXTERNAL_BRIDGE inverts the listen rule above. In every other room the host is one of
+    /// several people and wants the room's target language; in a bridge room the host is the only
+    /// human present and the other "participant" is the external call, so the host wants to hear
+    /// their OWN language. Seeding targetLanguages[0] there would make the inbound route
+    /// en -> en, which translates nothing and would leave the far side apparently mute.
+    /// </param>
     public static TranslationRoomParticipant BuildHostParticipant(
         Guid roomId,
         Guid hostId,
         string hostDisplayName,
         string sourceLanguage,
-        IReadOnlyList<string> targetLanguages)
+        IReadOnlyList<string> targetLanguages,
+        string? roomType = null)
     {
         if (targetLanguages is null || targetLanguages.Count == 0)
             throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
@@ -152,10 +164,99 @@ public static class TranslationRoomMapper
             UserId = hostId,
             DisplayName = hostDisplayName,
             SpeakLanguage = sourceLanguage,
-            ListenLanguage = targetLanguages[0],
+            ListenLanguage = TranslationRoomTypes.IsExternalBridge(roomType)
+                ? sourceLanguage
+                : targetLanguages[0],
             Role = "HOST",
-            Status = TranslationRoomParticipantStatuses.Connected,
+            // WT-450. INVITED, not CONNECTED: booking a meeting is not attending it.
+            //
+            // This row is written when the room is CREATED, before the host has opened anything.
+            // Seeding it CONNECTED made every room in the system claim an occupant from the
+            // moment it existed, and CONNECTED is the sole definition of "holds a seat"
+            // (TranslationRoomParticipantStatuses.SeatHolding). Three things read that:
+            //
+            //   * ParticipantCount — an empty room reported 1.
+            //   * IdleRoomMonitoringWorker — `hasConnectedParticipants` was true, so it skipped
+            //     the room.
+            //   * AbandonedRoomSweepWorker — `seatHolders > 0`, so AbandonedRoomPolicy answered
+            //     Leave, every sweep, forever.
+            //
+            // Both reapers were therefore BLIND to any room whose host never opened a socket —
+            // and a socket is the only thing that ever clears this row, since
+            // MarkParticipantDisconnectedAsync runs off the hub's OnDisconnectedAsync. A host who
+            // pressed "Join meeting" (which calls /start and writes IN_PROGRESS) and then closed
+            // the tab before the hub connected left a room that was IN_PROGRESS, unoccupied, and
+            // permanently unsweepable. That is the reported bug: "In Progress" on a meeting
+            // nobody started, next to an empty artifact list.
+            //
+            // Safe because the host is promoted on real arrival, unconditionally:
+            // TranslationRoomParticipantMapper.UpdateFrom's `if (isHost)` branch sets CONNECTED
+            // whatever the row said before, and INVITED is already an established non-seat
+            // status the join path knows. The capacity check exempts the host explicitly
+            // (`!isHost`), so nothing about admission changes. Routing is unaffected: a solo room
+            // legitimately has zero routes — StartTranslationRoomAsync says so — and routes are
+            // regenerated at Start and incrementally per join (S7).
+            //
+            // EXTERNAL_BRIDGE is exempt, and stays CONNECTED. That room's entire mesh is the host
+            // plus the far-side stand-in, and GenerateRoutesAsync builds from seat holders — a
+            // bridge room seeded with one seat generates no routes at all (see
+            // ExternalBridgeParticipantTests.BothSeatsShouldHoldTheirSeatSoTheMeshSeesThem, and
+            // the matching note in CreateTranslationRoomAsync). Exempting it also costs nothing
+            // here: the stand-in is itself seeded CONNECTED and never disconnects, so a bridge
+            // room's seat count is non-zero regardless of what the host's row says. Making the
+            // host INVITED there would buy no sweepability and risk the audio mesh.
+            Status = TranslationRoomTypes.IsExternalBridge(roomType)
+                ? TranslationRoomParticipantStatuses.Connected
+                : TranslationRoomParticipantStatuses.Invited,
             ConnectionType = "WEBRTC",
+            IsTranslationAudioEnabled = true,
+            IsUsingVoiceClone = false,
+            // Untouched by the INVITED branch above, and set on arrival by the join path. Left as
+            // the creation time so nothing that reads it null-references; it is not evidence of
+            // attendance while the status says INVITED.
+            JoinedAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    /// <summary>
+    /// The second seat in an EXTERNAL_BRIDGE room: one stand-in for everyone on the far side of
+    /// the Google Meet / Zoom / Teams call.
+    ///
+    /// Its languages are the mirror of the host's, which is the whole trick. The existing mesh in
+    /// TranslationRoomAudioRouteService pairs source.SpeakLanguage with target.ListenLanguage, so
+    /// a host of vi/vi against a far side of en/en yields exactly the two routes the bridge needs
+    /// — vi to en outbound, en to vi inbound — and every worker downstream treats this like any
+    /// other room.
+    ///
+    /// IsUsingVoiceClone is false and must stay false. The people on the far side never agreed to
+    /// anything with WarpTalk, so their voices are not cloned; they are dubbed in a stock voice.
+    /// VoiceCloneConsentGate already fails closed for a participant with no consent record, so
+    /// this is belt and braces rather than the only guard.
+    /// </summary>
+    public static TranslationRoomParticipant BuildExternalBridgeParticipant(
+        Guid roomId,
+        string sourceLanguage,
+        IReadOnlyList<string> targetLanguages)
+    {
+        if (targetLanguages is null || targetLanguages.Count == 0)
+            throw new ArgumentException("A room always has at least one target language.", nameof(targetLanguages));
+
+        var now = DateTime.UtcNow;
+
+        return new TranslationRoomParticipant
+        {
+            Id = Guid.CreateVersion7(),
+            TranslationRoomId = roomId,
+            UserId = TranslationRoomConstants.ExternalBridgeParticipantUserId,
+            DisplayName = TranslationRoomConstants.ExternalBridgeDisplayName,
+            // Mirror of the host: speaks what the far side speaks, hears what the far side hears.
+            SpeakLanguage = targetLanguages[0],
+            ListenLanguage = targetLanguages[0],
+            Role = "PARTICIPANT",
+            Status = TranslationRoomParticipantStatuses.Connected,
+            ConnectionType = ExternalBridgeConnectionType,
             IsTranslationAudioEnabled = true,
             IsUsingVoiceClone = false,
             JoinedAt = now,
@@ -163,6 +264,12 @@ public static class TranslationRoomMapper
             UpdatedAt = now
         };
     }
+
+    /// <summary>
+    /// Marks the stand-in row so a roster, a billing sweep or a presence check can tell it from a
+    /// real person. The column is a free varchar that has only ever held "WEBRTC".
+    /// </summary>
+    public const string ExternalBridgeConnectionType = "EXTERNAL_BRIDGE";
 
     /// <summary>
     /// The settings a new room starts with: the meeting type's profile, with any value the
@@ -188,6 +295,9 @@ public static class TranslationRoomMapper
             MuteOnEntry = requested?.MuteOnEntry ?? defaults.MuteOnEntry,
             AutoRecord = requested?.AutoRecord ?? defaults.AutoRecord,
             BreakoutsEnabled = requested?.BreakoutsEnabled ?? defaults.BreakoutsEnabled,
+            // No meeting-type default: WT-371 wants host-only unless a host says otherwise, and
+            // seeding it per type would put the looser stance back where nobody chose it.
+            ParticipantsCanStartTranslation = requested?.ParticipantsCanStartTranslation ?? false,
         };
     }
 

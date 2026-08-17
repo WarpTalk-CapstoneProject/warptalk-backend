@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.Json;
+using Grpc.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -101,6 +102,17 @@ public class TranslationRoomService : ITranslationRoomService
     /// </summary>
     private const string MeetingInvitedEventType = "MeetingInvited";
 
+    /// <summary>
+    /// The invitation states this service writes. PENDING is set at creation; ACCEPTED is the
+    /// invitee's own answer. Both are already in
+    /// <see cref="RoomReadAccess.InvitationStatusesGrantingRead"/>, so accepting never changes
+    /// what a person can see — it records that they said yes.
+    /// </summary>
+    private const string InvitationAcceptedStatus = "ACCEPTED";
+
+    /// <summary>Written by nothing today; read here so Accept fails closed if it ever is.</summary>
+    private const string InvitationDeclinedStatus = "DECLINED";
+
     public TranslationRoomService(
         IUnitOfWork unitOfWork,
         ILanguagePolicy languagePolicy,
@@ -170,20 +182,62 @@ public class TranslationRoomService : ITranslationRoomService
         string meetingLink,
         CancellationToken ct)
     {
+        // WT-415: both skips are logged now, and this is the whole point of the change.
+        //
+        // MEETING_INVITED has produced ZERO rows in production while its siblings
+        // MEETING_STARTED (127) and MEETING_REMINDER (20) fire normally, against 538
+        // invitation rows. It is not throwing — its own catch below has never logged either —
+        // so it is returning at one of the two guards, and neither said which. That is the
+        // same shape as every other silent exit found this week: the branch that swallows a
+        // feature has to say so, or the next investigation restarts from nothing.
+        //
+        // Warning, not information: neither of these is a normal outcome for an invitee who
+        // has an account, which is the case the bell exists for.
         if (_notificationClient is null || _userClient is null)
         {
+            _logger.LogWarning(
+                "invite_notification_skipped: reason=clients_unavailable RoomId={RoomId} "
+                + "NotificationClient={HasNotificationClient} UserClient={HasUserClient}. "
+                + "The invitation and its email are unaffected.",
+                room.Id,
+                _notificationClient is not null,
+                _userClient is not null);
             return;
         }
 
         try
         {
-            var user = await _userClient.GetUserByEmailAsync(
-                new WarpTalk.Shared.Protos.GetUserByEmailRequest { Email = email },
-                cancellationToken: ct);
+            WarpTalk.Shared.Protos.GetUserResponse? user;
+            try
+            {
+                user = await _userClient.GetUserByEmailAsync(
+                    new WarpTalk.Shared.Protos.GetUserByEmailRequest
+                    {
+                        // Invitations store the address as typed; accounts are matched
+                        // case-insensitively upstream, but trimming here removes the one
+                        // difference a pasted address reliably introduces.
+                        Email = email.Trim(),
+                    },
+                    cancellationToken: ct);
+            }
+            catch (RpcException notFound) when (notFound.StatusCode == StatusCode.NotFound)
+            {
+                // UserServiceGrpc.GetUserByEmail THROWS NotFound for an unknown address — it does
+                // not answer with an empty id. The `user?.Id` check below was therefore
+                // unreachable for its own case, and every invitee without an account fell into
+                // the outer catch and was logged as a FAILURE of the notification system. It is
+                // not a failure: their invitation email is the correct and only channel.
+                _logger.LogInformation(
+                    "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
+                    room.Id);
+                return;
+            }
 
             if (string.IsNullOrWhiteSpace(user?.Id))
             {
-                // No account yet. The invitation email is their only channel, by design.
+                _logger.LogInformation(
+                    "invite_notification_skipped: reason=no_account_for_email RoomId={RoomId}",
+                    room.Id);
                 return;
             }
 
@@ -201,6 +255,12 @@ public class TranslationRoomService : ITranslationRoomService
             request.Metadata.Add("room_title", room.Title);
 
             await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+
+            // The success side too, so "it fired and something downstream dropped it" can be
+            // told apart from "it never fired". Without this, a MEETING_INVITED row missing
+            // from the notification service is unattributable.
+            _logger.LogInformation(
+                "invite_notification_sent: RoomId={RoomId} UserId={UserId}", room.Id, user.Id);
         }
         catch (Exception ex)
         {
@@ -339,7 +399,12 @@ public class TranslationRoomService : ITranslationRoomService
             if (workspaceId == Guid.Empty)
                 return Result.Failure<TranslationRoomDto>(ApiMessageConstants.ValidationMessages.WorkspaceRequired, ErrorCodes.ValidationError);
 
-            var policy = await _workspaceMeetingPolicy.ValidateMeetingCreationAsync(workspaceId, hostId, targetLangs, ct);
+            // WT-466: sourceLang goes with the targets. The workspace whitelist used to see only
+            // the targets, so a workspace narrowed to vi/en/ja happily created a room whose host
+            // spoke Spanish — the setting appeared to do nothing on the one language every
+            // participant hears first.
+            var policy = await _workspaceMeetingPolicy.ValidateMeetingCreationAsync(
+                workspaceId, hostId, targetLangs, sourceLang, ct);
             if (!policy.IsSuccess)
             {
                 // The workspace owns the wording, but it is free to deny without one.
@@ -401,8 +466,19 @@ public class TranslationRoomService : ITranslationRoomService
             // TranslationRoomMapper.BuildHostParticipant so the recurring-series materialiser
             // seeds its occurrences identically instead of from a second hand-written copy.
             var hostParticipant = TranslationRoomMapper.BuildHostParticipant(
-                room.Id, hostId, hostDisplayName, sourceLang, targetLangs);
+                room.Id, hostId, hostDisplayName, sourceLang, targetLangs, room.TranslationRoomType);
             await _participantRepository.AddAsync(hostParticipant, ct);
+
+            // An external-bridge room is the host plus a stand-in for the Google Meet / Zoom call
+            // they are actually sitting in. The stand-in is seeded here, at creation, rather than
+            // when the room starts, because the audio mesh is built from whoever holds a seat and
+            // a bridge room with one seat would generate no routes at all.
+            if (TranslationRoomTypes.IsExternalBridge(room.TranslationRoomType))
+            {
+                await _participantRepository.AddAsync(
+                    TranslationRoomMapper.BuildExternalBridgeParticipant(room.Id, sourceLang, targetLangs),
+                    ct);
+            }
 
             await _unitOfWork.SaveChangesAsync(ct);
             await PublishRoomTargetLanguagesAsync(room, ct);
@@ -433,22 +509,48 @@ public class TranslationRoomService : ITranslationRoomService
                         Status = "PENDING"
                     }, ct);
 
-                    // 2. Send the email
+                    // 2. Tell them — both ways.
+                    //
+                    // Only the email was sent here. NotifyInvitedUserAsync already existed and was
+                    // already called when somebody is invited to an EXISTING room, so a meeting
+                    // that named its guests up front — the ordinary way to create one — was the
+                    // single path that rang no bell. "check noti i mn": there was nothing there
+                    // to check, and the only trace was an email to an account that had one.
+                    //
+                    // Same gate as the email, for the same reason: one daily standup must not
+                    // deliver thirty notifications. NotifyInvitedUserAsync skips anyone without an
+                    // account and never throws, so this cannot fail a room creation.
+                    // Both gated together, and correctly so: EVERY occurrence of a series gets
+                    // invitation rows (WT-327 — otherwise days 2..N are invisible in the
+                    // invitee's list), so announcing per row would mean thirty notifications for
+                    // one daily booking. `sendInvitationEmails` is true only for a plain room or
+                    // the series' first occurrence, which is exactly "announce this once".
                     if (sendInvitationEmails)
                     {
                         emailTasks.Add(_emailService.SendMeetingInvitationAsync(email, "Participant", meetingLink, request.Title, scheduledTime, ct));
+                        emailTasks.Add(NotifyInvitedUserAsync(email, room, meetingLink, ct));
                     }
                 }
 
                 // Save the newly added invitations
                 await _unitOfWork.SaveChangesAsync(ct);
 
-                // WT-187: published after the invitations are committed, so a client that
-                // refetches the moment it receives the event cannot miss them.
-                await PublishRoomInvitationsChangedAsync(room);
                 // Send all emails in parallel
                 await Task.WhenAll(emailTasks);
             }
+
+            // EVERY new room announces itself, not only one created with email invitations.
+            //
+            // This call used to sit INSIDE the `if (request.InvitedEmails.Any())` block above, so
+            // a room created without typing anybody's email — the ordinary case for a workspace
+            // whose members can already see each other's meetings — published nothing at all.
+            // The whole realtime chain existed and worked; it simply was never rung. That is why
+            // the report was "phải F5" from one tester and "realtime mà, bth có cần reload đâu"
+            // from another: both were right, about different ways of creating a room.
+            //
+            // Still after the invitation SaveChangesAsync, so a client that refetches the instant
+            // it receives the event cannot miss rows that are about to be committed.
+            await PublishRoomInvitationsChangedAsync(room);
 
             // 5. Return mapped response. WT-280: seats are counted in the database, after the
             // host row above was committed, so a freshly created room correctly reports 1.
@@ -490,6 +592,74 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while fetching invitations for TranslationRoomId: {TranslationRoomId}", translationRoomId);
             return Result.Failure<IEnumerable<TranslationRoomInvitationDto>>("An unexpected error occurred while fetching invitations.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<TranslationRoomInvitationDto>> AcceptTranslationRoomInvitationAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var email = RoomReadAccess.NormalizeEmail(userEmail);
+            if (email is null)
+            {
+                // No email claim means there is no way to match an invitation row at all — the
+                // rows are keyed by address, not by user id. Same refusal as "no invitation":
+                // this endpoint must not become a way to probe which room ids exist.
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
+            var invitation = await invitationRepo.FirstOrDefaultAsync(
+                i => i.TranslationRoomId == translationRoomId && i.Email == email, ct: ct);
+
+            if (invitation is null)
+            {
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationNotFound, ErrorCodes.NotFound);
+            }
+
+            // DECLINED is the one state Accept may not walk back: the host has already been told
+            // this person is not coming, and reversing it silently would make the roster lie.
+            // (Nothing writes DECLINED today; this fails closed for when something does.)
+            if (string.Equals(invitation.Status, InvitationDeclinedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<TranslationRoomInvitationDto>(
+                    TranslationRoomConstants.ErrorInvitationDeclined, ErrorCodes.InvalidState);
+            }
+
+            if (!string.Equals(invitation.Status, InvitationAcceptedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                invitation.Status = InvitationAcceptedStatus;
+                invitation.UpdatedAt = DateTime.UtcNow;
+                invitationRepo.Update(invitation);
+                await _unitOfWork.SaveChangesAsync(ct);
+            }
+
+            _logger.LogInformation(
+                "invitation_accepted: RoomId={RoomId} UserId={UserId}", translationRoomId, userId);
+
+            return Result.Success(new TranslationRoomInvitationDto(
+                invitation.Id,
+                invitation.TranslationRoomId,
+                invitation.Email,
+                invitation.Status,
+                invitation.CreatedAt,
+                invitation.UpdatedAt));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error occurred while accepting the invitation for TranslationRoomId: {TranslationRoomId}",
+                translationRoomId);
+            return Result.Failure<TranslationRoomInvitationDto>(
+                "An unexpected error occurred while accepting the invitation.", ErrorCodes.InternalServerError);
         }
     }
 
@@ -637,6 +807,42 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(roomCode))
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var room = await _translationRoomRepository.GetByCodeAsync(roomCode.Trim(), null, ct);
+
+            // A code that resolves to nothing answers "no restriction" rather than 404. This
+            // endpoint exists to populate a picker while the user is still TYPING a code, so a
+            // not-found must not paint an error over a half-typed one — and it must not become a
+            // way to probe which codes exist. The join itself is where a bad code is reported.
+            if (room == null || room.WorkspaceId == Guid.Empty)
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var policy = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+
+            // Fails OPEN, unlike the enforcement paths. This one only decides what to OFFER, and
+            // the server still refuses a forbidden language at join. A WorkspaceService blip that
+            // widened a picker for a moment is a far smaller harm than a pre-join screen that
+            // cannot be filled in at all — which is the bug this ticket is about.
+            return policy.IsSuccess
+                ? policy
+                : Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not resolve the join language policy for a room code.");
+            return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+    }
+
     public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try
@@ -742,6 +948,21 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            // WT-446: settle "is this person a guest here?" once, on admission.
+            //
+            // Asked here rather than on the roster read because GET /participants is polled every
+            // three seconds by every client in the meeting — resolving it there would be one gRPC
+            // call per participant per poll, for an answer that does not change while somebody is
+            // sitting in a room. The host is never external: they own the room, and skipping the
+            // call for them also spares the ordinary single-person case a round trip.
+            //
+            // IsMemberAsync never throws and answers false when WorkspaceService is unreachable,
+            // which would read as "external". That is the wrong default for a LABEL — an outage
+            // would quietly brand every member a guest — so the result is only trusted to make
+            // someone external, and a failed lookup leaves an existing row's value alone.
+            var isExternal = !isHost
+                && !await _workspaceMemberDirectory.IsMemberAsync(translationRoom.WorkspaceId, userId, ct);
+
             if (participant == null)
             {
                 participant = request.ToParticipantEntity(
@@ -750,7 +971,8 @@ public class TranslationRoomService : ITranslationRoomService
                     speakLang!,
                     listenLang!,
                     requiresApproval,
-                    isHost
+                    isHost,
+                    isExternal
                 );
 
                 await _participantRepository.AddAsync(participant, ct);
@@ -762,7 +984,8 @@ public class TranslationRoomService : ITranslationRoomService
                     speakLang!,
                     listenLang!,
                     requiresApproval,
-                    isHost
+                    isHost,
+                    isExternal
                 );
 
                 _participantRepository.Update(participant);
@@ -824,6 +1047,27 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            // WT-446: tell the billing worker who is a guest, because it cannot find out itself.
+            //
+            // Externality is workspace membership, which lives a gRPC hop from here and two
+            // services away from warptalk-ai. This service is the only one that resolves it, so it
+            // publishes it beside the `:languages` hash the rest of the pipeline already reads.
+            // The AI settlement worker stamps it onto every usage record so a workspace's own
+            // spend and its guests' can be told apart afterwards.
+            //
+            // Best-effort, like every other realtime publish on this path: attribution is a
+            // reporting dimension, and failing a join over it would trade a real feature for a
+            // bookkeeping nicety. A missing field reads as "not known to be external".
+            await PublishParticipantExternalityAsync(translationRoom.Id, userId, isExternal);
+
+            // WT-428: the knock. A row that just landed WAITING is invisible to the host until
+            // the 3s roster poll happens to run — this rings them the moment somebody is actually
+            // standing at the door. Best-effort like every realtime publish on this path.
+            if (participant.Status == TranslationRoomParticipantStatuses.Waiting)
+            {
+                await PublishParticipantWaitingAsync(translationRoom.Id, userId, participant.DisplayName);
+            }
+
             // BR-008: Return comprehensive context
             return Result.Success(new JoinTranslationRoomResponse(
                 translationRoom.ToResponseDto(
@@ -835,6 +1079,117 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while joining translation room. UserId: {UserId}, RoomCode: {RoomCode}", userId, request.TranslationRoomCode);
             return Result.Failure<JoinTranslationRoomResponse>("An unexpected error occurred while joining the room.", ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// WT-433 (Linear): join a room by its ID — the shape a shared LINK produces — for callers who
+    /// are members of the room's workspace.
+    ///
+    /// The by-code path performs no read authorization at all: possession of the code is the
+    /// entitlement. A link is weaker (it appears in address bars, chat logs and screenshots), so
+    /// this path demands workspace membership before delegating — and answers NotFound rather
+    /// than Forbidden for a non-member, indistinguishable from a missing room, exactly like the
+    /// detail read (WT-334).
+    ///
+    /// Delegation reuses the by-code body verbatim, so requires_approval still lands the row at
+    /// WAITING and the host still gets the knock — this endpoint is how an uninvited teammate
+    /// reaches the waiting room instead of "Room information is unavailable."
+    /// </summary>
+    public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(
+        Guid translationRoomId,
+        JoinTranslationRoomRequest request,
+        Guid userId,
+        string? userEmail = null,
+        CancellationToken ct = default)
+    {
+        var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+        if (translationRoom == null || translationRoom.DeletedAt != null)
+        {
+            return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+        }
+
+        var isMember = await _workspaceMemberDirectory.IsMemberAsync(translationRoom.WorkspaceId, userId, ct);
+        if (!isMember)
+        {
+            return Result.Failure<JoinTranslationRoomResponse>(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+        }
+
+        return await JoinTranslationRoomAsync(
+            request with { TranslationRoomCode = translationRoom.TranslationRoomCode },
+            userId,
+            userEmail,
+            ct);
+    }
+
+    /// <summary>
+    /// Tells the gateway somebody is waiting for admission, so the HOST learns in realtime
+    /// instead of on the next roster poll. Mirrors PublishParticipantAdmittedAsync's channel and
+    /// failure posture: a lost knock costs immediacy only — the poll still shows the row.
+    /// </summary>
+    /// <summary>
+    /// WT-446. Publishes "is this speaker a guest here?" for the AI billing worker.
+    ///
+    /// A hash keyed by user id, deliberately shaped like <c>translationRoom:{id}:languages</c> —
+    /// the pipeline already reads siblings of this key, and a new shape would be a second
+    /// convention for the same kind of fact. "0" is written as well as "1" so a present-and-false
+    /// field is distinguishable from an evicted one if that ever matters; the consumer treats
+    /// both as internal.
+    ///
+    /// The TTL matches the room projection MeetingService keeps (24h), which is the longest
+    /// supported meeting window — long enough that the key outlives any meeting, short enough
+    /// that it cannot accumulate. Redis runs allkeys-lru, so the consumer must tolerate this key
+    /// being gone regardless, and it does.
+    /// </summary>
+    private async Task PublishParticipantExternalityAsync(Guid translationRoomId, Guid userId, bool isExternal)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var key = $"translationRoom:{translationRoomId}:external_participants";
+            await _redisStateRepository.HashSetAsync(
+                key,
+                new Dictionary<string, string> { [userId.ToString()] = isExternal ? "1" : "0" });
+            await _redisStateRepository.KeyExpireAsync(key, TimeSpan.FromHours(24));
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogWarning(
+                publishEx,
+                "Failed to publish participant externality for RoomId: {RoomId}, UserId: {UserId}; their usage will be attributed as internal.",
+                translationRoomId, userId);
+        }
+    }
+
+    private async Task PublishParticipantWaitingAsync(Guid translationRoomId, Guid waitingUserId, string? displayName)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                Command = "ParticipantWaiting",
+                RoomId = translationRoomId.ToString(),
+                UserId = waitingUserId.ToString(),
+                DisplayName = displayName ?? string.Empty
+            });
+
+            await _redisStateRepository.PublishAsync("warptalk:translation-room:commands", payload);
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogWarning(
+                publishEx,
+                "Failed to publish ParticipantWaiting for RoomId: {RoomId}, UserId: {UserId}; the host will see them on the next roster poll.",
+                translationRoomId, waitingUserId);
         }
     }
 
@@ -1357,7 +1712,29 @@ public class TranslationRoomService : ITranslationRoomService
         {
             var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
             if (translationRoom == null) return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
-            if (!translationRoom.IsHostedBy(hostId)) return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+
+            // WT-373: the room's own rule, not a bare host check.
+            //
+            // This was `IsHostedBy(hostId)`, and WT-371's "participants may start translation"
+            // was implemented only in TranslationRoomSessionService.CanStartSessionAsync — which
+            // serves POST /sessions, an endpoint the client does not call. Start Translation
+            // calls /resume, so the rule was enforced where nothing runs and ignored where
+            // everything does.
+            //
+            // The cost was the whole feature: /resume is the only path that opens a
+            // TranslationRoomSession, and that row IS `translation_active` in
+            // PublishRoutesUpdateAsync, which the AI worker gates every STT result on. A
+            // participant in an opted-in room was shown the button, pressed it, and got 401 from
+            // a branch that returns without logging — no session, no dub, and nothing anywhere
+            // saying why.
+            //
+            // Stopping stays host-only below and in StopTranslationAsync: opening a meeting up is
+            // not the same as letting anyone cut it off for everybody.
+            if (!await RoomStartTranslationAccess.CanStartTranslationAsync(
+                    translationRoom, hostId, _workspaceMemberDirectory, _participantRepository, ct))
+            {
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedUpdateRoom, ErrorCodes.Unauthorized);
+            }
 
             // WT-339: THIS is "Start Translation". IN_PROGRESS is accepted alongside PAUSED
             // because opening the room no longer starts translation with it — an open, never-yet-
@@ -1785,27 +2162,55 @@ public class TranslationRoomService : ITranslationRoomService
             }
 
             // WT-65: Update and Validate Source Language
+            string? normSourceLang = null;
             if (!string.IsNullOrWhiteSpace(request.SourceLanguage))
             {
-                var normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
+                normSourceLang = LanguageHelper.NormalizeLanguageCode(request.SourceLanguage);
                 if (!await _languagePolicy.IsSupportedAsync(normSourceLang))
                     return Result.Failure(TranslationRoomConstants.ValidationSourceLanguageUnsupported, ErrorCodes.ValidationError);
-
-                translationRoom.SourceLanguage = normSourceLang;
             }
 
             // WT-65: Update and Validate Target Languages
+            List<string>? normTargetLangs = null;
             if (request.TargetLanguages != null && request.TargetLanguages.Count > 0)
             {
-                var normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
+                normTargetLangs = request.TargetLanguages.Select(LanguageHelper.NormalizeLanguageCode).ToList();
                 foreach (var lang in normTargetLangs)
                 {
                     if (!await _languagePolicy.IsSupportedAsync(lang))
                         return Result.Failure(string.Format(TranslationRoomConstants.ValidationLanguageUnsupported, lang), ErrorCodes.ValidationError);
                 }
-
-                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
             }
+
+            // WT-466: the workspace's whitelist applies to an EDIT as well.
+            //
+            // Everything above this line checks only that the PLATFORM supports the code. That was
+            // the entire language rule on this path, so a workspace narrowed to vi/en/ja could have
+            // any of its rooms edited into Spanish afterwards — creation enforced the owner's
+            // setting once, and every subsequent write ignored it. Both values are validated
+            // together, and BEFORE either is assigned, so a rejected edit leaves the room exactly
+            // as it was rather than half-applied.
+            // An external-bridge room can carry Guid.Empty here: it belongs to no workspace, so
+            // there is no whitelist to apply and asking would only produce a lookup that fails.
+            if ((normSourceLang != null || normTargetLangs != null) && translationRoom.WorkspaceId != Guid.Empty)
+            {
+                var languagePolicy = await _workspaceMeetingPolicy.ValidateRoomLanguagesAsync(
+                    translationRoom.WorkspaceId,
+                    normSourceLang,
+                    normTargetLangs ?? Enumerable.Empty<string>(),
+                    ct);
+
+                if (!languagePolicy.IsSuccess)
+                    return Result.Failure(
+                        languagePolicy.Error ?? "The workspace does not allow one of the requested languages.",
+                        languagePolicy.ErrorCode);
+            }
+
+            if (normSourceLang != null)
+                translationRoom.SourceLanguage = normSourceLang;
+
+            if (normTargetLangs != null)
+                translationRoom.TargetLanguages = LanguageHelper.SerializeTargetLanguages(normTargetLangs);
 
             // Update settings. Every field is nullable, so this is a PATCH: an omitted field
             // keeps whatever the room already has rather than being reset to a default. Before
@@ -2536,13 +2941,27 @@ public class TranslationRoomService : ITranslationRoomService
             artifact.RetentionUntil,
             artifact.Status,
             artifact.CreatedAt,
-            includeContent ? artifact.Content : null
+            includeContent ? artifact.Content : null,
+            // WT-473: null means NOT SEEKABLE, and the client must read it that way.
+            artifact.RecordingStartedAt
         );
     }
 
+    /// <summary>
+    /// The artifact's name as a person sees it.
+    ///
+    /// The format in the title is the format they will GET, not the one the row is stored as.
+    /// Those differ for the transcript and the summary — stored as markdown and JSON, both served
+    /// as plain text (see <see cref="ArtifactPlainText"/>) — and the title said MARKDOWN and JSON
+    /// while the download handed over a .txt. The storage shape is an implementation detail of the
+    /// summary parser and the knowledge indexer; a title is a promise about the file.
+    /// </summary>
     private static string BuildArtifactTitle(string type, string? format)
     {
         var label = type.ToLowerInvariant().Replace('_', ' ');
+
+        if (ArtifactPlainText.IsTextExport(type)) return $"{label} (TXT)";
+
         return string.IsNullOrWhiteSpace(format) ? label : $"{label} ({format.ToUpperInvariant()})";
     }
 

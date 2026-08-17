@@ -28,12 +28,16 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         Guid workspaceId,
         Guid userId,
         IEnumerable<string> targetLanguages,
+        string? sourceLanguage = null,
         CancellationToken ct = default)
     {
         var request = new ValidateMeetingCreationRequest
         {
             WorkspaceId = workspaceId.ToString(),
-            UserId = userId.ToString()
+            UserId = userId.ToString(),
+            // proto3 has no null string: an unstated source language must go on the wire as "",
+            // which the workspace side reads as "not stated" rather than as a violation.
+            SourceLanguage = sourceLanguage ?? string.Empty
         };
         request.TargetLanguages.AddRange(targetLanguages ?? Enumerable.Empty<string>());
 
@@ -58,6 +62,75 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
         return response.IsAllowed
             ? Result.Success()
             : Result.Failure(response.ErrorMessage, ErrorCodes.Forbidden);
+    }
+
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetAllowedLanguagesAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var settings = await _client.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            return Result.Success<IReadOnlyList<string>>(settings.AllowedTargetLanguages.ToArray());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Workspace language-policy lookup failed. WorkspaceId: {WorkspaceId}",
+                workspaceId);
+            return Result.Failure<IReadOnlyList<string>>(UnavailableMessage, ErrorCodes.ServiceUnavailable);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> ValidateRoomLanguagesAsync(
+        Guid workspaceId,
+        string? sourceLanguage,
+        IEnumerable<string> targetLanguages,
+        CancellationToken ct = default)
+    {
+        var policy = await GetAllowedLanguagesAsync(workspaceId, ct);
+        if (!policy.IsSuccess)
+        {
+            // The lookup failing is not the same as the languages being refused, but this path
+            // fails CLOSED for the reason given on the interface: it is the enforcement of a rule
+            // an owner set deliberately.
+            return Result.Failure(policy.Error ?? UnavailableMessage, policy.ErrorCode);
+        }
+
+        // EMPTY MEANS UNRESTRICTED. A workspace that never set a policy allows everything the
+        // platform supports, and reading empty the other way would refuse every edit in every such
+        // workspace — which is most of them.
+        if (policy.Value!.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        var allowed = new HashSet<string>(policy.Value!, StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrWhiteSpace(sourceLanguage) && !allowed.Contains(sourceLanguage))
+        {
+            return Result.Failure(
+                $"Source language '{sourceLanguage}' is not allowed by the workspace policy.",
+                ErrorCodes.ValidationError);
+        }
+
+        foreach (var language in targetLanguages ?? Enumerable.Empty<string>())
+        {
+            if (!string.IsNullOrWhiteSpace(language) && !allowed.Contains(language))
+            {
+                return Result.Failure(
+                    $"Target language '{language}' is not allowed by the workspace policy.",
+                    ErrorCodes.ValidationError);
+            }
+        }
+
+        return Result.Success();
     }
 
     /// <inheritdoc />

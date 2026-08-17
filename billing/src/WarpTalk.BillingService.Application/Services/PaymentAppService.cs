@@ -17,6 +17,16 @@ public class PaymentAppService : IPaymentAppService
     private readonly IBillingMessagePublisher _messagePublisher;
     private readonly IReadOnlyList<IPaymentEventHandler> _paymentEventHandlers;
     private readonly IWorkspaceClient _workspaceClient;
+    private readonly IUsageRateCardRepository _rateCards;
+
+    /// <summary>WT-429: the admin-editable VND price of one credit.</summary>
+    private const string CreditValueConfigKey = "credit_value_vnd";
+
+    /// <summary>
+    /// WT-429: the smallest top-up worth a Stripe round trip, mirrored by the web's own minimum.
+    /// A floor also stops a 1-credit purchase whose Stripe fee exceeds the amount charged.
+    /// </summary>
+    private const int MinimumTopUpCredits = 1500;
 
     public PaymentAppService(
         IStripePaymentService stripePaymentService,
@@ -24,8 +34,10 @@ public class PaymentAppService : IPaymentAppService
         ILogger<PaymentAppService> logger,
         IBillingMessagePublisher messagePublisher,
         IEnumerable<IPaymentEventHandler> paymentEventHandlers,
-        IWorkspaceClient workspaceClient)
+        IWorkspaceClient workspaceClient,
+        IUsageRateCardRepository rateCards)
     {
+        _rateCards = rateCards;
         _stripePaymentService = stripePaymentService;
         _unitOfWork = unitOfWork;
         _logger = logger;
@@ -43,6 +55,47 @@ public class PaymentAppService : IPaymentAppService
                 return Result.Failure<string>(
                     ApiMessageConstants.ValidationMessages.WorkspaceIdRequired,
                     ErrorCodes.ValidationError);
+            }
+
+            // WT-429: a top-up is priced HERE, from the credit count, against the admin-editable
+            // rate — the client's Amount is discarded.
+            //
+            // The old top-up UI quoted from its own hardcoded DOCUMENTED_VND_PER_CREDIT and sent
+            // the resulting Amount, so the browser was effectively naming the exchange rate: a
+            // stale constant (or a tampered request) bought credits at whatever price it liked,
+            // and the two numbers could not be reconciled afterwards because only one of them was
+            // ever written down. Deriving the price from the count also means the count is the
+            // authoritative field, which is what the grant handler needs.
+            if (string.Equals(request.PaymentType, PaymentConstants.PaymentTypes.CreditTopUp, StringComparison.OrdinalIgnoreCase))
+            {
+                if (request.Credits < MinimumTopUpCredits)
+                {
+                    return Result.Failure<string>(
+                        string.Format(
+                            BillingMessageConstants.ErrorMessages.CreditTopUpBelowMinimum,
+                            MinimumTopUpCredits),
+                        ErrorCodes.ValidationError);
+                }
+
+                var creditValueVnd = await _rateCards.ReadPricingConfigValueAsync(
+                    CreditValueConfigKey,
+                    SubscriptionConstants.RateCardDefaults.CreditValueVnd);
+
+                if (creditValueVnd <= 0)
+                {
+                    _logger.LogError(
+                        "credit_topup_rate_unavailable: {Key} resolved to {Value}; refusing to price a top-up.",
+                        CreditValueConfigKey, creditValueVnd);
+                    return Result.Failure<string>(
+                        BillingMessageConstants.ErrorMessages.CreditTopUpRateUnavailable,
+                        ErrorCodes.InternalServerError);
+                }
+
+                request = request with
+                {
+                    Amount = decimal.Round(request.Credits * creditValueVnd, 0, MidpointRounding.AwayFromZero),
+                    Currency = PaymentConstants.Currencies.Vnd,
+                };
             }
 
             var result = await _stripePaymentService.CreateCheckoutSessionAsync(request);
@@ -120,14 +173,32 @@ public class PaymentAppService : IPaymentAppService
             return Result.Failure<CheckoutSessionDto>(ApiMessageConstants.ErrorMessages.BillingWorkspaceIdNotInSessionMetadata, ErrorCodes.ValidationError);
         }
 
-        if (!isSystemAdmin)
+        // WT-370 — THE BUYER IS AUTHORISED BY THE SESSION THEY ARE HOLDING.
+        //
+        // This is the path a person lands on the instant Stripe redirects them back, and it is the
+        // only thing that activates their plan when the webhook does not. It used to begin with a
+        // cross-service call to workspace-service on EVERY visit, and a call that fails for any
+        // reason — the service restarting, a gRPC hiccup, a slow deploy — is indistinguishable
+        // here from "you are not allowed", so it returned 403 and the plan was never applied.
+        // A payment that succeeded should not hinge on a second service being reachable in the
+        // three seconds after checkout.
+        //
+        // Stripe's own session metadata already names who started this checkout. If that is the
+        // caller, they are the buyer — a stronger claim than "is currently an Owner of the
+        // workspace", and one that needs no network at all. The role check stays for everyone
+        // else (an admin opening someone else's receipt), so nothing is loosened: a stranger with
+        // a guessed session id still has to pass exactly the check they had to pass before.
+        var sessionUserIdStr = session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.UserId, string.Empty);
+        var isTheBuyer = Guid.TryParse(sessionUserIdStr, out var sessionUserId) && sessionUserId == userId;
+
+        if (!isSystemAdmin && !isTheBuyer)
         {
             var accessResult = await _workspaceClient.VerifyWorkspaceRolesAsync(
                 workspaceId,
                 userId,
                 WorkspaceRoleConstants.Owner,
                 WorkspaceRoleConstants.Admin);
-            
+
             if (!accessResult.IsSuccess || !accessResult.Value)
             {
                 return Result.Failure<CheckoutSessionDto>(ApiMessageConstants.ErrorMessages.BillingAccessDeniedOwnerAdminRequired, ErrorCodes.Forbidden);
@@ -149,12 +220,35 @@ public class PaymentAppService : IPaymentAppService
                 PaymentType: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PaymentType, string.Empty),
                 Status: PaymentConstants.Payments.StatusPaid,
                 PlanSlug: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.PlanSlug, string.Empty),
-                BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty)
+                BillingCycle: session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.BillingCycle, string.Empty),
+                // WT-429: the same credit count the webhook reads. Both paths run for a given
+                // session (whichever arrives first wins; the other short-circuits on the
+                // already-processed guard), so they must agree on the number.
+                Credits: int.TryParse(
+                    session.Metadata.GetValueOrDefault(PaymentConstants.StripeMetadata.Credits, string.Empty),
+                    System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var sessionCredits) ? sessionCredits : 0
             ));
             
             if (!processResult.IsSuccess)
             {
-                return Result.Failure<CheckoutSessionDto>(processResult.Error ?? "Unknown payment processing error", processResult.ErrorCode);
+                // The RECEIPT still gets through. Failing the whole request here meant a payment
+                // that Stripe had taken came back to the browser as a bare error: the success page
+                // showed "Transaction ID: Pending / Amount: Processing…" with every field blank,
+                // which is the screenshot on this ticket. The session is a fact — it is paid, it
+                // has an id and an amount, and the person who just paid is entitled to see it.
+                //
+                // Activation is reported by the subscription itself, which the client queries
+                // separately, so hiding the receipt bought nothing and cost the one piece of
+                // evidence support needs. Retrying is safe and re-enters this same method:
+                // ProcessPaymentEventAsync short-circuits on an already-paid payment record.
+                _logger.LogError(
+                    "Checkout-session activation failed for session {SessionId}, workspace {WorkspaceId}: {Error} ({ErrorCode})",
+                    session.Id,
+                    workspaceId,
+                    processResult.Error,
+                    processResult.ErrorCode);
             }
         }
 
@@ -196,6 +290,26 @@ public class PaymentAppService : IPaymentAppService
                     return handlerResult;
                 }
             }
+            else if (context.ParsedPaymentStatus == PaymentConstants.PaymentStatuses.Paid)
+            {
+                // WT-429: an unmatched PAID payment type is the exact shape of the incident that
+                // switched top-ups off — "CreditTopUp" reached here, no handler claimed it, this
+                // branch did nothing at all, and PersistPaymentRecordAsync + the invoice below
+                // still ran. The customer was charged, invoiced, and given nothing.
+                //
+                // Not a failure: the money is already taken and refusing here would also skip the
+                // payment record, leaving no trace of a real charge. But it must never again be
+                // silent — this is the line that would have named the bug on day one.
+                _logger.LogError(
+                    "payment_type_unhandled: PaymentType={PaymentType} StripeSessionId={SessionId} "
+                    + "WorkspaceId={WorkspaceId} Amount={Amount} {Currency}. The payment is recorded and "
+                    + "invoiced, but NOTHING was granted for it — a handler for this type is missing.",
+                    context.Request.PaymentType,
+                    context.Request.StripeSessionId,
+                    context.WorkspaceId,
+                    context.Request.Amount,
+                    context.Request.Currency);
+            }
 
             await PersistPaymentRecordAsync(context);
             await CreateInvoiceForPaidPaymentAsync(context);
@@ -207,8 +321,21 @@ public class PaymentAppService : IPaymentAppService
         catch (Exception ex)
         {
             _logger.LogError(ex, BillingMessageConstants.LogMessages.FailedToProcessPaymentEvent);
+
+            // WT-370: carry WHAT went wrong, not just that something did.
+            //
+            // This returned a fixed sentence and dropped the exception, so the only record of the
+            // real cause — a foreign-key violation, a unique-index conflict on
+            // ix_subscriptions_workspace_active, a timeout — lived in a log file. Combined with
+            // the webhook answering 200 (see StripeWebhookService), a failed activation left
+            // literally no evidence anywhere anyone was looking.
+            //
+            // This message reaches exactly two places, both ours: the log, and the body of the
+            // non-2xx the webhook now returns, which shows up on the Stripe delivery attempt. The
+            // browser path no longer propagates it — GetAndProcessCheckoutSessionAsync logs and
+            // returns the receipt instead — so no database detail reaches an end user.
             return Result.Failure(
-                BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed,
+                $"{BillingMessageConstants.ApiErrorMessages.BillingPaymentEventFailed}: {ex.GetBaseException().Message}",
                 ErrorCodes.InternalServerError);
         }
     }

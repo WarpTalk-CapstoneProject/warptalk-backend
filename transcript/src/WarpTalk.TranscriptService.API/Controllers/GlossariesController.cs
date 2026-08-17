@@ -96,6 +96,25 @@ public class GlossariesController : ControllerBase
         return StatusCode(201);
     }
 
+    /// <summary>
+    /// WT-472: import a whole spreadsheet in one request.
+    ///
+    /// Answers 200 with the counts rather than 201, because the interesting part of the response is
+    /// how many rows landed and how many were skipped — a bare 201 would tell the caller nothing
+    /// about a file where half the rows were already present.
+    /// </summary>
+    [HttpPost("{id}/terms/bulk")]
+    public async Task<ActionResult<BulkImportGlossaryTermsResultDto>> BulkImportTerms(
+        Guid id,
+        [FromBody] BulkImportGlossaryTermsDto request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _glossaryService.BulkImportTermsAsync(id, request, cancellationToken);
+        if (!result.IsSuccess) return HandleFailure(result.ErrorCode, result.Error);
+
+        return Ok(result.Value);
+    }
+
     [HttpGet("{id}/terms")]
     public async Task<ActionResult<IEnumerable<GlossaryTermDto>>> GetTerms(Guid id, CancellationToken cancellationToken)
     {

@@ -48,7 +48,28 @@ public class GlossaryStartedEventConsumer : BackgroundService
     // (stt_worker/model.py:_normalized_keywords), so 24 — not either cap — is the binding
     // constraint today. Raising it is likely a real accuracy win, but it should be
     // measured rather than assumed, so it is left alone here and called out instead.
-    private const int MaxSttKeywords = 24;
+    /// <summary>
+    /// How many terms the recogniser is biased toward. WT-426 cut this from 24.
+    ///
+    /// A bias list is not free vocabulary — it is a thumb on the scale, and on marginal audio the
+    /// model resolves ambiguity INTO the list. Production, 15 Aug, a noisy meeting: a speaker said
+    /// "voice clone" and the transcript read "Cũng là ChatGPT"; elsewhere it emitted "WarpTalk,
+    /// WarpBot, Codex." as a whole utterance. Every one of those is a glossary term.
+    ///
+    /// So the budget is small on purpose. It should hold the handful of names this room genuinely
+    /// cannot be transcribed without, not a dictionary.
+    /// </summary>
+    private const int MaxSttKeywords = 10;
+
+    /// <summary>
+    /// Of that budget, how much a PLATFORM-WIDE term may take.
+    ///
+    /// Global terms earned their place in the recogniser honestly — "Codex" came back as "cô đích"
+    /// without them. But they are global: most of them have nothing to do with any given meeting,
+    /// and a term nobody is going to say is pure hallucination surface. Workspace terms fill the
+    /// budget first and globals take what is left.
+    /// </summary>
+    private const int MaxGlobalSttKeywords = 3;
     // Below this, an entry is treated as a false-accept risk rather than a useful hint;
     // see IsUsefulSttKeyword for the acronym exception.
     private const int MinSttKeywordLength = 3;
@@ -173,13 +194,25 @@ public class GlossaryStartedEventConsumer : BackgroundService
         var globalTerms = await LoadGlobalTermsAsync(scope, workspaceId, ct);
 
         var (merged, droppedAsOverridden, droppedAsOverBudget) = MergeTerms(workspaceTerms, globalTerms, MaxTermsInPrompt);
-        // `merged`, not `workspaceTerms`. Global terms reached the translator but never the
-        // recogniser, so a platform-wide proper noun was translated correctly and heard
-        // wrongly — "Codex" came back as "cô đích" from a production rehearsal, and no
-        // amount of curating the global glossary could have fixed it, because the STT model
-        // was never told the word exists. MergeTerms has already applied workspace overrides
-        // and the priority ordering, so the workspace's own terms still win the budget.
-        var sttKeywords = BuildSttKeywords(merged, MaxSttKeywords);
+        // Workspace terms first, globals only in what is left. WT-426.
+        //
+        // This used to pass `merged` — every term, workspace and global together, ranked only by
+        // priority. That was the right shape for the problem it solved: global terms reached the
+        // translator but never the recogniser, so "Codex" came back as "cô đích" and no amount of
+        // curating the global glossary could fix it.
+        //
+        // It overshot. A bias list is a thumb on the scale, and on marginal audio the model
+        // resolves ambiguity INTO it. A noisy production meeting on 15 Aug transcribed "voice
+        // clone" as "Cũng là ChatGPT" and emitted "WarpTalk, WarpBot, Codex." as an utterance
+        // nobody spoke. Global terms are the worst offenders precisely because they are global:
+        // most have nothing to do with the meeting in the room, so they are hallucination surface
+        // with no upside.
+        //
+        // The fix is not to take them back out — "Codex" still needs to be heard. It is to stop
+        // them crowding out the terms this workspace actually uses, and to keep the whole list
+        // small enough that it biases rather than dictates.
+        var sttKeywords = BuildSttKeywords(
+            workspaceTerms, globalTerms, MaxSttKeywords, MaxGlobalSttKeywords);
 
         var meetingContext = BuildMeetingContext(title, description);
         if (merged.Count == 0 && string.IsNullOrEmpty(meetingContext))
@@ -305,34 +338,61 @@ public class GlossaryStartedEventConsumer : BackgroundService
         return value.Count(char.IsUpper) >= 2;
     }
 
+    /// <summary>
+    /// The terms the recogniser is biased toward, workspace-first. WT-426.
+    /// </summary>
+    /// <remarks>
+    /// Two budgets, not one. `maxKeywords` bounds the whole list; `maxGlobalKeywords` bounds how
+    /// much of it a platform-wide term may take.
+    ///
+    /// The split exists because the two kinds of term carry different risk. A workspace's own
+    /// glossary describes what people in that workspace say. A global term describes what somebody
+    /// on the platform says — usually not the people in this room — so it is mostly hallucination
+    /// surface, and on noisy audio the model reaches for it. Bounding globals separately keeps the
+    /// fix that put them here ("Codex" was being heard as "cô đích") without letting them fill a
+    /// list they were never the point of.
+    /// </remarks>
     internal static List<string> BuildSttKeywords(
-        IReadOnlyCollection<PromptTerm> terms,
-        int maxKeywords)
+        IReadOnlyCollection<PromptTerm> workspaceTerms,
+        IReadOnlyCollection<PromptTerm> globalTerms,
+        int maxKeywords,
+        int maxGlobalKeywords)
     {
         if (maxKeywords <= 0)
             return new List<string>();
 
         var keywords = new List<string>(maxKeywords);
         var seen = new HashSet<string>();
-        foreach (var term in terms.OrderByDescending(t => t.Priority))
-        {
-            foreach (var value in new[] { term.Source, term.Target })
-            {
-                var cleaned = string.Join(
-                    " ",
-                    value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
-                if (string.IsNullOrEmpty(cleaned) || !IsUsefulSttKeyword(cleaned))
-                    continue;
-                if (!seen.Add(NormalizeKey(cleaned)))
-                    continue;
 
-                keywords.Add(cleaned);
-                if (keywords.Count >= maxKeywords)
-                    return keywords;
-            }
-        }
+        // Workspace first, and NOT interleaved by priority with the globals. A global term with a
+        // high priority would otherwise take a slot from a workspace term that is more likely to
+        // actually be said in this room — which is the whole distinction being drawn.
+        Fill(workspaceTerms, maxKeywords);
+        Fill(globalTerms, Math.Min(maxKeywords, keywords.Count + maxGlobalKeywords));
 
         return keywords;
+
+        void Fill(IReadOnlyCollection<PromptTerm> terms, int ceiling)
+        {
+            foreach (var term in terms.OrderByDescending(t => t.Priority))
+            {
+                foreach (var value in new[] { term.Source, term.Target })
+                {
+                    if (keywords.Count >= ceiling)
+                        return;
+
+                    var cleaned = string.Join(
+                        " ",
+                        value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+                    if (string.IsNullOrEmpty(cleaned) || !IsUsefulSttKeyword(cleaned))
+                        continue;
+                    if (!seen.Add(NormalizeKey(cleaned)))
+                        continue;
+
+                    keywords.Add(cleaned);
+                }
+            }
+        }
     }
 
     /// <summary>

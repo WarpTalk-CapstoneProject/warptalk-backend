@@ -16,6 +16,29 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/workspaces/{**catch-all}",
         "/api/v1/admin/audit-log/{**catch-all}",
         "/api/v1/admin/billing/{**catch-all}",
+        // The platform user directory, served by auth. Read-only: the controller has no mutation,
+        // because auditing one would need a message bus the auth service deliberately does not
+        // have.
+        "/api/v1/admin/users/{**catch-all}",
+        // The subscription directory and its revenue summary, served by billing. Read-only:
+        // changing a plan or cancelling a subscription already has its own validated path.
+        "/api/v1/admin/subscriptions/{**catch-all}",
+        // The platform meeting directory, served by translation-room. Metadata only: no join, no
+        // room control, and no transcript read anywhere on that controller.
+        "/api/v1/admin/meetings/{**catch-all}",
+        // The System Health screen, served by workspace. Query-only against the metrics store:
+        // nothing behind it can silence an alert, restart a container or write a sample.
+        "/api/v1/admin/platform-health/{**catch-all}",
+        // Product feedback, served by translation-room. Read-only and aggregated; comments come
+        // back without the person who wrote them.
+        "/api/v1/admin/feedback/{**catch-all}",
+        // The language catalog room validation reads, inactive rows included. Read-only:
+        // deactivating a language stops every new room in it platform-wide, and translation-room
+        // has no message bus to record who did it.
+        "/api/v1/admin/languages/{**catch-all}",
+        // Voice-clone consent, served by auth. COUNTS ONLY — a per-person list of who agreed to
+        // being cloned is a register of biometric permissions, and nothing here acts on a person.
+        "/api/v1/admin/voice-consent/{**catch-all}",
     ];
 
     private static JsonElement Routes()

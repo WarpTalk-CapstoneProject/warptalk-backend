@@ -86,6 +86,29 @@ public class SubscriptionsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// WT-471: undo a cancellation while the paid period is still running.
+    ///
+    /// Same role gate as cancel — whoever may cancel may reverse it. It creates no charge: the
+    /// period is already paid for, and a workspace whose period has ended is told to choose a plan
+    /// instead, because that is a Checkout flow.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId}/reactivate")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> ReactivateSubscription(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(
+                result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("workspace/{workspaceId}/resume")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
@@ -109,6 +132,40 @@ public class SubscriptionsController : ControllerBase
         CancellationToken cancellationToken)
     {
         var result = await _subscriptionService.UpdateContractTermsAsync(workspaceId, request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// Whether this workspace keeps translating past zero credits, and how far.
+    ///
+    /// Workspace-scoped, not [Authorize(AdminSystem)] like contract-terms above: the Owner is
+    /// choosing whether to USE an allowance, not how big it is. The service refuses to enable
+    /// anything on a plan whose cap is 0.
+    /// </summary>
+    [HttpGet("workspace/{workspaceId}/overage")]
+    public async Task<ActionResult<WorkspaceOverageSettingDto>> GetOverage(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.GetOverageSettingAsync(workspaceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
+    [HttpPut("workspace/{workspaceId}/overage")]
+    public async Task<ActionResult<WorkspaceOverageSettingDto>> SetOverage(
+        Guid workspaceId,
+        [FromBody] SetWorkspaceOverageRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.SetOverageAsync(workspaceId, request, cancellationToken);
         if (!result.IsSuccess)
         {
             return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));

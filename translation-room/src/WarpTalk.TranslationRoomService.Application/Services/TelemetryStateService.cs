@@ -27,6 +27,13 @@ public class TelemetryStateService : ITelemetryStateService
                eventType == AudioRoutingEventType.audio_unavailable ||
                eventType == AudioRoutingEventType.audio_recovered ||
                eventType == AudioRoutingEventType.tts_unavailable ||
+               // WT-429. stt_unavailable is the exact sibling of tts_unavailable and belongs on
+               // the same path. stt_recovered comes with it because a degraded flag that nothing
+               // clears is a worse bug than the one being fixed — it would latch a room into
+               // SPEECH_DELAYED for the rest of its life. Its previous route through the state
+               // machine was silent acceptance, i.e. a no-op, so this only gives it meaning.
+               eventType == AudioRoutingEventType.stt_unavailable ||
+               eventType == AudioRoutingEventType.stt_recovered ||
                eventType == AudioRoutingEventType.telemetry_state_updated;
     }
 
@@ -51,6 +58,17 @@ public class TelemetryStateService : ITelemetryStateService
         else if (eventType == AudioRoutingEventType.audio_recovered)
         {
             updates.Add("delivery_mode", DeliveryMode.NORMAL.ToString());
+        }
+        // WT-429. AudioRoutePriorityResolver has always read is_stt_degraded and nothing has ever
+        // written it, so the one degradation the resolver was built to weigh could not be set.
+        // These two are the only writers, and they are a pair on purpose.
+        else if (eventType == AudioRoutingEventType.stt_unavailable)
+        {
+            updates.Add("is_stt_degraded", "true");
+        }
+        else if (eventType == AudioRoutingEventType.stt_recovered)
+        {
+            updates.Add("is_stt_degraded", "false");
         }
 
         if (updates.Any())

@@ -5,12 +5,14 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using System;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
 using WarpTalk.TranslationRoomService.Domain.Constants;
+using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 
 namespace WarpTalk.TranslationRoomService.API.Workers;
@@ -104,6 +106,7 @@ public class ArtifactsReconciliationWorker : BackgroundService
             try
             {
                 await SweepAsync(stoppingToken);
+                await RecoverLateSummariesAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -203,6 +206,118 @@ public class ArtifactsReconciliationWorker : BackgroundService
                 attempts,
                 _settings.MaxRecoverySweeps,
                 room.EndedAt);
+        }
+    }
+
+    /// <summary>
+    /// WT-379 — the summary that arrived after the finalizer stopped waiting.
+    ///
+    /// `ArtifactsFinalizer.FinalizeSummaryAsync` waits 90s for ai_assistant_worker. When that
+    /// window closes it writes an insufficient-data artifact and DELIBERATELY KEEPS the Redis
+    /// key, with a comment saying it does so "so a late result is not lost". Nothing read the
+    /// key back. The summary landed seconds later, into a key with no reader, while the meeting
+    /// page said "No summary output. This meeting ended without a summary artifact." — forever.
+    ///
+    /// THE KEY'S EXISTENCE IS THE SIGNAL, and it is exact. The finalizer deletes it on every
+    /// path where it found content, so a surviving key means precisely one thing: the summary
+    /// was written after the artifact was. No content parsing, no marker string to drift.
+    ///
+    /// UPDATE, NEVER ADD. The sweep above re-queues finalization, which calls
+    /// `artifactRepo.AddAsync` — running it again here would give the meeting two summary
+    /// artifacts rather than one correct one, and the page picks whichever it sees first.
+    /// </summary>
+    private async Task RecoverLateSummariesAsync(CancellationToken ct)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        var now = DateTime.UtcNow;
+        var endedAfter = now - _lookback;
+
+        // Bounded the same way the sweep above is: recently-ended rooms only. An old meeting is
+        // not waiting on a summary, and re-publishing history to Knowledge is not free.
+        var candidates = await unitOfWork.TranslationRoomRepository.FindAsync(
+            room =>
+                TranslationRoomConstants.TerminalStatuses.Contains(room.Status)
+                && room.EndedAt != null
+                && room.EndedAt > endedAfter
+                && room.TranslationRoomArtifacts.Any(),
+            "TranslationRoomArtifacts",
+            ct);
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var db = _redis.GetDatabase();
+        var recovered = 0;
+
+        foreach (var room in candidates.OrderByDescending(room => room.EndedAt))
+        {
+            if (recovered >= MaxRoomsPerSweep)
+            {
+                _logger.LogInformation(
+                    "Late-summary recovery cap of {Cap} reached; the rest wait for the next sweep.",
+                    MaxRoomsPerSweep);
+                break;
+            }
+
+            var summaryKey = $"meeting:{room.Id}:summary";
+            if (!await db.KeyExistsAsync(summaryKey))
+            {
+                continue;
+            }
+
+            var artifact = room.TranslationRoomArtifacts.FirstOrDefault(
+                a => string.Equals(a.ArtifactType, ArtifactType.SUMMARY_EXPORT.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (artifact == null)
+            {
+                // No summary artifact at all — that is the OTHER worker's case, and re-queueing
+                // finalization there is correct because there is nothing to update.
+                continue;
+            }
+
+            var entries = await db.HashGetAllAsync(summaryKey);
+            string? Field(string name) =>
+                entries.FirstOrDefault(e => e.Name == name) is { Value.HasValue: true } hit
+                    ? hit.Value.ToString()
+                    : null;
+
+            var structuredJson = Field("structured");
+            var summaryContent = Field("summary");
+            var actionItems = Field("action_items");
+
+            if (string.IsNullOrWhiteSpace(structuredJson)
+                && string.IsNullOrWhiteSpace(summaryContent)
+                && string.IsNullOrWhiteSpace(actionItems))
+            {
+                // The key exists but holds nothing usable. Leave it: the AI worker may still be
+                // mid-write, and deleting it here would recreate the very race this repairs.
+                continue;
+            }
+
+            artifact.Content = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
+
+            // WT-432. A recovered summary and a first-try summary are the same artifact seen at
+            // two different times — the reason SummaryContentBuilder was extracted at all — so the
+            // metadata has to match too, not just the payload. The row being repaired here was
+            // written by the finalizer before this fix and still carries the markdown label and a
+            // size measured from a document that was never stored.
+            artifact.FileFormat = ArtifactFileFormats.Json;
+            artifact.FileSizeBytes = Encoding.UTF8.GetByteCount(artifact.Content);
+
+            unitOfWork.TranslationRoomArtifactRepository.Update(artifact);
+            await unitOfWork.SaveChangesAsync(ct);
+
+            // Only after the update is committed. Deleting first would lose the summary if the
+            // save then failed — the same ordering ArtifactsFinalizer settled on.
+            await db.KeyDeleteAsync(summaryKey);
+
+            recovered++;
+            _logger.LogInformation(
+                "Recovered a late AI summary for room {RoomId} and updated its existing artifact.",
+                room.Id);
         }
     }
 }

@@ -34,7 +34,12 @@ public record WorkspaceSettingsSnapshotDto(
     bool AllowExternalCollaboration,
     bool IsProfanityFilterEnabled,
     bool AllowExternalLlm,
-    bool UseGlobalGlossary
+    bool UseGlobalGlossary,
+    /// <summary>
+    /// WT-466: the workspace's allowed-language whitelist. EMPTY MEANS UNRESTRICTED — the same
+    /// reading <c>ValidateMeetingCreationAsync</c> gives it — never "no language permitted".
+    /// </summary>
+    IReadOnlyList<string> AllowedTargetLanguages
 );
 
 public record WorkspacePreflightDto(

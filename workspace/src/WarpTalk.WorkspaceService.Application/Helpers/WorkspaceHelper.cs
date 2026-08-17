@@ -54,9 +54,23 @@ public static class WorkspaceHelper
         // VerifiedDomains list left behind in the settings JSON used to count too, which made
         // workspaces that had switched the policy off still behave as if it were on — the
         // WT-179 incident. Stale JSON is not evidence of live policy.
+        //
+        // WT-417 adds `DeletedAt == null`, and it is the half that bit hardest. This rule is
+        // "you may be internal to only one Enterprise workspace", so it reads every membership
+        // the user holds — and a DELETED workspace still had rows here, because deleting one
+        // stamped the workspace and left its memberships with RemovedAt NULL. The result was an
+        // account permanently barred from joining any Enterprise workspace as Internal, by a
+        // workspace that no longer exists, with a 403 naming a workspace the user cannot see, in
+        // a listing it never appears in. Nothing in the product could have shown them why.
+        //
+        // SoftDeleteWorkspaceAsync now stamps those rows so the orphan is not manufactured in the
+        // first place, and the backfill migration clears the ones already out there. This stays
+        // regardless: a membership of a workspace that does not exist must never gate anything,
+        // whatever left it lying around.
         return memberships.Any(m =>
             string.Equals(m.MembershipType, MembershipType.Internal.ToString(), StringComparison.OrdinalIgnoreCase)
             && m.Workspace != null
+            && m.Workspace.DeletedAt == null
             && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 

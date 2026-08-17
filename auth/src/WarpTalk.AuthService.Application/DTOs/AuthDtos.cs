@@ -1,8 +1,27 @@
 namespace WarpTalk.AuthService.Application.DTOs;
 
-public record RegisterRequest(string Email, string Password, string FullName);
+/// <summary>
+/// The two languages are optional and are the sign-up wizard's third step.
+///
+/// They are collected AT REGISTRATION rather than afterwards because self-registration issues no
+/// session (BR-02 — the address has to be proven first), so there is no authenticated moment
+/// between "account created" and "first meeting" in which the client could PUT them. Optional
+/// because the Google and invited paths do not necessarily ask, and a missing answer must land on
+/// the platform default rather than fail the registration.
+/// </summary>
+public record RegisterRequest(
+    string Email,
+    string Password,
+    string FullName,
+    string? DefaultSpeakLanguage = null,
+    string? DefaultListenLanguage = null);
 
-public record RegisterInvitedRequest(string Token, string Password, string FullName);
+public record RegisterInvitedRequest(
+    string Token,
+    string Password,
+    string FullName,
+    string? DefaultSpeakLanguage = null,
+    string? DefaultListenLanguage = null);
 
 public record LoginRequest(string Email, string Password, string? IpAddress, string? DeviceInfo);
 

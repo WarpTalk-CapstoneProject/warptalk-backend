@@ -15,6 +15,16 @@ public static class PaymentConstants
         public const string SubscriptionUpdate = "SubscriptionUpdate";
         public const string InvoicePayment = "InvoicePayment";
 
+        /// <summary>
+        /// WT-429. Buying credits outright, outside the subscription cycle.
+        ///
+        /// The web has posted this string since the top-up UI was built, and NOTHING matched it:
+        /// no handler claimed it, PaymentAppService skipped the grant in silence, and the request
+        /// still wrote a payment row and issued an invoice. Money in, no credits — which is why
+        /// the button was switched off rather than fixed at the time (#190).
+        /// </summary>
+        public const string CreditTopUp = "CreditTopUp";
+
         public static readonly IReadOnlySet<string> SubscriptionLifecycleTypes = new HashSet<string>
         {
             Subscription,
@@ -59,6 +69,13 @@ public static class PaymentConstants
         public const string PaymentType = "PaymentType";
         public const string PlanSlug = "PlanSlug";
         public const string BillingCycle = "BillingCycle";
+
+        /// <summary>
+        /// WT-429: how many credits this top-up buys, decided SERVER-side and carried on the
+        /// Stripe session so the webhook and the return path grant the same number without
+        /// re-deriving it from the amount (which would make the rate a client input).
+        /// </summary>
+        public const string Credits = "Credits";
     }
 
     public static class StripeEvents
@@ -113,6 +130,29 @@ public static class PaymentConstants
     {
         public const string Month = "month";
         public const string Year = "year";
+    }
+
+    /// <summary>
+    /// What the CLIENT calls a billing cycle, which is not what Stripe calls one.
+    ///
+    /// <see cref="PriceIntervals"/> is Stripe's vocabulary ("month"/"year") and is what goes out
+    /// on a price. The plans page sends "monthly"/"yearly" — the two are never equal, and
+    /// comparing them directly is the WT-370 bug. Read a cycle through
+    /// <c>BillingCycleResolver</c>, never with <c>==</c> against PriceIntervals.
+    /// </summary>
+    public static class BillingCycles
+    {
+        public const string Monthly = "monthly";
+        public const string Yearly = "yearly";
+
+        public static readonly string[] MonthlySpellings = { Monthly, PriceIntervals.Month };
+        public static readonly string[] YearlySpellings =
+        {
+            Yearly,
+            PriceIntervals.Year,
+            "annual",
+            "annually"
+        };
     }
 
     public static class StripeConfigKeys

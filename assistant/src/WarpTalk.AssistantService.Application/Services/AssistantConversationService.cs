@@ -67,7 +67,12 @@ public class AssistantConversationService : IAssistantConversationService
 
     public async Task<Result<SendAssistantMessageResponse>> SendMessageAsync(Guid conversationId, Guid userId, string? bearerToken, SendAssistantMessageRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(request.Content))
+        // WT-474: an attachment IS a question. "What is this?" with a screenshot, or a PDF dropped
+        // in with nothing typed, is a complete turn — so content is required only when nothing is
+        // attached. Without this the browser would offer an attachment-only send that the server
+        // refuses, which is the worst of both.
+        var hasAttachment = request.Attachments is { Count: > 0 };
+        if (string.IsNullOrWhiteSpace(request.Content) && !hasAttachment)
             return Result.Failure<SendAssistantMessageResponse>("Message content is required.", "VALIDATION_ERROR");
 
         var conversation = await _unitOfWork.AssistantConversationRepository.GetByIdAsync(conversationId, ct);
@@ -104,8 +109,13 @@ public class AssistantConversationService : IAssistantConversationService
         await _unitOfWork.AssistantMessageRepository.AddAsync(assistantMessage, ct);
 
         conversation.LastMessageAt = now;
-        if (conversation.Title == "New chat")
+        if (conversation.Title == "New chat" && !string.IsNullOrWhiteSpace(request.Content))
+        {
+            // WT-474: guarded on non-empty, because an attachment-only first turn has no text to
+            // title the conversation with — and "" is a worse title than "New chat", which at least
+            // reads as a conversation waiting to be named.
             conversation.Title = request.Content.Length > 60 ? request.Content[..60] : request.Content;
+        }
         _unitOfWork.AssistantConversationRepository.Update(conversation);
 
         await _unitOfWork.SaveChangesAsync(ct);
@@ -121,12 +131,83 @@ public class AssistantConversationService : IAssistantConversationService
 
         var pageContextJson = SerializePageContext(request.PageContext, conversation.WorkspaceId);
         var mentionsJson = SerializeMentions(request.Mentions, conversation.WorkspaceId);
+        var attachmentsJson = SerializeAttachments(request.Attachments);
 
         await _chatRequestPublisher.PublishAsync(
-            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, ct);
+            assistantMessage.Id, conversationId, conversation.WorkspaceId, userId, bearerToken, history, pageContextJson, mentionsJson, attachmentsJson, ct);
 
         return Result.Success(new SendAssistantMessageResponse(userMessage.Id, assistantMessage.Id));
     }
+
+    /// <summary>
+    /// WT-474: the attachments for this turn, validated before they leave this service.
+    ///
+    /// This is the one field of the request that can be megabytes long, and the only one a caller
+    /// can fill with arbitrary bytes, so the limits are enforced here rather than trusted to the
+    /// browser. The worker enforces them again — the browser's copy is a courtesy to the user,
+    /// these two are what protect the system.
+    ///
+    /// Bad entries are DROPPED, not rejected: the user's question is still a question, and failing
+    /// the whole message because one attachment was the wrong type loses the text they typed. If
+    /// nothing survives, the turn proceeds as a plain text message.
+    ///
+    /// ONLY `data:` URLs. An http(s) URL would make the worker fetch a caller-supplied address,
+    /// which is a request-forgery primitive rather than a feature.
+    ///
+    /// The accepted types mirror the worker's whitelist. Letting anything else through would reach
+    /// OpenAI as a confusing 400, or be silently ignored — and a user whose attachment was quietly
+    /// dropped reads the answer as the model lying.
+    /// </summary>
+    private static string? SerializeAttachments(List<AssistantAttachmentDto>? attachments)
+    {
+        if (attachments == null || attachments.Count == 0) return null;
+
+        var accepted = attachments
+            .Where(attachment => !string.IsNullOrWhiteSpace(attachment.DataUrl))
+            .Where(attachment => attachment.DataUrl.StartsWith("data:", StringComparison.Ordinal))
+            .Where(attachment => attachment.DataUrl.Length <= MaxAttachmentDataUrlChars)
+            .Where(attachment => IsSupportedAttachment(attachment.DataUrl))
+            .Take(MaxAttachmentsPerTurn)
+            .Select(attachment => new
+            {
+                dataUrl = attachment.DataUrl,
+                name = attachment.Name ?? "",
+                mimeType = attachment.MimeType ?? "",
+            })
+            .ToList();
+
+        return accepted.Count == 0 ? null : JsonSerializer.Serialize(accepted);
+    }
+
+    /// <summary>
+    /// Reads the type off the DATA URL, never off the caller's MimeType field — the two can
+    /// disagree, and the bytes are the only side that decides how OpenAI reads them.
+    /// </summary>
+    private static bool IsSupportedAttachment(string dataUrl)
+    {
+        var semicolon = dataUrl.IndexOf(';', StringComparison.Ordinal);
+        if (semicolon <= 5) return false;
+
+        var mime = dataUrl[5..semicolon];
+        return mime.StartsWith("image/", StringComparison.Ordinal)
+            || SupportedDocumentMimeTypes.Contains(mime);
+    }
+
+    /// <summary>Mirrors ai_assistant_worker.chat_worker.DOCUMENT_MIME_TYPES.</summary>
+    private static readonly HashSet<string> SupportedDocumentMimeTypes = new(StringComparer.Ordinal)
+    {
+        "application/pdf",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/json",
+    };
+
+    /// <summary>At most four attachments in one question; past that it is a document set, not a hint.</summary>
+    private const int MaxAttachmentsPerTurn = 4;
+
+    /// <summary>~7MB of base64, a little over 5MB of file. Larger is likelier to be refused by the model than answered.</summary>
+    private const int MaxAttachmentDataUrlChars = 7_000_000;
 
     /// <summary>
     /// Serializes the frontend's ambient page-context hint for the Python worker, scoping it

@@ -10,11 +10,16 @@ public class UserServiceGrpc : UserService.UserServiceBase
 {
     private readonly IUserDirectoryService _userDirectory;
     private readonly IVoiceConsentService _voiceConsent;
+    private readonly IVoiceProfileService _voiceProfiles;
 
-    public UserServiceGrpc(IUserDirectoryService userDirectory, IVoiceConsentService voiceConsent)
+    public UserServiceGrpc(
+        IUserDirectoryService userDirectory,
+        IVoiceConsentService voiceConsent,
+        IVoiceProfileService voiceProfiles)
     {
         _userDirectory = userDirectory;
         _voiceConsent = voiceConsent;
+        _voiceProfiles = voiceProfiles;
     }
 
     /// <summary>
@@ -34,6 +39,26 @@ public class UserServiceGrpc : UserService.UserServiceBase
 
         var granted = await _voiceConsent.HasActiveConsentAsync(parsedId, CancellationTokenOf(context));
         return new HasVoiceCloneConsentResponse { Granted = granted };
+    }
+
+    /// <summary>
+    /// WT-396. Empty is a valid answer meaning "they have not chosen one" — the caller falls back
+    /// to cloning the speaker live, which is what happens for everyone today. An unparseable id
+    /// answers the same way rather than throwing: a voice preference must never be able to stop a
+    /// meeting's audio routes from being built.
+    /// </summary>
+    public override async Task<GetPreferredVoiceResponse> GetPreferredVoice(
+        GetUserRequest request,
+        ServerCallContext context)
+    {
+        if (!Guid.TryParse(request.Id, out var parsedId))
+            return new GetPreferredVoiceResponse();
+
+        var result = await _voiceProfiles.GetDubVoiceAsync(parsedId, CancellationTokenOf(context));
+        if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Value))
+            return new GetPreferredVoiceResponse();
+
+        return new GetPreferredVoiceResponse { VoiceId = result.Value, Provider = "cartesia" };
     }
 
     public override async Task<GetUserResponse> GetUserById(GetUserRequest request, ServerCallContext context)
@@ -75,7 +100,8 @@ public class UserServiceGrpc : UserService.UserServiceBase
         {
             Found = true,
             DefaultSpeakLanguage = result.Value.DefaultSpeakLanguage,
-            DefaultListenLanguage = result.Value.DefaultListenLanguage
+            DefaultListenLanguage = result.Value.DefaultListenLanguage,
+            VoiceCloneEnabled = result.Value.VoiceCloneEnabled
         };
     }
 

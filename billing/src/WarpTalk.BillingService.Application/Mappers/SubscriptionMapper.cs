@@ -97,6 +97,31 @@ public static class SubscriptionMapper
         sub.UpdatedAt = now;
     }
 
+    /// <summary>
+    /// WT-471: the exact inverse of <see cref="Cancel"/>, and only of that one.
+    ///
+    /// Cancel on a paid subscription flips <c>AutoRenew</c> off and stamps the status; it
+    /// deliberately leaves <c>IsActive</c> true and <c>CancelledAt</c> null, because the workspace
+    /// keeps everything it paid for until the period ends. So the row is still the live
+    /// subscription, and reactivating is a matter of undoing those two fields rather than issuing a
+    /// new one.
+    ///
+    /// It is NOT the inverse of <see cref="CancelImmediately"/>, which runs on the trial path and
+    /// does set <c>IsActive = false</c>. Nothing here can bring that back — the caller checks for
+    /// it, because a trial that has been ended is not a subscription with renewal switched off.
+    ///
+    /// <c>CancellationReason</c> is cleared with the rest. Leaving a stale reason on a renewing
+    /// subscription would surface a cancellation notice on a plan that is not cancelled.
+    /// </summary>
+    public static void Reactivate(this Subscription sub)
+    {
+        sub.AutoRenew = true;
+        sub.Status = SubscriptionConstants.SubscriptionStatuses.Active;
+        sub.CancellationReason = null;
+        sub.CancelledAt = null;
+        sub.UpdatedAt = DateTime.UtcNow;
+    }
+
     public static void ResumeAiService(this Subscription sub)
     {
         sub.ServiceState = SubscriptionConstants.ServiceStates.Healthy;

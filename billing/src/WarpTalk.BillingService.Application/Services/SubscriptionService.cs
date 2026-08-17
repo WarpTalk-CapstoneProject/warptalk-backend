@@ -342,6 +342,87 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
+    /// <summary>
+    /// WT-471: switch renewal back on for a subscription that was cancelled but has not expired.
+    ///
+    /// There was no way back into a plan from inside the product. Cancel existed, auto-renew was
+    /// deliberately never built ("cũng đâu có chứng minh được trong demo"), and nothing reversed a
+    /// cancellation — so every cancelled workspace was a dead end. Two reasonable decisions that
+    /// together made a trap.
+    ///
+    /// NOT the same thing as <see cref="ResumeSubscriptionAsync"/>, which clears a ServiceState
+    /// suspension caused by running past the overage cap. Those are independent axes: a
+    /// subscription can be healthy and cancelled, or suspended and renewing. Reusing that endpoint
+    /// would have refused every cancelled-but-healthy subscription with "AI service is not
+    /// suspended", which is true and answers a question nobody asked.
+    ///
+    /// Stripe is deliberately NOT called. CancelSubscriptionAsync cancels the Stripe subscription
+    /// as a side effect, and un-cancelling it is not a symmetric operation — the correct path there
+    /// is a new Checkout, which is what the period-ended branch below sends the caller to. This
+    /// endpoint restores the LOCAL renewal intent for the remainder of a period that is already
+    /// paid for; it never creates a charge.
+    /// </summary>
+    public async Task<Result<SubscriptionDto>> ReactivateSubscriptionAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            // A trial cancelled through CancelImmediately has IsActive = false, so it does not
+            // match here and correctly reads as "nothing to reactivate" rather than being revived.
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            // AutoRenew is the field Cancel actually flips, and CancelAtPeriodEnd on the wire is
+            // literally `!AutoRenew`. Testing it — rather than the status string — keeps this
+            // agreeing with what every client already renders.
+            if (sub.AutoRenew)
+                return Result.Failure<SubscriptionDto>(
+                    BillingMessageConstants.ApiErrorMessages.BillingSubscriptionNotCancelled,
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            if (sub.CurrentPeriodEnd <= DateTime.UtcNow)
+                return Result.Failure<SubscriptionDto>(
+                    BillingMessageConstants.ApiErrorMessages.BillingSubscriptionPeriodAlreadyEnded,
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            sub.Reactivate();
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Entitlements are republished because cancellation published them too. A consumer
+            // that lowered a quota on the cancel event has to hear the reversal, or the workspace
+            // keeps a downgraded snapshot while its subscription says otherwise.
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "Subscription reactivated. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}",
+                workspaceId,
+                sub.Id);
+
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
+            return Result.Success(plan is null
+                ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
+                : sub.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to reactivate subscription. WorkspaceId={WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>(
+                ApiMessageConstants.ErrorMessages.BillingInternalError,
+                ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(
         Guid workspaceId,
         ResumeSubscriptionRequest request,
@@ -400,6 +481,168 @@ public class SubscriptionService : ISubscriptionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to resume billing AI service. WorkspaceId={WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>What the workspace's billing page shows about running past zero credits.</summary>
+    public async Task<Result<WorkspaceOverageSettingDto>> GetOverageSettingAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        var (sub, plan, failure) = await LoadActiveSubscriptionAsync<WorkspaceOverageSettingDto>(
+            workspaceId, cancellationToken);
+        if (failure is not null) return failure;
+
+        var effective = sub!.OverageCapCreditsOverride ?? plan!.OverageCapCredits;
+        return Result.Success(new WorkspaceOverageSettingDto(
+            Enabled: effective > 0,
+            EffectiveCapCredits: effective,
+            PlanCapCredits: plan!.OverageCapCredits,
+            OverageCreditsThisCycle: sub.OverageCreditsThisCycle));
+    }
+
+    /// <summary>
+    /// Turn overage on or off for this workspace, WITHIN the allowance its plan already grants.
+    ///
+    /// Enabling clears the override so the plan's own cap applies; disabling pins it to 0. The
+    /// Owner therefore cannot raise their own ceiling — that is what UpdateContractTermsAsync is
+    /// for, and why that one is system-admin-only. A plan whose cap is 0 offers no overage at
+    /// all, and enabling on it changes nothing, which is reported honestly rather than as success.
+    /// </summary>
+    public async Task<Result<WorkspaceOverageSettingDto>> SetOverageAsync(
+        Guid workspaceId,
+        SetWorkspaceOverageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var (sub, plan, failure) = await LoadActiveSubscriptionAsync<WorkspaceOverageSettingDto>(
+            workspaceId, cancellationToken);
+        if (failure is not null) return failure;
+
+        if (request.Enabled && plan!.OverageCapCredits <= 0)
+        {
+            return Result.Failure<WorkspaceOverageSettingDto>(
+                "This plan does not include an overage allowance. Contact WarpTalk to add one.",
+                ErrorCodes.ValidationError);
+        }
+
+        // null, not the number: the override exists to DIFFER from the plan. Copying the plan's
+        // cap into it would freeze today's value, so a later plan change would silently not apply.
+        sub!.OverageCapCreditsOverride = request.Enabled ? null : 0;
+
+        // Switching it off must not strand a workspace that is already suspended for having used
+        // it — that would make the toggle a one-way door. Switching it ON is the case that can
+        // legitimately resume, and only when the room under the cap is real.
+        var effective = sub.OverageCapCreditsOverride ?? plan!.OverageCapCredits;
+        if (request.Enabled
+            && sub.ServiceState == SubscriptionConstants.ServiceStates.Suspended
+            && sub.SuspendedReason == SubscriptionConstants.SuspendedReasons.OverageCap
+            && sub.OverageCreditsThisCycle < effective)
+        {
+            sub.ResumeAiService();
+        }
+
+        _unitOfWork.SubscriptionRepository.Update(sub);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        await PublishEntitlementsAsync(
+            sub.WorkspaceId,
+            EntitlementConstants.Reasons.ContractOverrideChanged,
+            cancellationToken);
+
+        return Result.Success(new WorkspaceOverageSettingDto(
+            Enabled: effective > 0,
+            EffectiveCapCredits: effective,
+            PlanCapCredits: plan!.OverageCapCredits,
+            OverageCreditsThisCycle: sub.OverageCreditsThisCycle));
+    }
+
+    /// <summary>The active subscription and its plan, or the failure both overage methods return.</summary>
+    private async Task<(Subscription? Sub, Plan? Plan, Result<T>? Failure)> LoadActiveSubscriptionAsync<T>(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        // WT-430: deliberately BROADER than Subscription.GrantsPlanEntitlements, and left that way.
+        // This finds the subscription to bill or credit, not the one that grants plan quotas — a
+        // cancelled subscription still inside its paid period keeps its credits until the period
+        // ends, so narrowing this to the entitlement test would take money handling with it.
+        var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+            s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+            cancellationToken);
+
+        if (sub is null)
+            return (null, null, Result.Failure<T>(
+                ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                ErrorCodes.BillingSubscriptionNotFound));
+
+        var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
+        if (plan is null)
+            return (null, null, Result.Failure<T>(
+                ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                ErrorCodes.BillingPlanNotFound));
+
+        return (sub, plan, null);
+    }
+
+    public async Task<Result<SubscriptionDto>> AdminChangePlanAsync(
+        Guid workspaceId,
+        Guid planId,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            if (sub.PlanId == planId)
+                return Result.Failure<SubscriptionDto>(
+                    "The subscription is already on this plan.",
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            var plan = await _unitOfWork.Plans.FirstOrDefaultAsync(
+                p => p.Id == planId && p.DeletedAt == null,
+                cancellationToken);
+
+            if (plan is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingPlanNotFound,
+                    ErrorCodes.BillingPlanNotFound);
+
+            // A hidden plan is retired from sale; moving a customer ONTO one recreates it by the
+            // back door and puts numbers in force that no price page describes.
+            if (!plan.IsActive)
+                return Result.Failure<SubscriptionDto>(
+                    "The target plan is deactivated. Reactivate it before moving a subscription onto it.",
+                    ErrorCodes.ValidationError);
+
+            sub.PlanId = plan.Id;
+            sub.UpdatedAt = DateTime.UtcNow;
+            sub.UpdatedBy = adminUserId;
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Layer 2 of the resolution order just moved for this workspace.
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.PlanChanged,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "System admin {AdminUserId} moved workspace {WorkspaceId} subscription {SubscriptionId} to plan {PlanId} ({PlanName})",
+                adminUserId, workspaceId, sub.Id, plan.Id, plan.Name);
+
+            return Result.Success(sub.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error changing plan for workspace {WorkspaceId} to plan {PlanId}", workspaceId, planId);
             return Result.Failure<SubscriptionDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
     }

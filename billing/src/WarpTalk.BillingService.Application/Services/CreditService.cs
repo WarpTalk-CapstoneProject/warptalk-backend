@@ -55,6 +55,47 @@ public class CreditService : ICreditService
         }
     }
 
+    public async Task<Result<WorkspaceUsageByMemberDto>> GetUsageByMemberAsync(
+        Guid workspaceId,
+        DateTime? from,
+        DateTime? to,
+        CancellationToken cancellationToken = default)
+    {
+        // A backwards window is a caller mistake, not an empty result: silently returning
+        // nothing would read as "nobody spent anything", which is the one answer a spend
+        // dashboard must never give wrongly.
+        if (from.HasValue && to.HasValue && from.Value > to.Value)
+        {
+            return Result.Failure<WorkspaceUsageByMemberDto>(
+                "The start of the range must not be after its end.",
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var rows = await _unitOfWork.UsageRecordRepository.GetUsageByMemberAsync(
+                workspaceId, from, to, cancellationToken);
+
+            var members = rows
+                .Select(r => new MemberCreditUsageDto(r.UserId, r.CreditsConsumed, r.RecordCount, r.LastUsedAt))
+                .ToList();
+
+            // Summed from the SAME rows as the breakdown. Reading the total off the
+            // subscription instead would answer a different question — what is left, not what
+            // these people spent in this window — and an owner comparing the number above the
+            // table against the sum of the table would find them disagreeing.
+            var total = members.Sum(m => m.CreditsConsumed);
+
+            return Result.Success(new WorkspaceUsageByMemberDto(workspaceId, from, to, total, members));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting per-member usage for WorkspaceId {WorkspaceId}", workspaceId);
+            return Result.Failure<WorkspaceUsageByMemberDto>(
+                ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
     public Task<Result<CreditTransactionDto>> ConsumeCreditsDirectlyAsync(
         Guid workspaceId, ConsumeCreditsRequest request, CancellationToken cancellationToken = default)
     {
@@ -83,6 +124,25 @@ public class CreditService : ICreditService
     }
 
 
+
+    public async Task<Result<CreditTransactionDto>> AdjustWorkspaceCreditsAsync(
+        Guid workspaceId,
+        AdjustCreditsRequest request,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        // Deliberately the BROAD resolution (same as consumption): a cancelled subscription still
+        // inside its paid period keeps its balance, and compensating that balance is exactly what
+        // this endpoint is for.
+        var subResult = await GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
+        if (!subResult.IsSuccess)
+            return Result.Failure<CreditTransactionDto>(
+                subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                subResult.ErrorCode);
+
+        return await AdjustCreditsAsync(
+            subResult.Value!.Id, request.Amount, request.Reason, adminUserId, cancellationToken);
+    }
 
     public async Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
         Guid subscriptionId,

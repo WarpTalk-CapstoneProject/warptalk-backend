@@ -101,9 +101,14 @@ public class NotificationValidatorTests
     // missing from the schema table, so an unknown type carrying a payload was rejected outright
     // — every "your meeting started" and every "your summary is ready" notification silently
     // discarded. Neither producer reads the reply, so the only trace was a log warning.
+    // MEETING_INVITED is the third one, found the same way and left behind by the same fix: it is
+    // the type translation-room sends for an invitation (past tense), while the constant that WAS
+    // registered is "MEETING_INVITE" with a meeting_id/inviter_name schema that no producer emits.
+    // So the bell rang for started and summary-ready meetings but never for being invited to one.
     [Theory]
     [InlineData(NotificationConstants.TypeMeetingStarted)]
     [InlineData(NotificationConstants.TypeMeetingSummaryReady)]
+    [InlineData(NotificationConstants.TypeMeetingInvited)]
     public void Validate_MeetingLifecyclePayload_IsAccepted(string type)
     {
         var payload = System.Text.Json.JsonSerializer.Serialize(new
@@ -120,6 +125,7 @@ public class NotificationValidatorTests
     [Theory]
     [InlineData(NotificationConstants.TypeMeetingStarted)]
     [InlineData(NotificationConstants.TypeMeetingSummaryReady)]
+    [InlineData(NotificationConstants.TypeMeetingInvited)]
     public void Validate_MeetingLifecycleWithoutItsRoom_IsRejected(string type)
     {
         // Registered as REQUIRED on purpose: a notification about a meeting, with no meeting on
