@@ -342,6 +342,87 @@ public class SubscriptionService : ISubscriptionService
         }
     }
 
+    /// <summary>
+    /// WT-471: switch renewal back on for a subscription that was cancelled but has not expired.
+    ///
+    /// There was no way back into a plan from inside the product. Cancel existed, auto-renew was
+    /// deliberately never built ("cũng đâu có chứng minh được trong demo"), and nothing reversed a
+    /// cancellation — so every cancelled workspace was a dead end. Two reasonable decisions that
+    /// together made a trap.
+    ///
+    /// NOT the same thing as <see cref="ResumeSubscriptionAsync"/>, which clears a ServiceState
+    /// suspension caused by running past the overage cap. Those are independent axes: a
+    /// subscription can be healthy and cancelled, or suspended and renewing. Reusing that endpoint
+    /// would have refused every cancelled-but-healthy subscription with "AI service is not
+    /// suspended", which is true and answers a question nobody asked.
+    ///
+    /// Stripe is deliberately NOT called. CancelSubscriptionAsync cancels the Stripe subscription
+    /// as a side effect, and un-cancelling it is not a symmetric operation — the correct path there
+    /// is a new Checkout, which is what the period-ended branch below sends the caller to. This
+    /// endpoint restores the LOCAL renewal intent for the remainder of a period that is already
+    /// paid for; it never creates a charge.
+    /// </summary>
+    public async Task<Result<SubscriptionDto>> ReactivateSubscriptionAsync(
+        Guid workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var sub = await _unitOfWork.SubscriptionRepository.FirstOrDefaultAsync(
+                s => s.WorkspaceId == workspaceId && s.IsActive && s.DeletedAt == null,
+                cancellationToken);
+
+            // A trial cancelled through CancelImmediately has IsActive = false, so it does not
+            // match here and correctly reads as "nothing to reactivate" rather than being revived.
+            if (sub is null)
+                return Result.Failure<SubscriptionDto>(
+                    ApiMessageConstants.ErrorMessages.BillingSubscriptionNotFound,
+                    ErrorCodes.BillingSubscriptionNotFound);
+
+            // AutoRenew is the field Cancel actually flips, and CancelAtPeriodEnd on the wire is
+            // literally `!AutoRenew`. Testing it — rather than the status string — keeps this
+            // agreeing with what every client already renders.
+            if (sub.AutoRenew)
+                return Result.Failure<SubscriptionDto>(
+                    BillingMessageConstants.ApiErrorMessages.BillingSubscriptionNotCancelled,
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            if (sub.CurrentPeriodEnd <= DateTime.UtcNow)
+                return Result.Failure<SubscriptionDto>(
+                    BillingMessageConstants.ApiErrorMessages.BillingSubscriptionPeriodAlreadyEnded,
+                    ErrorCodes.BillingSubscriptionConflict);
+
+            sub.Reactivate();
+            _unitOfWork.SubscriptionRepository.Update(sub);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // Entitlements are republished because cancellation published them too. A consumer
+            // that lowered a quota on the cancel event has to hear the reversal, or the workspace
+            // keeps a downgraded snapshot while its subscription says otherwise.
+            await PublishEntitlementsAsync(
+                sub.WorkspaceId,
+                EntitlementConstants.Reasons.SubscriptionChanged,
+                cancellationToken);
+
+            _logger.LogInformation(
+                "Subscription reactivated. WorkspaceId={WorkspaceId}, SubscriptionId={SubscriptionId}",
+                workspaceId,
+                sub.Id);
+
+            var plan = await _unitOfWork.Plans.GetByIdAsync(sub.PlanId, cancellationToken);
+            return Result.Success(plan is null
+                ? sub.ToDto(BillingMessageConstants.Subscription.UnknownPlan, 0m)
+                : sub.ToDto(plan));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to reactivate subscription. WorkspaceId={WorkspaceId}", workspaceId);
+            return Result.Failure<SubscriptionDto>(
+                ApiMessageConstants.ErrorMessages.BillingInternalError,
+                ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<SubscriptionDto>> ResumeSubscriptionAsync(
         Guid workspaceId,
         ResumeSubscriptionRequest request,
