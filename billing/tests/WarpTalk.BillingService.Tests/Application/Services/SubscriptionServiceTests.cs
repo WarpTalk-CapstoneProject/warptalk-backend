@@ -193,6 +193,99 @@ public class SubscriptionServiceTests
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(default), Times.Never);
     }
 
+    /// <summary>
+    /// WT-471. The subscription is HEALTHY and cancelled, which is the ordinary case and the one
+    /// ResumeSubscriptionAsync cannot serve — it would refuse with "AI service is not suspended".
+    /// Cancellation and suspension are independent axes and this test is what pins them apart.
+    /// </summary>
+    [Fact]
+    public async Task ReactivateSubscriptionAsync_Should_TurnRenewalBackOn_WhenCancelledAndUnexpired()
+    {
+        var workspaceId = Guid.NewGuid();
+        var plan = new Plan { Id = Guid.NewGuid(), Name = "Enterprise", Price = 1_000_000m };
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            PlanId = plan.Id,
+            // Exactly the state Cancel() leaves behind on a paid subscription: still active, still
+            // inside its period, renewal off.
+            IsActive = true,
+            AutoRenew = false,
+            Status = SubscriptionConstants.SubscriptionStatuses.Cancelled,
+            CancellationReason = "changed our minds",
+            ServiceState = SubscriptionConstants.ServiceStates.Healthy,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(11)
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+        _mockPlanRepo.Setup(r => r.GetByIdAsync(plan.Id, default)).ReturnsAsync(plan);
+
+        var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
+
+        result.IsSuccess.Should().BeTrue();
+        subscription.AutoRenew.Should().BeTrue();
+        subscription.Status.Should().Be(SubscriptionConstants.SubscriptionStatuses.Active);
+        // A stale reason left on a renewing subscription would surface a cancellation notice on a
+        // plan that is not cancelled.
+        subscription.CancellationReason.Should().BeNull();
+        subscription.CancelledAt.Should().BeNull();
+        _mockSubRepo.Verify(r => r.Update(subscription), Times.Once);
+        // No charge is created: the period is already paid for.
+        _mockStripePaymentService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task ReactivateSubscriptionAsync_Should_Refuse_WhenNotCancelled()
+    {
+        var workspaceId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            IsActive = true,
+            AutoRenew = true,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(11)
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+
+        var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionConflict);
+        _mockSubRepo.Verify(r => r.Update(It.IsAny<Subscription>()), Times.Never);
+    }
+
+    /// <summary>
+    /// Once the period is over the cancellation has taken effect, and there is nothing left to
+    /// switch renewal back on for. Reactivating here would hand the workspace a fresh cycle of
+    /// credits it never paid for, so the caller is sent to Checkout instead.
+    /// </summary>
+    [Fact]
+    public async Task ReactivateSubscriptionAsync_Should_Refuse_WhenPeriodAlreadyEnded()
+    {
+        var workspaceId = Guid.NewGuid();
+        var subscription = new Subscription
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            IsActive = true,
+            AutoRenew = false,
+            Status = SubscriptionConstants.SubscriptionStatuses.Cancelled,
+            CurrentPeriodEnd = DateTime.UtcNow.AddDays(-1)
+        };
+
+        _mockSubRepo.Setup(r => r.FirstOrDefaultAsync(It.IsAny<Expression<Func<Subscription, bool>>>(), default)).ReturnsAsync(subscription);
+
+        var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId);
+
+        result.IsSuccess.Should().BeFalse();
+        result.ErrorCode.Should().Be(ErrorCodes.BillingSubscriptionConflict);
+        subscription.AutoRenew.Should().BeFalse();
+        _mockSubRepo.Verify(r => r.Update(It.IsAny<Subscription>()), Times.Never);
+    }
+
     [Fact]
     public async Task ResumeSubscriptionAsync_Should_Clear_Suspend_State_And_Sync_Redis()
     {

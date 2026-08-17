@@ -86,6 +86,29 @@ public class SubscriptionsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// WT-471: undo a cancellation while the paid period is still running.
+    ///
+    /// Same role gate as cancel — whoever may cancel may reverse it. It creates no charge: the
+    /// period is already paid for, and a workspace whose period has ended is told to choose a plan
+    /// instead, because that is a Checkout flow.
+    /// </summary>
+    [HttpPost("workspace/{workspaceId}/reactivate")]
+    [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
+    public async Task<ActionResult<SubscriptionDto>> ReactivateSubscription(
+        Guid workspaceId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _subscriptionService.ReactivateSubscriptionAsync(workspaceId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(
+                result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPost("workspace/{workspaceId}/resume")]
     [RequireWorkspaceRole(WorkspaceRoleConstants.Owner, WorkspaceRoleConstants.Admin, WorkspaceRoleConstants.SystemAdmin)]
     public async Task<ActionResult<SubscriptionDto>> ResumeSubscription(
