@@ -35,7 +35,7 @@ public sealed class RedisAssistantChatRequestPublisher : IAssistantChatRequestPu
         IReadOnlyList<ChatTurnDto> history,
         string? pageContextJson = null,
         string? mentionsJson = null,
-        string? imagesJson = null,
+        string? attachmentsJson = null,
         CancellationToken ct = default)
     {
         var db = _redis.GetDatabase();
@@ -56,7 +56,7 @@ public sealed class RedisAssistantChatRequestPublisher : IAssistantChatRequestPu
             // WT-474. Field name must stay in step with ChatRequestMessage.from_redis(), which
             // defaults it to "" — an older worker reading a stream that carries it simply ignores
             // it, so this is safe to deploy before the AI side.
-            new("images_json", imagesJson ?? ""),
+            new("images_json", attachmentsJson ?? ""),
             new("timestamp_ms", timestampMs.ToString(CultureInfo.InvariantCulture)),
         };
 

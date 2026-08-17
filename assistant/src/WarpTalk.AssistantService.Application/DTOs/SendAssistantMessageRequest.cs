@@ -30,24 +30,40 @@ public record AssistantMentionDto(
     string? Label
 );
 
+/// <summary>
+/// WT-474: one attachment on a chat message.
+///
+/// DataUrl carries the bytes as `data:&lt;mime&gt;;base64,...`. Name is kept because the Responses API
+/// requires a filename for a document part, and because it is the only handle the model has for
+/// referring to one document among several — "the contract" is not resolvable from bytes alone.
+///
+/// MimeType is ADVISORY. The worker reads the real type off the data URL, since the two can
+/// disagree and the bytes are the only side that decides how OpenAI reads them.
+/// </summary>
+public record AssistantAttachmentDto(
+    [Required] string DataUrl,
+    string? Name = null,
+    string? MimeType = null
+);
+
 public record SendAssistantMessageRequest(
     [Required] string Content,
     AssistantPageContextDto? PageContext = null,
     List<AssistantMentionDto>? Mentions = null,
     /// <summary>
-    /// WT-474: screenshots pasted into the chat box, as `data:image/...;base64,...` strings.
+    /// WT-474: files pasted, dropped or picked in the chat box — images AND documents.
     ///
     /// They belong to THIS TURN. Nothing stores them: they are forwarded to the worker with the
     /// request and are not written to AssistantMessage.Content, so a follow-up question cannot see
-    /// the picture. That is deliberate — an image kept against a conversation becomes a new kind of
+    /// them. That is deliberate — a file kept against a conversation becomes a new kind of
     /// workspace content, and every kind of workspace content has to answer to the visibility model
     /// WT-463 is still defining.
     ///
-    /// Validated, not trusted. ValidateImages rejects anything that is not an image data URL, caps
-    /// the count and caps the size, because this field is the one part of the request that can be
-    /// megabytes long.
+    /// Validated, not trusted. SerializeAttachments caps the count and the size and accepts only
+    /// the types the worker can actually submit, because this field is the one part of the request
+    /// that can be megabytes long.
     /// </summary>
-    List<string>? Images = null
+    List<AssistantAttachmentDto>? Attachments = null
 );
 
 public record SendAssistantMessageResponse(
