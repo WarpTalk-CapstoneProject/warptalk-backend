@@ -8,6 +8,13 @@ public static class VoiceProfileMapper
 {
     public static VoiceProfileDto ToDto(VoiceProfile profile)
     {
+        var activeConsent = profile.VoiceConsents
+            .Where(consent =>
+                string.Equals(consent.ConsentType, "VOICE_PROFILE_UPLOAD", System.StringComparison.OrdinalIgnoreCase)
+                && string.Equals(consent.ConsentStatus, "GRANTED", System.StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(consent => consent.GrantedAt ?? consent.CreatedAt)
+            .FirstOrDefault();
+
         return new VoiceProfileDto(
             profile.Id,
             profile.DisplayName,
@@ -18,10 +25,10 @@ public static class VoiceProfileMapper
             profile.CreatedAt,
             profile.UpdatedAt,
             profile.Provider,
-            // EmbeddingRef is the provider's own reference for the voice. For a picked
-            // library voice that is the Cartesia voice id; for a future cloned profile it
-            // would be the cloned voice's id. Same column either way.
-            profile.EmbeddingRef
+            profile.EmbeddingRef,
+            activeConsent is null ? null : "granted",
+            activeConsent?.ConsentTextVersion,
+            activeConsent?.GrantedAt
         );
     }
 }
