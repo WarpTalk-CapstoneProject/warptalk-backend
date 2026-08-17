@@ -43,7 +43,22 @@ public static class ApiMessageConstants
 
         // Auth & Profiles
         public const string EmailRequired = "Email is required.";
-        public const string EmailInvalidFormat = "Email must be a valid @gmail.com address.";
+        /// <summary>
+        /// Shown by BOTH RegisterRequestValidator and LoginRequestValidator when an address does
+        /// not match UserConstants.PermittedEmailRegex.
+        ///
+        /// It used to read "Email must be a valid @gmail.com address." — true when 4a70e34e
+        /// introduced strict Gmail validation, and false ever since the regex was relaxed to
+        /// `[^@]+@[^@]+\.[a-z]{2,}`. Every domain is accepted today; only the wording still said
+        /// otherwise.
+        ///
+        /// That is not a cosmetic slip. Someone signing up with an iCloud, Outlook or company
+        /// address who mistypes once is told, in the product's own voice, that their address is
+        /// the wrong KIND — so they stop, and report that they cannot create an account. The
+        /// message named a rule that no longer exists and sent people away from a flow that
+        /// would have accepted them.
+        /// </summary>
+        public const string EmailInvalidFormat = "Enter a valid email address.";
         public const string PasswordRequired = "Password is required.";
         public const string PasswordMinLength = "Password must be at least 6 characters long.";
         public const string FullNameRequired = "Full name is required.";
