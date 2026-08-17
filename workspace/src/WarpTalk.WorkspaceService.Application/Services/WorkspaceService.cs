@@ -359,16 +359,8 @@ public class WorkspaceService : IWorkspaceService
             // document is a secret from the workspace's own members — it is the rules they are
             // being asked to follow. Writing stays Owner/Admin-only in UpdateWorkspaceSettings.
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
-
-<<<<<<< HEAD
-            // The settings JSON carries a VerifiedDomains list, but VerifiedDomainService writes
-            // domains to workspace_verified_domains and never touches that JSON, so the stored
-            // copy drifts the moment a domain is added or revoked. Overwrite it with the table on
-            // the way out: the DTO stays a faithful view, and no caller can be misled into
-            // treating the stale copy as policy.
             settings.VerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
-            return Result.Success(settings.ToSettingsDto());
-=======
+
             // The ceiling travels WITH the setting, because the setting alone is not the rule.
             // Meeting creation enforces the tighter of the two (WorkspaceDirectoryService
             // .ResolveMaxActiveRooms), so a page that showed only the stored number was reporting
@@ -390,7 +382,6 @@ public class WorkspaceService : IWorkspaceService
                     ? entitlements.Source(EntitlementKeys.MaxActiveRooms)
                     : null,
             });
->>>>>>> 11505a6c814ca8637b50a8279ccac50442a10bb2
         }
         catch (Exception ex)
         {
@@ -452,23 +443,6 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanModifyPolicySettings, ErrorCodes.Forbidden);
             }
 
-<<<<<<< HEAD
-            // The domain lifecycle belongs to VerifiedDomainService — it owns the Owner-only
-            // check, the public-domain refusal, the cross-workspace uniqueness check, and the two
-            // revoke guards. This endpoint used to carry its own partial copy of those rules,
-            // driven by whatever VerifiedDomains the client happened to send. That copy could
-            // only ever be a second, weaker opinion about the same table, so the incoming list is
-            // now ignored outright and replaced with the table below.
-            var newConfig = settings.ToConfiguration();
-            newConfig.VerifiedDomains = activeVerifiedDomains.ToList();
-            var updated = await _unitOfWork.WorkspaceRepository.UpdateSettingsAsync(workspaceId, newConfig, userId, ct);
-            if (!updated)
-            {
-                return Result.Failure(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
-            }
-
-            await _unitOfWork.SaveChangesAsync(ct);
-=======
             if (settings.VerifiedDomains != null && settings.VerifiedDomains.Any())
             {
                 foreach (var domain in settings.VerifiedDomains)
@@ -515,7 +489,6 @@ public class WorkspaceService : IWorkspaceService
                     }
                 }
             }
->>>>>>> 11505a6c814ca8637b50a8279ccac50442a10bb2
 
             // WT-263: max_active_rooms is an entitlement, so the owner's chosen value has to reach
             // the resolver — it is the only code that knows the plan ceiling and therefore the only
@@ -591,14 +564,6 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
-<<<<<<< HEAD
-            // Release every verified domain this workspace holds.
-            //
-            // Deletion is terminal — ChangeLifecycleAsync refuses every transition on a deleted
-            // workspace — so nobody is left who could revoke these rows later. Without this, the
-            // domain stays claimed forever: no other workspace can take it, and no Owner exists
-            // to release it. Suspension deliberately does NOT do this, because a suspended
-            // workspace is coming back and expects to still hold its domains.
             var heldDomains = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
                 vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
                 "",
@@ -610,11 +575,8 @@ public class WorkspaceService : IWorkspaceService
                 _unitOfWork.WorkspaceVerifiedDomainRepository.Update(heldDomain);
             }
 
-            workspace.DeletedAt = DateTime.UtcNow;
-=======
             var deletedAt = DateTime.UtcNow;
             workspace.DeletedAt = deletedAt;
->>>>>>> 11505a6c814ca8637b50a8279ccac50442a10bb2
             workspace.UpdatedBy = userId;
             workspace.RequireVerifiedDomainForInternal = false;
 
