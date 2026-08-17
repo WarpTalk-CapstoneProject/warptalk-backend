@@ -551,6 +551,12 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasDefaultValue(true)
                 .HasColumnName("is_translation_audio_enabled");
             entity.Property(e => e.IsUsingVoiceClone).HasColumnName("is_using_voice_clone");
+            // WT-446. Every column in this context is hand-mapped — there is no snake_case naming
+            // convention to fall back on — so a missing HasColumnName here would not be a cosmetic
+            // gap: EF would look for "IsExternal" and every SELECT over the roster would 500.
+            entity.Property(e => e.IsExternal)
+                .HasDefaultValue(false)
+                .HasColumnName("is_external");
             entity.Property(e => e.JoinedAt).HasColumnName("joined_at");
             entity.Property(e => e.LeftAt).HasColumnName("left_at");
             entity.Property(e => e.ListenLanguage)

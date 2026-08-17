@@ -105,9 +105,46 @@ public class ExternalBridgeParticipantTests
     {
         // GenerateRoutesAsync builds from seat holders. A stand-in that does not hold one
         // produces a room with no routes at all.
+        //
+        // WT-450 made the host INVITED at creation everywhere ELSE, and deliberately exempted
+        // this room type: a bridge room's whole mesh is these two rows, seeded before anybody
+        // opens anything. This test is the exemption's guard — it must keep asserting CONNECTED
+        // for BOTH, which is why it is not simply relaxed.
         var (host, farSide) = Pair();
 
         host.Status.Should().Be(TranslationRoomParticipantStatuses.Connected);
         farSide.Status.Should().Be(TranslationRoomParticipantStatuses.Connected);
+    }
+
+    /// <summary>
+    /// WT-450: booking a meeting is not attending it.
+    ///
+    /// The host row is written at room CREATION. Seeding it CONNECTED — the sole seat-holding
+    /// status — made every ordinary room report an occupant from birth, which meant
+    /// IdleRoomMonitoringWorker skipped it and AbandonedRoomPolicy answered Leave on every sweep,
+    /// forever. A host who pressed "Join meeting" (writing IN_PROGRESS) and closed the tab before
+    /// the hub connected left a permanently unsweepable room reporting "In Progress" with nobody
+    /// in it.
+    /// </summary>
+    [Fact]
+    public void TheHostDoesNotHoldASeatInAnOrdinaryRoomUntilTheyActuallyJoin()
+    {
+        var host = TranslationRoomMapper.BuildHostParticipant(
+            Guid.NewGuid(), Guid.NewGuid(), "Tú", Source, Targets, TranslationRoomTypes.Event);
+
+        host.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
+        TranslationRoomParticipantStatuses.HoldsSeat(host.Status).Should().BeFalse(
+            "a room nobody has opened has nobody in it, and both abandoned-room reapers read this");
+    }
+
+    [Fact]
+    public void TheHostDoesNotHoldASeatWhenNoRoomTypeIsPassed()
+    {
+        // The default path — every caller that omits the argument gets the ordinary-room rule,
+        // not the bridge exemption.
+        var host = TranslationRoomMapper.BuildHostParticipant(
+            Guid.NewGuid(), Guid.NewGuid(), "Tú", Source, Targets);
+
+        host.Status.Should().Be(TranslationRoomParticipantStatuses.Invited);
     }
 }
