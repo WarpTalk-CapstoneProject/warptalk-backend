@@ -138,6 +138,18 @@ public class DlpSecurityGuardrailE2ETests
         _workspaceRepository.UpdateSettingsAsync(workspaceId, Arg.Do<WorkspaceConfiguration>(c => savedConfig = c), adminUserId, Arg.Any<CancellationToken>())
             .Returns(true);
 
+        // This test is about DLP, but the settings payload it sends also turns on
+        // RequireVerifiedDomainForInternal. That is now satisfiable only by a row in
+        // workspace_verified_domains — the VerifiedDomains list in the DTO is a display mirror.
+        _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<System.Linq.Expressions.Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>
+            {
+                new() { Domain = "company.com", Status = "verified", VerifiedAt = DateTime.UtcNow }
+            });
+
         // 2. Act Step 1: Admin configures DLP Blacklist Keywords in Workspace Settings
         var blacklistKeywords = new List<string> { "Project-Alpha-Secret", "Restricted-Finance" };
         var settingsDto = new WorkspaceSettingsDto(

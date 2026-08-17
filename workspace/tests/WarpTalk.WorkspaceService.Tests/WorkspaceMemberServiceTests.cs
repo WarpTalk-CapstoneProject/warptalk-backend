@@ -29,6 +29,7 @@ public class WorkspaceMemberServiceTests
     private readonly IUnitOfWork _unitOfWork;
     private readonly IWorkspaceRepository _workspaceRepository;
     private readonly IWorkspaceMemberRepository _workspaceMemberRepository;
+    private readonly IWorkspaceVerifiedDomainRepository _verifiedDomainRepository;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
     private readonly WorkspaceMemberService _workspaceMemberService;
@@ -38,11 +39,21 @@ public class WorkspaceMemberServiceTests
         _unitOfWork = Substitute.For<IUnitOfWork>();
         _workspaceRepository = Substitute.For<IWorkspaceRepository>();
         _workspaceMemberRepository = Substitute.For<IWorkspaceMemberRepository>();
+        _verifiedDomainRepository = Substitute.For<IWorkspaceVerifiedDomainRepository>();
         _authIdentity = Substitute.For<IAuthIdentityClient>();
         _eventPublisher = Substitute.For<IWorkspaceEventPublisher>();
 
         _unitOfWork.WorkspaceRepository.Returns(_workspaceRepository);
         _unitOfWork.WorkspaceMemberRepository.Returns(_workspaceMemberRepository);
+        _unitOfWork.WorkspaceVerifiedDomainRepository.Returns(_verifiedDomainRepository);
+
+        // Default: no verified domains. A workspace that verifies none assigns membership by
+        // hand, so the transfer rule below has an empty set to check against and stays vacuous.
+        _verifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
 
         _workspaceMemberService = new WorkspaceMemberService(
             _unitOfWork,
@@ -50,6 +61,21 @@ public class WorkspaceMemberServiceTests
             _authIdentity,
             _eventPublisher,
             CreatePreviewSigningConfiguration());
+    }
+
+    private void StubVerifiedDomains(Guid workspaceId, params string[] domains)
+    {
+        _verifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(domains.Select(d => new WorkspaceVerifiedDomain
+            {
+                WorkspaceId = workspaceId,
+                Domain = d,
+                Status = "verified",
+                VerifiedAt = DateTime.UtcNow
+            }).ToList());
     }
 
     private static IConfiguration CreatePreviewSigningConfiguration(string key = "test-role-preview-signing-key-with-at-least-32-characters")
@@ -1186,6 +1212,78 @@ public class WorkspaceMemberServiceTests
         Assert.Equal(adminRoleId, currentOwnerMember.RoleId);
         Assert.Equal(ownerRoleId, newOwnerMember.RoleId);
         await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TransferOwnershipAsync_ShouldFail_WhenNewOwnerIsOutsideTheVerifiedDomains()
+    {
+        // A workspace holding acme.com hands whoever owns it the power to classify every
+        // @acme.com joiner as Internal. That domain was verified on the strength of an
+        // @acme.com account, so passing the workspace to someone outside acme.com would leave
+        // the claim standing on evidence that no longer relates to its owner.
+        //
+        // "Not External" does not cover this: that reads the stored MembershipType, and a member
+        // keeps the type they were given even after the workspace starts verifying domains.
+        var workspaceId = Guid.NewGuid();
+        var ownerId = Guid.NewGuid();
+        var newOwnerId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerId, RequireVerifiedDomainForInternal = true };
+        var currentOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerId, RoleId = ownerRoleId };
+        var newOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = newOwnerId, MembershipType = "Internal" };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(newOwnerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(newOwnerMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(currentOwnerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(currentOwnerMember);
+
+        StubVerifiedDomains(workspaceId, "acme.com");
+        _authIdentity.GetUserByIdAsync(newOwnerId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = newOwnerId, Email = "outsider@contractor.io" });
+
+        var result = await _workspaceMemberService.TransferOwnershipAsync(workspaceId, newOwnerId, ownerId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.NewOwnerMustShareVerifiedDomain, result.Error);
+        Assert.Equal(ownerId, workspace.OwnerId);
+        await _unitOfWork.DidNotReceiveWithAnyArgs().SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TransferOwnershipAsync_ShouldSucceed_WhenNewOwnerIsOnAVerifiedDomain()
+    {
+        var workspaceId = Guid.NewGuid();
+        var ownerId = Guid.NewGuid();
+        var newOwnerId = Guid.NewGuid();
+        var ownerRoleId = Guid.NewGuid();
+        var adminRoleId = Guid.NewGuid();
+
+        var workspace = new Workspace { Id = workspaceId, OwnerId = ownerId, RequireVerifiedDomainForInternal = true };
+        var currentOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = ownerId, RoleId = ownerRoleId };
+        var newOwnerMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = newOwnerId, MembershipType = "Internal" };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(newOwnerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(newOwnerMember);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+            Arg.Is<Expression<Func<WorkspaceMember, bool>>>(e => e.Compile()(currentOwnerMember)),
+            "", Arg.Any<CancellationToken>()).Returns(currentOwnerMember);
+
+        StubVerifiedDomains(workspaceId, "acme.com");
+        _authIdentity.GetUserByIdAsync(newOwnerId, Arg.Any<CancellationToken>())
+            .Returns(new User { Id = newOwnerId, Email = "successor@acme.com" });
+        StubRoleId("Owner", ownerRoleId);
+        StubRoleId("Admin", adminRoleId);
+
+        var result = await _workspaceMemberService.TransferOwnershipAsync(workspaceId, newOwnerId, ownerId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(newOwnerId, workspace.OwnerId);
     }
 
     #endregion

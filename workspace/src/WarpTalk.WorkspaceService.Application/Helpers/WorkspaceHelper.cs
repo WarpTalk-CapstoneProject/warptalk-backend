@@ -74,32 +74,6 @@ public static class WorkspaceHelper
             && GetWorkspaceConfig(m.Workspace).RequireVerifiedDomainForInternal);
     }
 
-    public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, string userEmail, CancellationToken ct)
-    {
-        var workspace = await unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
-        if (workspace == null)
-        {
-            return false;
-        }
-
-        var config = GetWorkspaceConfig(workspace);
-        if (!workspace.RequireVerifiedDomainForInternal && !config.RequireVerifiedDomainForInternal)
-        {
-            return false;
-        }
-
-        if (string.IsNullOrEmpty(userEmail))
-        {
-            return true;
-        }
-
-        if (!EmailAddress.TryParse(userEmail, out var emailAddress) || emailAddress == null)
-        {
-            return true;
-        }
-        var isDomainVerified = await IsEmailDomainVerifiedAsync(unitOfWork, workspace, emailAddress.Domain, ct);
-        return !isDomainVerified;
-    }
 
     public static async Task<bool> IsUserExternalMemberAsync(IUnitOfWork unitOfWork, Guid workspaceId, Guid userId, CancellationToken ct)
     {
@@ -109,58 +83,6 @@ public static class WorkspaceHelper
         return string.Equals(member.MembershipType, MembershipType.External.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
-    public static async Task<MembershipType> DetermineMembershipTypeAsync(IUnitOfWork unitOfWork, string? userEmail, Workspace? workspace, CancellationToken ct)
-    {
-        if (workspace == null)
-        {
-            return MembershipType.Internal;
-        }
-
-        var config = GetWorkspaceConfig(workspace);
-        if (!workspace.RequireVerifiedDomainForInternal && !config.RequireVerifiedDomainForInternal)
-        {
-            return MembershipType.Internal;
-        }
-
-        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
-        var verifiedDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-            vd => vd.WorkspaceId == workspace.Id
-                  && vd.Status == verifiedStatus
-                  && vd.VerifiedAt != null
-                  && vd.RevokedAt == null,
-            "",
-            ct);
-
-        return ResolveMembershipType(
-            userEmail,
-            verifiedDomains.Select(vd => vd.Domain),
-            requireVerifiedDomain: true,
-            workspace.AllowSubdomains);
-    }
-
-    public static async Task<MembershipType> DetermineJoinRequestMembershipTypeAsync(
-        IUnitOfWork unitOfWork,
-        string? userEmail,
-        Workspace workspace,
-        CancellationToken ct)
-    {
-        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
-        var verifiedDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-            vd => vd.WorkspaceId == workspace.Id
-                  && vd.Status == verifiedStatus
-                  && vd.VerifiedAt != null
-                  && vd.RevokedAt == null,
-            "",
-            ct);
-
-        // Join Requests are deliberately conservative: without proof of a
-        // verified workspace domain, the request remains provisional External.
-        return ResolveMembershipType(
-            userEmail,
-            verifiedDomains.Select(vd => vd.Domain),
-            requireVerifiedDomain: true,
-            workspace.AllowSubdomains);
-    }
 
     public static async Task<JoinRequestEligibility> EvaluateJoinRequestEligibilityAsync(
         IUnitOfWork unitOfWork,
@@ -170,16 +92,31 @@ public static class WorkspaceHelper
         CancellationToken ct)
     {
         var config = GetWorkspaceConfig(workspace);
-        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
-        var verifiedDomains = (await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-                vd => vd.WorkspaceId == workspace.Id
-                      && vd.Status == verifiedStatus
-                      && vd.VerifiedAt != null
-                      && vd.RevokedAt == null,
-                "",
-                ct))
-            .Select(vd => vd.Domain)
-            .ToList();
+        var verifiedDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
+        var requireVerifiedDomain = config.RequireVerifiedDomainForInternal;
+
+        // A workspace with no domain policy draws the internal/external line by hand, so a join
+        // request there is not decided by the requester's address — both classes are open and the
+        // reviewing Admin picks one.
+        //
+        // This used to hard-code requireVerifiedDomain: true regardless of the workspace, which
+        // meant such a workspace has no verified domains, so every requester inferred External,
+        // so AllowedFinalMembershipTypes only ever offered External — and ApproveJoinRequestAsync
+        // refused an Admin who chose Internal. There was no way at all to admit an internal member
+        // through this path.
+        if (!requireVerifiedDomain)
+        {
+            var allowedWithoutDomainPolicy = config.AllowExternalCollaboration
+                ? new[] { MembershipType.Internal.ToString(), MembershipType.External.ToString() }
+                : new[] { MembershipType.Internal.ToString() };
+
+            return new JoinRequestEligibility(
+                MembershipType.Internal,
+                allowedWithoutDomainPolicy,
+                RequiresPolicyAction: false,
+                PolicyReason: "This workspace assigns membership manually, so the reviewer chooses the access type.",
+                SuggestedActions: Array.Empty<string>());
+        }
 
         var inferredMembershipType = ResolveMembershipType(
             userEmail,
@@ -189,12 +126,7 @@ public static class WorkspaceHelper
 
         if (inferredMembershipType == MembershipType.Internal)
         {
-            var isEnterpriseWorkspace = workspace.RequireVerifiedDomainForInternal
-                || config.RequireVerifiedDomainForInternal
-                || verifiedDomains.Any();
-
             if (userId.HasValue
-                && isEnterpriseWorkspace
                 && await IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(unitOfWork, userId.Value, userEmail ?? string.Empty, ct))
             {
                 return new JoinRequestEligibility(
@@ -265,6 +197,39 @@ public static class WorkspaceHelper
         return matches ? MembershipType.Internal : MembershipType.External;
     }
 
+    /// <summary>
+    /// The workspace's live verified domains, normalised and de-duplicated.
+    ///
+    /// <c>workspace_verified_domains</c> is the only record of them.
+    /// <see cref="WorkspaceConfiguration.VerifiedDomains"/> is a display mirror and nothing may
+    /// make a policy decision from it: the two were read interchangeably once, and a settings JSON
+    /// list that no longer matched the table went on deciding who counted as Internal (WT-179).
+    ///
+    /// Four call sites used to carry their own copy of this query. They agreed, which is why the
+    /// duplication was survivable — but a fifth copy that disagreed is exactly the shape of that
+    /// incident, so there is now one.
+    /// </summary>
+    public static async Task<List<string>> GetActiveVerifiedDomainsAsync(
+        IUnitOfWork unitOfWork,
+        Guid workspaceId,
+        CancellationToken ct)
+    {
+        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
+        var verifiedDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+            vd => vd.WorkspaceId == workspaceId
+                  && vd.Status == verifiedStatus
+                  && vd.VerifiedAt != null
+                  && vd.RevokedAt == null,
+            "",
+            ct);
+
+        return verifiedDomains
+            .Select(vd => vd.Domain.Trim().TrimStart('@').ToLowerInvariant())
+            .Where(domain => domain.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     public static async Task<bool> IsEmailDomainVerifiedAsync(
         IUnitOfWork unitOfWork,
         Workspace workspace,
@@ -277,23 +242,27 @@ public static class WorkspaceHelper
         }
 
         var normalizedDomain = emailDomain.Trim().TrimStart('@').ToLowerInvariant();
-        var verifiedStatus = VerifiedDomainStatus.Verified.ToString().ToLowerInvariant();
-        var verifiedDomains = await unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
-            vd => vd.WorkspaceId == workspace.Id
-                  && vd.Status == verifiedStatus
-                  && vd.VerifiedAt != null
-                  && vd.RevokedAt == null,
-            "",
-            ct);
+        var verifiedDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
 
-        return verifiedDomains.Any(vd =>
-        {
-            var verifiedDomain = vd.Domain.Trim().TrimStart('@').ToLowerInvariant();
-            return normalizedDomain == verifiedDomain
-                || (workspace.AllowSubdomains && normalizedDomain.EndsWith($".{verifiedDomain}", StringComparison.Ordinal));
-        });
+        return verifiedDomains.Any(verifiedDomain =>
+            normalizedDomain == verifiedDomain
+            || (workspace.AllowSubdomains && normalizedDomain.EndsWith($".{verifiedDomain}", StringComparison.Ordinal)));
     }
 
+    /// <summary>
+    /// Which workspace currently holds <paramref name="domain"/>, if any.
+    ///
+    /// Deliberately blind to the owning workspace's lifecycle. It used to skip suspended and
+    /// soft-deleted workspaces, which disagreed with the partial unique index behind the same
+    /// rule — the index only looks at <c>status</c>. A caller was told the domain was free,
+    /// the INSERT then hit the index, and the request failed as a 500 instead of a refusal.
+    ///
+    /// Suspension is reversible, so it must not release a claim: the workspace is coming back
+    /// and expects to still hold its domain. Deletion is terminal, and releases the claim by
+    /// revoking the rows outright (see SoftDeleteWorkspaceAsync) rather than by being filtered
+    /// out here — which keeps a single rule, "a domain is taken while its row is verified",
+    /// true at both layers.
+    /// </summary>
     public static async Task<Guid?> GetWorkspaceIdVerifyingDomainAsync(IUnitOfWork unitOfWork, string domain, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(domain)) return null;
@@ -303,13 +272,44 @@ public static class WorkspaceHelper
             vd => vd.Domain.ToLower() == domain.ToLower()
                   && vd.Status == verifiedStatus
                   && vd.VerifiedAt != null
-                  && vd.RevokedAt == null
-                  && vd.Workspace.IsActive
-                  && vd.Workspace.DeletedAt == null,
+                  && vd.RevokedAt == null,
             "Workspace",
             ct);
 
         return verifiedDomain?.WorkspaceId;
+    }
+
+    /// <summary>
+    /// Restores the invariant that defines a workspace's membership policy:
+    ///
+    /// <code>require_verified_domain_for_internal == (active verified domains &gt; 0)</code>
+    ///
+    /// The column is derived, not configured. Holding a verified domain IS domain-verified
+    /// membership; holding none IS manually-assigned membership. Nobody sets the flag — an
+    /// Owner adds or revokes a domain and the policy follows, which is why the settings
+    /// endpoint refuses the field outright.
+    ///
+    /// Every path that changes the domain list calls this, and no path sets the column
+    /// directly. Three copies of one invariant is how WT-179 happened the first time.
+    ///
+    /// Returns the policy now in force.
+    /// </summary>
+    public static async Task<bool> RecomputeDomainPolicyAsync(
+        IUnitOfWork unitOfWork,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        var activeDomains = await GetActiveVerifiedDomainsAsync(unitOfWork, workspace.Id, ct);
+        var requireVerifiedDomain = activeDomains.Count > 0;
+
+        if (workspace.RequireVerifiedDomainForInternal != requireVerifiedDomain)
+        {
+            workspace.RequireVerifiedDomainForInternal = requireVerifiedDomain;
+            workspace.UpdatedAt = DateTime.UtcNow;
+            unitOfWork.WorkspaceRepository.Update(workspace);
+        }
+
+        return requireVerifiedDomain;
     }
 
     public static bool AreEquivalentAiPolicies(AiUsagePolicyConfiguration? current, AiUsagePolicyConfiguration? requested)

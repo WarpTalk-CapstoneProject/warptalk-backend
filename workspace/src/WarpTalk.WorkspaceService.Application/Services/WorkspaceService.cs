@@ -81,34 +81,6 @@ public class WorkspaceService : IWorkspaceService
             }
 
             // ── Caller eligibility ────────────────────────────────────────────────
-            // These two rules are properties of the CALLER, not of the workspace being
-            // created, so they must not sit behind a flag the caller supplies in the
-            // request body. RequireVerifiedDomainForInternal answers a different
-            // question — "how do future JOINERS get classified in this workspace" — and
-            // is a legitimate per-workspace setting. It never decides who is allowed to
-            // found a workspace in the first place. Previously both checks ran only when
-            // that flag was on, so `{"requireVerifiedDomainForInternal": false}` turned
-            // them both off from the request body. WT-142: "FE disabled states do not
-            // replace backend authorization."
-
-            // A public-domain account may now found a workspace. WT-417.
-            //
-            // This used to refuse gmail.com and its siblings outright, so anybody without a
-            // corporate address could only ever JOIN one by invitation — which is not the
-            // product the owner wants.
-            //
-            // Removing it does NOT open public-domain VERIFICATION: EmailAddress.IsPublicDomainName
-            // still refuses to let anyone claim gmail.com as a workspace's verified domain, in
-            // VerifiedDomainService, in UpdateSettings, and a few lines below here. That
-            // separation is load-bearing — a verified domain makes every address on it Internal,
-            // so verifying gmail.com would silently make every Gmail user internal to that
-            // workspace. The guard below even says so: "kept so relaxing that rule cannot
-            // silently re-open public-domain verification". This is that relaxation, and the
-            // guard is why it is safe.
-            //
-            // The one-Enterprise-home rule below is likewise untouched.
-
-            // One Enterprise (internal) home per user.
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, user.Email, ct);
             if (isInternalElsewhere)
             {
@@ -116,16 +88,8 @@ public class WorkspaceService : IWorkspaceService
             }
 
             // WT-437 (Linear): one OWNED workspace per account, full stop.
-            //
-            // The Enterprise-home rule above only counts workspaces whose config has
-            // RequireVerifiedDomainForInternal — a workspace founded without verified domains
-            // (every public-domain founder since WT-417) sets it false, so its owner passed this
-            // guard indefinitely and could found workspaces without limit. The business rule is
-            // about OWNERSHIP, not about the internal-membership tier, so it is checked on the
-            // Owner role directly.
-            // Resolved once here and reused for the owner-membership row below — this method
-            // needed the Owner role id anyway, the guard just needs it earlier.
-            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+            var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
+            var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(ownerRoleName, ct);
             if (!ownerRoleId.HasValue)
             {
                 return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.RequiredOwnerRoleNotFound, ErrorCodes.ValidationError);
@@ -143,50 +107,31 @@ public class WorkspaceService : IWorkspaceService
                     WorkspaceConstants.Errors.UserAlreadyOwnsWorkspace, ErrorCodes.ValidationError);
             }
 
-            var domainsToVerify = new List<string>();
-            bool requireVerified;
+            // ── Which membership policy is being asked for ────────────────────────
+            var domainsToVerify = (request.VerifiedDomains ?? new List<string>())
+                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Select(d => d.Trim().ToLowerInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-            if (request.VerifiedDomains != null && request.VerifiedDomains.Any())
+            if (domainsToVerify.Count == 0)
             {
-                domainsToVerify = request.VerifiedDomains
-                    .Where(d => !string.IsNullOrWhiteSpace(d))
-                    .Select(d => d.Trim().ToLowerInvariant())
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                requireVerified = request.RequireVerifiedDomainForInternal ?? true;
-            }
-            else
-            {
-                if (request.RequireVerifiedDomainForInternal == true)
+                if (request.RequireVerifiedDomainForInternal == true || (request.RequireVerifiedDomainForInternal == null && !emailAddress.IsPublicDomain))
                 {
-                    domainsToVerify = new List<string> { emailAddress.Domain };
-                    requireVerified = true;
-                }
-                else
-                {
-                    requireVerified = false;
+                    domainsToVerify.Add(emailAddress.Domain);
                 }
             }
+
+            var requireVerified = domainsToVerify.Count > 0;
 
             // ── Domain claims ─────────────────────────────────────────────────────
-            // Claiming a domain grants this workspace the trusted Internal tier over
-            // everyone who later joins from that domain, so it is an authorization
-            // decision, not a preference. It is validated unconditionally: even when
-            // requireVerified is false the list is still persisted into the settings
-            // JSON, which IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync reads.
             foreach (var domain in domainsToVerify)
             {
-                // A caller may only claim the domain of their own account email.
-                // Without this an attacker at attacker.com could claim victimcorp.com
-                // and auto-classify every victimcorp.com joiner as Internal.
                 if (!string.Equals(domain, emailAddress.Domain, StringComparison.OrdinalIgnoreCase))
                 {
                     return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyUnownedDomain, ErrorCodes.Forbidden);
                 }
 
-                // Redundant while the ownership rule above holds (a public caller is
-                // already refused), kept so relaxing that rule cannot silently
-                // re-open public-domain verification.
                 if (EmailAddress.IsPublicDomainName(domain))
                 {
                     return Result.Failure<WorkspaceDto>(WorkspaceConstants.Errors.CannotVerifyPublicDomain, ErrorCodes.ValidationError);
@@ -210,7 +155,9 @@ public class WorkspaceService : IWorkspaceService
             var settingsJson = JsonSerializer.Serialize(config);
             var workspace = request.ToEntity(slug, userId, settingsJson);
 
-            // ownerRoleId was resolved (and null-checked) by the WT-437 ownership guard above.
+            workspace.RequireVerifiedDomainForInternal = requireVerified;
+            workspace.AllowExternalCollaboration = config.AllowExternalCollaboration;
+
             var workspaceMember = WorkspaceMemberMapper.CreateOwnerMember(workspace.Id, userId, ownerRoleId.Value);
 
             await _unitOfWork.WorkspaceRepository.AddAsync(workspace, ct);
@@ -413,6 +360,7 @@ public class WorkspaceService : IWorkspaceService
             // document is a secret from the workspace's own members — it is the rules they are
             // being asked to follow. Writing stays Owner/Admin-only in UpdateWorkspaceSettings.
             var settings = await _unitOfWork.WorkspaceRepository.GetSettingsAsync(workspaceId, ct);
+            settings.VerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
 
             // The ceiling travels WITH the setting, because the setting alone is not the rule.
             // Meeting creation enforces the tighter of the two (WorkspaceDirectoryService
@@ -466,7 +414,24 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanUpdateSettings, ErrorCodes.Forbidden);
             }
 
-            var settingsValidation = WorkspaceSettingsValidator.Validate(settings);
+            // Read once, from the table that owns them. Used both to validate the request and to
+            // refresh the mirror written below, so the two can never disagree within this call.
+            var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+
+            // RequireVerifiedDomainForInternal is derived from the domain list, so this endpoint
+            // cannot change it — not even for an Owner. Refusing a *different* value rather than
+            // the field's presence keeps read-modify-write honest: clients send back the whole
+            // settings document, and echoing what they were given must not be an error.
+            //
+            // The alternative, owner-gating it, would have left two ways to set one value: an
+            // Owner could switch the policy off while verified domains remained, which is the
+            // exact state WT-179 was about.
+            if (settings.RequireVerifiedDomainForInternal != (activeVerifiedDomains.Count > 0))
+            {
+                return Result.Failure(WorkspaceConstants.Errors.RequireVerifiedDomainIsDerived, ErrorCodes.ValidationError);
+            }
+
+            var settingsValidation = WorkspaceSettingsValidator.Validate(settings, activeVerifiedDomains);
             if (!settingsValidation.IsValid)
             {
                 return Result.Failure(settingsValidation.ErrorMessage, ErrorCodes.ValidationError);
@@ -600,9 +565,21 @@ public class WorkspaceService : IWorkspaceService
                 return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerCanDeleteWorkspace, ErrorCodes.Forbidden);
             }
 
+            var heldDomains = await _unitOfWork.WorkspaceVerifiedDomainRepository.FindAsync(
+                vd => vd.WorkspaceId == workspaceId && vd.RevokedAt == null,
+                "",
+                ct);
+
+            foreach (var heldDomain in heldDomains)
+            {
+                heldDomain.SoftRevoke(userId);
+                _unitOfWork.WorkspaceVerifiedDomainRepository.Update(heldDomain);
+            }
+
             var deletedAt = DateTime.UtcNow;
             workspace.DeletedAt = deletedAt;
             workspace.UpdatedBy = userId;
+            workspace.RequireVerifiedDomainForInternal = false;
 
             // WT-417: the members go with it.
             //
