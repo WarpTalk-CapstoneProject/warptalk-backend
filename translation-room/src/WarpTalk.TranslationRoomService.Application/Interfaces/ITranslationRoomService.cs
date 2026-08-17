@@ -110,7 +110,7 @@ public interface ITranslationRoomService
     /// not exist, 404'd on every request, and turned /join into a dead end blaming the room. This
     /// answers one question and returns nothing else about the room.
     /// </summary>
-    Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+    Task<Result<JoinLanguagePolicyDto>> GetJoinLanguagePolicyByCodeAsync(
         string roomCode,
         CancellationToken ct = default);
 
