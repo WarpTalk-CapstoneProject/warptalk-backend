@@ -2104,6 +2104,99 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result> SetArtifactAccessAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string level,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+
+            if (translationRoom == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // Host only, matching FinalizeTranscriptAsync. The two controls a host has over a
+            // finished meeting — lock the wording, share the record — answer to the same person,
+            // and letting a workspace Admin do one but not the other would be arbitrary.
+            if (!translationRoom.IsHostedBy(hostId))
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedShareRecord, ErrorCodes.Unauthorized);
+
+            if (!ArtifactAccessLevels.IsValid(level))
+            {
+                return Result.Failure(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        level,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
+
+            // NO status gate, and that absence is the point of this method existing.
+            //
+            // UpdateTranslationRoomSettingsAsync refuses anything past WAITING
+            // (ErrorSettingsLocked) — correct for the settings it guards, because changing a
+            // room's languages or seat count mid-meeting would rewrite the rules under the people
+            // in it. But sharing the transcript, summary and recording is an act that can ONLY
+            // happen once the meeting is over and those artifacts exist. Routing it through that
+            // method would have made the feature refuse in exactly the state it is for.
+            var settings = ReadSettings(translationRoom.Settings);
+            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal))
+                return Result.Success();
+
+            settings.ArtifactAccess = level;
+            translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+            translationRoom.UpdatedBy = hostId;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Logged because this is a sharing decision about a recording of people talking, and
+            // "who opened this up, and when" is the question asked after the fact.
+            _logger.LogInformation(
+                "artifact_access_changed: RoomId={RoomId} HostId={HostId} Level={Level}",
+                translationRoom.Id,
+                hostId,
+                level);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error changing artifact access. RoomId: {RoomId}, HostId: {HostId}",
+                translationRoomId,
+                hostId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// A room's settings blob, or an empty one. Unparseable JSON yields defaults rather than
+    /// throwing — the same direction ArtifactAccessHelper fails in.
+    /// </summary>
+    private static TranslationRoomSettings ReadSettings(string? settingsJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingsJson))
+            return new TranslationRoomSettings();
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<TranslationRoomSettings>(
+                settingsJson,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new TranslationRoomSettings();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return new TranslationRoomSettings();
+        }
+    }
+
     public async Task<Result> UpdateTranslationRoomSettingsAsync(Guid translationRoomId, Guid hostId, UpdateRoomSettingsRequest request, CancellationToken ct = default)
     {
         try
