@@ -27,6 +27,8 @@ public static class ApiMessageConstants
         public const string BillingAccessDeniedOwnerAdminRequired = "Access denied. You must be an Owner or Admin of the workspace associated with this session.";
         public const string BillingStripeWebhookFailed = "Failed to process webhook event.";
         public const string BillingDuplicatePlanSlug = "A plan with this slug already exists.";
+        /// <summary>{0} is the comma-separated list of fields the request would have changed.</summary>
+        public const string BillingPlanCommercialTermsLocked = "This plan is published or has subscribers, so its commercial terms cannot be changed: {0}. Create a new plan instead, and hide this one. Its name, description, features, ordering and visibility are still editable.";
         public const string BillingSimulationInvalidClientRef = "Invalid or missing client_reference_id.";
         public const string BillingSimulationInvalidEvent = "Simulation only supports a paid checkout.session.completed event for now.";
         public const string BillingSimulationFailed = "Failed to process simulated payment.";
