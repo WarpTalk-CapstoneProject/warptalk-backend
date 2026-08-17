@@ -65,37 +65,53 @@ public sealed class WorkspaceMeetingPolicyGrpcClient : IWorkspaceMeetingPolicy
     }
 
     /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetAllowedLanguagesAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var settings = await _client.GetWorkspaceSettingsAsync(
+                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
+                cancellationToken: ct);
+
+            return Result.Success<IReadOnlyList<string>>(settings.AllowedTargetLanguages.ToArray());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Workspace language-policy lookup failed. WorkspaceId: {WorkspaceId}",
+                workspaceId);
+            return Result.Failure<IReadOnlyList<string>>(UnavailableMessage, ErrorCodes.ServiceUnavailable);
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<Result> ValidateRoomLanguagesAsync(
         Guid workspaceId,
         string? sourceLanguage,
         IEnumerable<string> targetLanguages,
         CancellationToken ct = default)
     {
-        GetWorkspaceSettingsResponse settings;
-        try
+        var policy = await GetAllowedLanguagesAsync(workspaceId, ct);
+        if (!policy.IsSuccess)
         {
-            settings = await _client.GetWorkspaceSettingsAsync(
-                new GetWorkspaceSettingsRequest { WorkspaceId = workspaceId.ToString() },
-                cancellationToken: ct);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(
-                ex,
-                "Workspace language-policy check failed. WorkspaceId: {WorkspaceId}",
-                workspaceId);
-            return Result.Failure(UnavailableMessage, ErrorCodes.ServiceUnavailable);
+            // The lookup failing is not the same as the languages being refused, but this path
+            // fails CLOSED for the reason given on the interface: it is the enforcement of a rule
+            // an owner set deliberately.
+            return Result.Failure(policy.Error ?? UnavailableMessage, policy.ErrorCode);
         }
 
         // EMPTY MEANS UNRESTRICTED. A workspace that never set a policy allows everything the
         // platform supports, and reading empty the other way would refuse every edit in every such
         // workspace — which is most of them.
-        if (settings.AllowedTargetLanguages.Count == 0)
+        if (policy.Value!.Count == 0)
         {
             return Result.Success();
         }
 
-        var allowed = new HashSet<string>(settings.AllowedTargetLanguages, StringComparer.OrdinalIgnoreCase);
+        var allowed = new HashSet<string>(policy.Value!, StringComparer.OrdinalIgnoreCase);
 
         if (!string.IsNullOrWhiteSpace(sourceLanguage) && !allowed.Contains(sourceLanguage))
         {

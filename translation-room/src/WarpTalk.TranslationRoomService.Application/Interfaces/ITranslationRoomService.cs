@@ -94,6 +94,27 @@ public interface ITranslationRoomService
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
     /// <summary>
+    /// WT-468: which languages the pre-join screen may offer for a room identified by CODE.
+    ///
+    /// The rule is the owner's: a joiner is offered the languages the workspace that OWNS THE ROOM
+    /// permits. The pre-join screen had no way to ask that — it has only a room code, and the room
+    /// is not resolved until the join itself — so it fell back to the settings of whatever
+    /// workspace the joiner happened to have selected. Someone in workspace A joining a room in
+    /// workspace B was therefore offered A's languages: too few (B allows more) or too many
+    /// (options B forbids, refused by the server only after they were picked).
+    ///
+    /// Returns an EMPTY list for a room whose workspace sets no policy, and for an external-bridge
+    /// room, which belongs to no workspace. Empty means unrestricted everywhere this list travels.
+    ///
+    /// Deliberately NOT a preflight route. An earlier screen called a `preflight` endpoint that did
+    /// not exist, 404'd on every request, and turned /join into a dead end blaming the room. This
+    /// answers one question and returns nothing else about the room.
+    /// </summary>
+    Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// WT-433: join by room ID — the shape a shared LINK produces — gated on membership of the
     /// room's workspace, then identical to the by-code join (a requires-approval room lands the
     /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.

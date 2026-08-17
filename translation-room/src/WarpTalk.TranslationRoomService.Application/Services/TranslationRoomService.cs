@@ -807,6 +807,42 @@ public class TranslationRoomService : ITranslationRoomService
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(roomCode))
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var room = await _translationRoomRepository.GetByCodeAsync(roomCode.Trim(), null, ct);
+
+            // A code that resolves to nothing answers "no restriction" rather than 404. This
+            // endpoint exists to populate a picker while the user is still TYPING a code, so a
+            // not-found must not paint an error over a half-typed one — and it must not become a
+            // way to probe which codes exist. The join itself is where a bad code is reported.
+            if (room == null || room.WorkspaceId == Guid.Empty)
+                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+
+            var policy = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
+
+            // Fails OPEN, unlike the enforcement paths. This one only decides what to OFFER, and
+            // the server still refuses a forbidden language at join. A WorkspaceService blip that
+            // widened a picker for a moment is a far smaller harm than a pre-join screen that
+            // cannot be filled in at all — which is the bug this ticket is about.
+            return policy.IsSuccess
+                ? policy
+                : Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not resolve the join language policy for a room code.");
+            return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+        }
+    }
+
     public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
         try

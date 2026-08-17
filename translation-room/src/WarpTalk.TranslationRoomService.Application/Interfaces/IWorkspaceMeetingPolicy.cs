@@ -53,6 +53,19 @@ public interface IWorkspaceMeetingPolicy
         CancellationToken ct = default);
 
     /// <summary>
+    /// WT-468: the workspace's allowed-language whitelist, for a caller that needs to OFFER the
+    /// right choices rather than judge a choice already made.
+    /// </summary>
+    /// <returns>
+    /// The whitelist, or an EMPTY list meaning unrestricted — the same reading every other user of
+    /// this list applies. A caller must branch on "no entries" before filtering, or every workspace
+    /// that never configured languages ends up offering none.
+    /// </returns>
+    Task<Result<IReadOnlyList<string>>> GetAllowedLanguagesAsync(
+        Guid workspaceId,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// The tenant kill switch: success while the workspace is live, a Forbidden failure once a
     /// system admin has suspended (or soft-deleted) it.
     ///
