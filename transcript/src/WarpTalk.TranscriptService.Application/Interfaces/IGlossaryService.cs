@@ -16,6 +16,15 @@ public interface IGlossaryService
     Task<Result> DeleteGlossaryAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<Result> AddTermAsync(Guid glossaryId, CreateGlossaryTermDto dto, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// WT-472: import many terms in one transaction, skipping duplicates and reporting how many
+    /// were skipped. See the implementation for why duplicates are skipped rather than rejected.
+    /// </summary>
+    Task<Result<BulkImportGlossaryTermsResultDto>> BulkImportTermsAsync(
+        Guid glossaryId,
+        BulkImportGlossaryTermsDto dto,
+        CancellationToken cancellationToken = default);
     Task<Result<IEnumerable<GlossaryTermDto>>> GetTermsByGlossaryIdAsync(Guid glossaryId, CancellationToken cancellationToken = default);
     Task<Result> UpdateTermAsync(Guid glossaryId, Guid termId, UpdateGlossaryTermDto dto, CancellationToken cancellationToken = default);
     Task<Result> DeleteTermAsync(Guid glossaryId, Guid termId, CancellationToken cancellationToken = default);

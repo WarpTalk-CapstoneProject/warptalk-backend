@@ -160,6 +160,100 @@ public class GlossaryService : IGlossaryService
         }
     }
 
+    /// <summary>
+    /// WT-472: import many terms in one transaction.
+    ///
+    /// WHY NOT LOOP AddTermAsync. That would be a SaveChanges and a TermCount increment per term,
+    /// so a client that died halfway would leave the counter describing a glossary that does not
+    /// exist — and 100 terms would be 100 round trips. Here the rows are added, the counter is
+    /// adjusted ONCE by however many actually landed, and everything commits together.
+    ///
+    /// DUPLICATES ARE SKIPPED, NOT REJECTED, and the count is reported. An import is usually a
+    /// second pass over a spreadsheet somebody has been editing; failing the whole file because one
+    /// row was already imported would make the feature unusable. But a silent skip is worse than
+    /// either — "100 imported" when 60 were written is how somebody comes to believe a term exists
+    /// that does not. Both numbers go back to the caller.
+    ///
+    /// The dedupe key is (SourceTerm, TargetTerm), case-insensitive, and it checks the incoming
+    /// batch as well as the stored rows: a spreadsheet with the same pair twice must not become two
+    /// rows just because neither existed when the request arrived.
+    ///
+    /// Embedding requests are published AFTER the commit, one per written term, and a failure to
+    /// publish does not fail the import — the terms are saved and the indexer is a follower.
+    /// </summary>
+    public async Task<Result<BulkImportGlossaryTermsResultDto>> BulkImportTermsAsync(
+        Guid glossaryId,
+        BulkImportGlossaryTermsDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var glossary = await _unitOfWork.Glossaries.GetByIdAsync(glossaryId, cancellationToken);
+            if (glossary == null)
+                return Result.Failure<BulkImportGlossaryTermsResultDto>(
+                    $"Glossary with ID {glossaryId} not found.", "NOT_FOUND");
+
+            var existing = await _unitOfWork.GlossaryTerms.FindAsync(
+                t => t.GlossaryId == glossaryId, cancellationToken);
+
+            var seen = new HashSet<string>(
+                existing.Select(t => $"{t.SourceTerm}{t.TargetTerm}"),
+                StringComparer.OrdinalIgnoreCase);
+
+            var errors = new List<string>();
+            var written = new List<GlossaryTerm>();
+
+            foreach (var row in dto.Terms)
+            {
+                var source = row.SourceTerm?.Trim() ?? string.Empty;
+                var target = row.TargetTerm?.Trim() ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(target))
+                {
+                    errors.Add($"'{source}': a term needs both a source and a target.");
+                    continue;
+                }
+
+                // The unit separator is the delimiter on purpose: a term may legitimately contain a
+                // comma, a pipe or a colon, and any of those as a key separator would collide two
+                // distinct pairs into one.
+                if (!seen.Add($"{source}{target}"))
+                {
+                    errors.Add($"'{source}' → '{target}': already in this glossary.");
+                    continue;
+                }
+
+                var term = (row with { SourceTerm = source, TargetTerm = target }).ToEntity(glossaryId);
+                await _unitOfWork.GlossaryTerms.AddAsync(term, cancellationToken);
+                written.Add(term);
+            }
+
+            if (written.Count > 0)
+            {
+                glossary.TermCount += written.Count;
+                glossary.UpdatedAt = DateTime.UtcNow;
+                _unitOfWork.Glossaries.Update(glossary);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+            }
+
+            foreach (var term in written)
+            {
+                await TryPublishEmbeddingIndexRequestAsync(glossary.WorkspaceId, term, cancellationToken);
+            }
+
+            return Result.Success(new BulkImportGlossaryTermsResultDto(
+                Imported: written.Count,
+                Skipped: dto.Terms.Count - written.Count,
+                Errors: errors));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error bulk importing terms into glossary {GlossaryId}", glossaryId);
+            return Result.Failure<BulkImportGlossaryTermsResultDto>(
+                "An unexpected error occurred.", "INTERNAL_ERROR");
+        }
+    }
+
     public async Task<Result<IEnumerable<GlossaryTermDto>>> GetTermsByGlossaryIdAsync(Guid glossaryId, CancellationToken cancellationToken = default)
     {
         try
