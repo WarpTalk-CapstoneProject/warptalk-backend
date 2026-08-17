@@ -907,6 +907,21 @@ public class TranslationRoomService : ITranslationRoomService
                 }
             }
 
+            // WT-446: settle "is this person a guest here?" once, on admission.
+            //
+            // Asked here rather than on the roster read because GET /participants is polled every
+            // three seconds by every client in the meeting — resolving it there would be one gRPC
+            // call per participant per poll, for an answer that does not change while somebody is
+            // sitting in a room. The host is never external: they own the room, and skipping the
+            // call for them also spares the ordinary single-person case a round trip.
+            //
+            // IsMemberAsync never throws and answers false when WorkspaceService is unreachable,
+            // which would read as "external". That is the wrong default for a LABEL — an outage
+            // would quietly brand every member a guest — so the result is only trusted to make
+            // someone external, and a failed lookup leaves an existing row's value alone.
+            var isExternal = !isHost
+                && !await _workspaceMemberDirectory.IsMemberAsync(translationRoom.WorkspaceId, userId, ct);
+
             if (participant == null)
             {
                 participant = request.ToParticipantEntity(
@@ -915,7 +930,8 @@ public class TranslationRoomService : ITranslationRoomService
                     speakLang!,
                     listenLang!,
                     requiresApproval,
-                    isHost
+                    isHost,
+                    isExternal
                 );
 
                 await _participantRepository.AddAsync(participant, ct);
@@ -927,7 +943,8 @@ public class TranslationRoomService : ITranslationRoomService
                     speakLang!,
                     listenLang!,
                     requiresApproval,
-                    isHost
+                    isHost,
+                    isExternal
                 );
 
                 _participantRepository.Update(participant);
@@ -988,6 +1005,19 @@ public class TranslationRoomService : ITranslationRoomService
                     await PublishRouteReadinessAsync(translationRoom.Id, ct);
                 }
             }
+
+            // WT-446: tell the billing worker who is a guest, because it cannot find out itself.
+            //
+            // Externality is workspace membership, which lives a gRPC hop from here and two
+            // services away from warptalk-ai. This service is the only one that resolves it, so it
+            // publishes it beside the `:languages` hash the rest of the pipeline already reads.
+            // The AI settlement worker stamps it onto every usage record so a workspace's own
+            // spend and its guests' can be told apart afterwards.
+            //
+            // Best-effort, like every other realtime publish on this path: attribution is a
+            // reporting dimension, and failing a join over it would trade a real feature for a
+            // bookkeeping nicety. A missing field reads as "not known to be external".
+            await PublishParticipantExternalityAsync(translationRoom.Id, userId, isExternal);
 
             // WT-428: the knock. A row that just landed WAITING is invisible to the host until
             // the 3s roster poll happens to run — this rings them the moment somebody is actually
@@ -1056,6 +1086,44 @@ public class TranslationRoomService : ITranslationRoomService
     /// instead of on the next roster poll. Mirrors PublishParticipantAdmittedAsync's channel and
     /// failure posture: a lost knock costs immediacy only — the poll still shows the row.
     /// </summary>
+    /// <summary>
+    /// WT-446. Publishes "is this speaker a guest here?" for the AI billing worker.
+    ///
+    /// A hash keyed by user id, deliberately shaped like <c>translationRoom:{id}:languages</c> —
+    /// the pipeline already reads siblings of this key, and a new shape would be a second
+    /// convention for the same kind of fact. "0" is written as well as "1" so a present-and-false
+    /// field is distinguishable from an evicted one if that ever matters; the consumer treats
+    /// both as internal.
+    ///
+    /// The TTL matches the room projection MeetingService keeps (24h), which is the longest
+    /// supported meeting window — long enough that the key outlives any meeting, short enough
+    /// that it cannot accumulate. Redis runs allkeys-lru, so the consumer must tolerate this key
+    /// being gone regardless, and it does.
+    /// </summary>
+    private async Task PublishParticipantExternalityAsync(Guid translationRoomId, Guid userId, bool isExternal)
+    {
+        if (_redisStateRepository is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var key = $"translationRoom:{translationRoomId}:external_participants";
+            await _redisStateRepository.HashSetAsync(
+                key,
+                new Dictionary<string, string> { [userId.ToString()] = isExternal ? "1" : "0" });
+            await _redisStateRepository.KeyExpireAsync(key, TimeSpan.FromHours(24));
+        }
+        catch (Exception publishEx)
+        {
+            _logger.LogWarning(
+                publishEx,
+                "Failed to publish participant externality for RoomId: {RoomId}, UserId: {UserId}; their usage will be attributed as internal.",
+                translationRoomId, userId);
+        }
+    }
+
     private async Task PublishParticipantWaitingAsync(Guid translationRoomId, Guid waitingUserId, string? displayName)
     {
         if (_redisStateRepository is null)
