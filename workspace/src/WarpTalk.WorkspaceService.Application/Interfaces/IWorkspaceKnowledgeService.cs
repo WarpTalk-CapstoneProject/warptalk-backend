@@ -23,16 +23,6 @@ public interface IWorkspaceKnowledgeService
         CancellationToken ct = default);
 
     /// <summary>
-    /// The same listing for the System Admin portal, which is global by construction and
-    /// consults no membership — the caller is gated by the system-admin policy at the
-    /// controller, exactly as <see cref="IAdminWorkspaceService"/> documents.
-    /// </summary>
-    Task<Result<WorkspaceKnowledgePageDto>> GetKnowledgeForAdminAsync(
-        Guid workspaceId,
-        GetWorkspaceKnowledgeQuery query,
-        CancellationToken ct = default);
-
-    /// <summary>
     /// Corrects one chunk's fact, its category, and whether WarpBot may retrieve it.
     ///
     /// Owner only, where the listing is Owner OR Admin. Reading what the workspace knows and

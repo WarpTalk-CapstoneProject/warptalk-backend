@@ -236,6 +236,47 @@ public class PlanService : IPlanService
     }
 
 
+    public async Task<Result<PlanDto>> CreatePlanAsync(
+        PlanRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var pricingConfig = await GetPricingConfigAsync(cancellationToken);
+            var validationResult = ValidatePlanRequest(request, pricingConfig);
+            if (!validationResult.IsSuccess)
+                return validationResult;
+
+            var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
+            var existing = await _unitOfWork.Plans.FirstOrDefaultAsync(
+                p => p.Slug == normalizedSlug && p.DeletedAt == null,
+                cancellationToken);
+            if (existing is not null)
+                return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingDuplicatePlanSlug, ErrorCodes.BillingDuplicatePlanSlug);
+
+            // ToEntity was written alongside UpdateFromRequest and then sat unwired — the
+            // catalogue only ever grew by migration. This is its first caller.
+            var plan = request.ToEntity();
+            await _unitOfWork.Plans.AddAsync(plan, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // No entitlement fan-out: a plan nobody subscribes to yet moves nobody's layer 2.
+            await BillingNotificationHelper.PublishPlanUpdateAsync(
+                _messagePublisher,
+                _logger,
+                BillingMessageConstants.Plan.Actions.Created,
+                plan.Name,
+                null,
+                cancellationToken);
+
+            return Result.Success(plan.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorUpdatingPlan);
+            return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
+
     private async Task<PricingConfigDto?> GetPricingConfigAsync(CancellationToken cancellationToken)
     {
         var result = await _pricingConfigService.GetPricingConfigAsync(cancellationToken);

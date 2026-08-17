@@ -62,6 +62,18 @@ public class PlansController : ControllerBase
     }
 
 
+    [HttpPost]
+    [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
+    public async Task<ActionResult<PlanDto>> CreatePlan([FromBody] PlanRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _planService.CreatePlanAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError, result.ErrorCode));
+        }
+        return Ok(result.Value);
+    }
+
     [HttpPut("{id}")]
     [Authorize(Roles = WorkspaceRoleConstants.AdminSystem)]
     public async Task<ActionResult<PlanDto>> UpdatePlan(Guid id, [FromBody] PlanRequest request, CancellationToken cancellationToken)

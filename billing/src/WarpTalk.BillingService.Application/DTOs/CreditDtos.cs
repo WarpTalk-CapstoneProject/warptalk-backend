@@ -34,6 +34,21 @@ public record ConsumeCreditsRequest(
 
 
 
+/// <summary>
+/// A manual, admin-only credit adjustment. Keyed by WORKSPACE in the route rather than by
+/// subscription id: the admin portal knows workspaces, and which subscription currently holds the
+/// balance is this service's business — the resolution happens once, server-side, instead of every
+/// caller guessing.
+/// </summary>
+public record AdjustCreditsRequest(
+    [Required]
+    [Range(int.MinValue, int.MaxValue)]
+    int Amount,
+
+    [Required]
+    string Reason
+);
+
 public record CreditTransactionDto(
     Guid Id,
     int Amount,        // negative = consumption, positive = top-up

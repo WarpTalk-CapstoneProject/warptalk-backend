@@ -68,6 +68,9 @@ public record TrialSubscriptionRequest(
 public record ResumeSubscriptionRequest(
     string? Reason = null);
 
+/// <summary>The one field an admin plan swap needs. The actor comes from the token.</summary>
+public record AdminChangeSubscriptionPlanRequest(Guid PlanId);
+
 public record UpdateSubscriptionContractTermsRequest(
     int? CreditsPerCycleOverride = null,
     decimal? ContractPriceVnd = null,

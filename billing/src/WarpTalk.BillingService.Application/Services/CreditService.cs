@@ -125,6 +125,25 @@ public class CreditService : ICreditService
 
 
 
+    public async Task<Result<CreditTransactionDto>> AdjustWorkspaceCreditsAsync(
+        Guid workspaceId,
+        AdjustCreditsRequest request,
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        // Deliberately the BROAD resolution (same as consumption): a cancelled subscription still
+        // inside its paid period keeps its balance, and compensating that balance is exactly what
+        // this endpoint is for.
+        var subResult = await GetActiveSubscriptionAsync(_unitOfWork, workspaceId, cancellationToken);
+        if (!subResult.IsSuccess)
+            return Result.Failure<CreditTransactionDto>(
+                subResult.Error ?? ApiMessageConstants.ErrorMessages.BillingInternalError,
+                subResult.ErrorCode);
+
+        return await AdjustCreditsAsync(
+            subResult.Value!.Id, request.Amount, request.Reason, adminUserId, cancellationToken);
+    }
+
     public async Task<Result<CreditTransactionDto>> AdjustCreditsAsync(
         Guid subscriptionId,
         int amount,
