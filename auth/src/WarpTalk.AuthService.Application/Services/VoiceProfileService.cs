@@ -442,7 +442,7 @@ public class VoiceProfileService : IVoiceProfileService
         byte[] audioBytes;
         using (var ms = new MemoryStream())
         {
-            using var readStream = request.Sample.OpenReadStream();
+            using var readStream = request.Sample!.OpenReadStream();
             await readStream.CopyToAsync(ms, ct);
             audioBytes = ms.ToArray();
         }
