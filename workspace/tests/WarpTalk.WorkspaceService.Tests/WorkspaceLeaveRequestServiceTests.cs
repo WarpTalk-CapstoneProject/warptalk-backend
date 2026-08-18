@@ -7,8 +7,9 @@ using NSubstitute;
 using WarpTalk.Shared;
 using WarpTalk.Shared.Interfaces;
 using WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation;
-using WarpTalk.WorkspaceService.Application.Extensions;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
+using WarpTalk.WorkspaceService.Application.Models;
 using WarpTalk.WorkspaceService.Application.Services;
 using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
@@ -72,8 +73,8 @@ public class WorkspaceLeaveRequestServiceTests
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(member);
-        _authIdentity.GetRoleNameByIdAsync(roleId, Arg.Any<CancellationToken>()).Returns("Member");
-        _authIdentity.GetRoleIdByNameAsync("Member", Arg.Any<CancellationToken>()).Returns(roleId);
+        _authIdentity.GetRoleByIdAsync(roleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = roleId, Name = "Member" });
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>()).Returns(new Role { Id = roleId, Name = "Member" });
 
         // Act
         var result = await _service.CreateLeaveRequestAsync(workspaceId, userId, userEmail);
@@ -100,8 +101,8 @@ public class WorkspaceLeaveRequestServiceTests
         _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(member);
-        _authIdentity.GetRoleNameByIdAsync(ownerRoleId, Arg.Any<CancellationToken>()).Returns("Owner");
-        _authIdentity.GetRoleIdByNameAsync("Owner", Arg.Any<CancellationToken>()).Returns(ownerRoleId);
+        _authIdentity.GetRoleByIdAsync(ownerRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRoleId, Name = "Owner" });
+        _authIdentity.GetRoleByNameAsync("Owner", Arg.Any<CancellationToken>()).Returns(new Role { Id = ownerRoleId, Name = "Owner" });
         _workspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId, Arg.Any<CancellationToken>()).Returns(1);
 
         // Act
@@ -128,7 +129,7 @@ public class WorkspaceLeaveRequestServiceTests
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(adminMember, targetMember);
-        _authIdentity.GetRoleNameByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns("Admin");
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = adminRoleId, Name = "Admin" });
         _workspaceInvitationRepository.GetByIdAsync(leaveRequestId, Arg.Any<CancellationToken>()).Returns(leaveRequest);
 
         // Act
@@ -155,7 +156,7 @@ public class WorkspaceLeaveRequestServiceTests
 
         _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(adminMember);
-        _authIdentity.GetRoleNameByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns("Admin");
+        _authIdentity.GetRoleByIdAsync(adminRoleId, Arg.Any<CancellationToken>()).Returns(new Role { Id = adminRoleId, Name = "Admin" });
         _workspaceInvitationRepository.GetByIdAsync(leaveRequestId, Arg.Any<CancellationToken>()).Returns(leaveRequest);
 
         // Act
