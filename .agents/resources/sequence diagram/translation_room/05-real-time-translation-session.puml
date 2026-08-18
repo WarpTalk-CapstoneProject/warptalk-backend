@@ -40,10 +40,10 @@ participant ":CartesiaSynthesizer" as Synthesizer <<service>>
 end box
 
 queue "Redis: tts:results" as TTSStream
-control "API Gateway" as Gateway
 
-box "Meeting Service" #PaleGreen
-participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+participant ":TranslationRoomHub" as Hub <<boundary>>
 end box
 
 == STEP 1: SPEECH-TO-TEXT WORKER PIPELINE (stt_worker) ==
@@ -101,11 +101,12 @@ TransStream -> Hub : Consume TranslationResultMessage
 activate Hub
 Hub -> Gateway : Broadcast Subtitle Event
 activate Gateway
-Gateway -> Client : SignalR: ReceiveSubtitle(translatedText, originalText)
-activate Client
-deactivate Hub
+Gateway ->> Client : SignalR: ReceiveSubtitle(translatedText, originalText)
+Gateway --> Hub : Broadcast Sent
 deactivate Gateway
+deactivate Hub
 
+activate Client
 Client -> Client : Render real-time translated subtitles on overlay
 deactivate Client
 
@@ -113,11 +114,12 @@ TTSStream -> Hub : Consume TTSResultMessage
 activate Hub
 Hub -> Gateway : Broadcast Audio Stream
 activate Gateway
-Gateway -> Client : SignalR: PlayClonedAudio(audioBytes)
-activate Client
-deactivate Hub
+Gateway ->> Client : SignalR: PlayClonedAudio(audioBytes)
+Gateway --> Hub : Broadcast Sent
 deactivate Gateway
+deactivate Hub
 
+activate Client
 Client -> Client : Play cloned audio via Virtual Mic / Headphones
 deactivate Client
 

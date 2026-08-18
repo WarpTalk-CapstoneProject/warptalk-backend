@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam dpi 136
@@ -19,14 +20,14 @@ package "Guest Or Invited User" {
   rectangle "Workspace Invitation Page" as WorkspaceInvitationPage
   rectangle "Workspace Selection Page" as GuestWorkspaceSelectionPage
 
-  LandingPage --> LoginPage : Click "Get Started for Free"
-  LandingPage --> RegisterPage : Click "Create an Account"
-  LoginPage --> ForgotPasswordPage : Click "Forgot password?"
-  LoginPage --> RegisterPage : Click "Create account"
-  RegisterPage --> LoginPage : Click "Log in"
-  VerifyEmailPage --> LoginPage : Click "Continue to Login"
-  WorkspaceInvitationPage --> RegisterPage : Click "Sign In to Accept"
-  WorkspaceInvitationPage --> GuestWorkspaceSelectionPage : Click "Accept and Join Workspace"
+  LandingPage --> LoginPage
+  LandingPage --> RegisterPage
+  LoginPage --> ForgotPasswordPage
+  LoginPage --> RegisterPage
+  RegisterPage --> LoginPage
+  VerifyEmailPage --> LoginPage
+  WorkspaceInvitationPage --> RegisterPage
+  WorkspaceInvitationPage --> GuestWorkspaceSelectionPage
 }
 
 package "Workspace Member" {
@@ -34,45 +35,55 @@ package "Workspace Member" {
   rectangle "Workspace Join Request Page" as WorkspaceJoinRequestPage
   rectangle "Workspace Home Page" as WorkspaceHomePage
   rectangle "Rooms Page" as RoomsPage
+  rectangle "Schedules Page" as SchedulesPage
   rectangle "Join Translation Room Page" as JoinTranslationRoomPage
   rectangle "Room Information Page" as RoomInformationPage
   rectangle "Waiting Room Page" as WaitingRoomPage
   rectangle "Live Meeting Page" as LiveMeetingPage
+  rectangle "Room Ended Summary Page" as RoomEndedSummaryPage
+  rectangle "Room Artifacts Page" as RoomArtifactsPage
   rectangle "History Page" as HistoryPage
   rectangle "Documents Page" as DocumentsPage
   rectangle "Document Details Page" as DocumentDetailsPage
 
-  MemberWorkspaceSelectionPage --> WorkspaceHomePage : Click Workspace Card
-  MemberWorkspaceSelectionPage --> WorkspaceJoinRequestPage : Click "Join workspace"
-  WorkspaceJoinRequestPage --> JoinTranslationRoomPage : Click "Back to room join"
-  WorkspaceHomePage --> RoomsPage : Click "Meetings"
-  WorkspaceHomePage --> HistoryPage : Click "History"
-  WorkspaceHomePage --> DocumentsPage : Click "Documents"
-  RoomsPage --> JoinTranslationRoomPage : Click "Join via code"
-  RoomsPage --> RoomInformationPage : Click Meeting Row
-  RoomInformationPage --> WaitingRoomPage : Click "Enter waiting room"
-  RoomInformationPage --> LiveMeetingPage : Click "Join meeting"
-  WaitingRoomPage --> LiveMeetingPage : Host starts meeting
-  DocumentsPage --> DocumentDetailsPage : Click Document Row
+  MemberWorkspaceSelectionPage --> WorkspaceHomePage
+  MemberWorkspaceSelectionPage --> WorkspaceJoinRequestPage
+  WorkspaceJoinRequestPage --> JoinTranslationRoomPage
+  WorkspaceHomePage --> RoomsPage
+  WorkspaceHomePage --> SchedulesPage
+  WorkspaceHomePage --> HistoryPage
+  WorkspaceHomePage --> DocumentsPage
+  RoomsPage --> JoinTranslationRoomPage
+  RoomsPage --> RoomInformationPage
+  SchedulesPage --> RoomInformationPage
+  RoomInformationPage --> WaitingRoomPage
+  RoomInformationPage --> LiveMeetingPage
+  WaitingRoomPage --> LiveMeetingPage
+  LiveMeetingPage --> RoomEndedSummaryPage
+  RoomEndedSummaryPage --> RoomArtifactsPage
+  RoomEndedSummaryPage --> HistoryPage
+  DocumentsPage --> DocumentDetailsPage
 }
 
 package "Workspace Owner Or Admin" {
   rectangle "Workspace Selection Page" as OwnerWorkspaceSelectionPage
   rectangle "Workspace Creation Page" as WorkspaceCreationPage
   rectangle "Workspace Home Page" as OwnerWorkspaceHomePage
+  rectangle "Schedules Page" as OwnerSchedulesPage
   rectangle "Members Page" as MembersPage
   rectangle "Billing Page" as BillingPage
-  rectangle "Payment Plans Page" as PaymentPlansPage
-  rectangle "Dashboard Page" as DashboardPage
-  rectangle "Settings Page" as SettingsPage
+  rectangle "Plans Page" as PaymentPlansPage
+  rectangle "Workspace Dashboard Page" as DashboardPage
+  rectangle "Workspace Settings Page" as SettingsPage
 
-  OwnerWorkspaceSelectionPage --> WorkspaceCreationPage : Click "Create workspace"
-  WorkspaceCreationPage --> OwnerWorkspaceHomePage : Click "Create Workspace"
-  OwnerWorkspaceHomePage --> MembersPage : Click "Members"
-  OwnerWorkspaceHomePage --> BillingPage : Click "Billing"
-  OwnerWorkspaceHomePage --> DashboardPage : Click "Dashboard"
-  OwnerWorkspaceHomePage --> SettingsPage : Click "Settings"
-  BillingPage --> PaymentPlansPage : Click "Manage Plan & Credits"
+  OwnerWorkspaceSelectionPage --> WorkspaceCreationPage
+  WorkspaceCreationPage --> OwnerWorkspaceHomePage
+  OwnerWorkspaceHomePage --> OwnerSchedulesPage
+  OwnerWorkspaceHomePage --> MembersPage
+  OwnerWorkspaceHomePage --> DashboardPage
+  OwnerWorkspaceHomePage --> SettingsPage
+  SettingsPage --> BillingPage
+  BillingPage --> PaymentPlansPage
 }
 
 package "Platform Admin" {
@@ -82,11 +93,11 @@ package "Platform Admin" {
   rectangle "Admin Global Glossary Page" as AdminGlobalGlossaryPage
   rectangle "Admin Workspace Detail Page" as AdminWorkspaceDetailPage
 
-  AdminOverviewPage --> AdminWorkspacesPage : Click "Workspaces"
-  AdminOverviewPage --> AdminBillingPage : Click "Billing"
-  AdminOverviewPage --> AdminGlobalGlossaryPage : Click "Global Glossary"
-  AdminWorkspacesPage --> AdminWorkspaceDetailPage : Click Workspace Row
-  AdminWorkspaceDetailPage --> AdminWorkspacesPage : Click "Back to directory"
+  AdminOverviewPage --> AdminWorkspacesPage
+  AdminOverviewPage --> AdminBillingPage
+  AdminOverviewPage --> AdminGlobalGlossaryPage
+  AdminWorkspacesPage --> AdminWorkspaceDetailPage
+  AdminWorkspaceDetailPage --> AdminWorkspacesPage
 }
 
 @enduml

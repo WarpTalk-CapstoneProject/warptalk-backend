@@ -20,23 +20,23 @@ rectangle "Privacy Page" as PrivacyPage
 rectangle "Workspace Invitation Page" as WorkspaceInvitationPage
 rectangle "Workspace Selection Page" as WorkspaceSelectionPage
 
-LandingPage --> LoginPage : Click "Get Started for Free"
-LandingPage --> RegisterPage : Click "Create an Account"
+LandingPage --> LoginPage
+LandingPage --> RegisterPage
 
-LoginPage --> ForgotPasswordPage : Click "Forgot password?"
-LoginPage --> RegisterPage : Click "Create account"
-LoginPage --> TermsPage : Click "Terms of use"
-LoginPage --> PrivacyPage : Click "Privacy policy"
+LoginPage --> ForgotPasswordPage
+LoginPage --> RegisterPage
+LoginPage --> TermsPage
+LoginPage --> PrivacyPage
 
-ForgotPasswordPage --> ResetPasswordPage : Click "Send Reset Link" (check email)
-ResetPasswordPage --> LoginPage : Click "Reset Password" (success)
+ForgotPasswordPage --> ResetPasswordPage
+ResetPasswordPage --> LoginPage
 
-RegisterPage --> VerifyEmailPage : Click "Sign Up"
-RegisterPage --> LoginPage : Click "Log in"
-VerifyEmailPage --> LoginPage : Click "Continue to Login"
+RegisterPage --> VerifyEmailPage
+RegisterPage --> LoginPage
+VerifyEmailPage --> LoginPage
 
-LoginPage --> WorkspaceSelectionPage : Click "Submit" (with valid credentials)
-WorkspaceInvitationPage --> RegisterPage : Click "Sign In to Accept"
-WorkspaceInvitationPage --> WorkspaceSelectionPage : Click "Accept and Join Workspace"
+LoginPage --> WorkspaceSelectionPage
+WorkspaceInvitationPage --> RegisterPage
+WorkspaceInvitationPage --> WorkspaceSelectionPage
 
 @enduml

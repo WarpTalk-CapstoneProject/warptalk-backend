@@ -722,7 +722,7 @@ cần thay implementation — không đụng call site nào.
 > bug đang sống → mục 3.17. Provider ở đây chỉ gom được phía backend; phía web vẫn là bản sao thủ
 > công cho tới khi có endpoint đọc platform config.
 
-Phần còn lại (bảng, API, admin UI, cache) đã tách thành **WT-360**.
+Phần còn lại (bảng, API, admin UI, cache) tách ticket riêng → Q10.
 
 ### 4.9 Đối chiếu hai loại theo từng action *(rà toàn bộ, không suy đoán)*
 

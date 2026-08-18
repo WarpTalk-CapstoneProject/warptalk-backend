@@ -1,22 +1,22 @@
 @startuml
-title 3.7 Platform Administration Module - Notification Service Class Diagram
+title 3.8 Notification Module Class Diagram (Report 4 Embedded Version)
 
 top to bottom direction
 hide circle
-hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 35
-skinparam ranksep 45
 skinparam dpi 140
+skinparam titleFontSize 18
+skinparam packageFontSize 16
 skinparam classFontSize 14
 skinparam classAttributeFontSize 12
-skinparam packageFontSize 16
-skinparam titleFontSize 18
 skinparam ArrowFontSize 11
+skinparam nodesep 36
+skinparam ranksep 44
+skinparam packageTitleAlignment left
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
@@ -26,205 +26,188 @@ skinparam ArrowColor Black
 
 package "API Layer" as ApiLayer {
   class NotificationsController <<boundary>> {
-    +GetNotifications(userId, request)
-    +MarkAsRead(notificationId)
-    +UpdatePreferences(request)
+    - notificationService: INotificationService
+    --
+    + GetNotifications(userId: Guid): Task<Result>
+    + MarkAsRead(notificationId: Guid): Task<Result>
+    + GetPreferences(userId: Guid): Task<Result>
   }
 
-  class NotificationGrpcServiceImpl <<boundary>> {
-    +SendNotification(request)
-    +SendBillingNotification(request)
+  class AdminNotificationsController <<boundary>> {
+    - adminNotificationService: IAdminNotificationService
+    --
+    + CreateAdminNotification(request: CreateAdminNotificationRequest): Task<Result>
+    + BroadcastNotification(adminNotificationId: Guid): Task<Result>
   }
 
-  class NotificationStreamConsumerService <<boundary>> {
-    +ExecuteAsync(stoppingToken)
+  class NotificationHub <<boundary>> {
+    - notificationService: INotificationService
+    --
+    + JoinUserGroupAsync(userId: Guid): Task
+    + SendRealtimeNotificationAsync(userId: Guid, notification: NotificationDto): Task
   }
 
-  class RealtimeNotificationPersistenceService <<boundary>> {
-    +ExecuteAsync(stoppingToken)
-  }
-
-  NotificationsController -[hidden]right- NotificationGrpcServiceImpl
-  NotificationGrpcServiceImpl -[hidden]right- NotificationStreamConsumerService
-  NotificationsController -[hidden]down- RealtimeNotificationPersistenceService
+  NotificationsController -[hidden]right- AdminNotificationsController
+  AdminNotificationsController -[hidden]right- NotificationHub
 }
 
 package "Application Layer" as ApplicationLayer {
   class NotificationService <<control>> {
-    +SendNotificationAsync(request)
-    +MarkNotificationReadAsync(id, userId)
-    +UpdatePreferencesAsync(userId, preferences)
+    - notificationRepository: INotificationMessageRepository
+    - preferenceRepository: INotificationPreferenceRepository
+    - templateRenderer: IEmailTemplateRenderer
+    - smtpAdapter: IMailkitSmtpAdapter
+    - unitOfWork: IUnitOfWork
+    --
+    + SendNotificationAsync(userId: Guid, type: String, payload: Object): Task<Result>
+    + MarkNotificationReadAsync(notificationId: Guid): Task<Result>
   }
 
   class AdminNotificationService <<control>> {
-    +CreateBroadcastNotificationAsync(request, adminUserId)
-    +DispatchBroadcastAsync(notificationId)
-  }
-
-  class BillingNotificationEventHandler <<control>> {
-    +HandleAsync(event)
-  }
-
-  class RealtimeNotificationPersistenceHandler <<control>> {
-    +PersistAsync(message)
-  }
-
-  class EmailTemplateRenderer <<control>> {
-    +RenderTemplateAsync(templateCode, model)
+    - adminNotificationRepository: IAdminNotificationRepository
+    - notificationService: INotificationService
+    - unitOfWork: IUnitOfWork
+    --
+    + CreateBroadcastNotificationAsync(title: String, content: String): Task<Result>
+    + DispatchBroadcastAsync(adminNotificationId: Guid): Task<Result>
   }
 
   NotificationService -[hidden]right- AdminNotificationService
-  AdminNotificationService -[hidden]right- BillingNotificationEventHandler
-  NotificationService -[hidden]down- RealtimeNotificationPersistenceHandler
-  RealtimeNotificationPersistenceHandler -[hidden]right- EmailTemplateRenderer
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
+  class NotificationDbContext <<control>> {
+    + NotificationMessages: DbSet<NotificationMessage>
+    + NotificationPreferences: DbSet<NotificationPreference>
+    + NotificationTemplates: DbSet<NotificationTemplate>
+    + PushSubscriptions: DbSet<PushSubscription>
+    + AdminNotifications: DbSet<AdminNotification>
+    --
+    + SaveChangesAsync(): Task<Int>
+  }
+
   class UnitOfWork <<control>> {
-    +SaveChangesAsync()
+    - dbContext: NotificationDbContext
+    --
+    + SaveChangesAsync(): Task<Int>
+    + BeginTransactionAsync(): Task
+    + CommitTransactionAsync(): Task
   }
 
   class NotificationMessageRepository <<control>> {
-    +GetByUserIdAsync(userId, page, pageSize)
-    +Update(message)
+    - dbContext: NotificationDbContext
+    --
+    + GetByUserIdAsync(userId: Guid): Task<List<NotificationMessage>>
+    + AddAsync(message: NotificationMessage): Task
   }
 
   class NotificationPreferenceRepository <<control>> {
-    +GetByUserIdAsync(userId)
-    +Update(preference)
+    - dbContext: NotificationDbContext
+    --
+    + GetByUserIdAsync(userId: Guid): Task<List<NotificationPreference>>
   }
 
-  class NotificationTemplateRepository <<control>> {
-    +GetByCodeAsync(code, language)
+  class EmailTemplateRenderer <<control>> {
+    - templateRootPath: String
+    --
+    + RenderTemplateAsync(templateName: String, model: Object): Task<String>
   }
 
-  class AdminNotificationRepository <<control>> {
-    +AddAsync(notification)
-    +GetByIdAsync(id)
+  class MailkitSmtpAdapter <<control>> {
+    - smtpOptions: SmtpOptions
+    --
+    + SendEmailAsync(toEmail: String, subject: String, bodyHtml: String): Task
   }
 
-  class PushSubscriptionRepository <<control>> {
-    +GetActiveByUserAsync(userId)
-  }
-
-  class ResendEmailSender <<control>> {
-    +SendEmailAsync(toEmail, subject, htmlContent)
-  }
-
-  class RedisMessagePublisher <<control>> {
-    +PublishAsync(channel, message)
-  }
-
-  UnitOfWork -[hidden]right- NotificationMessageRepository
   NotificationMessageRepository -[hidden]right- NotificationPreferenceRepository
-  UnitOfWork -[hidden]down- NotificationTemplateRepository
-  NotificationTemplateRepository -[hidden]right- AdminNotificationRepository
-  AdminNotificationRepository -[hidden]right- PushSubscriptionRepository
-  NotificationTemplateRepository -[hidden]down- ResendEmailSender
-  ResendEmailSender -[hidden]right- RedisMessagePublisher
-
-  UnitOfWork o-- NotificationMessageRepository
-  UnitOfWork o-- NotificationPreferenceRepository
-  UnitOfWork o-- NotificationTemplateRepository
-  UnitOfWork o-- AdminNotificationRepository
-  UnitOfWork o-- PushSubscriptionRepository
+  NotificationPreferenceRepository -[hidden]right- EmailTemplateRenderer
+  EmailTemplateRenderer -[hidden]right- MailkitSmtpAdapter
+  NotificationDbContext -[hidden]right- UnitOfWork
+  NotificationMessageRepository -[hidden]down- NotificationDbContext
 }
 
 package "Domain Layer" as DomainLayer {
+  class AdminNotification <<entity>> {
+    - Id: Guid
+    - Title: String
+    - Content: String
+    - TargetAudienceMode: String
+    - Status: String
+    - CreatedBy: Guid
+    --
+  }
+
   class NotificationMessage <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -WorkspaceId: Guid
-    -Title: String
-    -Body: String
-    -IsRead: Boolean
+    - Id: Guid
+    - UserId: Guid
+    - Type: String
+    - Title: String
+    - Content: String
+    - ActionUrl: String
+    - IsRead: Boolean
+    - CreatedAt: DateTime
+    --
   }
 
   class NotificationPreference <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -Channel: String
-    -Category: String
-    -Enabled: Boolean
+    - Id: Guid
+    - UserId: Guid
+    - NotificationType: String
+    - EmailEnabled: Boolean
+    - PushEnabled: Boolean
+    - InAppEnabled: Boolean
+    --
   }
 
   class NotificationTemplate <<entity>> {
-    -Id: Guid
-    -Code: String
-    -SubjectTemplate: String
-    -BodyTemplate: String
-  }
-
-  class AdminNotification <<entity>> {
-    -Id: Guid
-    -Title: String
-    -Body: String
-    -TargetAudience: String
+    - Id: Guid
+    - Type: String
+    - Channel: String
+    - Subject: String
+    - BodyTemplate: String
+    - IsActive: Boolean
+    --
   }
 
   class PushSubscription <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -Endpoint: String
+    - Id: Guid
+    - UserId: Guid
+    - DeviceToken: String
+    - Platform: String
+    - IsActive: Boolean
+    --
   }
 
-  class NotificationInboxMessage <<entity>> {
-    -Id: Guid
-    -MessageId: String
-    -ProcessedAt: DateTime
-  }
-
-  AdminNotification "1" *-- "0..*" NotificationMessage : fans out as
-  NotificationPreference "1" -- "0..*" NotificationMessage : filters delivery
-}
-
-package "External Systems" as ExternalSystems {
-  class RedisServer <<external system>> {
-    +PublishRealtimeNotification(message)
-    +ConsumeNotificationEvents()
-  }
-
-  class ResendMailServer <<external system>> {
-    +SendEmail(payload)
-  }
-
-  class SignalRGateway <<external system>> {
-    +BroadcastToUser(userId, payload)
-  }
-
-  RedisServer -[hidden]right- ResendMailServer
-  ResendMailServer -[hidden]right- SignalRGateway
+  AdminNotification -[hidden]right- NotificationMessage
+  NotificationMessage -[hidden]down- NotificationPreference
+  NotificationPreference -[hidden]right- NotificationTemplate
+  NotificationTemplate -[hidden]right- PushSubscription
 }
 
 NotificationsController --> NotificationService
-NotificationGrpcServiceImpl --> NotificationService
-NotificationStreamConsumerService --> BillingNotificationEventHandler
-RealtimeNotificationPersistenceService --> RealtimeNotificationPersistenceHandler
+AdminNotificationsController --> AdminNotificationService
+NotificationHub --> NotificationService
+AdminNotificationService --> NotificationService
 
+NotificationService ..> NotificationMessageRepository
+NotificationService ..> NotificationPreferenceRepository
 NotificationService ..> EmailTemplateRenderer
-NotificationService ..> ResendEmailSender
-NotificationService ..> RedisMessagePublisher
-AdminNotificationService ..> RedisMessagePublisher
-RealtimeNotificationPersistenceHandler ..> NotificationMessageRepository
+NotificationService ..> MailkitSmtpAdapter
+NotificationService ..> UnitOfWork
+
+AdminNotificationService ..> NotificationService
+AdminNotificationService ..> UnitOfWork
+
+NotificationMessageRepository ..> NotificationDbContext
+NotificationPreferenceRepository ..> NotificationDbContext
+UnitOfWork ..> NotificationDbContext
 
 NotificationMessageRepository ..> NotificationMessage : persists
 NotificationPreferenceRepository ..> NotificationPreference : persists
-NotificationTemplateRepository ..> NotificationTemplate : persists
-AdminNotificationRepository ..> AdminNotification : persists
-PushSubscriptionRepository ..> PushSubscription : persists
 
-RedisMessagePublisher ..> RedisServer : publishes events
-NotificationStreamConsumerService ..> RedisServer : consumes events
-ResendEmailSender ..> ResendMailServer : sends email
-RedisServer ..> SignalRGateway : forwards realtime
+AdminNotification *-right- "0..*" NotificationMessage
+NotificationMessage *-down- "0..*" NotificationPreference
+NotificationMessage *-down- "0..*" NotificationTemplate
+NotificationMessage *-down- "0..*" PushSubscription
 
-ApiLayer -[hidden]down- ApplicationLayer
-ApplicationLayer -[hidden]down- InfrastructureLayer
-InfrastructureLayer -[hidden]down- DomainLayer
-DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

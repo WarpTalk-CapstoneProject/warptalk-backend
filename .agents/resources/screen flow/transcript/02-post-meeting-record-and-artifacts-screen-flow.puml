@@ -13,17 +13,19 @@ left to right direction
 rectangle "Active Meeting Room Page" as ActiveMeetingRoomPage
 rectangle "Room Ended Summary Page" as RoomEndedSummaryPage
 rectangle "Room Artifacts Page" as RoomArtifactsPage
-rectangle "Meeting History Page" as MeetingHistoryPage
+rectangle "History Page" as HistoryPage
+rectangle "Schedules Page" as SchedulesPage
 rectangle "Room Information Page" as RoomInformationPage
 rectangle "Meeting Transcript Tab" as MeetingTranscriptTab
 rectangle "Meeting Summary Tab" as MeetingSummaryTab
 rectangle "Meeting Artifacts Tab" as MeetingArtifactsTab
 
-ActiveMeetingRoomPage --> RoomEndedSummaryPage : Meeting ended
+ActiveMeetingRoomPage --> RoomEndedSummaryPage
 RoomEndedSummaryPage --> RoomArtifactsPage
-RoomEndedSummaryPage --> MeetingHistoryPage
+RoomEndedSummaryPage --> HistoryPage
 
-MeetingHistoryPage --> RoomInformationPage
+HistoryPage --> RoomInformationPage
+SchedulesPage --> RoomInformationPage
 RoomInformationPage --> MeetingTranscriptTab
 RoomInformationPage --> MeetingSummaryTab
 RoomInformationPage --> MeetingArtifactsTab
