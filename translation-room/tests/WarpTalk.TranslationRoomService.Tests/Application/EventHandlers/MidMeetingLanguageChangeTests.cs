@@ -287,6 +287,7 @@ public class MidMeetingLanguageChangeTests
             new LanguagePolicy(unitOfWork.Object),
             consentDirectory.Object,
             settingsDirectory.Object,
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 }

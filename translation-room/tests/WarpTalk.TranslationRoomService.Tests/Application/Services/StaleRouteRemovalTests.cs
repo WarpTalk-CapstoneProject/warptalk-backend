@@ -69,6 +69,7 @@ public class StaleRouteRemovalTests
             languagePolicy.Object,
             consent.Object,
             settings.Object,
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
 
         _rooms.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
