@@ -43,6 +43,20 @@ public interface IVoiceProfileService
     Task<Result<string?>> GetDubVoiceAsync(Guid userId, CancellationToken ct = default);
 
     /// <summary>
+    /// The best voice this person was cloned into in an earlier meeting, and how good the clip
+    /// behind it was — or (null, null) when there is none (WT-B).
+    ///
+    /// DELIBERATELY SEPARATE FROM <see cref="GetDubVoiceAsync"/>. That one is a deliberate pick
+    /// and the worker must stop capturing and never overwrite it; this is a starting point the
+    /// worker is supposed to keep improving on. Returned on one field, a carried clone would be
+    /// read as a pick and every speaker would freeze at the first clone they ever earned.
+    ///
+    /// The score is decimal? and null means NOT MEASURED, never zero.
+    /// </summary>
+    Task<Result<(string? VoiceId, decimal? Score)>> GetAutoCloneVoiceAsync(
+        Guid userId, CancellationToken ct = default);
+
+    /// <summary>
     /// WAV bytes of this voice speaking one sentence, so somebody can hear it before a meeting.
     ///
     /// Scoped to voices this user could actually be dubbed in — the same rule

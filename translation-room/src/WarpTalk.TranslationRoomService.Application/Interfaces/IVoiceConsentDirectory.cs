@@ -33,10 +33,47 @@ public interface IVoiceConsentDirectory
 public interface IDubVoiceDirectory
 {
     /// <summary>
-    /// The provider voice id, or null when the speaker has not chosen one, is a guest, or
-    /// AuthService cannot answer. Null always means "clone them live from the meeting instead",
-    /// which is what happened for everybody before this existed — so an outage degrades to the
-    /// previous behaviour rather than to silence.
+    /// Everything AuthService knows about how this speaker should be voiced, in ONE call.
+    ///
+    /// One call rather than one per fact, deliberately. The mesh is O(n^2) in participants and
+    /// this runs on the path that starts every meeting; asking twice per speaker would double
+    /// the round trips on the exact call site whose comment already explains why it asks once.
+    /// AuthService answers both from the same row read anyway.
+    ///
+    /// Never throws. Every field null is the honest answer for a guest, for somebody who has
+    /// chosen nothing, and for an AuthService that cannot be reached — and all three mean the
+    /// same thing to the workers: clone them live, which is what everybody had before any of
+    /// this existed.
     /// </summary>
-    Task<string?> GetDubVoiceAsync(Guid userId, CancellationToken ct = default);
+    Task<DubVoiceSelection> GetSelectionAsync(Guid userId, CancellationToken ct = default);
+}
+
+/// <summary>How one speaker should be voiced.</summary>
+/// <param name="ChosenVoiceId">
+/// WT-396 — a voice they DELIBERATELY PICKED. The worker must stop capturing and never overwrite
+/// it.
+/// </param>
+/// <param name="AutoCloneVoiceId">
+/// WT-B — a voice captured from them in an earlier meeting. The opposite instruction: a starting
+/// point the worker is supposed to keep improving on.
+///
+/// Kept apart from <paramref name="ChosenVoiceId"/> for exactly that reason. Collapsed into one
+/// field, a carried clone would be read as a pick, capture would stop, and every speaker would be
+/// frozen at the first clone they ever earned.
+/// </param>
+/// <param name="AutoCloneScore">
+/// How good the clip behind the carried voice was — the bar a later clip must beat.
+///
+/// A string, and null means NOT MEASURED rather than zero: zero grades as the worst possible
+/// sample and would invite replacement by anything at all. Carried as the text AuthService
+/// formatted and never re-parsed, because a decimal round-tripped through a comma-decimal locale
+/// is how 0.006575 became 6575 in billing.
+/// </param>
+public sealed record DubVoiceSelection(
+    string? ChosenVoiceId,
+    string? AutoCloneVoiceId,
+    string? AutoCloneScore)
+{
+    /// <summary>A speaker nothing is known about — a guest, or an unreachable AuthService.</summary>
+    public static readonly DubVoiceSelection None = new(null, null, null);
 }

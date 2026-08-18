@@ -18,7 +18,7 @@ public sealed class DubVoiceGrpcDirectory : IDubVoiceDirectory
         _logger = logger;
     }
 
-    public async Task<string?> GetDubVoiceAsync(Guid userId, CancellationToken ct = default)
+    public async Task<DubVoiceSelection> GetSelectionAsync(Guid userId, CancellationToken ct = default)
     {
         try
         {
@@ -26,20 +26,29 @@ public sealed class DubVoiceGrpcDirectory : IDubVoiceDirectory
                 new GetUserRequest { Id = userId.ToString() },
                 cancellationToken: ct);
 
-            return string.IsNullOrWhiteSpace(response.VoiceId) ? null : response.VoiceId;
+            return new DubVoiceSelection(
+                Trimmed(response.VoiceId),
+                Trimmed(response.AutoCloneVoiceId),
+                // Passed through as the text AuthService formatted, never parsed and re-formatted
+                // here. Round-tripping it through a decimal would put it at the mercy of this
+                // server's culture, and empty has to stay distinguishable from zero.
+                Trimmed(response.AutoCloneScore));
         }
         catch (RpcException ex)
         {
             // Degrades, unlike its neighbour VoiceConsentGrpcDirectory, and the difference is the
             // point. That one guards biometric processing and must fail closed. This one only
-            // says WHICH voice somebody preferred; losing the answer costs them their chosen
-            // voice for this meeting and nothing else, so the meeting carries on with the voice
-            // it would have used before this feature existed.
+            // says WHICH voice somebody should be given; losing the answer costs them their
+            // chosen voice for this meeting, and costs a carried-over clone one re-clone, so the
+            // meeting carries on with the voice it would have used before this feature existed.
             _logger.LogWarning(
                 ex,
-                "Could not reach AuthService for the dub voice of {UserId}; falling back to live cloning.",
+                "Could not reach AuthService for the voice selection of {UserId}; falling back to live cloning.",
                 userId);
-            return null;
+            return DubVoiceSelection.None;
         }
     }
+
+    private static string? Trimmed(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
 }

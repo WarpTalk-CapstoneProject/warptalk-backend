@@ -92,8 +92,8 @@ public class DubVoicePublishedTests
     {
         RoutesAre(Route(_speaker, _listener));
         _dubVoices
-            .Setup(d => d.GetDubVoiceAsync(_speakerUserId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync("the-voice-they-picked");
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection("the-voice-they-picked", null, null));
 
         var published = Published();
 
@@ -106,10 +106,10 @@ public class DubVoicePublishedTests
         // Both directions of a two-person room. Attaching one person's voice to the other's
         // routes would dub them as each other, which is worse than nobody's choice working.
         RoutesAre(Route(_speaker, _listener), Route(_listener, _speaker));
-        _dubVoices.Setup(d => d.GetDubVoiceAsync(_speakerUserId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync("speaker-voice");
-        _dubVoices.Setup(d => d.GetDubVoiceAsync(_listenerUserId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync("listener-voice");
+        _dubVoices.Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection("speaker-voice", null, null));
+        _dubVoices.Setup(d => d.GetSelectionAsync(_listenerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection("listener-voice", null, null));
 
         var published = Published();
 
@@ -126,8 +126,8 @@ public class DubVoicePublishedTests
     {
         RoutesAre(Route(_speaker, _listener));
         _dubVoices
-            .Setup(d => d.GetDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string?)null);
+            .Setup(d => d.GetSelectionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(DubVoiceSelection.None);
 
         Assert.All(Published(), r => Assert.Null(r.SourceDubVoiceId));
     }
@@ -147,7 +147,7 @@ public class DubVoicePublishedTests
 
         Assert.All(published, r => Assert.Null(r.SourceDubVoiceId));
         _dubVoices.Verify(
-            d => d.GetDubVoiceAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+            d => d.GetSelectionAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     // ── cost ─────────────────────────────────────────────────────────────────────────────────
@@ -166,12 +166,81 @@ public class DubVoicePublishedTests
         };
         RoutesAre(Route(_speaker, _listener), Route(_speaker, third));
         _dubVoices
-            .Setup(d => d.GetDubVoiceAsync(_speakerUserId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync("one-voice");
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection("one-voice", null, null));
 
         Published();
 
         _dubVoices.Verify(
-            d => d.GetDubVoiceAsync(_speakerUserId, It.IsAny<CancellationToken>()), Times.Once);
+            d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // ── WT-B: the carried-over clone travels on its OWN field ───────────────────────────────
+
+    [Fact]
+    public void ACarriedOverCloneReachesTheWorkersWithItsScore()
+    {
+        RoutesAre(Route(_speaker, _listener));
+        _dubVoices
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection(null, "voice-from-last-meeting", "0.812"));
+
+        var published = Published();
+
+        Assert.All(published, r =>
+        {
+            Assert.Equal("voice-from-last-meeting", r.SourceAutoCloneVoiceId);
+            Assert.Equal("0.812", r.SourceAutoCloneScore);
+        });
+    }
+
+    [Fact]
+    public void ACarriedCloneIsNeverPublishedAsADeliberatePick()
+    {
+        // The separation the whole feature rests on. Read as a pick, the worker stops capturing
+        // and the speaker is frozen at the first clone they ever earned — which is the state B
+        // exists to end.
+        RoutesAre(Route(_speaker, _listener));
+        _dubVoices
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection(null, "voice-from-last-meeting", "0.812"));
+
+        var published = Published();
+
+        Assert.All(published, r => Assert.Null(r.SourceDubVoiceId));
+    }
+
+    [Fact]
+    public void APickAndACarriedCloneTravelTogetherWithoutOverwritingEachOther()
+    {
+        // Both facts are sent even though only one can win, because the WORKER decides the
+        // precedence and it cannot decide what it was never told.
+        RoutesAre(Route(_speaker, _listener));
+        _dubVoices
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection("chosen", "carried", "0.5"));
+
+        var published = Published();
+
+        Assert.All(published, r =>
+        {
+            Assert.Equal("chosen", r.SourceDubVoiceId);
+            Assert.Equal("carried", r.SourceAutoCloneVoiceId);
+        });
+    }
+
+    [Fact]
+    public void AnUnmeasuredCarriedCloneTravelsWithNoScoreRatherThanAZero()
+    {
+        // A zero would reach the worker as "the worst possible sample" and invite replacement by
+        // any clip at all. Absent has to stay absent all the way down.
+        RoutesAre(Route(_speaker, _listener));
+        _dubVoices
+            .Setup(d => d.GetSelectionAsync(_speakerUserId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DubVoiceSelection(null, "carried", null));
+
+        var published = Published();
+
+        Assert.All(published, r => Assert.Null(r.SourceAutoCloneScore));
     }
 }
