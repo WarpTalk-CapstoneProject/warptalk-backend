@@ -396,3 +396,12 @@ public record TranslationRoomFeedbackStateDto(
     bool HasSubmitted,
     TranslationRoomFeedbackDto? Feedback
 );
+
+/// <summary>
+/// WT-480: who a finished meeting's record is shared with.
+///
+/// One field, and it carries a stored token rather than a boolean: a boolean would read as
+/// "shared: yes/no" and could not grow a third audience without changing every caller, while the
+/// level is already the vocabulary the guard enforces (<c>ArtifactAccessLevels</c>).
+/// </summary>
+public record SetArtifactAccessRequest(string Level);

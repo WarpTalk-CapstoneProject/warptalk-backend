@@ -808,14 +808,14 @@ public class TranslationRoomService : ITranslationRoomService
     }
 
     /// <inheritdoc />
-    public async Task<Result<IReadOnlyList<string>>> GetJoinLanguagePolicyByCodeAsync(
+    public async Task<Result<JoinLanguagePolicyDto>> GetJoinLanguagePolicyByCodeAsync(
         string roomCode,
         CancellationToken ct = default)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(roomCode))
-                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+                return Result.Success(EmptyJoinLanguagePolicy);
 
             var room = await _translationRoomRepository.GetByCodeAsync(roomCode.Trim(), null, ct);
 
@@ -824,7 +824,19 @@ public class TranslationRoomService : ITranslationRoomService
             // not-found must not paint an error over a half-typed one — and it must not become a
             // way to probe which codes exist. The join itself is where a bad code is reported.
             if (room == null || room.WorkspaceId == Guid.Empty)
-                return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+                return Result.Success(EmptyJoinLanguagePolicy);
+
+            // WT-490: the languages this ROOM declares — its source plus its targets, deduped.
+            // A room is defined by the set of languages that will be spoken in it, and the screen
+            // was ignoring that set entirely: a workspace permitting four languages and a room
+            // declaring two offered all four, so a joiner could choose a language nobody present
+            // would ever speak. Sent alongside the workspace policy rather than intersected here,
+            // because an empty list has to keep meaning "no restriction from this source".
+            var roomLanguages = new List<string> { LanguageHelper.NormalizeLanguageCode(room.SourceLanguage) }
+                .Concat(LanguageHelper.ParseTargetLanguages(room.TargetLanguages))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             var policy = await _workspaceMeetingPolicy.GetAllowedLanguagesAsync(room.WorkspaceId, ct);
 
@@ -832,16 +844,22 @@ public class TranslationRoomService : ITranslationRoomService
             // the server still refuses a forbidden language at join. A WorkspaceService blip that
             // widened a picker for a moment is a far smaller harm than a pre-join screen that
             // cannot be filled in at all — which is the bug this ticket is about.
-            return policy.IsSuccess
-                ? policy
-                : Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+            var allowed = policy.IsSuccess && policy.Value != null
+                ? policy.Value
+                : (IReadOnlyList<string>)Array.Empty<string>();
+
+            return Result.Success(new JoinLanguagePolicyDto(allowed, roomLanguages));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not resolve the join language policy for a room code.");
-            return Result.Success<IReadOnlyList<string>>(Array.Empty<string>());
+            return Result.Success(EmptyJoinLanguagePolicy);
         }
     }
+
+    /// <summary>Both limits unknown, which every consumer reads as "offer everything".</summary>
+    private static JoinLanguagePolicyDto EmptyJoinLanguagePolicy =>
+        new(Array.Empty<string>(), Array.Empty<string>());
 
     public async Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default)
     {
@@ -2083,6 +2101,99 @@ public class TranslationRoomService : ITranslationRoomService
         {
             _logger.LogError(ex, "Error occurred while ending translation room. RoomId: {RoomId}, HostId: {HostId}", translationRoomId, hostId);
             return Result.Failure(TranslationRoomConstants.ErrorUnexpectedEndRoom, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> SetArtifactAccessAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string level,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var translationRoom = await _translationRoomRepository.GetByIdAsync(translationRoomId, ct);
+
+            if (translationRoom == null)
+                return Result.Failure(TranslationRoomConstants.ErrorRoomNotFound, ErrorCodes.NotFound);
+
+            // Host only, matching FinalizeTranscriptAsync. The two controls a host has over a
+            // finished meeting — lock the wording, share the record — answer to the same person,
+            // and letting a workspace Admin do one but not the other would be arbitrary.
+            if (!translationRoom.IsHostedBy(hostId))
+                return Result.Failure(TranslationRoomConstants.ErrorUnauthorizedShareRecord, ErrorCodes.Unauthorized);
+
+            if (!ArtifactAccessLevels.IsValid(level))
+            {
+                return Result.Failure(
+                    string.Format(
+                        TranslationRoomConstants.ValidationArtifactAccessUnsupported,
+                        level,
+                        string.Join(", ", ArtifactAccessLevels.All)),
+                    ErrorCodes.ValidationError);
+            }
+
+            // NO status gate, and that absence is the point of this method existing.
+            //
+            // UpdateTranslationRoomSettingsAsync refuses anything past WAITING
+            // (ErrorSettingsLocked) — correct for the settings it guards, because changing a
+            // room's languages or seat count mid-meeting would rewrite the rules under the people
+            // in it. But sharing the transcript, summary and recording is an act that can ONLY
+            // happen once the meeting is over and those artifacts exist. Routing it through that
+            // method would have made the feature refuse in exactly the state it is for.
+            var settings = ReadSettings(translationRoom.Settings);
+            if (string.Equals(settings.ArtifactAccess, level, StringComparison.Ordinal))
+                return Result.Success();
+
+            settings.ArtifactAccess = level;
+            translationRoom.Settings = System.Text.Json.JsonSerializer.Serialize(settings);
+            translationRoom.UpdatedAt = DateTime.UtcNow;
+            translationRoom.UpdatedBy = hostId;
+
+            _translationRoomRepository.Update(translationRoom);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            // Logged because this is a sharing decision about a recording of people talking, and
+            // "who opened this up, and when" is the question asked after the fact.
+            _logger.LogInformation(
+                "artifact_access_changed: RoomId={RoomId} HostId={HostId} Level={Level}",
+                translationRoom.Id,
+                hostId,
+                level);
+
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Error changing artifact access. RoomId: {RoomId}, HostId: {HostId}",
+                translationRoomId,
+                hostId);
+            return Result.Failure(TranslationRoomConstants.ErrorUnexpectedUpdateRoomSettings, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// A room's settings blob, or an empty one. Unparseable JSON yields defaults rather than
+    /// throwing — the same direction ArtifactAccessHelper fails in.
+    /// </summary>
+    private static TranslationRoomSettings ReadSettings(string? settingsJson)
+    {
+        if (string.IsNullOrWhiteSpace(settingsJson))
+            return new TranslationRoomSettings();
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<TranslationRoomSettings>(
+                settingsJson,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new TranslationRoomSettings();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return new TranslationRoomSettings();
         }
     }
 

@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
+using WarpTalk.WorkspaceService.Application.Helpers;
 using WarpTalk.WorkspaceService.Application.Interfaces;
 
 namespace WarpTalk.WorkspaceService.Infrastructure.Adapters;
@@ -51,11 +53,17 @@ public sealed class DocumentSecurityScanner : IDocumentSecurityScanner
             new("keywords", JsonSerializer.Serialize(keywordsBlacklist ?? []))
         };
 
+        // Derived from the document's size rather than fixed: since WT-460 the scan echoes the
+        // whole analysed text back with PII masked, so how long it takes depends on how much
+        // there is to reproduce. See SecurityScanBudget for the production measurements.
+        var budget = SecurityScanBudget.For(content.Length);
+        var startedAt = Stopwatch.GetTimestamp();
+
         try
         {
             await database.StreamAddAsync("security:scan_requests", entries);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            timeout.CancelAfter(budget);
 
             while (!timeout.IsCancellationRequested)
             {
@@ -63,6 +71,18 @@ public sealed class DocumentSecurityScanner : IDocumentSecurityScanner
                 if (!value.IsNull)
                 {
                     await database.KeyDeleteAsync(resultKey);
+
+                    // Logged on the SUCCESS path too. The flat 30s stood for months because
+                    // nothing recorded how long a scan actually took, so there was no way to see
+                    // the margin shrinking until documents started failing.
+                    _logger.LogInformation(
+                        "Security scan completed in {ElapsedMs}ms of a {BudgetMs}ms budget for "
+                        + "{ContentLength} characters. ScanId: {ScanId}",
+                        (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+                        (long)budget.TotalMilliseconds,
+                        content.Length,
+                        scanId);
+
                     var response = JsonSerializer.Deserialize<ScanResponse>((string)value!);
                     if (response is null)
                     {
@@ -87,11 +107,11 @@ public sealed class DocumentSecurityScanner : IDocumentSecurityScanner
                 await Task.Delay(500, timeout.Token);
             }
 
-            throw new TimeoutException($"Security scan timed out. ScanId: {scanId}");
+            throw TimedOut(scanId, content.Length, budget);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException($"Security scan timed out. ScanId: {scanId}");
+            throw TimedOut(scanId, content.Length, budget);
         }
         catch (Exception ex)
         {
@@ -102,6 +122,20 @@ public sealed class DocumentSecurityScanner : IDocumentSecurityScanner
             throw;
         }
     }
+
+    /// <summary>
+    /// The timeout, carrying enough to diagnose it without another production investigation.
+    /// </summary>
+    /// <remarks>
+    /// The old message was the scan id alone. Recovering what actually happened meant correlating
+    /// that id against the worker's logs by hand — and since a deploy recreates the worker and
+    /// takes its logs with it, that evidence is routinely gone. The size and the budget are what
+    /// distinguish the two very different causes: a budget the document outgrew, or a worker that
+    /// never answered at all.
+    /// </remarks>
+    private static TimeoutException TimedOut(string scanId, int contentLength, TimeSpan budget) =>
+        new($"Security scan timed out after {budget.TotalSeconds:0.#}s for {contentLength} "
+            + $"characters. ScanId: {scanId}");
 
     private sealed class ScanResponse
     {
