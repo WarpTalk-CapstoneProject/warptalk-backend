@@ -375,11 +375,13 @@ public class VoiceProfileService : IVoiceProfileService
         {
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
             var collected = await CollectFinishedClonesAsync(profiles, ct);
+            var activeConsent = await _unitOfWork.VoiceConsentRepository.GetCurrentAsync(
+                userId, VoiceProfileConsentContract.UploadConsentType, ct);
 
             var dtos = new List<VoiceProfileDto>();
             foreach (var profile in profiles)
             {
-                dtos.Add(VoiceProfileMapper.ToDto(profile));
+                dtos.Add(VoiceProfileMapper.ToDto(profile, activeConsent));
             }
 
             if (collected > 0)
@@ -550,7 +552,7 @@ public class VoiceProfileService : IVoiceProfileService
                 await QueueForCloningAsync(profile, userId, request.Sample, ct);
             }
 
-            return Result.Success(VoiceProfileMapper.ToDto(profile));
+            return Result.Success(VoiceProfileMapper.ToDto(profile, consent));
         }
         catch (Exception ex)
         {

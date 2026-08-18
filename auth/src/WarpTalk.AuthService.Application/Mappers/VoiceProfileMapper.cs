@@ -1,17 +1,18 @@
 using System.Linq;
 using WarpTalk.AuthService.Application.DTOs;
+using WarpTalk.AuthService.Application.Services;
 using WarpTalk.AuthService.Domain.Entities;
 
 namespace WarpTalk.AuthService.Application.Mappers;
 
 public static class VoiceProfileMapper
 {
-    public static VoiceProfileDto ToDto(VoiceProfile profile)
+    public static VoiceProfileDto ToDto(VoiceProfile profile, VoiceConsent? activeConsent = null)
     {
-        var activeConsent = profile.VoiceConsents
+        activeConsent ??= profile.VoiceConsents?
             .Where(consent =>
-                string.Equals(consent.ConsentType, "VOICE_PROFILE_UPLOAD", System.StringComparison.OrdinalIgnoreCase)
-                && string.Equals(consent.ConsentStatus, "GRANTED", System.StringComparison.OrdinalIgnoreCase))
+                string.Equals(consent.ConsentType, VoiceProfileConsentContract.UploadConsentType, System.StringComparison.OrdinalIgnoreCase)
+                && string.Equals(consent.ConsentStatus, VoiceProfileConsentContract.GrantedStatus, System.StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(consent => consent.GrantedAt ?? consent.CreatedAt)
             .FirstOrDefault();
 
@@ -21,7 +22,7 @@ public static class VoiceProfileMapper
             profile.Language,
             profile.Status,
             profile.IsActive,
-            profile.VoiceSamples.Any(s => s.DeletedAt == null),
+            profile.VoiceSamples?.Any(s => s.DeletedAt == null) ?? false,
             profile.CreatedAt,
             profile.UpdatedAt,
             profile.Provider,
