@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WarpTalk.TranslationRoomService.Application.DTOs;
+using WarpTalk.Shared;
 using WarpTalk.TranslationRoomService.Application.Interfaces;
 using WarpTalk.Shared.Extensions;
 
@@ -15,10 +16,14 @@ namespace WarpTalk.TranslationRoomService.API.Controllers;
 public class TranslationRoomAudioRouteController : ControllerBase
 {
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
+    private readonly IRoomFlashModeService _flashMode;
 
-    public TranslationRoomAudioRouteController(ITranslationRoomAudioRouteService audioRouteService)
+    public TranslationRoomAudioRouteController(
+        ITranslationRoomAudioRouteService audioRouteService,
+        IRoomFlashModeService flashMode)
     {
         _audioRouteService = audioRouteService;
+        _flashMode = flashMode;
     }
 
     [HttpPost("generate")]
@@ -131,6 +136,66 @@ public class TranslationRoomAudioRouteController : ControllerBase
         if (result.IsSuccess)
         {
             return Ok(result.Value);
+        }
+
+        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    /// <summary>
+    /// Flash mode for this room — whether a speaker's audio is streamed to STT while they are
+    /// still talking, instead of only once VAD closes the turn.
+    ///
+    /// Readable by any participant so a guest's UI can show what the host chose; writable by the
+    /// host alone, because unlike voice-clone consent and the dub-voice refresh above it, this
+    /// changes how EVERYBODY in the room is transcribed.
+    ///
+    /// It lives on this controller rather than on TranslationRoomsController because it is a
+    /// property of the audio pipeline, and this is the client the meeting UI already talks to for
+    /// the rest of it.
+    /// </summary>
+    [HttpGet("flash-mode")]
+    public async Task<IActionResult> GetFlashMode([FromRoute] Guid roomId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _flashMode.GetAsync(roomId, userId.Value, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(new { Enabled = result.Value });
+        }
+
+        return NotFound(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    [HttpPut("flash-mode")]
+    public async Task<IActionResult> SetFlashMode(
+        [FromRoute] Guid roomId,
+        [FromBody] SetFlashModeDto dto,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _flashMode.SetAsync(roomId, userId.Value, dto.Enabled, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(new { Enabled = result.Value });
+        }
+
+        // A non-host gets 403, not 400: the request was well formed and they are simply not
+        // allowed, and a UI that renders the switch needs to tell those two apart.
+        if (result.ErrorCode == ErrorCodes.Forbidden)
+        {
+            return StatusCode(403, new { Error = result.Error, Code = result.ErrorCode });
         }
 
         return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
