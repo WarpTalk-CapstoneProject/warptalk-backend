@@ -550,6 +550,45 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         }
     }
 
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> RefreshDubVoiceAsync(Guid roomId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            // The same participant gate SetVoiceCloneConsentAsync applies. This publishes a
+            // snapshot of the whole room and re-reads every speaker's voice on the way, so it is
+            // not a read a stranger may trigger.
+            var participant = await _translationRoomParticipantRepository.GetByRoomAndUserAsync(roomId, userId, ct);
+            if (participant == null)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(
+                    AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+            }
+
+            // Nothing is written here. PublishRoutesUpdateAsync re-reads each speaker's chosen
+            // voice from AuthService as it builds the payload, so republishing IS the refresh —
+            // and it stays the single place that knowledge enters the pipeline.
+            await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
+
+            var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            var myOutgoingRoutes = allRoutes
+                .Where(r => r.SourceParticipantId == participant.Id
+                    && r.Status != AudioRouteStatus.COMPLETED.ToString())
+                .Select(TranslationRoomAudioRouteMapper.ToDto)
+                .ToList();
+
+            _logger.LogInformation(
+                "Republished routes for room {RoomId} after user {UserId} changed their dub voice.",
+                roomId, userId);
+
+            return Result.Success(myOutgoingRoutes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while refreshing the dub voice for user {UserId} in room {RoomId}", userId, roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> SetVoiceCloneConsentAsync(Guid roomId, Guid userId, bool enabled, CancellationToken ct = default)
     {
         try

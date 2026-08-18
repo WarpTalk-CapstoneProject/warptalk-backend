@@ -34,6 +34,7 @@ public class VoiceProfileServiceTests
     private readonly IVoiceConsentRepository _consents = Substitute.For<IVoiceConsentRepository>();
     private readonly IVoiceSampleStorage _storage = Substitute.For<IVoiceSampleStorage>();
     private readonly IVoiceCloneRequestQueue _cloneQueue;
+    private readonly IVoicePreviewQueue _previewQueue;
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
     private readonly VoiceProfileService _service;
 
@@ -51,8 +52,12 @@ public class VoiceProfileServiceTests
         // Silent by default: the clone hand-off is pinned in UploadCloneHandoffTests, and a
         // queue that answered here would change what every assertion below is testing.
         _cloneQueue = Substitute.For<IVoiceCloneRequestQueue>();
+        // Silent for the same reason, and it matters more here: an unstubbed WaitAsync answers
+        // null, so a preview test that forgot to arrange one fails on the timeout branch rather
+        // than passing on a substitute's default.
+        _previewQueue = Substitute.For<IVoicePreviewQueue>();
         _service = new VoiceProfileService(
-            _unitOfWork, _storage, _catalog, _cloneQueue,
+            _unitOfWork, _storage, _catalog, _cloneQueue, _previewQueue,
             Substitute.For<ILogger<VoiceProfileService>>());
     }
 

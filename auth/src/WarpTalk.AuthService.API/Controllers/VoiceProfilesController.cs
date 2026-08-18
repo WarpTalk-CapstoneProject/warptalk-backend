@@ -93,6 +93,31 @@ public class VoiceProfilesController : ControllerBase
         return result.Value == null ? NoContent() : Ok(result.Value);
     }
 
+    /// <summary>
+    /// Hear a voice speaking one sentence, before a meeting rather than during one.
+    ///
+    /// POST rather than GET because the first call for a voice does real work on the AI side —
+    /// it is not a cached read that happens to be slow. Later calls for the same
+    /// (voice, language) are served from that render.
+    ///
+    /// The container is WAV because that is what CartesiaSynthesizer.synthesize asks the
+    /// provider for; it is fixed there, not negotiated here.
+    /// </summary>
+    [Authorize]
+    [HttpPost("preview")]
+    public async Task<IActionResult> PreviewVoice([FromBody] PreviewVoiceRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.PreviewVoiceAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return File(result.Value!, "audio/wav");
+    }
+
     [Authorize]
     [HttpDelete("{profileId:guid}")]
     public async Task<IActionResult> DeleteProfile(Guid profileId, CancellationToken ct)
