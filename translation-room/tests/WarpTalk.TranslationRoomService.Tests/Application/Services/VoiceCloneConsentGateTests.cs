@@ -83,6 +83,7 @@ public class VoiceCloneConsentGateTests
             new Mock<ILanguagePolicy>().Object,
             _consent.Object,
             _settings.Object,
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 

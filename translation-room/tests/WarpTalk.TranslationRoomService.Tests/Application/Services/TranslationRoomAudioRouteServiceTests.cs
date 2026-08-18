@@ -46,6 +46,7 @@ public class TranslationRoomAudioRouteServiceTests
             // See LateJoinerAudioRouteTests: silent on purpose, so WT-401's seeding does not
             // quietly change what these older routing assertions are testing.
             NoVoicePreference(),
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 
