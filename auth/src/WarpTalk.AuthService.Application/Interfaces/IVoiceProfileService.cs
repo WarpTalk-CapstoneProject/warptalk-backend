@@ -41,4 +41,14 @@ public interface IVoiceProfileService
 
     /// <summary>The user's chosen dub voice, or null when they have not chosen one.</summary>
     Task<Result<string?>> GetDubVoiceAsync(Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// WAV bytes of this voice speaking one sentence, so somebody can hear it before a meeting.
+    ///
+    /// Scoped to voices this user could actually be dubbed in — the same rule
+    /// <see cref="SetDubVoiceAsync"/> enforces, and for the same reason: a voice cloned from
+    /// somebody's recording is theirs, and being able to render audio from an arbitrary id would
+    /// be a way to sample another person's voice.
+    /// </summary>
+    Task<Result<byte[]>> PreviewVoiceAsync(Guid userId, PreviewVoiceRequest request, CancellationToken ct = default);
 }

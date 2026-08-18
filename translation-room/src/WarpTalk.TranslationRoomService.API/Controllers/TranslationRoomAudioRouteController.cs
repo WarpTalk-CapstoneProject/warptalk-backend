@@ -82,6 +82,34 @@ public class TranslationRoomAudioRouteController : ControllerBase
     }
 
     /// <summary>
+    /// Self-service: the calling participant has just changed the voice they are DUBBED IN (in
+    /// AuthService, which owns that setting) and wants it to take effect in this meeting now.
+    ///
+    /// Carries no voice id on purpose — see ITranslationRoomAudioRouteService.RefreshDubVoiceAsync.
+    /// This endpoint only says "go and re-read it".
+    /// </summary>
+    [HttpPost("dub-voice/refresh")]
+    public async Task<IActionResult> RefreshDubVoice(
+        [FromRoute] Guid roomId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _audioRouteService.RefreshDubVoiceAsync(roomId, userId.Value, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(result.Value);
+        }
+
+        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    /// <summary>
     /// Self-service: the calling participant consents (or withdraws consent) to have
     /// THEIR OWN voice cloned for every listener they currently speak to in this room.
     /// See ITranslationRoomAudioRouteService.SetVoiceCloneConsentAsync.

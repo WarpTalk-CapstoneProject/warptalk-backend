@@ -72,6 +72,7 @@ if (string.IsNullOrWhiteSpace(redisConnectionString))
     builder.Services.AddScoped<IVoiceCatalogDirectory, EmptyVoiceCatalogDirectory>();
     // No Redis, so no way to hand a recording to the AI side — see NullVoiceCloneRequestQueue.
     builder.Services.AddScoped<IVoiceCloneRequestQueue, NullVoiceCloneRequestQueue>();
+    builder.Services.AddScoped<IVoicePreviewQueue, NullVoicePreviewQueue>();
 }
 else
 {
@@ -91,6 +92,7 @@ else
         _ => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddScoped<IVoiceCatalogDirectory, RedisVoiceCatalogDirectory>();
     builder.Services.AddScoped<IVoiceCloneRequestQueue, RedisVoiceCloneRequestQueue>();
+    builder.Services.AddScoped<IVoicePreviewQueue, RedisVoicePreviewQueue>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
