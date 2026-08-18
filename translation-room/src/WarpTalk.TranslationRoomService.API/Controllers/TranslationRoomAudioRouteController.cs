@@ -17,13 +17,16 @@ public class TranslationRoomAudioRouteController : ControllerBase
 {
     private readonly ITranslationRoomAudioRouteService _audioRouteService;
     private readonly IRoomFlashModeService _flashMode;
+    private readonly IMicrophoneNoiseReductionService _noiseReduction;
 
     public TranslationRoomAudioRouteController(
         ITranslationRoomAudioRouteService audioRouteService,
-        IRoomFlashModeService flashMode)
+        IRoomFlashModeService flashMode,
+        IMicrophoneNoiseReductionService noiseReduction)
     {
         _audioRouteService = audioRouteService;
         _flashMode = flashMode;
+        _noiseReduction = noiseReduction;
     }
 
     [HttpPost("generate")]
@@ -196,6 +199,66 @@ public class TranslationRoomAudioRouteController : ControllerBase
         if (result.ErrorCode == ErrorCodes.Forbidden)
         {
             return StatusCode(403, new { Error = result.Error, Code = result.ErrorCode });
+        }
+
+        return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    /// <summary>
+    /// How much denoising the STT provider applies to THIS CALLER'S OWN microphone in this meeting.
+    ///
+    /// Self-service, unlike flash mode above it: this changes how one person's microphone is
+    /// handled and touches nobody else's audio, so requiring the host would mean a guest in a noisy
+    /// room has to ask permission to be understood. See IMicrophoneNoiseReductionService.
+    ///
+    /// The caller's own id is always the subject. There is no parameter for choosing whose
+    /// microphone, deliberately.
+    /// </summary>
+    [HttpGet("noise-reduction")]
+    public async Task<IActionResult> GetNoiseReduction(
+        [FromRoute] Guid roomId,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _noiseReduction.GetAsync(roomId, userId.Value, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(new { Mode = result.Value });
+        }
+
+        return NotFound(new { Error = result.Error, Code = result.ErrorCode });
+    }
+
+    [HttpPut("noise-reduction")]
+    public async Task<IActionResult> SetNoiseReduction(
+        [FromRoute] Guid roomId,
+        [FromBody] SetNoiseReductionDto dto,
+        CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized();
+        }
+
+        var result = await _noiseReduction.SetAsync(roomId, userId.Value, dto.Mode, ct);
+
+        if (result.IsSuccess)
+        {
+            return Ok(new { Mode = result.Value });
+        }
+
+        // A caller who is not in the room gets 404, an unusable mode gets 400. Collapsing the two
+        // would leave a client unable to tell "you are not here" from "that is not a mode".
+        if (result.ErrorCode == ErrorCodes.NotFound)
+        {
+            return NotFound(new { Error = result.Error, Code = result.ErrorCode });
         }
 
         return BadRequest(new { Error = result.Error, Code = result.ErrorCode });
