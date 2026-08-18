@@ -493,7 +493,17 @@ public class TranslationRoomService : ITranslationRoomService
                 // thirty identical "you're invited" messages for one daily booking is spam.
                 var sendInvitationEmails = occurrence is null || occurrence.SendInvitationEmails;
 
-                var meetingLink = $"{_frontendBaseUrl}/room/{roomCode}";
+                // room.Id, NOT roomCode. WT-528.
+                //
+                // Every /room/{x} and /rooms/{x} route on the web forwards the segment VERBATIM to
+                // /{slug}/rooms/{x}, and the page behind it reads that segment as a room id. A code
+                // therefore arrives somewhere it can never resolve: the room lookup fails, the page
+                // renders "You don't have access to this room yet" — which is a wrong diagnosis, the
+                // room is fine and only the identifier was the wrong kind — and "Ask to join" then
+                // POSTs to /translation-rooms/{code}/join, where Guid binding fails with a 400 whose
+                // body the web cannot parse, so it falls back to "This room is not available to
+                // join." That sentence is the whole of Lỗi 2 in the ticket.
+                var meetingLink = $"{_frontendBaseUrl}/room/{room.Id}";
                 var scheduledTime = request.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
 
@@ -2247,7 +2257,9 @@ public class TranslationRoomService : ITranslationRoomService
 
             if (request.InvitedEmails != null && request.InvitedEmails.Any())
             {
-                var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.TranslationRoomCode}";
+                // Id, not code — see the identical link built at room creation for why a code
+                // cannot survive the /room/{x} forward (WT-528).
+                var meetingLink = $"{_frontendBaseUrl}/room/{translationRoom.Id}";
                 var scheduledTime = translationRoom.ScheduledAt?.ToString("f") ?? "Now";
                 var invitationRepo = _unitOfWork.TranslationRoomInvitationRepository;
 
@@ -2669,7 +2681,10 @@ public class TranslationRoomService : ITranslationRoomService
             if (!room.ScheduledAt.HasValue)
                 return Result.Failure<string>(TranslationRoomConstants.ErrorRoomNotScheduled, ErrorCodes.InvalidState);
 
-            var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
+            // Id, not code (WT-528). This one goes into a calendar entry, so it outlives every
+            // other link here — an .ics sits in somebody's calendar until the meeting happens, and
+            // a code in it is a dead link at exactly the moment they click it.
+            var joinLink = $"{_frontendBaseUrl}/room/{room.Id}";
             var ics = IcsCalendarBuilder.Build(
                 uid: $"{room.Id}@warptalk.vn",
                 title: room.Title,

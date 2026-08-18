@@ -208,7 +208,10 @@ public class ReminderNotificationWorker : BackgroundService
     {
         var database = _redis.GetDatabase();
         var recipientIds = ResolveRecipientIds(room);
-        var joinLink = $"{_frontendBaseUrl}/room/{room.TranslationRoomCode}";
+        // Id, not code (WT-528). The web's /room/{x} route forwards the segment verbatim to
+        // /{slug}/rooms/{x}, which reads it as a room id — a code lands on a page that cannot
+        // resolve it and reports the room as inaccessible rather than the link as wrong.
+        var joinLink = $"{_frontendBaseUrl}/room/{room.Id}";
         var title = minutesUntilStart == 1
             ? $"\"{room.Title}\" starts in 1 minute"
             : $"\"{room.Title}\" starts in {minutesUntilStart} minutes";
