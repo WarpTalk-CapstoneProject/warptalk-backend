@@ -189,6 +189,42 @@ public class WorkspaceInvitationsController : ControllerBase
         return ToNoContentResult(result);
     }
 
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/leave-requests")]
+    public async Task<IActionResult> CreateLeaveRequest(Guid workspaceId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+        if (string.IsNullOrWhiteSpace(userEmail)) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _workspaceInvitationService.CreateLeaveRequestAsync(workspaceId, userId.Value, userEmail, ct);
+        return ToActionResult(result);
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/leave-requests/{leaveRequestId:guid}/approve")]
+    public async Task<IActionResult> ApproveLeaveRequest(Guid workspaceId, Guid leaveRequestId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _workspaceInvitationService.ApproveLeaveRequestAsync(workspaceId, leaveRequestId, userId.Value, ct);
+        return ToNoContentResult(result);
+    }
+
+    [Authorize]
+    [HttpPost("{workspaceId:guid}/leave-requests/{leaveRequestId:guid}/reject")]
+    public async Task<IActionResult> RejectLeaveRequest(Guid workspaceId, Guid leaveRequestId, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
+
+        var result = await _workspaceInvitationService.RejectLeaveRequestAsync(workspaceId, leaveRequestId, userId.Value, ct);
+        return ToNoContentResult(result);
+    }
+
     private IActionResult ToActionResult<T>(Result<T> result)
     {
         if (result.IsSuccess)
