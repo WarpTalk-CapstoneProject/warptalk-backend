@@ -25,6 +25,7 @@ public sealed class AdminRouteExposureTests
         "/api/v1/admin/subscriptions/{**catch-all}",
         // The platform meeting directory, served by translation-room. Metadata only: no join, no
         // room control, and no transcript read anywhere on that controller.
+        "/api/v1/admin/meetings",
         "/api/v1/admin/meetings/{**catch-all}",
         // The System Health screen, served by workspace. Query-only against the metrics store:
         // nothing behind it can silence an alert, restart a container or write a sample.
