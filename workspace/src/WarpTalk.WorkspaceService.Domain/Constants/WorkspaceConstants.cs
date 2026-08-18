@@ -59,6 +59,9 @@ public static class WorkspaceConstants
         public const string CannotTransferToExternal = "Cannot transfer ownership to an external member.";
         public const string RequiredRolesNotFound = "Required roles not found.";
         public const string CannotLeaveAsLastOwner = "Cannot leave the workspace as the last owner. Please transfer ownership first.";
+        public const string LeaveRequestNotFound = "Leave request not found or invalid.";
+        public const string AlreadyPendingLeaveRequest = "A pending leave request already exists for this member.";
+        public const string OnlyOwnerAdminCanReviewLeaveRequest = "Only Owner or Admin can review leave requests.";
         public const string OnlyOwnerAdminCanRemoveMembers = "Only Owner or Admin can remove members.";
         public const string TargetMemberNotFoundOrRemoved = "Target member not found or already removed.";
         public const string CannotRemoveOwner = "Cannot remove the Owner of the workspace.";
