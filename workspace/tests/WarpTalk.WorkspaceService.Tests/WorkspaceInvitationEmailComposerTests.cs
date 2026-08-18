@@ -57,8 +57,8 @@ public class WorkspaceInvitationEmailComposerTests
             CancellationToken.None);
 
         Assert.NotNull(capturedRequest);
-        Assert.Contains("https://app.warptalk.vn/invitations/abc123", capturedRequest!.HtmlBody);
-        Assert.Contains("https://app.warptalk.vn/invitations/abc123", capturedRequest.TextBody);
+        Assert.Contains("https://app.warptalk.vn/login?token=abc123", capturedRequest!.HtmlBody);
+        Assert.Contains("https://app.warptalk.vn/login?token=abc123", capturedRequest.TextBody);
     }
 
     [Fact]

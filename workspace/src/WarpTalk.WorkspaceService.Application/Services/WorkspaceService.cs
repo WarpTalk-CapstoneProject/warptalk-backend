@@ -40,6 +40,7 @@ public class WorkspaceService : IWorkspaceService
     /// workspace's settings JSON stays the only record, which is the pre-WT-263 behaviour.
     /// </summary>
     private readonly IBillingSubscriptionClient? _billingSubscriptionClient;
+    private readonly IWorkspaceInvitationService? _invitationService;
 
     public WorkspaceService(
         IUnitOfWork unitOfWork,
@@ -47,7 +48,8 @@ public class WorkspaceService : IWorkspaceService
         ILogger<WorkspaceService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
-        IBillingSubscriptionClient? billingSubscriptionClient = null)
+        IBillingSubscriptionClient? billingSubscriptionClient = null,
+        IWorkspaceInvitationService? invitationService = null)
     {
         _unitOfWork = unitOfWork;
         _workspaceCache = workspaceCache;
@@ -55,6 +57,7 @@ public class WorkspaceService : IWorkspaceService
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
         _billingSubscriptionClient = billingSubscriptionClient;
+        _invitationService = invitationService;
     }
 
 
@@ -174,6 +177,22 @@ public class WorkspaceService : IWorkspaceService
 
             await _eventPublisher.PublishWorkspaceCreatedAsync(workspace.Id, workspace.Name, workspace.Slug, userId, ct);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            if (_invitationService != null && request.InitialInvitations != null && request.InitialInvitations.Count > 0)
+            {
+                foreach (var initialInvite in request.InitialInvitations)
+                {
+                    if (!string.IsNullOrWhiteSpace(initialInvite.Email))
+                    {
+                        var inviteReq = new WarpTalk.WorkspaceService.Application.DTOs.WorkspaceInvitation.InviteMemberRequest(
+                            initialInvite.Email.Trim(),
+                            initialInvite.RoleName,
+                            initialInvite.MembershipType
+                        );
+                        await _invitationService.InviteMemberAsync(workspace.Id, inviteReq, userId, ct);
+                    }
+                }
+            }
 
             return Result.Success(workspace.ToDto(WorkspaceMemberRole.Owner));
         }

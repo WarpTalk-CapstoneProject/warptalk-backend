@@ -1,13 +1,21 @@
 using System;
 using System.Collections.Generic;
+using WarpTalk.WorkspaceService.Domain.Enums;
 
 namespace WarpTalk.WorkspaceService.Application.DTOs.Workspace;
+
+public record InitialWorkspaceInvitationDto(
+    string Email,
+    string RoleName,
+    string MembershipType = nameof(MembershipType.Internal)
+);
 
 public record CreateWorkspaceRequest(
     string Name,
     string? LogoUrl,
     List<string>? VerifiedDomains = null,
-    bool? RequireVerifiedDomainForInternal = null
+    bool? RequireVerifiedDomainForInternal = null,
+    List<InitialWorkspaceInvitationDto>? InitialInvitations = null
 );
 
 public record GetWorkspacesQuery
@@ -33,7 +41,7 @@ public record WorkspaceDto(
     string? LogoUrl,
     string Role,
     DateTime CreatedAt,
-    string MembershipType = "Internal",
+    string MembershipType = nameof(MembershipType.Internal),
     string DefaultLanguage = "en",
     bool CanApproveDocuments = false
 );
