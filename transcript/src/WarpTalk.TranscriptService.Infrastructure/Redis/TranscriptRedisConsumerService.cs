@@ -474,6 +474,21 @@ public class TranscriptRedisConsumerService : BackgroundService
         var sourceSttConfidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
             values, TranscriptConsumerPollingPolicy.SourceSttConfidenceField);
 
+        // How long the translation of this sentence took, as measured by translation_worker.
+        //
+        // The column and the entity property have both existed since this table was designed and
+        // nothing ever wrote them: NULL on every row, 3803 of them. So the single most common
+        // report about this pipeline — "translation is fast sometimes and slow other times" — had
+        // no recorded evidence anywhere, and neither a dashboard nor an investigation could say
+        // whether a given meeting was slow at all.
+        //
+        // Absent parses to NULL rather than 0, deliberately: an empty-sentence flush and a
+        // speculative cache hit do no translation work and have no honest duration to claim, and a
+        // zero among real measurements would drag every average it appears in.
+        var latencyMs = int.TryParse(values.GetValueOrDefault("latency_ms"), out var parsedLatency)
+            ? parsedLatency
+            : (int?)null;
+
         if (string.IsNullOrWhiteSpace(translatedText))
         {
             return true; // flush/empty messages carry no translation to persist
@@ -520,6 +535,11 @@ public class TranscriptRedisConsumerService : BackgroundService
                     TranslatedText = translatedText,
                     TranslatorModel = translatorModel,
                     SourceSttConfidence = sourceSttConfidence,
+                    // Only on the row that is actually created. A dedup HIT reuses an existing
+                    // row, and overwriting its latency with a later occurrence's would describe
+                    // one measurement with another sentence's timing — the stored number belongs
+                    // to the translation that produced the text.
+                    LatencyMs = latencyMs,
                     IsRetranslated = false,
                     Status = "done"
                 };
