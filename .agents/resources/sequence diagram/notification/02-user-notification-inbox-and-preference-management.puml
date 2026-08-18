@@ -1,0 +1,150 @@
+@startuml
+title WarpTalk - User In-App Notification Inbox & Preference Management
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 160
+
+actor "Authenticated User" as User
+boundary "NotificationBell / Inbox UI" as Web
+control "API Gateway" as Gateway
+
+box "Notification Service" #LightSalmon
+participant ":NotificationsController" as Controller <<boundary>>
+participant ":NotificationService" as Service <<service>>
+participant ":NotificationInboxMessageRepository" as InboxRepo <<control>>
+participant ":NotificationPreferenceRepository" as PrefRepo <<control>>
+database "Notification Database" as Db
+end box
+
+== FLOW 1: FETCH USER IN-APP NOTIFICATION INBOX ==
+
+User -> Web : Click Notification Bell / Open Inbox
+activate Web
+
+Web -> Gateway : GET /api/v1/notifications?page=1&pageSize=20\n[with JWT Token]
+activate Gateway
+
+Gateway -> Controller : GetUserNotifications(query, cancellationToken)
+activate Controller
+
+Controller -> Service : GetUserNotificationsAsync(userId, query, ct)
+activate Service
+
+Service -> InboxRepo : GetUserInboxMessagesAsync(userId, query)
+activate InboxRepo
+InboxRepo -> Db : SELECT FROM notification_inbox_messages\nWHERE user_id = userId ORDER BY created_at DESC
+activate Db
+Db --> InboxRepo : Inbox records & total unread count
+deactivate Db
+InboxRepo --> Service : PagedList<NotificationInboxMessage>
+deactivate InboxRepo
+
+Service --> Controller : Result.Success(PagedResponse<NotificationInboxDto>)
+deactivate Service
+Controller --> Gateway : 200 OK (Notifications & UnreadCount)
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+
+Web --> User : Render Notification List & Unread Badge Count
+deactivate Web
+
+== FLOW 2: MARK NOTIFICATION AS READ ==
+
+User -> Web : Click on an unread notification item
+activate Web
+
+Web -> Gateway : PATCH /api/v1/notifications/{id}/read\n[with JWT Token]
+activate Gateway
+
+Gateway -> Controller : MarkAsRead(id, cancellationToken)
+activate Controller
+
+Controller -> Service : MarkAsReadAsync(userId, notificationId, ct)
+activate Service
+
+Service -> InboxRepo : GetByIdAsync(notificationId)
+activate InboxRepo
+InboxRepo -> Db : SELECT FROM notification_inbox_messages WHERE id = notificationId
+activate Db
+Db --> InboxRepo : Message entity
+deactivate Db
+InboxRepo --> Service : Message entity
+deactivate InboxRepo
+
+alt Message Not Found or Ownership Mismatch
+  Service --> Controller : Result.Failure(NotFound)
+  Controller --> Gateway : 404 Not Found
+  Gateway --> Web : Display error
+else Message Belongs to User
+  Service -> InboxRepo : Update(message with IsRead = true, ReadAt = UtcNow)
+  activate InboxRepo
+  InboxRepo --> Service : Tracked
+  deactivate InboxRepo
+
+  Service -> InboxRepo : SaveChangesAsync()
+  activate InboxRepo
+  InboxRepo -> Db : UPDATE notification_inbox_messages SET is_read = true
+  activate Db
+  Db --> InboxRepo : Saved
+  deactivate Db
+  InboxRepo --> Service : Saved
+  deactivate InboxRepo
+
+  Service --> Controller : Result.Success()
+  deactivate Service
+  Controller --> Gateway : 200 OK (or 204 No Content)
+  deactivate Controller
+  Gateway --> Web : 200 OK
+  deactivate Gateway
+
+  Web --> User : Update UI badge & dim read notification
+  deactivate Web
+end
+
+== FLOW 3: UPDATE NOTIFICATION CHANNEL PREFERENCES ==
+
+User -> Web : Change Notification Settings (e.g. disable Email for meeting reminders)
+activate Web
+
+Web -> Gateway : PUT /api/v1/notifications/preferences\n[UpdateNotificationPreferencesRequest + JWT]
+activate Gateway
+
+Gateway -> Controller : UpdatePreferences(request, cancellationToken)
+activate Controller
+
+Controller -> Service : UpdatePreferencesAsync(userId, request, ct)
+activate Service
+
+Service -> PrefRepo : AddOrUpdatePreferencesAsync(userId, preferences)
+activate PrefRepo
+PrefRepo -> Db : INSERT / UPDATE notification_preferences WHERE user_id = userId
+activate Db
+Db --> PrefRepo : Saved
+deactivate Db
+PrefRepo --> Service : Saved
+deactivate PrefRepo
+
+Service --> Controller : Result.Success(NotificationPreferencesDto)
+deactivate Service
+Controller --> Gateway : 200 OK (NotificationPreferencesDto)
+deactivate Controller
+Gateway --> Web : 200 OK
+deactivate Gateway
+
+Web --> User : Display success toast & updated preference toggles
+deactivate Web
+
+@enduml

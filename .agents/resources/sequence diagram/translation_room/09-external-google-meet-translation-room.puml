@@ -1,4 +1,4 @@
-﻿@startuml
+@startuml
 title WarpTalk - External Google Meet Translation Room
 
 autonumber
@@ -22,7 +22,10 @@ boundary "RoomDetailsPage" as RoomDetailsPage
 boundary "GoogleMeetPage" as GoogleMeetPage <<external system>>
 boundary "PopupWidget" as PopupWidget
 
+box "API Gateway" #LightGray
 control "API Gateway" as Gateway <<control>>
+boundary ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+end box
 
 box "Translation Room Service" #LightYellow
 participant ":TranslationRooms\nController" as Controller <<boundary>>
@@ -32,10 +35,6 @@ participant ":TranslationRoom\nAudioRouteService" as RouteService <<service>>
 participant ":TranslationRoom\nRepository" as RoomRepo <<control>>
 participant ":AudioRouteCache\nService" as CacheService <<service>>
 database "Translation Room DB" as RoomDb
-end box
-
-box "Meeting Service" #PaleGreen
-participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
 end box
 
 == STEP 1: CREATE ROOM ON MAIN APP PAGE & REDIRECT TO ROOM DETAILS ==
@@ -161,8 +160,8 @@ alt Member toggles Voice Clone consent
   activate RoomDb
   RoomDb --> RouteService : Saved
   deactivate RoomDb
-  deactivate RouteService
   RouteService --> RouteController : Result.Success()
+  deactivate RouteService
   RouteController --> Gateway : 200 OK
   deactivate RouteController
   Gateway --> PopupWidget : 200 OK

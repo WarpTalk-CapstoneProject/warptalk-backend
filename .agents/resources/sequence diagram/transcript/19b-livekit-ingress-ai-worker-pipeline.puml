@@ -1,0 +1,139 @@
+@startuml
+title WarpTalk - LiveKit Ingress & AI Worker Pipeline Orchestration (STT, Translation, TTS)
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+participant "LiveKit Media Server" as LiveKit <<external system>>
+
+box "LiveKit Ingress Worker Service (livekit_ingress_worker)" #LightCyan
+participant ":LiveKitIngressWorker" as IngressWorker <<boundary>>
+participant ":NearFieldGate" as NearFieldGate <<service>>
+end box
+
+queue "Redis Pub/Sub & Streams" as Redis
+
+box "STT Worker Service (stt_worker)" #LightGreen
+participant ":STTWorker" as STTWorker <<boundary>>
+participant ":OpenAISTT" as STTModel <<service>>
+end box
+
+box "Translation Worker Service (translation_worker)" #LightYellow
+participant ":TranslationWorker" as TransWorker <<boundary>>
+participant ":OpenAITranslator" as Translator <<service>>
+end box
+
+box "TTS Worker Service (tts_worker)" #LightPink
+participant ":TTSWorker" as TTSWorker <<boundary>>
+participant ":CartesiaSynthesizer" as Synthesizer <<service>>
+participant ":LiveKitTTSPublisher" as TTSPublisher <<boundary>>
+end box
+
+box "Transcript Service" #Lavender
+participant ":TranscriptRedisConsumerService" as TranscriptConsumer <<boundary>>
+participant ":UnitOfWork" as UnitOfWork <<control>>
+participant ":TranscriptRepository" as TranscriptRepo <<control>>
+database "Transcript Database" as TranscriptDb
+end box
+
+== STEP 1: LiveKit Ingress Room Join & Audio Capture ==
+
+Redis ->> IngressWorker : Deliver meeting.track_published\n(room_name, participant_identity, track_id)
+activate IngressWorker
+IngressWorker -> LiveKit : Connect ingress participant & subscribe\nto room audio tracks
+LiveKit -->> IngressWorker : Raw audio frames from speaker track
+
+IngressWorker -> NearFieldGate : accept(raw_peak)
+activate NearFieldGate
+NearFieldGate --> IngressWorker : Accept / reject speech window
+deactivate NearFieldGate
+
+IngressWorker -> IngressWorker : Build audio chunk payload\n(meeting_id, speaker_id, pcm_bytes, timestamps)
+IngressWorker ->> Redis : XADD audio:chunks\n{ meeting_id, speaker_id, audio_data,\n  start_ms, end_ms }
+deactivate IngressWorker
+
+== STEP 2: Speech-to-Text Worker Processing (stt_worker) ==
+
+Redis ->> STTWorker : XREADGROUP audio:chunks
+activate STTWorker
+
+STTWorker -> STTModel : TranscribeAsync(audio_data,\nsource_language, context)
+activate STTModel
+STTModel -> STTModel : Execute OpenAI STT inference
+STTModel --> STTWorker : TranscribedSegment\n(text, confidence, timing)
+deactivate STTModel
+
+STTWorker ->> Redis : XADD stt:results\n{ meeting_id, segment_id, speaker_id,\n  text, source_lang, start_ms, end_ms }
+STTWorker ->> Redis : XACK audio:chunks
+deactivate STTWorker
+
+== STEP 3: Translation Worker Processing (translation_worker) ==
+
+Redis ->> TransWorker : XREADGROUP stt:results
+activate TransWorker
+
+TransWorker -> Translator : TranslateAsync(text,\nsource_lang, target_lang, glossary_context)
+activate Translator
+Translator -> Translator : Apply glossary context\nand execute OpenAI translation
+Translator --> TransWorker : TranslationResult\n(translated_text, target_lang)
+deactivate Translator
+
+TransWorker ->> Redis : XADD translate:results\n{ meeting_id, segment_id, speaker_id,\n  translated_text, target_lang }
+TransWorker ->> Redis : XACK stt:results
+deactivate TransWorker
+
+== STEP 4: Text-to-Speech Synthesizer Worker Processing (tts_worker) ==
+
+Redis ->> TTSWorker : XREADGROUP translate:results
+activate TTSWorker
+
+TTSWorker -> Synthesizer : SynthesizeSpeechAsync(translated_text,\nvoice_id, target_lang)
+activate Synthesizer
+Synthesizer -> Synthesizer : Generate synthetic audio\nwith Cartesia
+Synthesizer --> TTSWorker : TTSResult\n(audio_data, duration_ms, voice metadata)
+deactivate Synthesizer
+
+TTSWorker ->> Redis : XADD tts:results\n{ meeting_id, segment_id, speaker_id,\n  audio_data, duration_ms, target_lang }
+
+TTSWorker -> TTSPublisher : Publish translated audio variant\nto target LiveKit room
+activate TTSPublisher
+TTSPublisher -> LiveKit : Publish translated WebRTC audio track
+LiveKit --> TTSPublisher : Track published
+TTSPublisher --> TTSWorker : Publish complete
+deactivate TTSPublisher
+
+TTSWorker ->> Redis : XACK translate:results
+deactivate TTSWorker
+
+== STEP 5: Transcript Persistence from AI Result Streams ==
+
+Redis ->> TranscriptConsumer : XREADGROUP stt:results,\ntranslate:results, tts:results
+activate TranscriptConsumer
+
+TranscriptConsumer -> UnitOfWork : SaveSegmentAsync(segment)
+activate UnitOfWork
+UnitOfWork -> TranscriptRepo : AddAsync(segment)
+activate TranscriptRepo
+TranscriptRepo -> TranscriptDb : INSERT transcript_segments /\ntranslation_contents /\naudio_dubbings
+activate TranscriptDb
+TranscriptDb --> TranscriptRepo : Persisted
+deactivate TranscriptDb
+TranscriptRepo --> UnitOfWork : Done
+deactivate TranscriptRepo
+UnitOfWork --> TranscriptConsumer : SaveChanges completed
+deactivate UnitOfWork
+
+TranscriptConsumer ->> Redis : XACK processed result streams
+deactivate TranscriptConsumer
+
+@enduml

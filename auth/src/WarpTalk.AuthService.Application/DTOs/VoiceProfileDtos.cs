@@ -66,6 +66,19 @@ public record SetDubVoiceRequest(
     string? Language = null
 );
 
+/// <summary>
+/// Ask to hear a voice before a meeting rather than during one.
+///
+/// The language is required and is not a formality: a voice is previewed by SPEAKING in that
+/// language, and the same voice is a different judgement in Vietnamese than in English — which
+/// is the gap between the "80% in English, 70% in Vietnamese" the feature exists to make
+/// measurable.
+/// </summary>
+public record PreviewVoiceRequest(
+    string? VoiceId,
+    string? Language
+);
+
 public class CreateVoiceProfileRequest
 {
     public string DisplayName { get; set; } = null!;

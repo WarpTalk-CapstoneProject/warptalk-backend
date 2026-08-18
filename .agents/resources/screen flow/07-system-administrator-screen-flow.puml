@@ -16,12 +16,12 @@ rectangle "Admin Workspace Detail Page" as AdminWorkspaceDetailPage
 rectangle "Admin Billing Page" as AdminBillingPage
 rectangle "Admin Global Glossary Page" as AdminGlobalGlossaryPage
 
-LoginPage --> AdminOverviewPage : Click "Submit" (with admin credentials)
-AdminOverviewPage --> AdminWorkspacesPage : Click "Workspaces"
-AdminOverviewPage --> AdminBillingPage : Click "Billing"
-AdminOverviewPage --> AdminGlobalGlossaryPage : Click "Global Glossary"
+LoginPage --> AdminOverviewPage
+AdminOverviewPage --> AdminWorkspacesPage
+AdminOverviewPage --> AdminBillingPage
+AdminOverviewPage --> AdminGlobalGlossaryPage
 
-AdminWorkspacesPage --> AdminWorkspaceDetailPage : Click Workspace Row
-AdminWorkspaceDetailPage --> AdminWorkspacesPage : Click "Back to directory"
+AdminWorkspacesPage --> AdminWorkspaceDetailPage
+AdminWorkspaceDetailPage --> AdminWorkspacesPage
 
 @enduml

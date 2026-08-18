@@ -2,11 +2,22 @@
 title WarpTalk - Stripe Credit Top-Up Checkout and Webhook
 
 autonumber
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
 skinparam maxMessageSize 160
 
 actor "Workspace Owner/Admin" as Owner
-actor "Stripe Payment Gateway" as Stripe <<external system>>
-boundary "Billing Service Gateway\n/api/v1/payments" as Gateway
+boundary "Billing Checkout UI" as Web
+control "API Gateway" as Gateway
 
 box "Billing Service" #LightCyan
 participant ":PaymentsController" as Controller <<boundary>>
@@ -16,10 +27,15 @@ control ":BillingGrpcService" as BillingEvents <<control>>
 participant ":PlanService" as PlanService <<service>>
 participant ":UnitOfWork" as UnitOfWork <<control>>
 database "Billing Database" as BillingDb
-queue "Billing Outbox" as Outbox <<entity>>
 end box
 
-Owner -> Gateway : POST /api/v1/payments/checkout\n(CreateCheckoutSessionRequest)
+queue "Billing Outbox Stream" as Outbox
+participant "Stripe Payment Gateway" as Stripe <<external system>>
+
+Owner -> Web : Select Credit Top-Up package & click Checkout
+activate Web
+
+Web -> Gateway : POST /api/v1/payments/checkout\n(CreateCheckoutSessionRequest)
 activate Gateway
 Gateway -> Controller : CreateCheckoutSession(request)
 activate Controller
@@ -48,8 +64,10 @@ Stripe --> StripeGateway : checkout URL
 StripeGateway --> Controller : checkout URL
 deactivate StripeGateway
 Controller --> Gateway : 200 OK { url }
-Gateway --> Owner : Redirect/return Stripe checkout URL
+Gateway --> Web : 200 OK { url }
 deactivate Gateway
+Web --> Owner : Redirect browser to Stripe Checkout URL
+deactivate Web
 
 Stripe -> Gateway : POST /api/v1/payments/webhook\n(Stripe-Signature, event payload)
 activate Gateway

@@ -1,22 +1,22 @@
 @startuml
-title 3.2 Workspace Module Class Diagram
+title 3.2 Workspace Module Class Diagram (Report 4 Embedded Version)
 
 top to bottom direction
 hide circle
-hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 35
-skinparam ranksep 45
 skinparam dpi 140
+skinparam titleFontSize 18
+skinparam packageFontSize 16
 skinparam classFontSize 14
 skinparam classAttributeFontSize 12
-skinparam packageFontSize 16
-skinparam titleFontSize 18
 skinparam ArrowFontSize 11
+skinparam nodesep 32
+skinparam ranksep 40
+skinparam packageTitleAlignment left
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
@@ -26,304 +26,338 @@ skinparam ArrowColor Black
 
 package "API Layer" as ApiLayer {
   class WorkspacesController <<boundary>> {
-    +CreateWorkspace(request)
-    +UpdateWorkspaceSettings(id, request)
-    +TransferOwnership(id, request)
+    - workspaceService: IWorkspaceService
+    --
+    + CreateWorkspace(request: CreateWorkspaceRequest): Task<Result>
+    + GetWorkspaces(query: GetWorkspacesQuery): Task<Result>
+    + GetWorkspaceById(id: Guid): Task<Result>
+    + SelectWorkspace(id: Guid): Task<Result>
   }
 
   class WorkspaceMembersController <<boundary>> {
-    +UpdateMemberRole(id, memberId, request)
-    +RemoveMember(id, memberId)
-    +LeaveWorkspace(id)
+    - memberService: IWorkspaceMemberService
+    --
+    + GetMembers(workspaceId: Guid): Task<Result>
+    + UpdateMemberRole(workspaceId: Guid, userId: Guid, request: UpdateMemberRoleRequest): Task<Result>
+    + RemoveMember(workspaceId: Guid, userId: Guid): Task<Result>
   }
 
   class WorkspaceInvitationsController <<boundary>> {
-    +InviteMember(workspaceId, request)
-    +AcceptInvitation(request)
-    +ApproveJoinRequest(workspaceId, invitationId)
+    - invitationService: IWorkspaceInvitationService
+    --
+    + InviteMember(workspaceId: Guid, request: InviteMemberRequest): Task<Result>
+    + AcceptInvitation(request: AcceptInvitationRequest): Task<Result>
+    + CreateJoinRequest(command: CreateJoinRequestCommand): Task<Result>
   }
 
   class WorkspaceDocumentsController <<boundary>> {
-    +UploadDocument(workspaceId, request)
-    +DownloadDocument(workspaceId, documentId)
-    +AddAccessPolicy(workspaceId, documentId, request)
-  }
-
-  class WorkspaceVerifiedDomainsController <<boundary>> {
-    +CreateDomain(workspaceId, request)
-    +VerifyDomain(workspaceId, domainId)
+    - documentService: IWorkspaceDocumentService
+    --
+    + UploadDocument(workspaceId: Guid, request: UploadDocumentApiRequest): Task<Result>
+    + ListDocuments(workspaceId: Guid, query: GetDocumentsQuery): Task<Result>
+    + DownloadDocument(workspaceId: Guid, documentId: Guid): Task<Result>
   }
 
   class AdminWorkspacesController <<boundary>> {
-    +SuspendWorkspace(id)
-    +GetWorkspaceDirectory(query)
-  }
-
-  class AdminAuditLogController <<boundary>> {
-    +GetAuditLogs(query)
+    - adminWorkspaceService: IAdminWorkspaceService
+    --
+    + GetAllWorkspaces(query: AdminWorkspaceQuery): Task<Result>
+    + UpdateWorkspaceStatus(workspaceId: Guid, status: String): Task<Result>
   }
 
   class WorkspaceGrpcService <<boundary>> {
-    +HasActiveMembership(request)
-    +GetActiveWorkspacesCount(request)
-  }
-
-  class WorkspaceInvitationGrpcService <<boundary>> {
-    +VerifyInvitationToken(request)
-    +AcceptInvitation(request)
+    - workspaceService: IWorkspaceService
+    --
+    + ValidateWorkspaceAccess(request: ValidateAccessRequest): Task<ValidateAccessResponse>
   }
 
   WorkspacesController -[hidden]right- WorkspaceMembersController
   WorkspaceMembersController -[hidden]right- WorkspaceInvitationsController
   WorkspacesController -[hidden]down- WorkspaceDocumentsController
-  WorkspaceDocumentsController -[hidden]right- WorkspaceVerifiedDomainsController
-  WorkspaceVerifiedDomainsController -[hidden]right- AdminWorkspacesController
-  WorkspaceDocumentsController -[hidden]down- AdminAuditLogController
-  AdminAuditLogController -[hidden]right- WorkspaceGrpcService
-  WorkspaceGrpcService -[hidden]right- WorkspaceInvitationGrpcService
+  WorkspaceDocumentsController -[hidden]right- AdminWorkspacesController
+  AdminWorkspacesController -[hidden]right- WorkspaceGrpcService
 }
 
 package "Application Layer" as ApplicationLayer {
   class WorkspaceService <<control>> {
-    +CreateWorkspaceAsync(request, ownerId)
-    +TransferOwnershipAsync(request)
-    +UpdateWorkspaceSettingsAsync(id, settings, userId)
+    - workspaceRepository: IWorkspaceRepository
+    - memberRepository: IWorkspaceMemberRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + CreateWorkspaceAsync(request: CreateWorkspaceRequest): Task<Result>
+    + GetWorkspacesAsync(query: GetWorkspacesQuery): Task<Result>
+    + GetWorkspaceByIdAsync(workspaceId: Guid): Task<Result>
   }
 
   class WorkspaceMemberService <<control>> {
-    +RemoveMemberAsync(request)
-    +LeaveWorkspaceAsync(workspaceId, userId)
-    +ActivateMember(userId)
+    - memberRepository: IWorkspaceMemberRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + GetMembersAsync(workspaceId: Guid): Task<Result>
+    + UpdateMemberRoleAsync(workspaceId: Guid, userId: Guid, newRole: String): Task<Result>
+    + RemoveMemberAsync(workspaceId: Guid, userId: Guid): Task<Result>
   }
 
   class WorkspaceInvitationService <<control>> {
-    +InviteMemberAsync(workspaceId, request, inviterId)
-    +AcceptInvitationAsync(request, userId, email)
-    +ApproveJoinRequestAsync(workspaceId, invitationId, adminId)
+    - invitationRepository: IWorkspaceInvitationRepository
+    - memberRepository: IWorkspaceMemberRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + InviteMemberAsync(workspaceId: Guid, request: InviteMemberRequest): Task<Result>
+    + AcceptInvitationAsync(request: AcceptInvitationRequest): Task<Result>
   }
 
   class WorkspaceDocumentService <<control>> {
-    +UploadDocumentAsync(workspaceId, file, actorId)
-    +AddAccessPolicyAsync(workspaceId, documentId, request, actorId)
-    +GetDocumentDownloadStreamAsync(workspaceId, documentId, actorId)
+    - documentRepository: IWorkspaceDocumentRepository
+    - storage: IWorkspaceDocumentStorage
+    - unitOfWork: IUnitOfWork
+    --
+    + UploadDocumentAsync(workspaceId: Guid, request: UploadDocumentApiRequest): Task<Result>
+    + ListDocumentsAsync(workspaceId: Guid, query: GetDocumentsQuery): Task<Result>
   }
 
-  class VerifiedDomainService <<control>> {
-    +CreateDomainAsync(workspaceId, request, actorId)
-    +VerifyDomainAsync(workspaceId, domainId, actorId)
+  class WorkspaceKnowledgeService <<control>> {
+    - vectorStoreAdapter: IQdrantVectorStoreAdapter
+    - documentRepository: IWorkspaceDocumentRepository
+    --
+    + IndexDocumentChunksAsync(documentId: Guid, chunks: List<String>): Task<Result>
+    + SearchKnowledgeAsync(workspaceId: Guid, query: String): Task<List<String>>
   }
 
   class AdminWorkspaceService <<control>> {
-    +SuspendWorkspaceAsync(id)
-    +GetWorkspaceDirectoryAsync(query)
+    - workspaceRepository: IWorkspaceRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + AdminGetWorkspacesAsync(query: AdminWorkspaceQuery): Task<Result>
+    + AdminSetWorkspaceStatusAsync(workspaceId: Guid, isActive: Boolean): Task<Result>
   }
 
-  class AdminAuditLogService <<control>> {
-    +GetAuditLogsAsync(query)
-    +RecordAdminActionAsync(action)
+  class VerifiedDomainService <<control>> {
+    - domainRepository: IWorkspaceVerifiedDomainRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + AddDomainAsync(workspaceId: Guid, domainName: String): Task<Result>
+    + VerifyDomainDnsAsync(domainId: Guid): Task<Result>
   }
 
   WorkspaceService -[hidden]right- WorkspaceMemberService
   WorkspaceMemberService -[hidden]right- WorkspaceInvitationService
-  WorkspaceService -[hidden]down- WorkspaceDocumentService
-  WorkspaceDocumentService -[hidden]right- VerifiedDomainService
-  VerifiedDomainService -[hidden]right- AdminWorkspaceService
-  WorkspaceDocumentService -[hidden]down- AdminAuditLogService
+  WorkspaceInvitationService -[hidden]right- WorkspaceDocumentService
+  WorkspaceService -[hidden]down- WorkspaceKnowledgeService
+  WorkspaceKnowledgeService -[hidden]right- AdminWorkspaceService
+  AdminWorkspaceService -[hidden]right- VerifiedDomainService
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
+  class WorkspaceDbContext <<control>> {
+    + Workspaces: DbSet<Workspace>
+    + WorkspaceMembers: DbSet<WorkspaceMember>
+    + WorkspaceInvitations: DbSet<WorkspaceInvitation>
+    + WorkspaceDocuments: DbSet<WorkspaceDocument>
+    + WorkspaceDocumentAccessPolicies: DbSet<WorkspaceDocumentAccessPolicy>
+    + WorkspaceVerifiedDomains: DbSet<WorkspaceVerifiedDomain>
+    + WorkspaceAdminActions: DbSet<WorkspaceAdminAction>
+    --
+    + SaveChangesAsync(): Task<Int>
+  }
+
   class UnitOfWork <<control>> {
-    +SaveChangesAsync()
-    +Repository<T>()
+    - dbContext: WorkspaceDbContext
+    --
+    + SaveChangesAsync(): Task<Int>
+    + BeginTransactionAsync(): Task
+    + CommitTransactionAsync(): Task
   }
 
   class WorkspaceRepository <<control>> {
-    +GetByIdAsync(id)
-    +GetBySlugAsync(slug)
-    +Update(workspace)
+    - dbContext: WorkspaceDbContext
+    --
+    + GetByIdAsync(id: Guid): Task<Workspace>
+    + GetWorkspacesForUserAsync(userId: Guid): Task<List<Workspace>>
+    + AddAsync(workspace: Workspace): Task
   }
 
   class WorkspaceMemberRepository <<control>> {
-    +GetActiveMembershipAsync(userId)
-    +GetByWorkspaceAndUserAsync(workspaceId, userId)
+    - dbContext: WorkspaceDbContext
+    --
+    + GetActiveMembersByWorkspaceAsync(workspaceId: Guid): Task<List<WorkspaceMember>>
+    + AddAsync(member: WorkspaceMember): Task
   }
 
   class WorkspaceInvitationRepository <<control>> {
-    +GetPendingByEmailAsync(workspaceId, email)
-    +GetByTokenHashAsync(tokenHash)
+    - dbContext: WorkspaceDbContext
+    --
+    + GetByTokenHashAsync(tokenHash: String): Task<WorkspaceInvitation>
+    + AddAsync(invitation: WorkspaceInvitation): Task
   }
 
   class WorkspaceDocumentRepository <<control>> {
-    +GetByIdAsync(id)
-    +AddAsync(document)
-    +Update(document)
+    - dbContext: WorkspaceDbContext
+    --
+    + GetPagedDocumentsAsync(workspaceId: Guid): Task<List<WorkspaceDocument>>
+    + AddAsync(document: WorkspaceDocument): Task
   }
 
-  class WorkspaceDocumentStorage <<control>> {
-    +SaveDocumentContentAsync(document, stream)
-    +GetDecryptedStreamAsync(document)
-    +DeleteDocumentContentAsync(document)
+  class WorkspaceVerifiedDomainRepository <<control>> {
+    - dbContext: WorkspaceDbContext
+    --
+    + GetByWorkspaceIdAsync(workspaceId: Guid): Task<List<WorkspaceVerifiedDomain>>
+    + AddAsync(domain: WorkspaceVerifiedDomain): Task
   }
 
-  class DocumentSecurityScanner <<control>> {
-    +ScanAsync(document)
+  class LocalEncryptedWorkspaceDocumentStorage <<control>> {
+    - storageOptions: ObjectStorageOptions
+    --
+    + SaveDocumentContentAsync(document: WorkspaceDocument, stream: Stream): Task
+    + ReadDocumentContentAsync(document: WorkspaceDocument): Task<Stream>
   }
 
-  class RedisEmbeddingIndexPublisher <<control>> {
-    +PublishEmbeddingIndexRequestAsync(documentId, workspaceId, text)
+  class QdrantVectorStoreAdapter <<control>> {
+    - qdrantClient: QdrantClient
+    --
+    + UpsertVectorsAsync(collection: String, vectors: List<VectorRecord>): Task
+    + QuerySimilarVectorsAsync(collection: String, vector: List<Single>): Task<List<String>>
   }
 
-  class AuthIdentityGrpcClient <<control>> {
-    +GetUserByIdAsync(userId)
-    +GetRoleNameByIdAsync(roleId)
-  }
-
-  class TranslationRoomGrpcClient <<control>> {
-    +GetRoomAsync(roomId)
-  }
-
+  WorkspaceDbContext -[hidden]right- UnitOfWork
   UnitOfWork -[hidden]right- WorkspaceRepository
   WorkspaceRepository -[hidden]right- WorkspaceMemberRepository
-  UnitOfWork -[hidden]down- WorkspaceInvitationRepository
-  WorkspaceInvitationRepository -[hidden]right- WorkspaceDocumentRepository
-  WorkspaceDocumentRepository -[hidden]right- WorkspaceDocumentStorage
-  WorkspaceInvitationRepository -[hidden]down- DocumentSecurityScanner
-  DocumentSecurityScanner -[hidden]right- RedisEmbeddingIndexPublisher
-  RedisEmbeddingIndexPublisher -[hidden]right- AuthIdentityGrpcClient
-  DocumentSecurityScanner -[hidden]down- TranslationRoomGrpcClient
-
-  UnitOfWork o-- WorkspaceRepository
-  UnitOfWork o-- WorkspaceMemberRepository
-  UnitOfWork o-- WorkspaceInvitationRepository
-  UnitOfWork o-- WorkspaceDocumentRepository
+  WorkspaceMemberRepository -[hidden]right- WorkspaceInvitationRepository
+  WorkspaceRepository -[hidden]down- WorkspaceDocumentRepository
+  WorkspaceDocumentRepository -[hidden]right- WorkspaceVerifiedDomainRepository
+  WorkspaceVerifiedDomainRepository -[hidden]right- LocalEncryptedWorkspaceDocumentStorage
+  LocalEncryptedWorkspaceDocumentStorage -[hidden]right- QdrantVectorStoreAdapter
 }
 
 package "Domain Layer" as DomainLayer {
   class Workspace <<entity>> {
-    -Id: Guid
-    -Name: String
-    -Slug: String
-    -Status: WorkspaceStatus
-    -Settings: Json
+    - Id: Guid
+    - Name: String
+    - Slug: String
+    - OwnerId: Guid
+    - AvatarUrl: String
+    - IsActive: Boolean
+    - CreatedAt: DateTime
+    --
   }
 
   class WorkspaceMember <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -UserId: Guid
-    -RoleId: Guid
-    -MembershipType: MembershipType
+    - Id: Guid
+    - WorkspaceId: Guid
+    - UserId: Guid
+    - RoleId: Guid
+    - Status: String
+    - JoinedAt: DateTime
+    --
   }
 
   class WorkspaceInvitation <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -Email: String
-    -RoleId: Guid
-    -TokenHash: String
-    -Status: InvitationStatus
+    - Id: Guid
+    - WorkspaceId: Guid
+    - Email: String
+    - TokenHash: String
+    - RoleId: Guid
+    - Status: String
+    - ExpiresAt: DateTime
+    --
   }
 
   class WorkspaceDocument <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -UploadedBy: Guid
-    -StorageKey: String
-    -IngestionStatus: WorkspaceDocumentIngestionStatus
+    - Id: Guid
+    - WorkspaceId: Guid
+    - StorageKey: String
+    - FileName: String
+    - FileExtension: String
+    - FileSizeBytes: Long
+    - IngestionStatus: String
+    --
   }
 
   class WorkspaceDocumentAccessPolicy <<entity>> {
-    -Id: Guid
-    -DocumentId: Guid
-    -SubjectType: String
-    -Permission: String
-    -Effect: String
+    - Id: Guid
+    - DocumentId: Guid
+    - TargetRole: String
+    - CanRead: Boolean
+    - CanWrite: Boolean
+    --
   }
 
   class WorkspaceVerifiedDomain <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -Domain: String
-    -Status: VerifiedDomainStatus
+    - Id: Guid
+    - WorkspaceId: Guid
+    - DomainName: String
+    - IsVerified: Boolean
+    - VerifiedAt: DateTime?
+    --
   }
 
   class WorkspaceAdminAction <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -Action: String
-    -ActorUserId: Guid
+    - Id: Guid
+    - WorkspaceId: Guid
+    - AdminUserId: Guid
+    - ActionType: String
+    - DetailsJson: String
+    - PerformedAt: DateTime
+    --
   }
 
-  Workspace "1" *-- "0..*" WorkspaceMember : contains members
-  Workspace "1" *-- "0..*" WorkspaceInvitation : issues invitations
-  Workspace "1" *-- "0..*" WorkspaceDocument : owns documents
-  WorkspaceDocument "1" *-- "0..*" WorkspaceDocumentAccessPolicy : controls access
-  Workspace "1" *-- "0..*" WorkspaceVerifiedDomain : verifies domains
-  Workspace "1" *-- "0..*" WorkspaceAdminAction : records audit
-}
-
-package "External Systems" as ExternalSystems {
-  class AuthServiceGrpcServer <<external system>> {
-    +ResolveUser(userId)
-  }
-
-  class TranslationRoomServiceGrpcServer <<external system>> {
-    +GetRoom(roomId)
-  }
-
-  class ObjectStorageProvider <<external system>> {
-    +StoreEncryptedObject(key)
-  }
-
-  class RedisEventStream <<external system>> {
-    +PublishWorkspaceEvent(event)
-  }
-
-  class QdrantVectorDb <<external system>> {
-    +IndexEmbedding(documentChunk)
-  }
-
-  AuthServiceGrpcServer -[hidden]right- TranslationRoomServiceGrpcServer
-  TranslationRoomServiceGrpcServer -[hidden]right- ObjectStorageProvider
-  AuthServiceGrpcServer -[hidden]down- RedisEventStream
-  RedisEventStream -[hidden]right- QdrantVectorDb
+  Workspace -[hidden]right- WorkspaceMember
+  WorkspaceMember -[hidden]right- WorkspaceInvitation
+  WorkspaceInvitation -[hidden]right- WorkspaceDocument
+  Workspace -[hidden]down- WorkspaceDocumentAccessPolicy
+  WorkspaceDocumentAccessPolicy -[hidden]right- WorkspaceVerifiedDomain
+  WorkspaceVerifiedDomain -[hidden]right- WorkspaceAdminAction
 }
 
 WorkspacesController --> WorkspaceService
 WorkspaceMembersController --> WorkspaceMemberService
 WorkspaceInvitationsController --> WorkspaceInvitationService
 WorkspaceDocumentsController --> WorkspaceDocumentService
-WorkspaceVerifiedDomainsController --> VerifiedDomainService
 AdminWorkspacesController --> AdminWorkspaceService
-AdminAuditLogController --> AdminAuditLogService
-WorkspaceGrpcService --> WorkspaceMemberService
-WorkspaceInvitationGrpcService --> WorkspaceInvitationService
+WorkspaceGrpcService --> WorkspaceService
 
-WorkspaceDocumentService ..> WorkspaceDocumentStorage
-WorkspaceDocumentService ..> RedisEmbeddingIndexPublisher
-WorkspaceService ..> AuthIdentityGrpcClient
-WorkspaceInvitationService ..> AuthIdentityGrpcClient
-WorkspaceDocumentService ..> TranslationRoomGrpcClient
+WorkspaceService ..> WorkspaceRepository
+WorkspaceService ..> WorkspaceMemberRepository
+WorkspaceService ..> UnitOfWork
+
+WorkspaceMemberService ..> WorkspaceMemberRepository
+WorkspaceMemberService ..> UnitOfWork
+
+WorkspaceInvitationService ..> WorkspaceInvitationRepository
+WorkspaceInvitationService ..> WorkspaceMemberRepository
+WorkspaceInvitationService ..> UnitOfWork
+
+WorkspaceDocumentService ..> WorkspaceDocumentRepository
+WorkspaceDocumentService ..> LocalEncryptedWorkspaceDocumentStorage
+WorkspaceDocumentService ..> UnitOfWork
+
+WorkspaceKnowledgeService ..> QdrantVectorStoreAdapter
+WorkspaceKnowledgeService ..> WorkspaceDocumentRepository
+
+AdminWorkspaceService ..> WorkspaceRepository
+AdminWorkspaceService ..> UnitOfWork
+
+VerifiedDomainService ..> WorkspaceVerifiedDomainRepository
+VerifiedDomainService ..> UnitOfWork
+
+WorkspaceRepository ..> WorkspaceDbContext
+WorkspaceMemberRepository ..> WorkspaceDbContext
+WorkspaceInvitationRepository ..> WorkspaceDbContext
+WorkspaceDocumentRepository ..> WorkspaceDbContext
+WorkspaceVerifiedDomainRepository ..> WorkspaceDbContext
+UnitOfWork ..> WorkspaceDbContext
 
 WorkspaceRepository ..> Workspace : persists
 WorkspaceMemberRepository ..> WorkspaceMember : persists
 WorkspaceInvitationRepository ..> WorkspaceInvitation : persists
 WorkspaceDocumentRepository ..> WorkspaceDocument : persists
-WorkspaceDocumentRepository ..> WorkspaceDocumentAccessPolicy : persists
+WorkspaceVerifiedDomainRepository ..> WorkspaceVerifiedDomain : persists
 
-WorkspaceDocumentStorage ..> ObjectStorageProvider : stores files
-RedisEmbeddingIndexPublisher ..> RedisEventStream : publishes events
-RedisEmbeddingIndexPublisher ..> QdrantVectorDb : feeds embeddings
-AuthIdentityGrpcClient ..> AuthServiceGrpcServer : resolves identity
-TranslationRoomGrpcClient ..> TranslationRoomServiceGrpcServer : reads rooms
+Workspace *-- "0..*" WorkspaceMember
+Workspace *-- "0..*" WorkspaceInvitation
+Workspace *-- "0..*" WorkspaceDocument
+Workspace *-- "0..*" WorkspaceVerifiedDomain
+Workspace *-- "0..*" WorkspaceAdminAction
+WorkspaceDocument *-- "0..*" WorkspaceDocumentAccessPolicy
 
-ApiLayer -[hidden]down- ApplicationLayer
-ApplicationLayer -[hidden]down- InfrastructureLayer
-InfrastructureLayer -[hidden]down- DomainLayer
-DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

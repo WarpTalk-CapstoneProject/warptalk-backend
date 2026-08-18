@@ -59,6 +59,7 @@ public class VoiceProfileService : IVoiceProfileService
     private readonly IVoiceSampleStorage _storage;
     private readonly IVoiceCatalogDirectory _voiceCatalog;
     private readonly IVoiceCloneRequestQueue _cloneQueue;
+    private readonly IVoicePreviewQueue _previewQueue;
     private readonly ILogger<VoiceProfileService> _logger;
 
     public VoiceProfileService(
@@ -66,12 +67,14 @@ public class VoiceProfileService : IVoiceProfileService
         IVoiceSampleStorage storage,
         IVoiceCatalogDirectory voiceCatalog,
         IVoiceCloneRequestQueue cloneQueue,
+        IVoicePreviewQueue previewQueue,
         ILogger<VoiceProfileService> logger)
     {
         _unitOfWork = unitOfWork;
         _storage = storage;
         _voiceCatalog = voiceCatalog;
         _cloneQueue = cloneQueue;
+        _previewQueue = previewQueue;
         _logger = logger;
     }
 
@@ -170,6 +173,88 @@ public class VoiceProfileService : IVoiceProfileService
         var catalog = await _voiceCatalog.GetAsync(language.Trim(), ct);
         return catalog.Any(v => string.Equals(v.Id, voiceId, StringComparison.Ordinal));
     }
+
+    public async Task<Result<byte[]>> PreviewVoiceAsync(
+        Guid userId, PreviewVoiceRequest request, CancellationToken ct = default)
+    {
+        var voiceId = request.VoiceId?.Trim();
+        var language = request.Language?.Trim();
+
+        if (string.IsNullOrWhiteSpace(voiceId))
+        {
+            return Result.Failure<byte[]>("A voice is required.", ErrorCodes.ValidationError);
+        }
+        if (string.IsNullOrWhiteSpace(language))
+        {
+            // Not a formality. The sample is SPOKEN in this language, and a voice is a different
+            // judgement in one language than another — which is the whole point of listening.
+            return Result.Failure<byte[]>("A language is required.", ErrorCodes.ValidationError);
+        }
+
+        // The same gate SetDubVoiceAsync applies, deliberately reused rather than restated: a
+        // voice cloned from somebody's recording is theirs, and rendering audio from an id this
+        // user cannot be dubbed in would be a way to sample another person's voice.
+        if (!await IsVoiceChoosableByAsync(userId, voiceId, language, ct))
+        {
+            return Result.Failure<byte[]>(
+                "That voice is not one you can preview.",
+                ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            // Asked for before it is requested. The AI side keys a rendered sample by
+            // (voice, language) rather than by request, so every play after the first is a cache
+            // read — and the common case never reaches the queue or the timeout below at all.
+            var cached = await _previewQueue.TryGetAsync(voiceId, language, ct);
+            if (cached is not null)
+            {
+                return AsResult(cached);
+            }
+
+            if (!await _previewQueue.RequestAsync(voiceId, language, ct))
+            {
+                // Said plainly rather than waited out. Nobody asked for this render, so no answer
+                // is coming and holding the request open for the timeout would only look broken.
+                return Result.Failure<byte[]>(
+                    "Voice previews are unavailable right now.",
+                    ErrorCodes.InvalidState);
+            }
+
+            var rendered = await _previewQueue.WaitAsync(voiceId, language, ct);
+            if (rendered is null)
+            {
+                // A real outcome, not a failure of the render: it may still land, and the next
+                // press of the button is served from the cache instantly. Worded so that trying
+                // again reads as the sensible next step, because it is.
+                return Result.Failure<byte[]>(
+                    "The preview is taking longer than expected. Try again in a moment.",
+                    ErrorCodes.InvalidState);
+            }
+
+            return AsResult(rendered);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex, "Error occurred while previewing voice {VoiceId} for user {UserId}.", voiceId, userId);
+            return Result.Failure<byte[]>(
+                "An unexpected error occurred while rendering the preview.",
+                ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// A rendered failure is an answer, and is reported as the named failure it is rather than
+    /// as an empty success — a play button that silently plays nothing is the state this whole
+    /// feature exists to remove.
+    /// </summary>
+    private static Result<byte[]> AsResult(VoicePreview preview) =>
+        preview.Audio is { Length: > 0 }
+            ? Result.Success(preview.Audio)
+            : Result.Failure<byte[]>(
+                preview.Error ?? "The preview could not be rendered.",
+                ErrorCodes.InvalidState);
 
     public async Task<Result<VoiceProfileDto?>> SetPreferredVoiceAsync(Guid userId, SetPreferredVoiceRequest request, CancellationToken ct = default)
     {

@@ -75,6 +75,7 @@ if (string.IsNullOrWhiteSpace(redisConnectionString))
     builder.Services.AddScoped<IVoiceCloneRequestQueue, NullVoiceCloneRequestQueue>();
     // Nor any way to hear that a meeting cloned somebody, or to ask for a voice to be destroyed.
     builder.Services.AddSingleton<IVoiceCarryOverQueue, NullVoiceCarryOverQueue>();
+    builder.Services.AddScoped<IVoicePreviewQueue, NullVoicePreviewQueue>();
 }
 else
 {
@@ -98,6 +99,7 @@ else
     // re-run the XGROUP check on every request instead of once per process.
     builder.Services.AddSingleton<IVoiceCarryOverQueue, RedisVoiceCarryOverQueue>();
     builder.Services.AddHostedService<VoiceCarryOverConsumerWorker>();
+    builder.Services.AddScoped<IVoicePreviewQueue, RedisVoicePreviewQueue>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);

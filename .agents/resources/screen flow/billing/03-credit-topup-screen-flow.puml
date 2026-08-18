@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam rectangle {
@@ -11,23 +12,33 @@ left to right direction
 
 ' Screen Nodes
 rectangle "Workspace Home Page" as WorkspaceHome
-rectangle "Billing & Wallet Page" as BillingWalletPage
-rectangle "Top-Up Plans Page" as TopUpPlansPage
-rectangle "Payment Checkout Gateway" as CheckoutGateway
+rectangle "Workspace Dashboard Page" as WorkspaceDashboardPage
+rectangle "Workspace Settings Page" as WorkspaceSettingsPage
+rectangle "Billing Page" as BillingPage
+rectangle "Plans Page" as PlansPage
+rectangle "Stripe Checkout" as StripeCheckout
 rectangle "Payment Success Page" as PaymentSuccessPage
 rectangle "Payment Cancelled Page" as PaymentCancelledPage
 
-' Flow: Accessing Credit Top Up
-WorkspaceHome --> BillingWalletPage : Click "Billing & Credits"
-BillingWalletPage --> TopUpPlansPage : Click "Top Up Credits"
+' Flow: Accessing Dashboard & Settings from Home
+WorkspaceHome --> WorkspaceDashboardPage
+WorkspaceHome --> WorkspaceSettingsPage
+WorkspaceSettingsPage --> BillingPage
 
-' Flow: Credit Package Selection & Payment
-TopUpPlansPage --> CheckoutGateway : Click "Top up 10,000 / 25,000 / 50,000 Credits"
-CheckoutGateway --> PaymentSuccessPage : Payment Successful
-CheckoutGateway --> PaymentCancelledPage : Payment Failed or Cancelled
+' Flow: Credit Tracking & Navigation from Dashboard
+WorkspaceDashboardPage --> BillingPage
+WorkspaceDashboardPage --> PlansPage
 
-' Flow: Return & Balance Synchronization
-PaymentSuccessPage --> BillingWalletPage : Click "Return to Wallet" (credits balance updated)
-PaymentCancelledPage --> TopUpPlansPage : Click "Try Again"
+' Views & Actions inside Billing Page
+BillingPage --> PlansPage
+
+' Checkout & Payment Gateway Flow
+PlansPage --> StripeCheckout
+StripeCheckout --> PaymentSuccessPage
+StripeCheckout --> PaymentCancelledPage
+
+' Return flows back to Billing Page / Plans Page
+PaymentSuccessPage --> BillingPage
+PaymentCancelledPage --> PlansPage
 
 @enduml

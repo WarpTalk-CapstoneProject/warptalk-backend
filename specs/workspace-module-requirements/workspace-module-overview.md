@@ -384,18 +384,28 @@ UI implementation rule: UI phải phân biệt TranslationRoom, MeetingRoom và 
 
 ```mermaid
 flowchart TD
-A["Create/Select Workspace"] --> B["Invite or manage members"]
-B --> C{"Inviter chọn access type"}
-C -->|Internal, domain hợp lệ| D["Assign Owner/Admin/Member"]
-C -->|External, collaboration bật| E["External Member, role Member"]
-C -->|lựa chọn không hợp lệ| X["Reject invite"]
-D --> F["Create room / upload document"]
-E --> F
-F --> G{"Policy checks"}
-G -->|allowed| H["Persist metadata / meeting"]
-G -->|denied| Y["Return 403/400"]
-H --> I["Redis/gRPC downstream integration"]
-I --> J["Audit, retention, AI ingestion"]
+LP["Unauthenticated user opens landing page"] --> Plans["Scroll to Subscription plans"]
+Plans --> Buy["Click Buy / Get started"]
+Buy --> Auth["Redirect to Login / Register"]
+Auth --> Pay["Workspace Owner completes payment"]
+Pay --> WorkspaceIndex["Redirect to /workspace"]
+WorkspaceIndex --> Create["Create workspace"]
+Create --> Home["Open workspace home and sidebar"]
+Home --> Seeded["Demo state: 5-seat plan with 4 active seats"]
+Seeded --> Members["Invite members from Members page"]
+Members --> MailA["System sends invitation email to Invitee A"]
+MailA --> AcceptA["Invitee A accepts from mailbox"]
+AcceptA --> Joined["System adds Invitee A as seat #5"]
+Joined --> InviteB["Owner invites Invitee B"]
+InviteB --> LimitError["System blocks seat #6 with plan limit error"]
+Members --> Requests["Approve or reject join requests"]
+LimitError --> Permissions["Manage member permissions and roles"]
+Requests --> Permissions
+Permissions --> Settings["Configure workspace settings and AI policy"]
+Settings --> Terms["Create workspace terminology"]
+Terms --> Docs["Upload workspace documents"]
+Docs --> Ingest["Process, store and apply access policy"]
+Ingest --> Dashboard["Review Workspace Dashboard"]
 ```
 
 ## 9. Screen flow

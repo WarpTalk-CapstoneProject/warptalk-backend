@@ -12,7 +12,10 @@ skinparam maxMessageSize 150
 
 actor "Participant" as Actor
 boundary "MeetingRoomPage" as Web
+box "API Gateway" #LightGray
 control "API Gateway" as Gateway
+boundary ":MeetingChatHub" as Hub <<boundary>>
+end box
 
 box "Meeting Service" #PaleGreen
 participant ":MeetingChatController" as Controller <<boundary>>
@@ -22,7 +25,6 @@ participant ":MeetingChatMessageRepository" as MsgRepo <<control>>
 participant ":MeetingChatAssistantRequestRepository" as AssistRepo <<control>>
 database "Meeting DB" as Db
 participant ":MeetingChatNotifier" as Notifier <<service>>
-participant ":MeetingChatHub" as Hub <<boundary>>
 end box
 
 boundary "MeetingRoomPage (Other Participant)" as OtherClient
@@ -59,12 +61,13 @@ Service -> Notifier : BroadcastMessageReceivedAsync(roomId, messageDto)
 activate Notifier
 Notifier -> Hub : SendMessageToRoom(roomId, messageDto)
 activate Hub
-Hub -> OtherClient : SignalR: BroadcastChatMessage(messageDto)
+Hub ->> OtherClient : SignalR: BroadcastChatMessage(messageDto)
+Hub --> Notifier : Done
+deactivate Hub
+
 activate OtherClient
 OtherClient -> OtherActor : Render chat bubble in UI
 deactivate OtherClient
-Hub --> Notifier : Done
-deactivate Hub
 Notifier --> Service : Done
 deactivate Notifier
 

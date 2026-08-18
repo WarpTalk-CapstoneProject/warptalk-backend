@@ -4,15 +4,26 @@ Key classes of the Translation Room module are described in the Class Specificat
 
 | Class | Field / Method | Description |
 | :--- | :--- | :--- |
-| `TranslationRoom` | `RoomId, SourceLanguage, TargetLanguage, Status` | Realtime audio translation session configuration defining language pairs and pipeline execution states. |
-| `TranslationRoomAudioRoute` | `RouteId, ParticipantId, InputDevice, OutputDevice` | Audio device mapping per participant; controls virtual audio driver routing (Virtual Cable vs physical mic/speakers). |
-| `MeetingChatMessage` | `MessageId, RoomId, SenderId, Content` | In-room text chat payload with optional AI mention support. |
-| `AudioRouteController` | `configureRoute(...), pauseTranslation(...)` | Boundary controller allowing participants to configure input/output devices and pause translation streams. |
-| `MeetingHub` | `receiveSubtitle(...), playClonedAudio(...), broadcastAssistantReply(...)` | WebSocket hub streaming realtime STT subtitles, synthesized cloned audio payloads, and AI assistant responses. |
-| `TranslationRoomService` | `getRoomPipelineConfig(...), pauseRoom(...), resumeRoom(...)` | Application service managing room pipeline execution state and configuration parameters. |
-| `TranslationRoomAudioRouteService` | `configureRouteAsync(...), resolveOutputTarget(...)` | Application service resolving audio routing targets for participant voice streams. |
-| `STTWorker` | `consumeAudioChunk(...), publishTranscribedSegment(...)` | Realtime worker consuming PCM audio chunks from Redis Streams and invoking STT transcription engines. |
-| `TranslationWorker` | `translateSegment(...), applyGlossaryTerms(...)` | Worker translating transcribed text segments into target languages while applying glossary overrides. |
-| `TTSWorker` | `synthesizeTranslation(...), resolveVoiceId(...)` | Worker generating cloned audio streams via Cartesia TTS APIs for translated segments. |
-| `CartesiaSynthesizer` | `synthesize(...)` | External voice synthesis provider performing low-latency voice cloning and TTS audio generation. |
-| `VirtualAudioDriver` | `routeToVirtualMicrophone(...)` | System-level virtual audio cable driver routing synthesized audio into meeting platforms (e.g., Google Meet). |
+| `TranslationRoom` | `Id, WorkspaceId, HostId, ActiveHostId, Title, Description, TranslationRoomCode, Status, TranslationRoomType, MaxParticipants, SourceLanguage, TargetLanguages, Settings, ScheduledAt, SeriesId` | Central entity representing a translation meeting session; tracks room lifecycle status, host ownership, handover (`ActiveHostId`), and language pairing rules. |
+| `TranslationRoomSeries` | `Id, WorkspaceId, HostId, RecurrenceType, RecurrenceInterval, StartTimeLocal, TimeZone, StartsOnLocalDate, EndsOnLocalDate, Status` | Booking template entity defining recurring translation room schedules and occurrence generation properties. |
+| `TranslationRoomParticipant` | `Id, TranslationRoomId, UserId, DisplayName, Role, ListenLanguage, SpeakLanguage, Status, ConnectionType, IsTranslationAudioEnabled, IsUsingVoiceClone` | Tracks participant state, assigned role (`Host`, `Participant`), preferred listening/speaking languages, and audio translation toggles. |
+| `TranslationRoomInvitation` | `Id, TranslationRoomId, Email, Status` | Entity managing email invitations sent to participants for a translation room. |
+| `TranslationRoomSession` | `Id, TranslationRoomId, MainLanguage, AudioUrl, Status, StartedAt, EndedAt` | Entity representing active translation execution sessions within a room. |
+| `TranslationRoomArtifact` | `Id, TranslationRoomId, ArtifactType, FileUrl, FileFormat, FileSizeBytes, Content, Status` | Meeting output artifact entity storing exported transcripts, summaries, or recording files generated from a session. |
+| `TranslationRoomAudioRoute` | `Id, TranslationRoomId, SourceParticipantId, TargetParticipantId, SourceLanguage, TargetLanguage, VoiceCloneEnabled, Status, IsCurrent` | Defines directed point-to-point audio translation routing between a source speaker and target listener. |
+| `TranslationRoomFeedback` | `Id, TranslationRoomId, UserId, OverallRating, TranslationQuality, AudioQuality, Comments` | Feedback entity collecting participant ratings on audio quality, translation accuracy, and voice cloning performance. |
+| `SupportedLanguage` | `Code, Name, NativeName, IsActive` | Lookup entity defining system-supported translation languages. |
+| `TranslationRoomsController` | `CreateTranslationRoom(...), StartRoom(...), JoinByLink(...), HandoffHost(...)` | REST controller managing translation room creation, session start, room code join, and host handover operations. |
+| `TranslationRoomSeriesController` | `CreateSeries(...), CancelSeries(...)` | REST controller managing recurring translation room series creation and cancellation. |
+| `TranslationRoomParticipantsController` | `JoinRoom(...), UpdateParticipantSettings(...), LeaveRoom(...)` | REST controller managing participant roster presence, spoken/listening language preference updates, and room exit. |
+| `TranslationRoomFeedbackController` | `SubmitFeedback(...), GetRoomFeedback(...)` | REST controller handling post-meeting feedback submissions. |
+| `TranslationRoomService` | `CreateTranslationRoomAsync(...), StartTranslationRoomAsync(...), EndTranslationRoomAsync(...), HandoffHostAsync(...)` | Application service orchestrating room lifecycle, state transitions, and host handover logic. |
+| `TranslationRoomSeriesService` | `CreateSeriesAsync(...), MaterializeOccurrencesAsync(...)` | Application service generating room instances from recurring series templates. |
+| `TranslationRoomParticipantService` | `AddParticipantAsync(...), UpdateLanguagesAsync(...), RemoveParticipantAsync(...)` | Application service managing participant roster state and language configuration updates. |
+| `TranslationRoomAudioRouteService` | `ResolveAudioRoutesAsync(...), ToggleVoiceCloneAsync(...)` | Application service calculating active speaker-listener audio routing pairs. |
+| `TranslationRoomDbContext` | `TranslationRooms, TranslationRoomSeries, TranslationRoomParticipants, TranslationRoomAudioRoutes, TranslationRoomSessions` | Entity Framework Core DbContext managing persistence for translation rooms, series, participants, audio routes, and sessions. |
+| `UnitOfWork` | `SaveChangesAsync(), BeginTransactionAsync(), CommitTransactionAsync()` | Manages transactional consistency for multi-entity translation room operations. |
+| `TranslationRoomRepository` | `GetByIdAsync(...), GetByCodeAsync(...), AddAsync(...)` | Persistence repository for retrieving translation room aggregate roots and room code lookup. |
+| `TranslationRoomParticipantRepository` | `GetByRoomIdAsync(...), AddAsync(...)` | Persistence repository managing participant presence records and assigned room roles (`Host`, `Participant`). |
+| `TranslationRoomAudioRouteRepository` | `GetCurrentRoutesAsync(...), AddRangeAsync(...)` | Persistence repository managing active speaker-to-listener audio translation routing pairs. |
+| `AudioRouteStateMachine` | `Transition(...), CanTransition(...)` | Domain state machine governing valid status transitions for point-to-point audio translation routes. |

@@ -1,0 +1,80 @@
+@startuml
+title WarpTalk - Asynchronous Event-Driven Notification & Email Dispatch
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 160
+
+queue "Redis Stream" as Redis
+
+box "Notification Service" #LightSalmon
+participant ":NotificationStreamConsumerService" as Consumer <<boundary>>
+participant ":NotificationService" as Service <<service>>
+participant ":EmailTemplateRenderer" as Renderer <<service>>
+participant ":NotificationInboxMessageRepository" as InboxRepo <<control>>
+participant ":ResendEmailSender" as EmailSender <<service>>
+database "Notification Database" as Db
+end box
+
+participant "Resend API (Email Gateway)" as ResendAPI <<external system>>
+
+== STEP 1: CONSUME NOTIFICATION EVENT FROM REDIS STREAM ==
+
+Redis ->> Consumer : StreamReadGroupAsync("notification:events", group="notification-group")
+activate Consumer
+
+Consumer -> Service : ProcessNotificationEventAsync(eventPayload)
+activate Service
+
+Service -> Service : Check user notification preference & channel settings
+
+alt Notification Channel Enabled (Email)
+  == STEP 2: RENDER EMAIL TEMPLATE & SEND VIA RESEND API ==
+  
+  Service -> Renderer : RenderEmailTemplateAsync(templateKey, templateModel)
+  activate Renderer
+  Renderer --> Service : Rendered HTML Body & Subject
+  deactivate Renderer
+  
+  Service -> EmailSender : SendEmailAsync(recipientEmail, subject, htmlBody)
+  activate EmailSender
+  EmailSender -> ResendAPI : POST /emails (Bearer API Token)
+  activate ResendAPI
+  ResendAPI --> EmailSender : 200 OK (EmailMessageId)
+  deactivate ResendAPI
+  EmailSender --> Service : SendResult.Success()
+  deactivate EmailSender
+end
+
+== STEP 3: PERSIST IN-APP NOTIFICATION INBOX RECORD ==
+
+Service -> InboxRepo : AddAsync(new NotificationInboxMessage)
+activate InboxRepo
+InboxRepo -> Db : INSERT INTO notification_inbox_messages\n(UserId, Title, Content, IsRead = false)
+activate Db
+Db --> InboxRepo : Saved
+deactivate Db
+InboxRepo --> Service : Saved
+deactivate InboxRepo
+
+Service --> Consumer : Processing Complete
+deactivate Service
+
+Consumer -> Redis : StreamAcknowledgeAsync("notification:events", group, messageId)
+activate Redis
+Redis --> Consumer : ACK Complete
+deactivate Redis
+deactivate Consumer
+
+@enduml

@@ -13,8 +13,8 @@ rectangle "Workspace Home Page" as WorkspaceHome
 rectangle "Notifications Center Modal" as NotificationsModal
 rectangle "Notification Preferences Page" as NotificationPreferencesPage
 
-WorkspaceHome --> NotificationsModal : Click "Notification Bell Icon"
-NotificationsModal --> NotificationPreferencesPage : Click "Configure Notification Channels"
-NotificationPreferencesPage --> WorkspaceHome : Save Email / Push Notification Settings
+WorkspaceHome --> NotificationsModal
+NotificationsModal --> NotificationPreferencesPage
+NotificationPreferencesPage --> WorkspaceHome
 
 @enduml

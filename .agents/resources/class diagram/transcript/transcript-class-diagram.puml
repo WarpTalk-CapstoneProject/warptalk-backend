@@ -1,22 +1,22 @@
 @startuml
-title 3.5 Transcripts & AI Module - Transcript Service Class Diagram
+title 3.5 Transcript Module Class Diagram (Report 4 Embedded Version)
 
 top to bottom direction
 hide circle
-hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 35
-skinparam ranksep 45
 skinparam dpi 140
+skinparam titleFontSize 18
+skinparam packageFontSize 16
 skinparam classFontSize 14
 skinparam classAttributeFontSize 12
-skinparam packageFontSize 16
-skinparam titleFontSize 18
 skinparam ArrowFontSize 11
+skinparam nodesep 28
+skinparam ranksep 36
+skinparam packageTitleAlignment left
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
@@ -26,267 +26,196 @@ skinparam ArrowColor Black
 
 package "API Layer" as ApiLayer {
   class TranscriptsController <<boundary>> {
-    +GetTranscript(id)
-    +GetTranscriptByTranslationRoom(translationRoomId)
-    +FinalizeTranscript(id)
-  }
-
-  class TranscriptSegmentsController <<boundary>> {
-    +GetSegments(transcriptId, query)
-  }
-
-  class TranscriptTranslationsController <<boundary>> {
-    +GetTranslations(transcriptId, query)
-  }
-
-  class TranscriptExportsController <<boundary>> {
-    +CreateExport(transcriptId, request)
-    +DownloadExport(transcriptId, id)
-  }
-
-  class TranscriptCorrectionsController <<boundary>> {
-    +SubmitCorrection(transcriptId, segmentId, request)
-    +GetCorrections(transcriptId, segmentId)
+    - transcriptService: ITranscriptService
+    --
+    + GetTranscript(roomId: Guid): Task<Result>
+    + UpdateSegment(segmentId: Guid, request: UpdateSegmentRequest): Task<Result>
+    + ExportTranscript(roomId: Guid, format: String): Task<Result>
   }
 
   class GlossariesController <<boundary>> {
-    +CreateGlossary(request)
-    +AddTerm(glossaryId, request)
-    +DeleteTerm(glossaryId, termId)
+    - globalGlossaryService: IGlobalGlossaryService
+    --
+    + CreateGlossary(request: CreateGlossaryRequest): Task<Result>
+    + AddTerm(glossaryId: Guid, request: AddTermRequest): Task<Result>
   }
 
-  class GlobalGlossariesController <<boundary>> {
-    +CreateTerm(request)
-    +PublishTerm(id)
-    +BulkImport(request)
-  }
-
-  class TranscriptGrpcService <<boundary>> {
-    +GetTranscript(request)
-    +RecordSegment(request)
-  }
-
-  TranscriptsController -[hidden]right- TranscriptSegmentsController
-  TranscriptSegmentsController -[hidden]right- TranscriptTranslationsController
-  TranscriptsController -[hidden]down- TranscriptExportsController
-  TranscriptExportsController -[hidden]right- TranscriptCorrectionsController
-  TranscriptCorrectionsController -[hidden]right- GlossariesController
-  TranscriptExportsController -[hidden]down- GlobalGlossariesController
-  GlobalGlossariesController -[hidden]right- TranscriptGrpcService
+  TranscriptsController -[hidden]right- GlossariesController
 }
 
 package "Application Layer" as ApplicationLayer {
-  class TranscriptQueryService <<control>> {
-    +GetTranscriptAsync(transcriptId, userId)
-    +GetTranscriptByTranslationRoomAsync(roomId, userId)
-    +GetSegmentsAsync(transcriptId, userId, skip, take)
-    +GetTranslationsAsync(transcriptId, userId, skip, take)
-  }
-
-  class TranscriptExportService <<control>> {
-    +CreateExportAsync(transcriptId, request, userId)
-  }
-
-  class TranscriptCorrectionService <<control>> {
-    +SubmitCorrectionAsync(transcriptId, segmentId, userId, dto)
-    +FinalizeTranscriptAsync(transcriptId, userId)
-  }
-
-  class GlossaryService <<control>> {
-    +CreateGlossaryAsync(dto)
-    +AddTermAsync(glossaryId, dto)
-    +DeleteTermAsync(glossaryId, termId)
+  class TranscriptService <<control>> {
+    - transcriptRepository: ITranscriptRepository
+    - segmentRepository: ITranscriptSegmentRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + CompileAndGenerateArtifactsAsync(roomId: Guid): Task<Result>
+    + UpdateSegmentTextAsync(segmentId: Guid, newText: String, userId: Guid): Task<Result>
+    + ExportTranscriptAsync(transcriptId: Guid, format: String): Task<Result>
   }
 
   class GlobalGlossaryService <<control>> {
-    +CreateTermAsync(dto, actorId)
-    +PublishTermAsync(id, actorId)
-    +BulkImportAsync(dto, actorId)
+    - glossaryRepository: IGlossaryRepository
+    - unitOfWork: IUnitOfWork
+    --
+    + BulkImportAsync(glossaryId: Guid, terms: List<GlossaryTermDto>): Task<Result>
+    + MatchGlossaryTermsAsync(text: String, sourceLang: String, targetLang: String): Task<List<GlossaryTermDto>>
   }
 
-  TranscriptQueryService -[hidden]right- TranscriptExportService
-  TranscriptExportService -[hidden]right- TranscriptCorrectionService
-  TranscriptQueryService -[hidden]down- GlossaryService
-  GlossaryService -[hidden]right- GlobalGlossaryService
+  TranscriptService -[hidden]right- GlobalGlossaryService
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
+  class TranscriptDbContext <<control>> {
+    + Transcripts: DbSet<Transcript>
+    + TranscriptSegments: DbSet<TranscriptSegment>
+    + TranscriptCorrections: DbSet<TranscriptCorrection>
+    + TranslationContents: DbSet<TranslationContent>
+    + Glossaries: DbSet<Glossary>
+    + GlossaryTerms: DbSet<GlossaryTerm>
+    --
+    + SaveChangesAsync(): Task<Int>
+  }
+
   class UnitOfWork <<control>> {
-    +SaveChangesAsync()
-    +CommitTranscriptIngestAsync(payload)
+    - dbContext: TranscriptDbContext
+    --
+    + SaveChangesAsync(): Task<Int>
+    + BeginTransactionAsync(): Task
+    + CommitTransactionAsync(): Task
   }
 
   class TranscriptRepository <<control>> {
-    +GetByIdAsync(id)
-    +GetByTranslationRoomAsync(roomId)
-    +Update(transcript)
+    - dbContext: TranscriptDbContext
+    --
+    + GetByRoomIdAsync(roomId: Guid): Task<Transcript>
+    + AddAsync(transcript: Transcript): Task
   }
 
   class TranscriptSegmentRepository <<control>> {
-    +GetPagedAsync(transcriptId, skip, take)
-    +AddAsync(segment)
-  }
-
-  class TranscriptCorrectionRepository <<control>> {
-    +AddAsync(correction)
-    +FindAsync(segmentId)
+    - dbContext: TranscriptDbContext
+    --
+    + GetSegmentsByTranscriptIdAsync(transcriptId: Guid): Task<List<TranscriptSegment>>
+    + AddAsync(segment: TranscriptSegment): Task
   }
 
   class GlossaryRepository <<control>> {
-    +AddAsync(glossary)
-    +GetByIdAsync(id)
+    - dbContext: TranscriptDbContext
+    --
+    + GetByWorkspaceIdAsync(workspaceId: Guid): Task<List<Glossary>>
+    + AddAsync(glossary: Glossary): Task
   }
 
-  class GlobalGlossaryTermsRepository <<control>> {
-    +GetPagedAsync(query)
-    +AddAsync(term)
-    +Update(term)
-  }
-
-  class TranscriptRedisConsumerService <<control>> {
-    +ProcessSttMessageAsync(message)
-    +ProcessMeetingEndedAsync(message)
-  }
-
-  class GlossaryStartedEventConsumer <<control>> {
-    +ProcessMessageAsync(message)
-  }
-
-  class TranslationRoomGrpcClient <<control>> {
-    +GetRoomAsync(roomId)
-  }
-
-  UnitOfWork -[hidden]right- TranscriptRepository
   TranscriptRepository -[hidden]right- TranscriptSegmentRepository
-  UnitOfWork -[hidden]down- TranscriptCorrectionRepository
-  TranscriptCorrectionRepository -[hidden]right- GlossaryRepository
-  GlossaryRepository -[hidden]right- GlobalGlossaryTermsRepository
-  TranscriptCorrectionRepository -[hidden]down- TranscriptRedisConsumerService
-  TranscriptRedisConsumerService -[hidden]right- GlossaryStartedEventConsumer
-  GlossaryStartedEventConsumer -[hidden]right- TranslationRoomGrpcClient
-
-  UnitOfWork o-- TranscriptRepository
-  UnitOfWork o-- TranscriptSegmentRepository
-  UnitOfWork o-- TranscriptCorrectionRepository
-  UnitOfWork o-- GlossaryRepository
-  UnitOfWork o-- GlobalGlossaryTermsRepository
+  TranscriptSegmentRepository -[hidden]right- GlossaryRepository
+  TranscriptDbContext -[hidden]right- UnitOfWork
+  TranscriptRepository -[hidden]down- TranscriptDbContext
 }
 
 package "Domain Layer" as DomainLayer {
   class Transcript <<entity>> {
-    -Id: Guid
-    -TranslationRoomId: Guid
-    -Status: TranscriptStatus
-    -CompiledText: String
-    -FinalizedAt: DateTime
+    - Id: Guid
+    - WorkspaceId: Guid
+    - TranslationRoomId: Guid
+    - SourceLanguage: String
+    - TotalSegments: Int
+    - TotalDurationMs: Long
+    - IsCurrent: Boolean
+    --
   }
 
   class TranscriptSegment <<entity>> {
-    -Id: Guid
-    -TranscriptId: Guid
-    -SpeakerId: Guid
-    -Text: String
-    -SequenceOrder: Int
-  }
-
-  class TranslationContent <<entity>> {
-    -Id: Guid
-    -LanguageCode: String
-    -Text: String
+    - Id: Guid
+    - TranscriptId: Guid
+    - SpeakerParticipantId: Guid
+    - SpeakerName: String
+    - OriginalText: String
+    - SequenceOrder: Int
+    - IsCorrected: Boolean
+    --
   }
 
   class TranscriptCorrection <<entity>> {
-    -Id: Guid
-    -TranscriptSegmentId: Guid
-    -RequestedByUserId: Guid
-    -ProposedText: String
+    - Id: Guid
+    - SegmentId: Guid
+    - UserId: Guid
+    - OriginalText: String
+    - CorrectedText: String
+    --
   }
 
-  class TranscriptExport <<entity>> {
-    -Id: Guid
-    -TranscriptId: Guid
-    -Format: String
-    -StorageKey: String
+  class TranslationContent <<entity>> {
+    - Id: Guid
+    - WorkspaceId: Guid
+    - TargetLanguage: String
+    - TranslatedText: String
+    - TranslatorModel: String
+    --
   }
 
   class Glossary <<entity>> {
-    -Id: Guid
-    -WorkspaceId: Guid
-    -Name: String
+    - Id: Guid
+    - WorkspaceId: Guid
+    - Name: String
+    - SourceLanguage: String
+    - TargetLanguage: String
+    --
   }
 
   class GlossaryTerm <<entity>> {
-    -Id: Guid
-    -GlossaryId: Guid
-    -SourceText: String
-    -TargetText: String
+    - Id: Guid
+    - GlossaryId: Guid
+    - SourceTerm: String
+    - TargetTerm: String
+    --
   }
 
-  class GlobalGlossaryTerm <<entity>> {
-    -Id: Guid
-    -Term: String
-    -Translation: String
-    -Status: GlossaryStatus
-  }
-
-  Transcript "1" *-- "0..*" TranscriptSegment : contains segments
-  TranscriptSegment "1" *-- "0..*" TranslationContent : has translations
-  TranscriptSegment "1" *-- "0..*" TranscriptCorrection : receives corrections
-  Transcript "1" *-- "0..*" TranscriptExport : exports artifacts
-  Glossary "1" *-- "0..*" GlossaryTerm : contains terms
+  Transcript -[hidden]right- TranscriptSegment
+  TranscriptSegment -[hidden]right- TranscriptCorrection
+  TranscriptCorrection -[hidden]right- TranslationContent
+  TranslationContent -[hidden]right- Glossary
+  Glossary -[hidden]right- GlossaryTerm
 }
 
 package "External Systems" as ExternalSystems {
-  class RedisServer <<external system>> {
-    +ReadTranscriptEvents()
-    +PublishEmbeddingRequest(event)
+  class OpenAI <<external system>> {
+    - apiEndpoint: String
+    --
+    + CompleteAsync(prompt: String): Task<String>
   }
 
-  class TranslationRoomServiceGrpcServer <<external system>> {
-    +GetRoom(roomId)
+  class VectorDatabase <<external system>> {
+    - collectionName: String
+    --
+    + SearchAsync(queryVector: List<Single>): Task<List<String>>
   }
 
-  class AiEmbeddingWorker <<external system>> {
-    +IndexGlossaryTerm(term)
-  }
-
-  RedisServer -[hidden]right- TranslationRoomServiceGrpcServer
-  TranslationRoomServiceGrpcServer -[hidden]right- AiEmbeddingWorker
+  OpenAI -[hidden]right- VectorDatabase
 }
 
-TranscriptsController --> TranscriptQueryService
-TranscriptSegmentsController --> TranscriptQueryService
-TranscriptTranslationsController --> TranscriptQueryService
-TranscriptExportsController --> TranscriptExportService
-TranscriptCorrectionsController --> TranscriptCorrectionService
-GlossariesController --> GlossaryService
-GlobalGlossariesController --> GlobalGlossaryService
-TranscriptGrpcService --> TranscriptQueryService
+TranscriptsController --> TranscriptService
+GlossariesController --> GlobalGlossaryService
 
-TranscriptQueryService ..> TranslationRoomGrpcClient
-TranscriptCorrectionService ..> RedisServer : publishes correction event
-GlossaryService ..> RedisServer : publishes embedding request
-GlobalGlossaryService ..> RedisServer : publishes embedding request
-TranscriptRedisConsumerService ..> UnitOfWork
+TranscriptService ..> TranscriptRepository
+TranscriptService ..> TranscriptSegmentRepository
+TranscriptService ..> UnitOfWork
+TranscriptService ..> OpenAI
+
+GlobalGlossaryService ..> GlossaryRepository
+GlobalGlossaryService ..> VectorDatabase
+GlobalGlossaryService ..> UnitOfWork
+
+TranscriptRepository ..> TranscriptDbContext
+TranscriptSegmentRepository ..> TranscriptDbContext
+GlossaryRepository ..> TranscriptDbContext
+UnitOfWork ..> TranscriptDbContext
 
 TranscriptRepository ..> Transcript : persists
 TranscriptSegmentRepository ..> TranscriptSegment : persists
-TranscriptCorrectionRepository ..> TranscriptCorrection : persists
-GlossaryRepository ..> Glossary : persists
-GlobalGlossaryTermsRepository ..> GlobalGlossaryTerm : persists
 
-TranscriptRedisConsumerService ..> RedisServer : consumes events
-GlossaryStartedEventConsumer ..> RedisServer : consumes events
-TranslationRoomGrpcClient ..> TranslationRoomServiceGrpcServer : reads rooms
-RedisServer ..> AiEmbeddingWorker : queues indexing
+Transcript *-- "0..*" TranscriptSegment
+TranscriptSegment *-- "0..*" TranscriptCorrection
+TranscriptSegment *-- "0..*" TranslationContent
+Glossary *-- "0..*" GlossaryTerm
 
-ApiLayer -[hidden]down- ApplicationLayer
-ApplicationLayer -[hidden]down- InfrastructureLayer
-InfrastructureLayer -[hidden]down- DomainLayer
-DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml
