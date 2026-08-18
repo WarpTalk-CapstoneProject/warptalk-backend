@@ -93,6 +93,25 @@ public class VoiceProfileService : IVoiceProfileService
         return Result.Success(string.IsNullOrWhiteSpace(chosen) ? null : chosen);
     }
 
+    public async Task<Result<(string? VoiceId, decimal? Score)>> GetAutoCloneVoiceAsync(
+        Guid userId, CancellationToken ct = default)
+    {
+        // Ordered best-likeness-first by the repository, so "first" is the answer rather than an
+        // accident of insertion order. A voice that has no provider id is skipped rather than
+        // returned empty: it would read as "no carried clone" anyway, and skipping lets a second,
+        // usable row answer instead.
+        var profiles = await _unitOfWork.VoiceProfileRepository.GetAutoClonesAsync(userId, ct);
+        foreach (var profile in profiles)
+        {
+            if (!string.IsNullOrWhiteSpace(profile.EmbeddingRef))
+            {
+                return Result.Success<(string?, decimal?)>((profile.EmbeddingRef, profile.QualityScore));
+            }
+        }
+
+        return Result.Success<(string?, decimal?)>((null, null));
+    }
+
     public async Task<Result<string?>> SetDubVoiceAsync(Guid userId, SetDubVoiceRequest request, CancellationToken ct = default)
     {
         var voiceId = request.VoiceId?.Trim();

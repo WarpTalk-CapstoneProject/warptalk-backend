@@ -89,4 +89,26 @@ message GetPreferredVoiceResponse {
   // "cartesia". Carried so a caller can refuse a voice from a provider it does not speak to,
   // rather than passing an id that provider will not recognise.
   string provider = 2;
+
+  // WT-B — the voice this person was cloned into in an EARLIER meeting, so the next meeting can
+  // open in their own voice instead of spending its first twenty seconds in a stock one.
+  //
+  // DELIBERATELY NOT voice_id, AND THAT SEPARATION IS LOAD-BEARING. voice_id above is a
+  // DELIBERATE PICK: the worker must stop capturing and never overwrite it. This is the
+  // opposite — a starting point the worker is supposed to keep improving on. Delivered on one
+  // field, a carried clone would be read as a pick, capture would stop, and every speaker would
+  // be frozen at the first clone they ever earned.
+  //
+  // Empty when there is none, when this service cannot answer, or when the person has withdrawn
+  // voice-clone consent. Empty always means "clone them live", never "silence".
+  string auto_clone_voice_id = 3;
+
+  // How good the clip behind auto_clone_voice_id was (0..1) — the bar a later clip must beat
+  // before it replaces the voice.
+  //
+  // EMPTY IS "NOT MEASURED" AND MUST NOT BE READ AS ZERO. A string rather than a double for
+  // exactly this reason: proto3 scalars have no null, so a double would arrive as 0.0 for an
+  // unmeasured voice, which grades as the worst possible sample and invites replacement by
+  // literally any clip that clears the floors.
+  string auto_clone_score = 4;
 }

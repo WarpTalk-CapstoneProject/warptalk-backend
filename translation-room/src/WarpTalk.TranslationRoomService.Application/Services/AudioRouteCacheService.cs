@@ -47,7 +47,7 @@ public class AudioRouteCacheService : IAudioRouteCacheService
     private async Task<List<TranslationRoomAudioRouteDto>> WithDubVoicesAsync(
         List<TranslationRoomAudioRouteDto> routes, CancellationToken ct)
     {
-        var byUser = new Dictionary<Guid, string?>();
+        var byUser = new Dictionary<Guid, DubVoiceSelection>();
         var enriched = new List<TranslationRoomAudioRouteDto>(routes.Count);
 
         foreach (var route in routes)
@@ -58,13 +58,18 @@ public class AudioRouteCacheService : IAudioRouteCacheService
                 continue;
             }
 
-            if (!byUser.TryGetValue(speaker, out var voiceId))
+            if (!byUser.TryGetValue(speaker, out var selection))
             {
-                voiceId = await _dubVoices.GetDubVoiceAsync(speaker, ct);
-                byUser[speaker] = voiceId;
+                selection = await _dubVoices.GetSelectionAsync(speaker, ct);
+                byUser[speaker] = selection;
             }
 
-            enriched.Add(route with { SourceDubVoiceId = voiceId });
+            enriched.Add(route with
+            {
+                SourceDubVoiceId = selection.ChosenVoiceId,
+                SourceAutoCloneVoiceId = selection.AutoCloneVoiceId,
+                SourceAutoCloneScore = selection.AutoCloneScore,
+            });
         }
 
         return enriched;

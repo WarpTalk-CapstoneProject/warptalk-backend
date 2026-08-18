@@ -20,6 +20,9 @@ public class VoiceConsentServiceTests
     private static readonly DateTime Now = new(2026, 8, 13, 10, 0, 0, DateTimeKind.Utc);
 
     private readonly IVoiceConsentRepository _repository = Substitute.For<IVoiceConsentRepository>();
+    private readonly IVoiceProfileRepository _profiles = Substitute.For<IVoiceProfileRepository>();
+    private readonly IUserSettingRepository _settings = Substitute.For<IUserSettingRepository>();
+    private readonly IVoiceCarryOverQueue _voiceDeletions = Substitute.For<IVoiceCarryOverQueue>();
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly VoiceConsentService _service;
     private readonly List<VoiceConsent> _added = new();
@@ -27,12 +30,21 @@ public class VoiceConsentServiceTests
     public VoiceConsentServiceTests()
     {
         _unitOfWork.VoiceConsentRepository.Returns(_repository);
+        _unitOfWork.VoiceProfileRepository.Returns(_profiles);
+        _unitOfWork.UserSettingRepository.Returns(_settings);
         _repository.When(r => r.Add(Arg.Any<VoiceConsent>()))
             .Do(call => _added.Add(call.Arg<VoiceConsent>()));
+        _profiles.GetAutoClonesAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<VoiceProfile>());
 
         _service = new VoiceConsentService(
-            _unitOfWork, NullLogger<VoiceConsentService>.Instance, () => Now);
+            _unitOfWork, _voiceDeletions, NullLogger<VoiceConsentService>.Instance, () => Now);
     }
+
+    /// <summary>The captured voices this user has when consent is withdrawn.</summary>
+    private void CapturedVoicesAre(params VoiceProfile[] profiles) =>
+        _profiles.GetAutoClonesAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns(profiles);
 
     private void CurrentIs(VoiceConsent? consent) =>
         _repository
@@ -133,5 +145,102 @@ public class VoiceConsentServiceTests
 
         // The default in front of biometric processing has to be refusal.
         Assert.False(await _service.HasActiveConsentAsync(Guid.NewGuid()));
+    }
+
+    // ----------------------------------------------------------------------------------
+    // WT-B: withdrawal has to destroy the voices, not merely stop using them
+    // ----------------------------------------------------------------------------------
+
+    private static VoiceProfile Captured(string voiceId) => new()
+    {
+        Id = Guid.NewGuid(),
+        UserId = Guid.NewGuid(),
+        Language = "vi",
+        Provider = "cartesia",
+        EmbeddingRef = voiceId,
+        Status = "active",
+        Source = VoiceProfileSources.InMeeting,
+        IsActive = true,
+    };
+
+    [Fact]
+    public async Task WithdrawingConsentDestroysTheVoicesItWasGrantedFor()
+    {
+        // The condition on which reusing the in-meeting consent text stands. While a clone died
+        // with its meeting, "stops being used" was the whole promise and it was kept by the
+        // fail-closed gate. Keeping clones between meetings makes deletion the rest of it — a
+        // voice model built from somebody's speech, still in the provider's account after they
+        // withdrew permission, is exactly what the withdrawal was for.
+        CurrentIs(Row(VoiceConsentStatuses.Granted));
+        var captured = Captured("cartesia-voice-1");
+        CapturedVoicesAre(captured);
+
+        await _service.RevokeAsync(Guid.NewGuid(), new VoiceConsentDecisionContext(null, null));
+
+        Assert.NotNull(captured.DeletedAt);
+        Assert.False(captured.IsActive);
+        await _voiceDeletions.Received(1).RequestDeletionAsync(
+            "cartesia-voice-1", "consent-revoked", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TheVoiceIsDestroyedOnlyAfterTheRowsAreCommitted()
+    {
+        // The other order can destroy a voice a live row still names, which is the worst state
+        // available here: a profile pointing at an id Cartesia no longer has, dubbing the person
+        // as a stranger while looking perfectly correct.
+        CurrentIs(Row(VoiceConsentStatuses.Granted));
+        CapturedVoicesAre(Captured("cartesia-voice-1"));
+
+        var committedFirst = false;
+        _unitOfWork.When(u => u.SaveChangesAsync(Arg.Any<CancellationToken>()))
+            .Do(_ => committedFirst = true);
+        _voiceDeletions.When(q => q.RequestDeletionAsync(
+                Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()))
+            .Do(_ => Assert.True(committedFirst, "the voice was destroyed before the row was committed"));
+
+        await _service.RevokeAsync(Guid.NewGuid(), new VoiceConsentDecisionContext(null, null));
+
+        await _voiceDeletions.Received(1).RequestDeletionAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task WithdrawingConsentClearsADubChoiceThatNamedADestroyedVoice()
+    {
+        CurrentIs(Row(VoiceConsentStatuses.Granted));
+        CapturedVoicesAre(Captured("cartesia-voice-1"));
+        var settings = new UserSetting { DubVoiceId = "cartesia-voice-1" };
+        _settings.GetByUserIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(settings);
+
+        await _service.RevokeAsync(Guid.NewGuid(), new VoiceConsentDecisionContext(null, null));
+
+        Assert.Null(settings.DubVoiceId);
+    }
+
+    [Fact]
+    public async Task WithdrawingConsentLeavesUploadedRecordingsAlone()
+    {
+        // An uploaded recording is a separate decision with its own consent and its own delete
+        // button. GetAutoClonesAsync returns only captured rows, so nothing uploaded is even
+        // considered — this pins that the revoke path asks for the narrow set and no other.
+        CurrentIs(Row(VoiceConsentStatuses.Granted));
+
+        await _service.RevokeAsync(Guid.NewGuid(), new VoiceConsentDecisionContext(null, null));
+
+        await _profiles.DidNotReceive().GetByUserIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _voiceDeletions.DidNotReceive().RequestDeletionAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RevokingWhenNothingWasGrantedDestroysNothing()
+    {
+        CurrentIs(null);
+
+        await _service.RevokeAsync(Guid.NewGuid(), new VoiceConsentDecisionContext(null, null));
+
+        await _voiceDeletions.DidNotReceive().RequestDeletionAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 }

@@ -54,11 +54,40 @@ public class UserServiceGrpc : UserService.UserServiceBase
         if (!Guid.TryParse(request.Id, out var parsedId))
             return new GetPreferredVoiceResponse();
 
-        var result = await _voiceProfiles.GetDubVoiceAsync(parsedId, CancellationTokenOf(context));
-        if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Value))
-            return new GetPreferredVoiceResponse();
+        var ct = CancellationTokenOf(context);
+        var response = new GetPreferredVoiceResponse();
 
-        return new GetPreferredVoiceResponse { VoiceId = result.Value, Provider = "cartesia" };
+        var chosen = await _voiceProfiles.GetDubVoiceAsync(parsedId, ct);
+        if (chosen.IsSuccess && !string.IsNullOrWhiteSpace(chosen.Value))
+        {
+            response.VoiceId = chosen.Value;
+            response.Provider = "cartesia";
+        }
+
+        // WT-B. Answered even when a deliberate pick exists above, and NOT folded into it.
+        //
+        // The two are different instructions to the worker: a pick means stop capturing, a
+        // carried clone means keep improving. Sending the carried one only when there is no pick
+        // would be a smaller change and a worse one — the worker decides the precedence, and it
+        // cannot decide what it was never told.
+        var carried = await _voiceProfiles.GetAutoCloneVoiceAsync(parsedId, ct);
+        if (carried.IsSuccess && !string.IsNullOrWhiteSpace(carried.Value.VoiceId))
+        {
+            response.AutoCloneVoiceId = carried.Value.VoiceId;
+            response.Provider = "cartesia";
+
+            // Formatted with InvariantCulture, matching how the AI side wrote it. Left to the
+            // ambient culture, a comma-decimal server would send "0,812" and the far side would
+            // read it as unparseable — dropping the bar to null and letting any clip at all
+            // replace a good voice.
+            if (carried.Value.Score is { } score)
+            {
+                response.AutoCloneScore = score.ToString(
+                    "0.###", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+
+        return response;
     }
 
     public override async Task<GetUserResponse> GetUserById(GetUserRequest request, ServerCallContext context)

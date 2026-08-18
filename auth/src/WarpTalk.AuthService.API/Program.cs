@@ -7,6 +7,7 @@ using StackExchange.Redis;
 using WarpTalk.AuthService.API.Extensions;
 using WarpTalk.AuthService.API.GrpcServices;
 using WarpTalk.AuthService.API.Validators;
+using WarpTalk.AuthService.API.Workers;
 using WarpTalk.AuthService.Application.Interfaces;
 using WarpTalk.AuthService.Application.Interfaces.Security;
 using WarpTalk.AuthService.Application.Services;
@@ -72,6 +73,8 @@ if (string.IsNullOrWhiteSpace(redisConnectionString))
     builder.Services.AddScoped<IVoiceCatalogDirectory, EmptyVoiceCatalogDirectory>();
     // No Redis, so no way to hand a recording to the AI side — see NullVoiceCloneRequestQueue.
     builder.Services.AddScoped<IVoiceCloneRequestQueue, NullVoiceCloneRequestQueue>();
+    // Nor any way to hear that a meeting cloned somebody, or to ask for a voice to be destroyed.
+    builder.Services.AddSingleton<IVoiceCarryOverQueue, NullVoiceCarryOverQueue>();
 }
 else
 {
@@ -91,6 +94,10 @@ else
         _ => ConnectionMultiplexer.Connect(redisConnectionString + ",abortConnect=false"));
     builder.Services.AddScoped<IVoiceCatalogDirectory, RedisVoiceCatalogDirectory>();
     builder.Services.AddScoped<IVoiceCloneRequestQueue, RedisVoiceCloneRequestQueue>();
+    // Singleton, unlike its neighbours: it owns the consumer group, and a scoped instance would
+    // re-run the XGROUP check on every request instead of once per process.
+    builder.Services.AddSingleton<IVoiceCarryOverQueue, RedisVoiceCarryOverQueue>();
+    builder.Services.AddHostedService<VoiceCarryOverConsumerWorker>();
 }
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddResendClient(builder.Configuration, builder.Environment);
@@ -103,6 +110,7 @@ builder.Services.AddScoped<IUserDirectoryService, UserDirectoryService>();
 builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 builder.Services.AddScoped<IVoiceProfileService, VoiceProfileService>();
 builder.Services.AddScoped<IVoiceConsentService, VoiceConsentService>();
+builder.Services.AddScoped<IVoiceCarryOverService, VoiceCarryOverService>();
 
 // Infrastructure Security & Storage Services
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
