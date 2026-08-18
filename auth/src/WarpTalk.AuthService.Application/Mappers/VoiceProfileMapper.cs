@@ -9,13 +9,6 @@ public static class VoiceProfileMapper
 {
     public static VoiceProfileDto ToDto(VoiceProfile profile, VoiceConsent? activeConsent = null)
     {
-        activeConsent ??= profile.VoiceConsents?
-            .Where(consent =>
-                string.Equals(consent.ConsentType, VoiceProfileConsentContract.UploadConsentType, System.StringComparison.OrdinalIgnoreCase)
-                && string.Equals(consent.ConsentStatus, VoiceProfileConsentContract.GrantedStatus, System.StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(consent => consent.GrantedAt ?? consent.CreatedAt)
-            .FirstOrDefault();
-
         return new VoiceProfileDto(
             profile.Id,
             profile.DisplayName,
