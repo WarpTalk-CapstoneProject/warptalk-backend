@@ -97,6 +97,7 @@ builder.Services.AddScoped<ITranslationRoomParticipantService, TranslationRoomPa
 builder.Services.AddScoped<ITranslationRoomDirectoryService, TranslationRoomDirectoryService>();
 builder.Services.AddScoped<ITranslationRoomAudioRouteService, TranslationRoomAudioRouteService>();
 builder.Services.AddScoped<IRoomFlashModeService, RoomFlashModeService>();
+builder.Services.AddScoped<IMicrophoneNoiseReductionService, MicrophoneNoiseReductionService>();
 builder.Services.AddScoped<ITranslationRoomSessionService, TranslationRoomSessionService>();
 builder.Services.AddScoped<IRecordingCompletedEventProcessor, RecordingCompletedEventProcessor>();
 builder.Services.AddScoped<IRecordingCompletedStreamMessageHandler, RecordingCompletedStreamMessageHandler>();
