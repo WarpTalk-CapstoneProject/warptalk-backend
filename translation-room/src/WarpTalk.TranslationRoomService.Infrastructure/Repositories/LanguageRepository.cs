@@ -1,6 +1,9 @@
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using WarpTalk.TranslationRoomService.Application.Helpers;
+using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
 using WarpTalk.TranslationRoomService.Infrastructure.Persistence;
 
@@ -50,4 +53,19 @@ public class LanguageRepository : ILanguageRepository
                  language.Code.ToLower() == primary ||
                  language.Code.ToLower().StartsWith(regionPrefix)));
     }
+
+    /// <summary>
+    /// The catalog THIS service validates against.
+    ///
+    /// `translation_room.supported_languages`, not `platform.supported_languages`. Migration 036
+    /// made this table the authority for room language validation and dropped the cross-schema
+    /// view; the platform table still exists and is still what seed-data.sh writes to, so the two
+    /// have been free to diverge ever since. Reading the one the validator reads is the only way
+    /// this screen can answer "why was that language rejected".
+    /// </summary>
+    public async Task<IReadOnlyList<SupportedLanguage>> GetCatalogAsync(CancellationToken ct = default)
+        => await _dbContext.SupportedLanguages
+            .AsNoTracking()
+            .OrderBy(language => language.Code)
+            .ToListAsync(ct);
 }

@@ -19,6 +19,27 @@ public static class TranslationRoomConstants
     /// </summary>
     public const string HostDisplayNameFallback = "Host";
 
+    /// <summary>
+    /// The user id carried by the pseudo-participant that stands in for everyone on the far side
+    /// of an EXTERNAL_BRIDGE room.
+    ///
+    /// It has to be a real, stable, non-null value rather than null, even though the column
+    /// permits null: TranslationRoomAudioRouteMapper.ToDto publishes SourceUserId/TargetUserId to
+    /// the AI workers, and tts_worker matches its speaker_id against those and not against the
+    /// participant ids. A null here would leave the inbound route unmatchable and the far side
+    /// silently untranslated.
+    ///
+    /// No row has to exist for it anywhere. translation_room_participants.user_id carries no
+    /// foreign key to auth.users — the only FK on that table is translation_room_id — because the
+    /// two live in different services. Nothing resolves this id through the Auth directory either,
+    /// since the display name below is written directly.
+    /// </summary>
+    public static readonly Guid ExternalBridgeParticipantUserId =
+        new("00000000-0000-0000-0000-00000000b21d");
+
+    /// <summary>What the roster and the transcript call the far side of an external call.</summary>
+    public const string ExternalBridgeDisplayName = "External Meeting";
+
     // Error Messages
     public const string ErrorRoomNotFound = "TranslationRoom not found";
     public const string ErrorRoomNotActive = "TranslationRoom not active or found";
@@ -26,6 +47,21 @@ public static class TranslationRoomConstants
     public const string ErrorUnauthorizedEndRoom = "Unauthorized. Only host can end translationRoom.";
     public const string ErrorUnauthorizedUpdateRoom = "Unauthorized. Only host can update room settings.";
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
+
+    /// <summary>
+    /// WT-480. Deliberately its own message rather than <see cref="ErrorUnauthorizedUpdateRoom"/>:
+    /// sharing a finished meeting's transcript, summary and recording is a different act from
+    /// editing a room's settings, and the person refused should be told which one they were
+    /// refused.
+    /// </summary>
+    public const string ErrorUnauthorizedShareRecord = "Unauthorized. Only the meeting host can change who this meeting's record is shared with.";
+
+    /// <summary>
+    /// Covers both "no such room" and "no invitation for you" on purpose — an uninvited caller
+    /// must not be able to tell those two apart, or this endpoint becomes a room-id oracle.
+    /// </summary>
+    public const string ErrorInvitationNotFound = "No invitation to this meeting was found for your account.";
+    public const string ErrorInvitationDeclined = "This invitation was already declined.";
 
     // Lifecycle Transition Errors
     public const string ErrorInvalidTransitionToWaiting = "Room must be SCHEDULED to open waiting room.";

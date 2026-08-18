@@ -28,6 +28,28 @@ public sealed class UserSettingsGrpcDirectory : IUserSettingsDirectory
             : null;
     }
 
+    public async Task<UserVoicePreference?> GetVoicePreferenceAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetUserSettingsAsync(
+                new GetUserRequest { Id = userId.ToString() },
+                cancellationToken: ct);
+
+            return response.Found ? new UserVoicePreference(response.VoiceCloneEnabled) : null;
+        }
+        catch (RpcException)
+        {
+            // Null, not false-as-a-value: "we could not ask" and "they said no" are different
+            // facts, and only the caller knows that both currently lead to the same route. An
+            // exception escaping here would fail route generation outright, which would cost the
+            // room its translation over a preference lookup.
+            return null;
+        }
+    }
+
     public async Task<string?> GetDisplayNameAsync(
         Guid userId,
         CancellationToken ct = default)

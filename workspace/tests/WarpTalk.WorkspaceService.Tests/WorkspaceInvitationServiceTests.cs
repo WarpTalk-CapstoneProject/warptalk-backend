@@ -114,6 +114,74 @@ public class WorkspaceInvitationServiceTests
 
     #region InviteMemberAsync Tests
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task InviteMemberAsync_ShouldFail_WhenMembershipTypeIsMissing(string? membershipType)
+    {
+        // The inviter decides the access class, so leaving it out is a malformed request rather
+        // than a request to guess. It used to fall back to inferring the type from the invitee's
+        // email — an inference that could not express External at all in some workspaces, so the
+        // caller silently got a decision nobody made.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Business WS",
+            Slug = "business-ws",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubVerifiedDomains(workspaceId, "warptalk.vn");
+
+        var request = new InviteMemberRequest("invitee@warptalk.vn", "Member", membershipType);
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(WorkspaceConstants.Errors.InvalidMembershipType, result.Error);
+    }
+
+    [Fact]
+    public async Task InviteMemberAsync_ShouldAllowInternal_ForAnyAddress_WhenWorkspaceHasNoDomainPolicy()
+    {
+        // A workspace that assigns membership by hand puts no domain constraint on the choice,
+        // so a public mailbox can be invited as an Internal member. The inviter is making that
+        // call deliberately; there is no verified domain for it to contradict.
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Small Team",
+            Slug = "small-team",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = false
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleId("Member", roleId);
+        StubUserEmail("teammate@gmail.com", Guid.NewGuid());
+        StubVerifiedDomains(workspaceId);
+
+        var request = new InviteMemberRequest("teammate@gmail.com", "Member", "Internal");
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess);
+    }
+
     [Fact]
     public async Task InviteMemberAsync_ShouldSucceed_WhenWorkspaceIsBusiness()
     {
@@ -184,7 +252,7 @@ public class WorkspaceInvitationServiceTests
             "Member",
             Arg.Is<string>(token => token.Length == 64),
             Arg.Any<CancellationToken>());
-        await _authIdentity.DidNotReceive().GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
+        await _authIdentity.Received(1).GetUserByEmailAsync("invitee@warptalk.vn", Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -223,6 +291,67 @@ public class WorkspaceInvitationServiceTests
             addedInvitation.ExpiresAt,
             before.AddDays(3).AddSeconds(-1),
             after.AddDays(3).AddSeconds(1));
+    }
+
+    /// <summary>
+    /// WT-375. The Owner turned External collaboration on precisely so this person could join,
+    /// and the invitation sent before that is now unacceptable: it was stored Internal (the
+    /// workspace had no external policy then) and Internal needs a verified domain, which a
+    /// public gmail address can never have.
+    ///
+    /// Acceptance refuses it and tells the Owner to revoke it and send a new one — and sending a
+    /// new one was refused because the dead invitation was still PENDING. There was no UI
+    /// anywhere to break that loop. A re-invite now supersedes an invitation that can no longer
+    /// be accepted.
+    /// </summary>
+    [Fact]
+    public async Task InviteMemberAsync_ShouldSupersedeAPendingInvitation_ThatCanNoLongerBeAccepted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var inviterUserId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var workspace = new Workspace
+        {
+            Id = workspaceId,
+            Name = "Kim",
+            Slug = "kim",
+            AllowExternalCollaboration = true,
+            RequireVerifiedDomainForInternal = true,
+        };
+        var inviterMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = inviterUserId, RoleId = Guid.NewGuid() };
+
+        var stranded = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = "nh@gmail.com",
+            Status = InvitationStatus.PENDING.ToString(),
+            RoleId = roleId,
+            MembershipType = "Internal",
+            ExpiresAt = DateTime.UtcNow.AddDays(1),
+        };
+
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>()).Returns(inviterMember);
+        _workspaceInvitationRepository.GetPendingByEmailAsync(workspaceId, "nh@gmail.com", Arg.Any<CancellationToken>()).Returns(stranded);
+
+        StubRoleName(inviterMember.RoleId, "Owner");
+        StubRoleName(roleId, "Member");
+        StubRoleId("Member", roleId);
+        StubUserEmail("nh@gmail.com", Guid.NewGuid());
+
+        _workspaceVerifiedDomainRepository.FindAsync(
+                Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(),
+                Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceVerifiedDomain>());
+
+        var request = new InviteMemberRequest("nh@gmail.com", "Member", "External");
+
+        var result = await _workspaceInvitationService.InviteMemberAsync(workspaceId, request, inviterUserId);
+
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(InvitationStatus.REVOKED.ToString(), stranded.Status);
     }
 
     [Fact]
@@ -587,6 +716,128 @@ public class WorkspaceInvitationServiceTests
 
     #region AcceptInvitationAsync Tests
 
+    /// <summary>
+    /// WT-417 — accepting an invitation to a workspace you once belonged to.
+    ///
+    /// The guard in WorkspaceInvitationAcceptanceProcessor looked up the membership row WITHOUT
+    /// `RemovedAt == null`. Leaving, being removed, or having the workspace deleted under you is
+    /// a SOFT delete, so the row survives — and it read as a live membership forever. Every
+    /// later invitation to that workspace was answered 409 AlreadyMember, internal or external,
+    /// by link or by web, every time.
+    ///
+    /// Its two siblings already had the predicate: RequestToJoinAsync always did, and
+    /// ApproveJoinRequestAsync got it in WT-416. This was the third door and the last one open.
+    /// </summary>
+    [Fact]
+    public async Task AcceptInvitationAsync_ShouldRevive_WhenInviteePreviouslyLeftTheWorkspace()
+    {
+        var invitationId = Guid.NewGuid();
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var userEmail = "returning@gmail.com";
+
+        var workspace = new Workspace { Id = workspaceId, AllowExternalCollaboration = true };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = userEmail,
+            RoleId = roleId,
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.External.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(1)
+        };
+        var departed = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = Guid.NewGuid(),
+            Status = "removed",
+            MembershipType = MembershipType.Internal.ToString(),
+            RemovedAt = DateTime.UtcNow.AddDays(-3),
+            RemovedBy = Guid.NewGuid(),
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        // First the live-membership guard (nothing live), then the row the revive reuses.
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null, departed);
+
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(
+            new AcceptInvitationRequest("valid_token"), userId, userEmail);
+
+        Assert.True(result.IsSuccess, "accepting an invitation after leaving failed — this is the 409 in WT-417");
+
+        // The row is reused, never duplicated: workspace_members carries UNIQUE
+        // (workspace_id, user_id) with no `WHERE removed_at IS NULL`, so a second insert for this
+        // pair is the unique violation that surfaces as the report's 400/500.
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+        _workspaceMemberRepository.Received(1).Update(departed);
+
+        Assert.Null(departed.RemovedAt);
+        Assert.Null(departed.RemovedBy);
+        Assert.Equal(roleId, departed.RoleId);
+        // The inviter's choice wins over whatever the old row happened to hold.
+        Assert.Equal(MembershipType.External.ToString(), departed.MembershipType);
+        Assert.Equal("active", departed.Status, ignoreCase: true);
+        Assert.Equal(InvitationStatus.ACCEPTED.ToString(), invitation.Status);
+    }
+
+    /// <summary>
+    /// The negative control for the fix above. Widening the lookup must not turn a genuine
+    /// double-accept into a silent second membership — the guard still has to fire for somebody
+    /// who is actually in the workspace right now.
+    /// </summary>
+    [Fact]
+    public async Task AcceptInvitationAsync_ShouldStillFail_WhenInviteeIsCurrentlyAMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var userEmail = "current@gmail.com";
+
+        var workspace = new Workspace { Id = workspaceId, AllowExternalCollaboration = true };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = userEmail,
+            RoleId = Guid.NewGuid(),
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.External.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(1)
+        };
+        var live = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = userId,
+            RoleId = Guid.NewGuid(),
+            Status = "active",
+            MembershipType = MembershipType.External.ToString(),
+            RemovedAt = null,
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(live);
+
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(
+            new AcceptInvitationRequest("valid_token"), userId, userEmail);
+
+        Assert.False(result.IsSuccess, "a live member accepted a second invitation");
+        Assert.Equal(WorkspaceConstants.Errors.AlreadyMember, result.Error);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+    }
+
+
     [Fact]
     public async Task AcceptInvitationAsync_ShouldFail_WhenTokenNotFound()
     {
@@ -721,6 +972,71 @@ public class WorkspaceInvitationServiceTests
         // Assert
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Forbidden, result.ErrorCode);
+    }
+
+    /// <summary>
+    /// WT-417 — a workspace that no longer exists must not gate anything.
+    ///
+    /// The rule above is "you may be internal to only one Enterprise workspace", and it read
+    /// every membership the user holds. Deleting a workspace stamped the workspace and left its
+    /// membership rows with RemovedAt NULL, so the dead one still counted: an account
+    /// permanently barred from joining any Enterprise workspace as Internal, by a workspace it
+    /// cannot see, in a listing the workspace never appears in. Nothing in the product could
+    /// have shown the user why.
+    ///
+    /// SoftDeleteWorkspaceAsync now stamps those rows and a backfill clears the existing ones.
+    /// This assertion stays regardless — whatever leaves an orphan behind, it must not vote.
+    /// </summary>
+    [Fact]
+    public async Task AcceptInvitationAsync_ShouldSucceed_WhenTheOtherEnterpriseWorkspaceHasBeenDeleted()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var userEmail = "employee@enterprise.com";
+
+        var workspace = new Workspace { Id = workspaceId, RequireVerifiedDomainForInternal = true };
+        var invitation = new WorkspaceInvitation
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            Email = userEmail,
+            RoleId = Guid.NewGuid(),
+            Status = InvitationStatus.PENDING.ToString(),
+            MembershipType = MembershipType.Internal.ToString(),
+            ExpiresAt = DateTime.UtcNow.AddDays(1)
+        };
+
+        _workspaceInvitationRepository.GetByTokenHashAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        StubVerifiedDomains(workspaceId, "enterprise.com");
+        _workspaceVerifiedDomainRepository.AnyAsync(
+            Arg.Any<Expression<Func<WorkspaceVerifiedDomain, bool>>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        // The user created an Enterprise workspace, then deleted it. The row survived with
+        // RemovedAt NULL, pointing at a workspace with deleted_at set.
+        var deletedEnterpriseWorkspace = new Workspace
+        {
+            Id = Guid.NewGuid(),
+            RequireVerifiedDomainForInternal = true,
+            DeletedAt = DateTime.UtcNow.AddDays(-2),
+        };
+        _workspaceMemberRepository.FindAsync(
+            Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), Arg.Is("Workspace"), Arg.Any<CancellationToken>())
+            .Returns(new List<WorkspaceMember>
+            {
+                new WorkspaceMember { UserId = userId, Workspace = deletedEnterpriseWorkspace, MembershipType = "Internal" }
+            });
+        _workspaceMemberRepository.FirstOrDefaultAsync(
+                Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns((WorkspaceMember?)null);
+
+        var result = await _workspaceInvitationService.AcceptInvitationAsync(
+            new AcceptInvitationRequest("valid_token"), userId, userEmail);
+
+        Assert.True(
+            result.IsSuccess,
+            "a deleted workspace still barred this account from joining an Enterprise workspace — this is the 403 in WT-417");
     }
 
     [Fact]
@@ -1272,6 +1588,141 @@ public class WorkspaceInvitationServiceTests
                 member.MembershipType == MembershipType.External.ToString()),
             Arg.Any<CancellationToken>());
         await _emailComposer.Received(1).SendJoinRequestApprovedEmailAsync(invitation, workspace, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// WT-416 — a member who left, then asked to come back.
+    ///
+    /// Leaving is a SOFT delete: the row stays and RemovedAt is stamped. But workspace_members
+    /// carries UNIQUE (workspace_id, user_id) with NO `WHERE removed_at IS NULL` predicate, so
+    /// the departed row still occupies the slot. The lookup here filtered on RemovedAt == null,
+    /// which made that row invisible, and AddAsync then inserted a second row for the same pair:
+    /// unique violation, caught by the catch-all, surfaced as 500 "An unexpected error
+    /// occurred". Three members of one production workspace were stuck outside it.
+    /// </summary>
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldRevive_WhenRequesterPreviouslyLeftTheWorkspace()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var memberRoleId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = memberRoleId,
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace { Id = workspaceId, Name = "Acme", Slug = "acme", AllowExternalCollaboration = true };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+        var departed = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = requesterId,
+            RoleId = Guid.NewGuid(),
+            Status = "removed",
+            MembershipType = MembershipType.Internal.ToString(),
+            RemovedAt = DateTime.UtcNow.AddDays(-1),
+            RemovedBy = adminId,
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, departed);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Owner" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+        _authIdentity.GetRoleByNameAsync("Member", Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = memberRoleId, Name = "Member" });
+        _emailComposer.SendJoinRequestApprovedEmailAsync(
+            Arg.Any<WorkspaceInvitation>(), Arg.Any<Workspace>(), Arg.Any<CancellationToken>())
+            .Returns(new SendEmailResponse(true, "approval-message", null));
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.External.ToString()));
+
+        Assert.True(result.IsSuccess, "approving a returning member failed — this is the 500 in WT-416");
+
+        // The row is reused, never duplicated: a second insert for this pair is the unique
+        // violation itself.
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
+        _workspaceMemberRepository.Received(1).Update(departed);
+
+        // And it comes back as a real membership, not a removed row with a new role.
+        Assert.Null(departed.RemovedAt);
+        Assert.Null(departed.RemovedBy);
+        Assert.Equal(memberRoleId, departed.RoleId);
+        Assert.Equal(MembershipType.External.ToString(), departed.MembershipType);
+        Assert.Equal("active", departed.Status, ignoreCase: true);
+    }
+
+    /// <summary>
+    /// The guard that must not move: somebody who is ALREADY a member is still a conflict, not a
+    /// revival. Widening the lookup to include removed rows must not make it accept a live one.
+    /// </summary>
+    [Fact]
+    public async Task ApproveJoinRequestAsync_ShouldStillRefuse_WhenRequesterIsAlreadyAnActiveMember()
+    {
+        var workspaceId = Guid.NewGuid();
+        var invitationId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        var invitation = new WorkspaceInvitation
+        {
+            Id = invitationId,
+            WorkspaceId = workspaceId,
+            Email = "requester@gmail.com",
+            RequestedBy = requesterId,
+            InvitedBy = requesterId,
+            RoleId = Guid.NewGuid(),
+            MembershipType = MembershipType.External.ToString(),
+            Status = InvitationStatus.REQUESTED.ToString(),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(7)
+        };
+        var workspace = new Workspace { Id = workspaceId, Name = "Acme", Slug = "acme", AllowExternalCollaboration = true };
+        var adminMember = new WorkspaceMember { WorkspaceId = workspaceId, UserId = adminId, RoleId = Guid.NewGuid() };
+        var liveMember = new WorkspaceMember
+        {
+            Id = Guid.NewGuid(),
+            WorkspaceId = workspaceId,
+            UserId = requesterId,
+            RoleId = Guid.NewGuid(),
+            Status = "active",
+            MembershipType = MembershipType.Internal.ToString(),
+            RemovedAt = null,
+        };
+
+        _workspaceMemberRepository.FirstOrDefaultAsync(Arg.Any<Expression<Func<WorkspaceMember, bool>>>(), "", Arg.Any<CancellationToken>())
+            .Returns(adminMember, liveMember);
+        _authIdentity.GetRoleByIdAsync(adminMember.RoleId, Arg.Any<CancellationToken>())
+            .Returns(new Role { Id = adminMember.RoleId, Name = "Owner" });
+        _workspaceInvitationRepository.GetByIdAsync(invitationId, Arg.Any<CancellationToken>()).Returns(invitation);
+        _workspaceRepository.GetByIdAsync(workspaceId, Arg.Any<CancellationToken>()).Returns(workspace);
+
+        var result = await _workspaceInvitationService.ApproveJoinRequestAsync(
+            workspaceId,
+            invitationId,
+            adminId,
+            new ApproveJoinRequestRequest(MembershipType.External.ToString()));
+
+        Assert.False(result.IsSuccess, "an existing active member was approved a second time");
+        Assert.Equal(ErrorCodes.Conflict, result.ErrorCode);
+        await _workspaceMemberRepository.DidNotReceive().AddAsync(
+            Arg.Any<WorkspaceMember>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]

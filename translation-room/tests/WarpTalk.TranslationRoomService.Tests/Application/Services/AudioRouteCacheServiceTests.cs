@@ -21,6 +21,7 @@ public class AudioRouteCacheServiceTests
     private readonly Mock<ITranslationRoomRepository> _mockRoomRepository;
     private readonly Mock<ITranslationRoomSessionRepository> _mockSessionRepository;
     private readonly Mock<IRedisStateRepository> _mockRedisStateRepo;
+    private readonly Mock<IDubVoiceDirectory> _mockDubVoices;
     private readonly AudioRouteCacheService _service;
 
     public AudioRouteCacheServiceTests()
@@ -29,11 +30,15 @@ public class AudioRouteCacheServiceTests
         _mockRoomRepository = new Mock<ITranslationRoomRepository>();
         _mockSessionRepository = new Mock<ITranslationRoomSessionRepository>();
         _mockRedisStateRepo = new Mock<IRedisStateRepository>();
+        // Silent by default: WT-396's enrichment is pinned in DubVoicePublishedTests, and a
+        // directory that answered here would change what every assertion below is testing.
+        _mockDubVoices = new Mock<IDubVoiceDirectory>();
         _service = new AudioRouteCacheService(
             _mockRouteRepository.Object,
             _mockRoomRepository.Object,
             _mockSessionRepository.Object,
-            _mockRedisStateRepo.Object);
+            _mockRedisStateRepo.Object,
+            _mockDubVoices.Object);
     }
 
     /// <summary>

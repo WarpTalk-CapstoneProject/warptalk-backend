@@ -62,6 +62,15 @@ public class WorkspaceConfiguration
 
 
     // 4. Enterprise & External Collaboration
+
+    /// <summary>
+    /// Display mirror of <c>workspace.workspace_verified_domains</c>. Read it to render a list;
+    /// never to decide anything. The table is the only record — domains are added and revoked
+    /// through VerifiedDomainService, which does not write this JSON, so a stored copy is only as
+    /// fresh as the last settings save. Treating it as policy is what let revoked domains go on
+    /// granting Internal membership (WT-179). Every decision reads
+    /// <c>WorkspaceHelper.GetActiveVerifiedDomainsAsync</c> instead.
+    /// </summary>
     public List<string> VerifiedDomains { get; set; } = new();
     public bool AllowExternalCollaboration { get; set; } = true;
     // Verification is opt-in for a new workspace without an explicit domain.

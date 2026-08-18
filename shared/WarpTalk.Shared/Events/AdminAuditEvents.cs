@@ -21,6 +21,8 @@ public static class AdminAuditEntityTypes
     public const string PaymentMethod = "payment_method";
     public const string GlossaryTerm = "glossary_term";
     public const string Notification = "notification";
+    /// <summary>A platform account, as acted on from the admin user directory.</summary>
+    public const string User = "user";
 }
 
 /// <summary>Service identifiers used as the audit entry's source.</summary>
@@ -30,6 +32,22 @@ public static class AdminAuditSources
     public const string BillingService = "billing-service";
     public const string TranscriptService = "transcript-service";
     public const string NotificationService = "notification-service";
+    public const string AuthService = "auth-service";
+}
+
+/// <summary>
+/// Action verbs recorded against a platform account.
+///
+/// Constants rather than literals because the value is persisted and queried: the audit screen
+/// filters on it, so a typo in one call site becomes a category of action that never appears in
+/// anybody's search.
+/// </summary>
+public static class AdminAuditUserActions
+{
+    public const string SessionsRevoked = "user.sessions_revoked";
+    public const string Deactivated = "user.deactivated";
+    public const string Reactivated = "user.reactivated";
+    public const string Unlocked = "user.unlocked";
 }
 
 public static class AdminAuditResults

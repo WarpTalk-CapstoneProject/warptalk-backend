@@ -58,6 +58,10 @@ public class LateJoinerAudioRouteTests
             // Granted by default: this file is about routing a late joiner, not about permission.
             // The gate itself is pinned in VoiceCloneConsentGateTests.
             GrantedConsent(),
+            // No preference expressed: WT-401 seeding is pinned in VoiceCloneSeedingTests, and
+            // leaving it silent here keeps every assertion below meaning what it meant before.
+            NoVoicePreference(),
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
 
         _rooms.Setup(r => r.GetByIdAsync(_roomId, It.IsAny<CancellationToken>()))
@@ -66,7 +70,7 @@ public class LateJoinerAudioRouteTests
                 Id = _roomId,
                 Status = "IN_PROGRESS",
                 SourceLanguage = "en",
-                TargetLanguages = "vi,ja",
+                TargetLanguages = """["vi","ja"]""",
             });
     }
 
@@ -109,6 +113,16 @@ public class LateJoinerAudioRouteTests
         _routes.Setup(r => r.AddRoutesAsync(It.IsAny<IEnumerable<TranslationRoomAudioRoute>>(), It.IsAny<CancellationToken>()))
             .Callback<IEnumerable<TranslationRoomAudioRoute>, CancellationToken>((added, _) => _capturedNewRoutes = added.ToList())
             .Returns(Task.CompletedTask);
+    }
+
+    /// <summary>A directory that reports no stored preference — the pre-WT-401 behaviour.</summary>
+    private static IUserSettingsDirectory NoVoicePreference()
+    {
+        var directory = new Mock<IUserSettingsDirectory>();
+        directory
+            .Setup(d => d.GetVoicePreferenceAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UserVoicePreference?)null);
+        return directory.Object;
     }
 
     [Fact]

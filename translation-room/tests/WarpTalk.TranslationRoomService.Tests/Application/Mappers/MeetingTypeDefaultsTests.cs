@@ -49,6 +49,7 @@ public class MeetingTypeDefaultsTests
         { TranslationRoomTypes.CompanyMeeting,      false,  true,  true,   true,      500 },
         { TranslationRoomTypes.VirtualAppointment,  true,   false, false,  false,       2 },
         { TranslationRoomTypes.LiveEvent,           true,   true,  true,   false,    1000 },
+        { TranslationRoomTypes.ExternalBridge,      false,  false, false,  false,       2 },
     };
 
     [Theory]
@@ -86,6 +87,8 @@ public class MeetingTypeDefaultsTests
     [InlineData("channel-meeting", TranslationRoomTypes.ChannelMeeting)]
     [InlineData("virtual appointment", TranslationRoomTypes.VirtualAppointment)]
     [InlineData("WEBINAR", TranslationRoomTypes.Webinar)]
+    [InlineData("External Bridge", TranslationRoomTypes.ExternalBridge)]
+    [InlineData("external-bridge", TranslationRoomTypes.ExternalBridge)]
     public void Normalize_ShouldFoldTheSpellingsAClientMightSend(string input, string expected)
     {
         TranslationRoomTypes.Normalize(input).Should().Be(expected);

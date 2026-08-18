@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+option csharp_namespace = "WarpTalk.Shared.Protos";
+
+package admin_audit;
+
+// How a service that is NOT the workspace service records an administrative mutation in the
+// platform audit log.
+//
+// The intended transport for this was the bus: AdminAuditPublisher publishes admin.action_recorded
+// and AdminActionRecordedConsumer appends it. That path is still there and still correct for a
+// service that already has MassTransit. This exists for the one that does not — the auth service,
+// where adding a broker would put RabbitMQ in the startup path of the service every sign-in
+// depends on, and where the actions being recorded (ending somebody's sessions, deactivating an
+// account) are exactly the ones that must not happen unrecorded.
+//
+// Synchronous on purpose. A publish is fire-and-forget by design: AdminAuditPublisher logs a
+// failure and returns, because the action it describes has already been committed. A caller here
+// can instead record the action BEFORE committing it and abandon the commit if the record fails,
+// which is the only ordering under which "this action is always audited" is true rather than
+// aspirational.
+service AdminAuditService {
+  rpc RecordAdminAction (RecordAdminActionRequest) returns (RecordAdminActionResponse);
+}
+
+// Mirrors WarpTalk.Shared.Events.AdminActionRecordedEvent field for field, so the two transports
+// cannot describe the same action differently.
+message RecordAdminActionRequest {
+  // See AdminAuditSources. Identifies which service performed the action.
+  string source_service = 1;
+  string action = 2;
+  // See AdminAuditEntityTypes. Persisted, so treat the values as a contract.
+  string entity_type = 3;
+  // Empty string means absent — proto3 has no null, and the server reads "" as no entity.
+  string entity_id = 4;
+  string workspace_id = 5;
+  string actor_id = 6;
+  string reason = 7;
+  // See AdminAuditResults: "succeeded" or "failed". Anything else is normalised to succeeded.
+  string result = 8;
+  // RFC 3339 / ISO 8601. Empty means "now, as the audit store sees it".
+  string performed_at = 9;
+  // The de-duplication key. AdminAuditLogService.RecordAsync ignores a repeat of the same
+  // (source, correlation, action, entity), so a caller that retries after a timeout cannot
+  // record the same action twice.
+  string correlation_id = 10;
+  // Safe, human-readable state summaries. Redacted by the caller AND again by the store: this
+  // table has no DELETE grant, so a secret that reaches it cannot be taken back out.
+  map<string, string> before_summary = 11;
+  map<string, string> after_summary = 12;
+}
+
+message RecordAdminActionResponse {
+  bool recorded = 1;
+  // Set only when recorded is false. The caller is expected to abandon its own change.
+  string error_message = 2;
+}

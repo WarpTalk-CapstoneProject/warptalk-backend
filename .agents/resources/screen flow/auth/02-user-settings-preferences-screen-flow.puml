@@ -13,9 +13,9 @@ rectangle "Workspace Home Page" as WorkspaceHome
 rectangle "User Preferences Page" as PreferencesPage
 rectangle "User Profile Page" as ProfilePage
 
-WorkspaceHome --> PreferencesPage : Click "User Profile Avatar -> Settings"
-PreferencesPage --> ProfilePage : Click "Profile Tab"
-ProfilePage --> PreferencesPage : Click "Preferences Tab"
-PreferencesPage --> WorkspaceHome : Click "Back to App"
+WorkspaceHome --> PreferencesPage
+PreferencesPage --> ProfilePage
+ProfilePage --> PreferencesPage
+PreferencesPage --> WorkspaceHome
 
 @enduml

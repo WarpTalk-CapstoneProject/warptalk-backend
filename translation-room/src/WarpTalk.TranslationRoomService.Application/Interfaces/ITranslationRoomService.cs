@@ -68,7 +68,82 @@ public interface ITranslationRoomService
         CancellationToken ct = default);
 
     Task<Result<IEnumerable<TranslationRoomInvitationDto>>> GetTranslationRoomInvitationsAsync(Guid translationRoomId, Guid userId, CancellationToken ct = default);
+
+    /// <summary>
+    /// The invitee's own answer to "you were invited": flips their PENDING invitation to ACCEPTED.
+    ///
+    /// Deliberately NOT the same act as joining. Joining seats you in the room and needs the room
+    /// to be live; accepting is an RSVP to a meeting that is usually still in the future, and it is
+    /// the only thing the invitation notification can offer at the moment it arrives.
+    ///
+    /// Keyed by the caller's EMAIL claim, because invitations are stored by email and an invitee
+    /// may have no participant row and no workspace membership — the same identity
+    /// <see cref="Domain.Authorization.RoomReadAccess"/> already resolves them by. A caller with no
+    /// invitation of their own gets NotFound rather than Forbidden: whether a room exists is not
+    /// something an uninvited caller may learn from this endpoint.
+    ///
+    /// Idempotent. Accepting an already-ACCEPTED invitation succeeds and returns the same row,
+    /// because the button lives in a notification that can legitimately be clicked twice — from
+    /// the popup and again from the bell.
+    /// </summary>
+    Task<Result<TranslationRoomInvitationDto>> AcceptTranslationRoomInvitationAsync(
+        Guid translationRoomId,
+        Guid userId,
+        string? userEmail,
+        CancellationToken ct = default);
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-468: which languages the pre-join screen may offer for a room identified by CODE.
+    ///
+    /// The rule is the owner's: a joiner is offered the languages the workspace that OWNS THE ROOM
+    /// permits. The pre-join screen had no way to ask that — it has only a room code, and the room
+    /// is not resolved until the join itself — so it fell back to the settings of whatever
+    /// workspace the joiner happened to have selected. Someone in workspace A joining a room in
+    /// workspace B was therefore offered A's languages: too few (B allows more) or too many
+    /// (options B forbids, refused by the server only after they were picked).
+    ///
+    /// Returns an EMPTY list for a room whose workspace sets no policy, and for an external-bridge
+    /// room, which belongs to no workspace. Empty means unrestricted everywhere this list travels.
+    ///
+    /// Deliberately NOT a preflight route. An earlier screen called a `preflight` endpoint that did
+    /// not exist, 404'd on every request, and turned /join into a dead end blaming the room. This
+    /// answers one question and returns nothing else about the room.
+    /// </summary>
+    Task<Result<JoinLanguagePolicyDto>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-480: who this meeting's record is shared with — its transcript, AI summary and recording.
+    ///
+    /// The visibility axis, and it is NOT the same as finalizing. Finalize
+    /// (<c>TranscriptCorrectionService.FinalizeTranscriptAsync</c>) locks the wording so no more
+    /// corrections land; this decides who may read it. A meeting can be shared and still editable,
+    /// or locked and still private, and the two controls stay independent on purpose — folding
+    /// them together would mean a typo could never be fixed once the record was shared.
+    ///
+    /// Deliberately NOT routed through <see cref="UpdateTranslationRoomSettingsAsync"/>, even
+    /// though that method also writes <c>ArtifactAccess</c>: it refuses any room past WAITING, and
+    /// sharing a record can only happen once the meeting is over and the artifacts exist. The
+    /// feature would have been refused in exactly the state it is for.
+    ///
+    /// Host only, matching Finalize. <paramref name="level"/> must be one of
+    /// <c>ArtifactAccessLevels.All</c>; anything else is rejected rather than stored, because an
+    /// unrecognised level reads as HOST_ONLY at the guard and would silently deny everyone.
+    /// </summary>
+    Task<Result> SetArtifactAccessAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string level,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-433: join by room ID — the shape a shared LINK produces — gated on membership of the
+    /// room's workspace, then identical to the by-code join (a requires-approval room lands the
+    /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.
+    /// </summary>
+    Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomByIdAsync(Guid translationRoomId, JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
     /// <summary>
     /// WT-341: takes a room live. The caller is no longer required to be the host.
     ///
@@ -122,6 +197,13 @@ public interface ITranslationRoomService
     Task<Result> ExpireTranslationRoomAsync(Guid translationRoomId, CancellationToken ct = default);
 
     Task<Result<TranslationRoomHistoryResponse>> GetTranslationRoomHistoryAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-333 — the caller's own meetings in one workspace, past and upcoming, newest first. Same
+    /// response shape as the history read; the implementation documents the three ways it differs.
+    /// </summary>
+    Task<Result<TranslationRoomHistoryResponse>> GetMyMeetingsAsync(GetTranslationRoomsRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
+
     Task<Result<List<TranslationRoomArtifactDto>>> GetTranslationRoomArtifactsAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackStateDto>> GetFeedbackStateAsync(Guid translationRoomId, Guid userId, string? userEmail = null, CancellationToken ct = default);
     Task<Result<TranslationRoomFeedbackDto>> SubmitFeedbackAsync(Guid translationRoomId, Guid userId, SubmitTranslationRoomFeedbackRequest request, string? userEmail = null, CancellationToken ct = default);

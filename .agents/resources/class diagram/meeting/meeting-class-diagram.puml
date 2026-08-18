@@ -1,22 +1,22 @@
 @startuml
-title 3.3 Meeting Module Class Diagram
+title 3.3 Meeting Module Class Diagram (Report 4 Embedded Version)
 
 top to bottom direction
 hide circle
-hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 35
-skinparam ranksep 45
 skinparam dpi 140
+skinparam titleFontSize 18
+skinparam packageFontSize 16
 skinparam classFontSize 14
 skinparam classAttributeFontSize 12
-skinparam packageFontSize 16
-skinparam titleFontSize 18
 skinparam ArrowFontSize 11
+skinparam nodesep 28
+skinparam ranksep 36
+skinparam packageTitleAlignment left
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
@@ -25,306 +25,215 @@ skinparam classBorderColor Black
 skinparam ArrowColor Black
 
 package "API Layer" as ApiLayer {
-  class MeetingsController <<boundary>> {
-    +JoinMeeting(translationRoomId, request)
-    +TransferHost(translationRoomId, newHostUserId)
-    +SetRecording(translationRoomId, request)
-    +EndMeeting(translationRoomId)
+  class MeetingRoomsController <<boundary>> {
+    - meetingRoomService: IMeetingRoomService
+    --
+    + CreateRoom(request: CreateRoomRequest): Task<Result>
+    + LockRoom(roomId: Guid): Task<Result>
+    + EndSession(roomId: Guid): Task<Result>
   }
 
   class MeetingChatController <<boundary>> {
-    +SendMessage(roomId, request)
-    +RequestTranslation(roomId, messageId, request)
-    +ModerateMessage(roomId, messageId, request)
+    - meetingChatService: IMeetingChatService
+    --
+    + SendMessage(roomId: Guid, request: SendChatMessageRequest): Task<Result>
+    + GetChatHistory(roomId: Guid): Task<Result>
+    + TranslateMessage(roomId: Guid, messageId: Guid): Task<Result>
   }
 
-  class QuestionsController <<boundary>> {
-    +Ask(translationRoomId, request)
-    +Upvote(translationRoomId, questionId)
-    +Answer(translationRoomId, questionId)
+  class MeetingHub <<boundary>> {
+    - meetingChatService: IMeetingChatService
+    --
+    + BroadcastRoomStatusAsync(roomId: Guid, status: String): Task
+    + BroadcastChatMessageAsync(roomId: Guid, message: ChatMessageDto): Task
   }
 
-  class PollsController <<boundary>> {
-    +CreatePoll(translationRoomId, request)
-    +Vote(translationRoomId, pollId, request)
-    +Close(translationRoomId, pollId)
-  }
-
-  class BreakoutsController <<boundary>> {
-    +Start(translationRoomId, request)
-    +End(translationRoomId)
-    +MyAssignment(translationRoomId)
-  }
-
-  class LiveKitWebhooksController <<boundary>> {
-    +HandleWebhook()
-  }
-
-  class MeetingChatHub <<boundary>> {
-    +JoinMeetingRoom(roomId)
-    +LeaveMeetingChat(roomId)
-  }
-
-  MeetingsController -[hidden]right- MeetingChatController
-  MeetingChatController -[hidden]right- QuestionsController
-  MeetingsController -[hidden]down- PollsController
-  PollsController -[hidden]right- BreakoutsController
-  BreakoutsController -[hidden]right- LiveKitWebhooksController
-  PollsController -[hidden]down- MeetingChatHub
+  MeetingRoomsController -[hidden]right- MeetingChatController
+  MeetingChatController -[hidden]right- MeetingHub
 }
 
 package "Application Layer" as ApplicationLayer {
   class MeetingRoomService <<control>> {
-    +JoinMeetingAsync(translationRoomId, userId, displayName)
-    +TransferHostAsync(translationRoomId, currentHostId, newHostId)
-    +SetRecordingAsync(translationRoomId, callerId, action)
-    +EndMeetingAsync(translationRoomId, hostId)
+    - meetingRoomRepository: IMeetingRoomRepository
+    - liveKitTokenService: ILiveKitTokenService
+    - unitOfWork: IUnitOfWork
+    --
+    + CreateMeetingRoomAsync(translationRoomId: Guid, hostId: Guid): Task<Result>
+    + LockRoomAsync(roomId: Guid, hostId: Guid): Task<Result>
+    + EndSessionAsync(roomId: Guid, hostId: Guid): Task<Result>
   }
 
   class MeetingChatService <<control>> {
-    +SendMessageAsync(roomId, userId, request)
-    +RequestTranslationAsync(roomId, messageId, userId, request)
-    +ModerateMessageAsync(roomId, messageId, userId, request)
-  }
-
-  class QuestionsService <<control>> {
-    +AskAsync(translationRoomId, userId, request)
-    +UpvoteAsync(translationRoomId, questionId, userId)
-    +AnswerAsync(translationRoomId, questionId, userId)
-  }
-
-  class PollsService <<control>> {
-    +CreatePollAsync(translationRoomId, userId, request)
-    +VoteAsync(translationRoomId, pollId, userId, request)
-    +CloseAsync(translationRoomId, pollId, userId)
-  }
-
-  class BreakoutsService <<control>> {
-    +StartBreakoutsAsync(translationRoomId, userId, request)
-    +EndBreakoutsAsync(translationRoomId, userId)
-    +GetMyAssignmentAsync(translationRoomId, userId)
-  }
-
-  class MeetingWebhookService <<control>> {
-    +ValidateWebhookToken(token, body)
-    +ProcessWebhookAsync(payload)
-  }
-
-  class MeetingHistoryService <<control>> {
-    +GetMeetingHistoryAsync(userId, request)
-    +GetMeetingRoomDetailAsync(roomId, userId)
-  }
-
-  MeetingRoomService -[hidden]right- MeetingChatService
-  MeetingChatService -[hidden]right- QuestionsService
-  MeetingRoomService -[hidden]down- PollsService
-  PollsService -[hidden]right- BreakoutsService
-  BreakoutsService -[hidden]right- MeetingWebhookService
-  PollsService -[hidden]down- MeetingHistoryService
-}
-
-package "Infrastructure Layer" as InfrastructureLayer {
-  class UnitOfWork <<control>> {
-    +SaveChangesAsync()
-    +Repository<T>()
-  }
-
-  class MeetingRoomRepository <<control>> {
-    +GetByTranslationRoomIdAsync(translationRoomId)
-    +AddAsync(room)
-    +Update(room)
-  }
-
-  class MeetingParticipantRepository <<control>> {
-    +GetByRoomAndUserAsync(roomId, userId)
-    +GetActiveByRoomAsync(roomId)
-  }
-
-  class MeetingChatMessageRepository <<control>> {
-    +GetByRoomIdAsync(roomId)
-    +AddAsync(message)
-  }
-
-  class MeetingTrackRepository <<control>> {
-    +AddAsync(track)
-    +GetByRoomAsync(roomId)
-  }
-
-  class MeetingChatTranslationRepository <<control>> {
-    +AddAsync(translation)
-    +GetByMessageAsync(messageId)
+    - chatMessageRepository: IMeetingChatMessageRepository
+    - meetingHub: MeetingHub
+    - unitOfWork: IUnitOfWork
+    --
+    + SendMessageAsync(roomId: Guid, senderId: Guid, text: String): Task<Result>
+    + TranslateMessageAsync(messageId: Guid, targetLanguage: String): Task<Result>
   }
 
   class LiveKitTokenService <<control>> {
-    +GenerateJoinToken(roomId, participantId)
+    - liveKitServerAdapter: ILiveKitServerAdapter
+    --
+    + GenerateJoinTokenAsync(roomId: Guid, userId: Guid, name: String): Task<String>
   }
 
-  class LiveKitRoomAdminService <<control>> {
-    +CreateRoomAsync(roomId)
-    +EndRoomAsync(roomId)
+  MeetingRoomService -[hidden]right- MeetingChatService
+  MeetingChatService -[hidden]right- LiveKitTokenService
+}
+
+package "Infrastructure Layer" as InfrastructureLayer {
+  class MeetingDbContext <<control>> {
+    + MeetingRooms: DbSet<MeetingRoom>
+    + RtcStreamParticipants: DbSet<RtcStreamParticipant>
+    + MeetingTracks: DbSet<MeetingTrack>
+    + MeetingChatMessages: DbSet<MeetingChatMessage>
+    + MeetingChatTranslations: DbSet<MeetingChatTranslation>
+    --
+    + SaveChangesAsync(): Task<Int>
   }
 
-  class TranslationRoomGrpcService <<control>> {
-    +GetRoomAsync(translationRoomId)
+  class UnitOfWork <<control>> {
+    - dbContext: MeetingDbContext
+    --
+    + SaveChangesAsync(): Task<Int>
+    + BeginTransactionAsync(): Task
+    + CommitTransactionAsync(): Task
   }
 
-  class RedisService <<control>> {
-    +PublishAsync(channel, message)
-    +ConsumeAsync(stream)
+  class MeetingRoomRepository <<control>> {
+    - dbContext: MeetingDbContext
+    --
+    + GetByIdAsync(id: Guid): Task<MeetingRoom>
+    + GetActiveByTranslationRoomIdAsync(roomId: Guid): Task<MeetingRoom>
+    + AddAsync(room: MeetingRoom): Task
   }
 
-  UnitOfWork -[hidden]right- MeetingRoomRepository
-  MeetingRoomRepository -[hidden]right- MeetingParticipantRepository
-  UnitOfWork -[hidden]down- MeetingChatMessageRepository
-  MeetingChatMessageRepository -[hidden]right- MeetingTrackRepository
-  MeetingTrackRepository -[hidden]right- MeetingChatTranslationRepository
-  MeetingChatMessageRepository -[hidden]down- LiveKitTokenService
-  LiveKitTokenService -[hidden]right- LiveKitRoomAdminService
-  LiveKitRoomAdminService -[hidden]right- TranslationRoomGrpcService
-  LiveKitTokenService -[hidden]down- RedisService
+  class RtcStreamParticipantRepository <<control>> {
+    - dbContext: MeetingDbContext
+    --
+    + GetActiveParticipantsByRoomIdAsync(roomId: Guid): Task<List<RtcStreamParticipant>>
+    + AddAsync(participant: RtcStreamParticipant): Task
+  }
 
-  UnitOfWork o-- MeetingRoomRepository
-  UnitOfWork o-- MeetingParticipantRepository
-  UnitOfWork o-- MeetingChatMessageRepository
-  UnitOfWork o-- MeetingTrackRepository
-  UnitOfWork o-- MeetingChatTranslationRepository
+  class MeetingChatMessageRepository <<control>> {
+    - dbContext: MeetingDbContext
+    --
+    + GetByRoomIdAsync(roomId: Guid, limit: Int): Task<List<MeetingChatMessage>>
+    + AddAsync(message: MeetingChatMessage): Task
+  }
+
+  class LiveKitServerAdapter <<control>> {
+    - liveKitOptions: LiveKitOptions
+    --
+    + CreateRoomAsync(roomName: String): Task
+    + IssueTokenAsync(roomName: String, identity: String): Task<String>
+  }
+
+  MeetingRoomRepository -[hidden]right- RtcStreamParticipantRepository
+  RtcStreamParticipantRepository -[hidden]right- MeetingChatMessageRepository
+  MeetingChatMessageRepository -[hidden]right- LiveKitServerAdapter
+  MeetingDbContext -[hidden]right- UnitOfWork
+  MeetingRoomRepository -[hidden]down- MeetingDbContext
 }
 
 package "Domain Layer" as DomainLayer {
   class MeetingRoom <<entity>> {
-    -Id: Guid
-    -TranslationRoomId: Guid
-    -HostUserId: Guid
-    -Status: MeetingRoomStatus
-    -IsLocked: Boolean
-    -RecordingState: String
+    - Id: Guid
+    - TranslationRoomId: Guid
+    - ProviderRoomName: String
+    - ActiveHostId: Guid
+    - Status: String
+    - IsLocked: Boolean
+    - MuteOnEntry: Boolean
+    - CreatedAt: DateTime
+    --
   }
 
-  class MeetingParticipant <<entity>> {
-    -Id: Guid
-    -MeetingRoomId: Guid
-    -UserId: Guid
-    -Role: String
-    -JoinedAt: DateTime
+  class RtcStreamParticipant <<entity>> {
+    - Id: Guid
+    - MeetingRoomId: Guid
+    - UserId: Guid
+    - ProviderIdentity: String
+    - DisplayName: String
+    - IsActive: Boolean
+    - JoinedAt: DateTime
+    --
   }
 
   class MeetingTrack <<entity>> {
-    -Id: Guid
-    -MeetingRoomId: Guid
-    -ParticipantId: Guid
-    -TrackSid: String
+    - Id: Guid
+    - MeetingParticipantId: Guid
+    - ProviderTrackId: String
+    - MediaType: String
+    - IsMuted: Boolean
+    - IsActive: Boolean
+    --
   }
 
   class MeetingChatMessage <<entity>> {
-    -Id: Guid
-    -MeetingRoomId: Guid
-    -SenderUserId: Guid
-    -Content: String
-    -SentAt: DateTime
+    - Id: Guid
+    - MeetingRoomId: Guid
+    - WorkspaceId: Guid
+    - SenderUserId: Guid
+    - SenderDisplayName: String
+    - OriginalText: String
+    - OriginalLanguage: String
+    - SentAt: DateTime
+    --
   }
 
   class MeetingChatTranslation <<entity>> {
-    -Id: Guid
-    -MessageId: Guid
-    -TargetLanguage: String
-    -TranslatedText: String
+    - Id: Guid
+    - MessageId: Guid
+    - SourceLanguage: String
+    - TargetLanguage: String
+    - TranslatedText: String
+    --
   }
 
-  class Question <<entity>> {
-    -Id: Guid
-    -TranslationRoomId: Guid
-    -AskedByUserId: Guid
-    -Content: String
-    -AnsweredAt: DateTime
-  }
-
-  class Poll <<entity>> {
-    -Id: Guid
-    -TranslationRoomId: Guid
-    -Question: String
-    -ClosedAt: DateTime
-  }
-
-  class PollOption <<entity>> {
-    -Id: Guid
-    -PollId: Guid
-    -Text: String
-    -VoteCount: Int
-  }
-
-  class BreakoutSession <<entity>> {
-    -Id: Guid
-    -TranslationRoomId: Guid
-    -StartedAt: DateTime
-    -EndedAt: DateTime
-  }
-
-  class BreakoutAssignment <<entity>> {
-    -Id: Guid
-    -BreakoutSessionId: Guid
-    -UserId: Guid
-    -GroupName: String
-  }
-
-  MeetingRoom "1" *-- "0..*" MeetingParticipant : hosts participants
-  MeetingRoom "1" *-- "0..*" MeetingTrack : records tracks
-  MeetingRoom "1" *-- "0..*" MeetingChatMessage : contains chat
-  MeetingChatMessage "1" *-- "0..*" MeetingChatTranslation : has translations
-  Poll "1" *-- "0..*" PollOption : offers options
-  BreakoutSession "1" *-- "0..*" BreakoutAssignment : assigns users
+  MeetingRoom -[hidden]right- RtcStreamParticipant
+  RtcStreamParticipant -[hidden]right- MeetingTrack
+  MeetingTrack -[hidden]right- MeetingChatMessage
+  MeetingChatMessage -[hidden]right- MeetingChatTranslation
 }
 
 package "External Systems" as ExternalSystems {
   class LiveKitServer <<external system>> {
-    +IssueAccessToken(claims)
-    +CreateRoom(roomId)
-    +ReceiveWebhook(payload)
+    - endpoint: String
+    --
+    + CreateRoomAsync(roomName: String): Task
+    + IssueToken(roomName: String, identity: String): String
   }
-
-  class TranslationRoomServiceGrpcServer <<external system>> {
-    +GetRoom(translationRoomId)
-  }
-
-  class RedisServer <<external system>> {
-    +PublishMeetingEvent(event)
-  }
-
-  LiveKitServer -[hidden]right- TranslationRoomServiceGrpcServer
-  TranslationRoomServiceGrpcServer -[hidden]right- RedisServer
 }
 
-MeetingsController --> MeetingRoomService
+MeetingRoomsController --> MeetingRoomService
 MeetingChatController --> MeetingChatService
-QuestionsController --> QuestionsService
-PollsController --> PollsService
-BreakoutsController --> BreakoutsService
-LiveKitWebhooksController --> MeetingWebhookService
-MeetingChatHub --> MeetingChatService
+MeetingHub --> MeetingChatService
 
+MeetingRoomService ..> MeetingRoomRepository
 MeetingRoomService ..> LiveKitTokenService
-MeetingRoomService ..> LiveKitRoomAdminService
-MeetingRoomService ..> TranslationRoomGrpcService
-MeetingChatService ..> RedisService
-MeetingWebhookService ..> LiveKitRoomAdminService
+MeetingRoomService ..> UnitOfWork
+
+MeetingChatService ..> MeetingChatMessageRepository
+MeetingChatService ..> MeetingHub
+MeetingChatService ..> UnitOfWork
+
+LiveKitTokenService ..> LiveKitServerAdapter
+LiveKitServerAdapter ..> LiveKitServer
+
+MeetingRoomRepository ..> MeetingDbContext
+RtcStreamParticipantRepository ..> MeetingDbContext
+MeetingChatMessageRepository ..> MeetingDbContext
+UnitOfWork ..> MeetingDbContext
 
 MeetingRoomRepository ..> MeetingRoom : persists
-MeetingParticipantRepository ..> MeetingParticipant : persists
+RtcStreamParticipantRepository ..> RtcStreamParticipant : persists
 MeetingChatMessageRepository ..> MeetingChatMessage : persists
-MeetingTrackRepository ..> MeetingTrack : persists
-MeetingChatTranslationRepository ..> MeetingChatTranslation : persists
 
-LiveKitTokenService ..> LiveKitServer : issues token
-LiveKitRoomAdminService ..> LiveKitServer : manages room
-TranslationRoomGrpcService ..> TranslationRoomServiceGrpcServer : validates room
-RedisService ..> RedisServer : publishes events
+MeetingRoom *-- "0..*" RtcStreamParticipant
+RtcStreamParticipant *-- "0..*" MeetingTrack
+MeetingRoom *-- "0..*" MeetingChatMessage
+MeetingChatMessage *-- "0..*" MeetingChatTranslation
 
-ApiLayer -[hidden]down- ApplicationLayer
-ApplicationLayer -[hidden]down- InfrastructureLayer
-InfrastructureLayer -[hidden]down- DomainLayer
-DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

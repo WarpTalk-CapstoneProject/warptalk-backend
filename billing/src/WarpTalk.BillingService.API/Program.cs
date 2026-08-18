@@ -73,6 +73,7 @@ try
 
     // --- Application Services ---
     builder.Services.AddScoped<ICreditService, CreditService>();
+builder.Services.AddScoped<IAdminSubscriptionService, AdminSubscriptionService>();
 
     builder.Services.AddScoped<IPlanService, PlanService>();
     builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
@@ -80,6 +81,9 @@ try
 
     builder.Services.AddScoped<IPaymentEventHandler, SubscriptionPaymentEventHandler>();
     builder.Services.AddScoped<IPaymentEventHandler, CancellationPaymentEventHandler>();
+    // WT-429: without this, "CreditTopUp" matched no handler and the payment completed having
+    // granted nothing — the incident that switched the top-up button off.
+    builder.Services.AddScoped<IPaymentEventHandler, CreditTopUpPaymentEventHandler>();
     builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 
     builder.Services.AddScoped<IUsageService, UsageService>();
@@ -104,7 +108,7 @@ try
 
     builder.Services.AddGrpcClient<WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient>(o =>
     {
-        var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50053";
+        var url = builder.Configuration["NotificationServiceGrpcUrl"] ?? "http://localhost:50054";
         o.Address = new Uri(url);
     })
     .AddWarpTalkGrpcClientDefaults(builder.Configuration, builder.Environment);
@@ -177,6 +181,10 @@ try
     builder.Services.AddHostedService<BillingAggregationWorker>();
     builder.Services.AddHostedService<BillingOutboxWorker>();
     builder.Services.AddHostedService<BillingRedisSubscriberService>();
+    // WT-430: republishes every workspace's entitlements on a slow interval, so a consumer's
+    // snapshot cannot stay silently stale after a change that did not go through billing's own
+    // write paths. Disabled by setting Billing:Workers:EntitlementReconcileIntervalMinutes to 0.
+    builder.Services.AddHostedService<EntitlementReconcileWorker>();
 
     builder.Services.AddControllers()
         .AddJsonOptions(options =>

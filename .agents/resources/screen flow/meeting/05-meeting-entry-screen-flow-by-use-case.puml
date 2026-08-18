@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam dpi 136
@@ -17,6 +18,7 @@ package "Create And Schedule Meeting" {
 }
 
 package "Review And Start Room" {
+  rectangle "Schedules Page" as SchedulesPage
   rectangle "Room Information Page" as RoomInformationPage
   rectangle "Setup Room Dialog" as SetupRoomDialog
 }
@@ -32,21 +34,22 @@ package "Waiting And Live Session" {
   rectangle "Live Meeting Page" as LiveMeetingPage
 }
 
-ScheduleWorkspaceRoomsPage --> CreateRoomDialog : Click "New Meeting"
-CreateRoomDialog --> DailyRecurrenceScheduleDialog : Click "Repeat Daily"
-DailyRecurrenceScheduleDialog --> CreateRoomDialog : Save Daily Schedule
-CreateRoomDialog --> SetupRoomDialog : Click "Configure"
-CreateRoomDialog --> RoomInformationPage : Click "Join"
+ScheduleWorkspaceRoomsPage --> CreateRoomDialog
+CreateRoomDialog --> DailyRecurrenceScheduleDialog
+DailyRecurrenceScheduleDialog --> CreateRoomDialog
+CreateRoomDialog --> SetupRoomDialog
+CreateRoomDialog --> RoomInformationPage
+SchedulesPage --> RoomInformationPage
 
-RoomInformationPage --> LiveMeetingPage : Click "Start meeting"
-RoomInformationPage --> WaitingRoomPage : Click "Enter waiting room"
-RoomInformationPage --> SetupRoomDialog : Click "Join meeting"
-SetupRoomDialog --> LiveMeetingPage : Click "Start Meeting" or "Join Meeting"
-WaitingRoomPage --> SetupRoomDialog : Click "Back to setup"
-WaitingRoomPage --> LiveMeetingPage : Host starts meeting
+RoomInformationPage --> LiveMeetingPage
+RoomInformationPage --> WaitingRoomPage
+RoomInformationPage --> SetupRoomDialog
+SetupRoomDialog --> LiveMeetingPage
+WaitingRoomPage --> SetupRoomDialog
+WaitingRoomPage --> LiveMeetingPage
 
-JoinWorkspaceRoomsPage --> JoinTranslationRoomDialog : Click "Join via code"
-JoinTranslationRoomDialog --> JoinTranslationRoomPage : Submit Meeting Code
-JoinTranslationRoomPage --> LiveMeetingPage : Click "Join Meeting"
+JoinWorkspaceRoomsPage --> JoinTranslationRoomDialog
+JoinTranslationRoomDialog --> JoinTranslationRoomPage
+JoinTranslationRoomPage --> LiveMeetingPage
 
 @enduml

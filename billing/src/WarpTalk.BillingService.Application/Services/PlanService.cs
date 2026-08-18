@@ -80,25 +80,42 @@ public class PlanService : IPlanService
         }
     }
 
+    /// <summary>
+    /// BR-74 — the customer-facing catalogue. Only plans that are actually on sale.
+    ///
+    /// This filtered on DeletedAt alone despite its name, so a plan an administrator had
+    /// deactivated stayed selectable for new purchases on the landing page and in every checkout
+    /// flow. `SubscriptionService` already refuses to create a subscription against an inactive
+    /// plan, so the end state was a customer picking a plan and being told no at the till.
+    ///
+    /// Administrators must NOT use this. Deactivating a plan through the edit form would remove it
+    /// from the only list the admin page has, and there would be no way to switch it back on —
+    /// deactivation would be a one-way door. That is what GetAllPlansAsync below is for.
+    /// </summary>
     public async Task<Result<IEnumerable<PlanDto>>> GetActivePlansAsync(
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var plans = (await _unitOfWork.Plans.FindAsync(
-                p => p.DeletedAt == null,
-                cancellationToken)).ToList();
+            var plans = await LoadCatalogueAsync(cancellationToken);
+            return Result.Success(plans.Where(p => p.IsActive).Select(p => p.ToDto()));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlans);
+            return Result.Failure<IEnumerable<PlanDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
 
-            if (!plans.Any())
-            {
-                var defaultEnterprisePlan = PlanMapper.CreateDefaultEnterprisePlan();
-                
-                await _unitOfWork.Plans.AddAsync(defaultEnterprisePlan, cancellationToken);
-                await _unitOfWork.SaveChangesAsync(cancellationToken);
-                
-                plans.Add(defaultEnterprisePlan);
-            }
-
+    /// <summary>
+    /// Every plan, deactivated ones included. System Admin only — see the controller.
+    /// </summary>
+    public async Task<Result<IEnumerable<PlanDto>>> GetAllPlansAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var plans = await LoadCatalogueAsync(cancellationToken);
             return Result.Success(plans.Select(p => p.ToDto()));
         }
         catch (Exception ex)
@@ -106,6 +123,31 @@ public class PlanService : IPlanService
             _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorGettingPlans);
             return Result.Failure<IEnumerable<PlanDto>>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
         }
+    }
+
+    /// <summary>
+    /// Every non-deleted plan, seeding the default Enterprise plan on a genuinely empty catalogue.
+    ///
+    /// The seed is keyed on "no plans exist", NOT on "no ACTIVE plans exist". Those differ exactly
+    /// when an administrator has deactivated everything — and seeding there would mint a brand new
+    /// Enterprise plan every time the catalogue was read, silently undoing the decision to take the
+    /// product off sale.
+    /// </summary>
+    private async Task<List<Plan>> LoadCatalogueAsync(CancellationToken cancellationToken)
+    {
+        var plans = (await _unitOfWork.Plans.FindAsync(
+            p => p.DeletedAt == null,
+            cancellationToken)).ToList();
+
+        if (plans.Count == 0)
+        {
+            var defaultEnterprisePlan = PlanMapper.CreateDefaultEnterprisePlan();
+            await _unitOfWork.Plans.AddAsync(defaultEnterprisePlan, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            plans.Add(defaultEnterprisePlan);
+        }
+
+        return plans;
     }
 
     public async Task<Result<PlanDto>> GetPlanByIdAsync(
@@ -160,6 +202,37 @@ public class PlanService : IPlanService
                     return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingDuplicatePlanSlug, ErrorCodes.BillingDuplicatePlanSlug);
             }
 
+            // WT-481: a plan somebody can already buy is not a draft.
+            //
+            // Locked when it is PUBLISHED (visible in the buy area) or when anyone is SUBSCRIBED to
+            // it — the second case matters on its own, because hiding a plan does not end the
+            // subscriptions already running on it, and those are exactly the workspaces a silent
+            // price change would hit.
+            //
+            // Refused rather than ignored. Dropping the offending fields would leave the
+            // administrator looking at a success message and a form that still shows what they
+            // typed, which is how you learn about it from a customer instead of from the screen.
+            // SubscriptionRepository, not the `Subscriptions` alias: the alias is a default
+            // interface member, and a mocked IUnitOfWork intercepts the property rather than
+            // running the default body, so it answers null. PublishEntitlementsForPlanAsync
+            // below already reaches for the same member for the same reason.
+            var hasSubscribers = await _unitOfWork.SubscriptionRepository.AnyAsync(
+                s => s.PlanId == id && s.DeletedAt == null,
+                cancellationToken);
+
+            if (plan.IsActive || hasSubscribers)
+            {
+                var lockedChanges = PlanEditPolicy.LockedFieldChanges(plan, request);
+                if (lockedChanges.Count > 0)
+                {
+                    return Result.Failure<PlanDto>(
+                        string.Format(
+                            ApiMessageConstants.ErrorMessages.BillingPlanCommercialTermsLocked,
+                            string.Join(", ", lockedChanges)),
+                        ErrorCodes.BillingPlanCommercialTermsLocked);
+                }
+            }
+
             var changes = new List<string>();
 
             if (plan.Price != request.Price)
@@ -193,6 +266,47 @@ public class PlanService : IPlanService
         }
     }
 
+
+    public async Task<Result<PlanDto>> CreatePlanAsync(
+        PlanRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var pricingConfig = await GetPricingConfigAsync(cancellationToken);
+            var validationResult = ValidatePlanRequest(request, pricingConfig);
+            if (!validationResult.IsSuccess)
+                return validationResult;
+
+            var normalizedSlug = request.Slug.ToLowerInvariant().Trim();
+            var existing = await _unitOfWork.Plans.FirstOrDefaultAsync(
+                p => p.Slug == normalizedSlug && p.DeletedAt == null,
+                cancellationToken);
+            if (existing is not null)
+                return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingDuplicatePlanSlug, ErrorCodes.BillingDuplicatePlanSlug);
+
+            // ToEntity was written alongside UpdateFromRequest and then sat unwired — the
+            // catalogue only ever grew by migration. This is its first caller.
+            var plan = request.ToEntity();
+            await _unitOfWork.Plans.AddAsync(plan, cancellationToken);
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+            // No entitlement fan-out: a plan nobody subscribes to yet moves nobody's layer 2.
+            await BillingNotificationHelper.PublishPlanUpdateAsync(
+                _messagePublisher,
+                _logger,
+                BillingMessageConstants.Plan.Actions.Created,
+                plan.Name,
+                null,
+                cancellationToken);
+
+            return Result.Success(plan.ToDto());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, BillingMessageConstants.LogMessages.ErrorUpdatingPlan);
+            return Result.Failure<PlanDto>(ApiMessageConstants.ErrorMessages.BillingInternalError, ErrorCodes.InternalServerError);
+        }
+    }
 
     private async Task<PricingConfigDto?> GetPricingConfigAsync(CancellationToken cancellationToken)
     {

@@ -213,6 +213,11 @@ public class WorkspacesController : ControllerBase
                 return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Conflict)
                 return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            // WT-434 (Linear): without this branch a server-side failure fell through to 400,
+            // which reads as "you sent a bad request" for a request that was perfectly formed —
+            // the EF tracking bug in SoftDeleteWorkspaceAsync hid behind that label.
+            if (result.ErrorCode == ErrorCodes.InternalServerError)
+                return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

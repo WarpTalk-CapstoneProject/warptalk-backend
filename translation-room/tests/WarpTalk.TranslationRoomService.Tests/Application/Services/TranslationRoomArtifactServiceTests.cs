@@ -10,21 +10,57 @@ namespace WarpTalk.TranslationRoomService.Tests.Application.Services;
 
 public sealed class TranslationRoomArtifactServiceTests
 {
+    /// <summary>
+    /// The transcript is STORED as markdown and DOWNLOADED as plain text.
+    ///
+    /// This test used to assert the stored bytes back — `# Real transcript`, text/markdown, .md —
+    /// which was the old contract and the reason a person who clicked Download got
+    /// `**[Nam (VI)]**: xin chào`. The storage shape is deliberately unchanged (the web client
+    /// parses the summary's JSON, the knowledge indexer reads the same field); what changed is
+    /// that the download renders it. See ArtifactPlainText.
+    /// </summary>
     [Fact]
-    public async Task GetArtifactDownloadAsync_ReturnsInlineTranscriptContent()
+    public async Task GetArtifactDownloadAsync_ServesTheTranscriptAsPlainText()
     {
         var userId = Guid.NewGuid();
         var artifact = CreateArtifact(userId);
         artifact.ArtifactType = "TRANSCRIPT_EXPORT";
         artifact.FileFormat = "markdown";
-        artifact.Content = "# Real transcript";
+        artifact.Content = "# Real transcript\n---\n**[Nam (VI)]**: xin chào";
 
         var service = CreateService(artifact);
         var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
 
         Assert.True(result.IsSuccess);
+        // A text export has no file behind it — the content IS the artifact — so no signed URL.
         Assert.Null(result.Value!.Url);
-        Assert.Equal("# Real transcript", result.Value.Content);
+        Assert.Equal("text/plain", result.Value.ContentType);
+        Assert.EndsWith(".txt", result.Value.FileName);
+        Assert.DoesNotContain("**", result.Value.Content);
+        Assert.DoesNotContain("# ", result.Value.Content);
+        Assert.Contains("Real transcript", result.Value.Content);
+        Assert.Contains("[Nam (VI)]: xin chào", result.Value.Content);
+    }
+
+    /// <summary>
+    /// The format switch still decides for everything that is a real file. Only the two text
+    /// exports are rendered on the way out; a markdown artifact of any other type is served as
+    /// the markdown it is.
+    /// </summary>
+    [Fact]
+    public async Task GetArtifactDownloadAsync_LeavesANonTextExportOnItsStoredFormat()
+    {
+        var userId = Guid.NewGuid();
+        var artifact = CreateArtifact(userId);
+        artifact.ArtifactType = "DEBUG_LOG";
+        artifact.FileFormat = "markdown";
+        artifact.Content = "# Raw notes";
+
+        var service = CreateService(artifact);
+        var result = await service.GetArtifactDownloadAsync(artifact.Id, userId);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("# Raw notes", result.Value!.Content);
         Assert.Equal("text/markdown", result.Value.ContentType);
         Assert.EndsWith(".md", result.Value.FileName);
     }

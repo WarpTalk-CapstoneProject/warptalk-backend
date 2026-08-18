@@ -1,0 +1,165 @@
+@startuml
+title WarpTalk - Subscription Purchase & Enterprise Contract Activation Flow
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 160
+
+actor "Authenticated User / Admin" as User
+boundary "BillingCheckoutPage" as Web
+control "API Gateway" as Gateway
+
+box "Billing Service" #LightCyan
+participant ":PaymentsController" as PaymentsController <<boundary>>
+participant ":SubscriptionsController" as SubscriptionsController <<boundary>>
+participant ":PaymentAppService" as PaymentAppService <<service>>
+participant ":SubscriptionService" as SubscriptionService <<service>>
+participant ":StripePaymentService" as StripeService <<control>>
+participant ":SubscriptionRepository" as SubRepo <<control>>
+database "Billing Database" as BillingDb
+participant ":BillingEventPublisher" as Publisher <<control>>
+end box
+
+participant "Stripe API / Checkout" as Stripe <<external system>>
+queue "Redis System Stream" as Stream
+
+box "Workspace Service" #LightBlue
+participant ":EntitlementsChangedConsumer" as EntitlementsConsumer <<boundary>>
+database "Workspace Database" as WorkspaceDb
+end box
+
+== OPTION A: SELF-SERVICE PLAN SUBSCRIPTION PURCHASE (STRIPE CHECKOUT) ==
+
+User -> Web : Select Subscription Plan (Pro / Business) & click Checkout
+activate Web
+
+Web -> Gateway : POST /api/v1/payments/checkout\n[WorkspaceId, PlanId, SuccessUrl, CancelUrl + JWT]
+activate Gateway
+
+Gateway -> PaymentsController : CreateCheckoutSession(request)
+activate PaymentsController
+
+PaymentsController -> PaymentAppService : CreateCheckoutSessionAsync(request)
+activate PaymentAppService
+
+PaymentAppService -> StripeService : CreateSubscriptionCheckoutSessionAsync(workspaceId, planId, urls)
+activate StripeService
+StripeService -> Stripe : Create Checkout Session (mode="subscription")
+activate Stripe
+Stripe --> StripeService : Stripe Checkout Session (id, url)
+deactivate Stripe
+StripeService --> PaymentAppService : CheckoutSessionDto (url)
+deactivate StripeService
+
+PaymentAppService --> PaymentsController : Result.Success(CheckoutSessionDto)
+deactivate PaymentAppService
+PaymentsController --> Gateway : 200 OK (Checkout URL)
+deactivate PaymentsController
+Gateway --> Web : 200 OK (Checkout URL)
+deactivate Gateway
+
+Web --> User : Redirect browser to Stripe Hosted Checkout URL
+deactivate Web
+
+User -> Stripe : Input payment details & confirm subscription payment
+activate Stripe
+Stripe -> Stripe : Process payment & activate recurring subscription
+Stripe --> User : Redirect to SuccessUrl
+deactivate Stripe
+
+Stripe -> PaymentsController : POST /api/v1/payments/webhook\n(Header: Stripe-Signature, Body: checkout.session.completed)
+activate PaymentsController
+PaymentsController -> PaymentAppService : ProcessWebhookAsync(payload, signature)
+activate PaymentAppService
+
+PaymentAppService -> SubscriptionService : ActivateSubscriptionAsync(workspaceId, planId, stripeSubscriptionId)
+activate SubscriptionService
+
+SubscriptionService -> SubRepo : AddOrUpdateSubscriptionAsync(subscriptionEntity)
+activate SubRepo
+SubRepo -> BillingDb : INSERT / UPDATE billing.subscriptions (Status = Active)
+activate BillingDb
+BillingDb --> SubRepo : Saved
+deactivate BillingDb
+SubRepo --> SubscriptionService : Subscription saved
+deactivate SubRepo
+
+SubscriptionService -> Publisher : PublishSubscriptionActivatedAsync(workspaceId, planId)
+activate Publisher
+Publisher -> Stream : XADD billing:events\n[event_type = SubscriptionActivated]
+activate Stream
+Stream --> Publisher : Queued
+deactivate Stream
+Publisher --> SubscriptionService : Published
+deactivate Publisher
+
+SubscriptionService --> PaymentAppService : Subscription Active
+deactivate SubscriptionService
+PaymentAppService --> PaymentsController : 200 OK
+deactivate PaymentAppService
+PaymentsController --> Stripe : 200 OK (Webhook Handled)
+deactivate PaymentsController
+
+== OPTION B: ENTERPRISE CONTRACT SUBSCRIPTION SIGNING (SYSTEM ADMIN) ==
+
+User -> Web : Open Admin Enterprise Contract Setup & submit contract details
+activate Web
+
+Web -> Gateway : POST /api/v1/subscriptions/contract\n[WorkspaceId, PlanId, ContractDetails + Admin JWT]
+activate Gateway
+
+Gateway -> SubscriptionsController : CreateWorkspaceContractSubscription(request)
+activate SubscriptionsController
+
+SubscriptionsController -> SubscriptionService : CreateWorkspaceContractSubscriptionAsync(request)
+activate SubscriptionService
+
+SubscriptionService -> SubRepo : AddAsync(new EnterpriseContractSubscription)
+activate SubRepo
+SubRepo -> BillingDb : INSERT INTO billing.subscriptions (IsContract = true, Status = Active)
+activate BillingDb
+BillingDb --> SubRepo : Saved
+deactivate BillingDb
+SubRepo --> SubscriptionService : Contract Subscription saved
+deactivate SubRepo
+
+SubscriptionService -> Publisher : PublishSubscriptionActivatedAsync(workspaceId, planId)
+activate Publisher
+Publisher -> Stream : XADD billing:events\n[event_type = SubscriptionActivated]
+activate Stream
+Stream --> Publisher : Queued
+deactivate Stream
+Publisher --> SubscriptionService : Published
+deactivate Publisher
+
+SubscriptionService --> SubscriptionsController : Result.Success(SubscriptionDto)
+deactivate SubscriptionService
+SubscriptionsController --> Gateway : 201 Created (SubscriptionDto)
+deactivate SubscriptionsController
+Gateway --> Web : 201 Created
+deactivate Gateway
+Web --> User : Display active enterprise contract subscription
+deactivate Web
+
+== PROPAGATION TO WORKSPACE ENTITLEMENTS ==
+
+Stream ->> EntitlementsConsumer : XREADGROUP billing:events (SubscriptionActivated)
+activate EntitlementsConsumer
+EntitlementsConsumer -> WorkspaceDb : UPDATE workspace_entitlements SET HasActiveSubscription = true
+activate WorkspaceDb
+WorkspaceDb --> EntitlementsConsumer : Entitlements Updated
+deactivate WorkspaceDb
+deactivate EntitlementsConsumer
+
+@enduml

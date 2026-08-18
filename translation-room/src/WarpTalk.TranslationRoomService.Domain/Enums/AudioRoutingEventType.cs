@@ -30,6 +30,17 @@ public enum AudioRoutingEventType
 
     stt_latency_high,
     stt_recovered,
+
+    /// <summary>
+    /// Speech-to-text is down for this room — stt_worker publishes it when its model call fails.
+    ///
+    /// WT-429. This member was missing while its recovery partner <see cref="stt_recovered"/> and
+    /// its siblings <see cref="tts_unavailable"/> and <see cref="audio_unavailable"/> all existed,
+    /// so every one of these events failed to parse and was dead-lettered: 381 of the 497 entries
+    /// in translationRoom:system_events:dlq, across 83 rooms, all reading "Unknown event type."
+    /// The backend was never told that transcription had stopped.
+    /// </summary>
+    stt_unavailable,
     translation_latency_high,
     translation_recovered,
     tts_latency_high,
@@ -42,8 +53,31 @@ public enum AudioRoutingEventType
     token_exhausted,
     token_recovered,
 
+    /// <summary>
+    /// Somebody changed the language they speak or hear WHILE the meeting is running. WT-419.
+    ///
+    /// Not a state transition on an existing route, which is what every other member of this enum
+    /// is — it changes the SHAPE of the mesh, so it is dispatched away from
+    /// AudioRouteEventProcessor entirely (see ParticipantLanguageProcessor) and ends in a full
+    /// GenerateRoutesAsync rather than a per-route transition.
+    ///
+    /// It exists because the gateway hub wrote language changes to Redis and nowhere else, while
+    /// the mesh reads the participant row in Postgres. A route was therefore pinned to whatever
+    /// languages the pair held at join time, forever.
+    /// </summary>
+    participant_language_changed,
+
     tts_unavailable,
     audio_unavailable,
     audio_recovered,
     telemetry_state_updated,
+
+    /// <summary>
+    /// tts_worker finished the last chunk of a segment. INFORMATIONAL — it reports progress and
+    /// moves no route between states.
+    ///
+    /// WT-429. Recognised here only so it stops being an unknown event: it made up the other 116
+    /// dead-lettered entries, each retried three times before being parked.
+    /// </summary>
+    final_chunk_processed,
 }

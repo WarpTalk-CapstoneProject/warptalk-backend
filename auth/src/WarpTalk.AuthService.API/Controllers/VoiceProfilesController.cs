@@ -93,6 +93,31 @@ public class VoiceProfilesController : ControllerBase
         return result.Value == null ? NoContent() : Ok(result.Value);
     }
 
+    /// <summary>
+    /// Hear a voice speaking one sentence, before a meeting rather than during one.
+    ///
+    /// POST rather than GET because the first call for a voice does real work on the AI side —
+    /// it is not a cached read that happens to be slow. Later calls for the same
+    /// (voice, language) are served from that render.
+    ///
+    /// The container is WAV because that is what CartesiaSynthesizer.synthesize asks the
+    /// provider for; it is fixed there, not negotiated here.
+    /// </summary>
+    [Authorize]
+    [HttpPost("preview")]
+    public async Task<IActionResult> PreviewVoice([FromBody] PreviewVoiceRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.PreviewVoiceAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return File(result.Value!, "audio/wav");
+    }
+
     [Authorize]
     [HttpDelete("{profileId:guid}")]
     public async Task<IActionResult> DeleteProfile(Guid profileId, CancellationToken ct)
@@ -106,5 +131,43 @@ public class VoiceProfilesController : ControllerBase
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
         return NoContent();
+    }
+
+    /// <summary>
+    /// WT-396 — the voice this user is DUBBED IN.
+    ///
+    /// A separate route from the preferred-voice one, deliberately, because they point in
+    /// opposite directions: that one is the voice you HEAR other people in, this one is how you
+    /// sound to them. Sharing an endpoint is how an uploaded recording ended up changing neither.
+    /// </summary>
+    [Authorize]
+    [HttpGet("dub-voice")]
+    public async Task<IActionResult> GetDubVoice(CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.GetDubVoiceAsync(userId.Value, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(new { voiceId = result.Value });
+    }
+
+    /// <summary>Pick, or clear with an empty voiceId, the voice this user is dubbed in.</summary>
+    [Authorize]
+    [HttpPut("dub-voice")]
+    public async Task<IActionResult> SetDubVoice([FromBody] SetDubVoiceRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null) return Unauthorized();
+
+        var result = await _voiceProfileService.SetDubVoiceAsync(userId.Value, request, ct);
+        if (!result.IsSuccess)
+        {
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+        return Ok(new { voiceId = result.Value });
     }
 }

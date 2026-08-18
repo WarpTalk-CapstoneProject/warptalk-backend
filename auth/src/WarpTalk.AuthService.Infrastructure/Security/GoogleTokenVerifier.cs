@@ -52,8 +52,22 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
         IHttpClientFactory httpClientFactory,
         ILogger<GoogleTokenVerifier> logger)
     {
-        _clientId = configuration["Authentication:Google:ClientId"]
+        // Trimmed, and that is not cosmetic tidying.
+        //
+        // This value arrives as `Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID:?}` from a
+        // .env file on the production host. A trailing space, a quote left around the value, or a
+        // CRLF line ending from a file edited on Windows all survive into the string — and
+        // IsOurClient compares with StringComparison.Ordinal, exactly, against the `aud` Google
+        // reports. So a client id that is visibly identical to the web bundle's rejects every
+        // token, and the operator comparing the two by eye sees no difference at all.
+        //
+        // Trimming cannot cause a false accept: an OAuth client id contains no leading or
+        // trailing whitespace, so anything removed here was never part of the identifier.
+        _clientId = configuration["Authentication:Google:ClientId"]?.Trim()
             ?? throw new InvalidOperationException("Google ClientId is not configured.");
+
+        if (string.IsNullOrWhiteSpace(_clientId))
+            throw new InvalidOperationException("Google ClientId is configured but empty.");
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -118,6 +132,18 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
             using var tokenInfoResponse = await httpClient.GetAsync(tokenInfoUrl, ct);
             if (!tokenInfoResponse.IsSuccessStatusCode)
             {
+                // WT-361 — 4xx and 5xx from tokeninfo mean opposite things and must not share
+                // an answer. 4xx is Google looking at the token and refusing it: that is a
+                // verdict, and null (which becomes "invalid token") is correct. 5xx is Google
+                // being unable to answer, which says nothing about the token at all — swallowing
+                // it told the user their perfectly good credential was rejected.
+                if ((int)tokenInfoResponse.StatusCode >= 500)
+                {
+                    throw new HttpRequestException(
+                        $"Google tokeninfo returned {(int)tokenInfoResponse.StatusCode}; "
+                        + "the token could not be verified.");
+                }
+
                 _logger.LogWarning(
                     "Google tokeninfo rejected an access token with status {StatusCode}.",
                     (int)tokenInfoResponse.StatusCode);
@@ -136,9 +162,27 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
             {
                 // This is the account-takeover signature. Log it loudly: a legitimate WarpTalk
                 // client can never reach here.
+                //
+                // WT-361 — the values are NAMED now, and that is a deliberate change. This
+                // message used to say only "reported aud/azp that did not match", which reads as
+                // an attack and is far more often a deployment mistake: the web bundle is built
+                // with NEXT_PUBLIC_GOOGLE_CLIENT_ID and the auth service reads GOOGLE_CLIENT_ID
+                // from the host environment, two values nothing keeps in step. Google sign-in was
+                // reported broken in production with nothing to go on but a bare 400, and this
+                // log line was the one place that could have said why and did not.
+                //
+                // An OAuth client id is not a secret — it ships inside the public JavaScript
+                // bundle and is visible to anyone who opens devtools. Printing it costs nothing
+                // and turns an undiagnosable outage into one line.
                 _logger.LogWarning(
                     "Rejected a Google access token issued to a foreign OAuth client. "
-                    + "Expected our configured client id; token reported aud/azp that did not match.");
+                    + "Expected client id {ExpectedClientId}; token reported aud={TokenAudience} azp={TokenAuthorizedParty}. "
+                    + "If the reported values look like WarpTalk's own web client, the auth "
+                    + "service's GOOGLE_CLIENT_ID and the web bundle's NEXT_PUBLIC_GOOGLE_CLIENT_ID "
+                    + "have drifted apart.",
+                    _clientId,
+                    audience ?? "(absent)",
+                    authorizedParty ?? "(absent)");
                 return null;
             }
 
@@ -176,8 +220,16 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
         {
-            _logger.LogWarning(ex, "Could not verify a Google access token.");
-            return null;
+            // WT-361 — rethrown, not swallowed. This used to return null, and null means
+            // "verified: not our client" everywhere upstream — so a DNS hiccup or a Google
+            // outage was reported to the user as an invalid credential, and to the operator as
+            // a 400 that looks like the caller's fault.
+            //
+            // GoogleLoginAsync's catch-all turns this into InternalServerError, which
+            // GoogleAuthController now answers with 503: "we could not check", which is both
+            // true and retryable.
+            _logger.LogWarning(ex, "Could not reach Google to verify an access token.");
+            throw;
         }
     }
 

@@ -41,9 +41,20 @@ public sealed class VoiceConsentGrpcDirectory : IVoiceConsentDirectory
             // The consequence is real and worth stating: while AuthService is unreachable, nobody
             // can newly enable voice cloning. Their meeting still runs, still translates, still
             // dubs — in a library voice. That is the correct thing to lose.
-            _logger.LogWarning(
+            //
+            // ERROR, NOT WARNING. It was a warning, and the wording below invites reading it as a
+            // transient blip — which is how a permanent fault hid behind it for days: the handler
+            // on the other end threw on EVERY call (a shadow foreign key put a non-existent column
+            // in its query), so this line was emitted for every user of every meeting, and nothing
+            // that watches production treats `warn` as a page. A consent gate that is refusing
+            // everybody is an outage of the feature, whatever the cause, and it should read like
+            // one.
+            _logger.LogError(
                 ex,
-                "Could not reach AuthService for voice clone consent of {UserId}; treating as not granted.",
+                "Voice clone consent lookup for {UserId} failed against AuthService; treating as "
+                    + "NOT granted. While this persists nobody in any meeting can enable voice "
+                    + "cloning — if it repeats for every user, suspect AuthService rather than the "
+                    + "network.",
                 userId);
             return false;
         }

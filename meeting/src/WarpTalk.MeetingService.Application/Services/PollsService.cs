@@ -251,7 +251,7 @@ public class PollsService : IPollsService
 
     private async Task<bool> IsHostAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
     {
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 

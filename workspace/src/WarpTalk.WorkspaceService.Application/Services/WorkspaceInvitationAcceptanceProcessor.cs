@@ -97,7 +97,7 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
                 policyResult.ErrorCode);
         }
 
-        if (membershipType == MembershipType.Internal && config.RequireVerifiedDomainForInternal)
+        if (membershipType == MembershipType.Internal)
         {
             var isInternalElsewhere = await WorkspaceHelper.IsUserInternalMemberOfAnyEnterpriseWorkspaceAsync(_unitOfWork, userId, userEmail, ct);
             if (isInternalElsewhere)
@@ -106,10 +106,24 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
             }
         }
 
-        var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-            m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
+        // WT-417: `RemovedAt == null`, which this lookup did not have.
+        //
+        // Leaving a workspace, being removed from one, or having one deleted under you is a SOFT
+        // delete — the row stays and RemovedAt is stamped. Without the predicate, that row read
+        // as a live membership forever, so accepting ANY later invitation to that workspace was
+        // answered 409 AlreadyMember. Production: one account could not accept an invitation to
+        // a workspace it had left, internal or external, by link or by web, every time.
+        //
+        // The same predicate was already on the sibling guards — RequestToJoinAsync has it, and
+        // ApproveJoinRequestAsync got it in WT-416. This was the third door and the last one
+        // still open. Revival itself happens in ProcessAcceptanceAsync, because the row must be
+        // reused rather than re-inserted; see there.
+        var liveMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId && m.RemovedAt == null,
+            "",
+            ct);
 
-        if (existingMember != null)
+        if (liveMember != null)
         {
             return Result.Failure(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
         }
@@ -138,16 +152,33 @@ public class WorkspaceInvitationAcceptanceProcessor : IWorkspaceInvitationAccept
         // No overwrite here. ValidateAcceptanceAsync has already confirmed the stored intent is
         // still permitted, and the member is created with exactly the access class and role the
         // inviter chose.
-        var newMember = WorkspaceMemberMapper.CreateInvitationMember(
-            invitation.WorkspaceId,
-            userId,
-            invitation.RoleId,
-            ResolveStoredMembershipType(invitation).ToString());
+        var membershipType = ResolveStoredMembershipType(invitation).ToString();
+
+        // WT-417. Validation above has confirmed there is no LIVE membership, but a departed one
+        // may still hold the row: workspace_members carries UNIQUE (workspace_id, user_id) with
+        // no `WHERE removed_at IS NULL`, so the schema allows one row per person per workspace
+        // forever while the code tells joins apart by RemovedAt. Inserting here would hit the
+        // constraint and surface as a 500 — which is the 400/500 half of the report, waiting
+        // behind the 409 that fired first.
+        var departedMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+            m => m.WorkspaceId == invitation.WorkspaceId && m.UserId == userId, "", ct);
+
+        if (departedMember != null)
+        {
+            departedMember.ReviveAsMember(invitation.RoleId, membershipType);
+            _unitOfWork.WorkspaceMemberRepository.Update(departedMember);
+        }
+        else
+        {
+            await _unitOfWork.WorkspaceMemberRepository.AddAsync(
+                WorkspaceMemberMapper.CreateInvitationMember(
+                    invitation.WorkspaceId, userId, invitation.RoleId, membershipType),
+                ct);
+        }
 
         invitation.Status = InvitationStatus.ACCEPTED.ToString();
         invitation.AcceptedAt = DateTime.UtcNow;
 
-        await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
         _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
         await _unitOfWork.SaveChangesAsync(ct);
 

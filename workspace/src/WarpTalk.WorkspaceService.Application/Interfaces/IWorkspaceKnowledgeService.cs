@@ -23,12 +23,30 @@ public interface IWorkspaceKnowledgeService
         CancellationToken ct = default);
 
     /// <summary>
-    /// The same listing for the System Admin portal, which is global by construction and
-    /// consults no membership — the caller is gated by the system-admin policy at the
-    /// controller, exactly as <see cref="IAdminWorkspaceService"/> documents.
+    /// Corrects one chunk's fact, its category, and whether WarpBot may retrieve it.
+    ///
+    /// Owner only, where the listing is Owner OR Admin. Reading what the workspace knows and
+    /// deciding what it is allowed to know are different acts: an Admin runs the workspace
+    /// day to day, and editing what the assistant will tell everyone — or removing the
+    /// evidence of what it was told — belongs to the person who answers for the workspace.
     /// </summary>
-    Task<Result<WorkspaceKnowledgePageDto>> GetKnowledgeForAdminAsync(
+    Task<Result<WorkspaceKnowledgeChunkDto>> UpdateKnowledgeChunkAsync(
         Guid workspaceId,
-        GetWorkspaceKnowledgeQuery query,
+        string chunkId,
+        UpdateWorkspaceKnowledgeChunkRequest request,
+        Guid userId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes one chunk from the index. Owner only, for the same reason.
+    ///
+    /// The source is untouched: deleting a chunk of a document does not delete the document,
+    /// and re-uploading it will index it again. This is a statement about what the assistant
+    /// may draw on, not a retention operation.
+    /// </summary>
+    Task<Result<bool>> DeleteKnowledgeChunkAsync(
+        Guid workspaceId,
+        string chunkId,
+        Guid userId,
         CancellationToken ct = default);
 }

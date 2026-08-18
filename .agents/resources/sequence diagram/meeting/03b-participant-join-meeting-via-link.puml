@@ -132,6 +132,7 @@ deactivate Web
         deactivate MeetingWeb
     else LiveKit connection established
         LiveKit --> MeetingWeb : Connection Established
+        deactivate LiveKit
         
         == SIGNALR HUB CONNECTION & BROADCAST ==
         
@@ -155,12 +156,14 @@ deactivate Web
         Redis --> Hub : Saved target language
         deactivate Redis
         Hub -> Gateway : Broadcast 'ParticipantJoined' to group
+        activate Gateway
         Gateway -> Gateway : Push message to other group members
         Gateway --> Hub : Broadcast Sent
         deactivate Gateway
         Hub --> Gateway : Success
         deactivate Hub
         Gateway --> MeetingWeb : Acknowledged
+        deactivate Gateway
         
         MeetingWeb --> Part : Render Live Meeting (Audio/Video active, WarpTalk active)
     end

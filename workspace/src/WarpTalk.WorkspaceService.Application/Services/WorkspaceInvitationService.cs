@@ -90,26 +90,27 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidEmailFormat, ErrorCodes.ValidationError);
             }
+
+            // WT-523: Self-invite check
+            var inviterUser = await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
+            if (inviterUser != null && string.Equals(emailAddress.Value, inviterUser.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<InviteMemberResponse>("You cannot invite yourself to the workspace.", ErrorCodes.ValidationError);
+            }
+
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
             // The inviter decides the access class; the domain only decides which choices are
-            // legal. Inferring it from the email instead made External unreachable through this
-            // endpoint whenever the invitee's domain happened to be verified — and unreachable
-            // outright while RequireVerifiedDomainForInternal was off, since the inference
-            // returns Internal for every address in that case (BR-140-011).
+            // legal. MembershipType is therefore required, not inferred.
             //
-            // An omitted MembershipType still falls back to the inference so older clients that
-            // never sent the field keep working.
-            MembershipType membershipTypeEnum;
-            if (string.IsNullOrWhiteSpace(request.MembershipType))
-            {
-                membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                    _unitOfWork,
-                    emailAddress.Value,
-                    workspace,
-                    ct);
-            }
-            else if (!Enum.TryParse(request.MembershipType, ignoreCase: true, out membershipTypeEnum))
+            // The fallback that used to stand here inferred it from the invitee's email, and the
+            // inference could not express what an inviter might want: External was unreachable
+            // whenever the invitee's domain happened to be verified, and unreachable outright in a
+            // workspace with no domain policy, where the inference answers Internal for every
+            // address (BR-140-011). Keeping it "for older clients" meant those clients silently
+            // got a decision nobody made; refusing is the honest answer.
+            if (string.IsNullOrWhiteSpace(request.MembershipType)
+                || !Enum.TryParse<MembershipType>(request.MembershipType, ignoreCase: true, out var membershipTypeEnum))
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
             }
@@ -152,6 +153,27 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                     _unitOfWork.WorkspaceInvitationRepository.Update(existingPendingInvite);
                     await _unitOfWork.SaveChangesAsync(ct);
                 }
+                else if (await IsNoLongerAcceptableAsync(existingPendingInvite, workspace, ct))
+                {
+                    // WT-375. The pending invitation cannot be accepted any more — the workspace's
+                    // access policy moved after it was sent, and acceptance refuses it (see
+                    // WorkspaceInvitationAcceptanceProcessor: the stored membership type is the
+                    // decision and may only be admitted unchanged or refused, never recomputed
+                    // into one that passes, BR-140-013).
+                    //
+                    // That rule is right and stays. What was wrong is that it left no way out:
+                    // the acceptance error tells the Owner to "revoke it and send a new one", and
+                    // sending a new one was refused because the dead invitation was still PENDING.
+                    // An Owner who flipped External collaboration ON specifically so somebody
+                    // could join had no UI anywhere to unstick them.
+                    //
+                    // So a re-invite supersedes it. Only in this branch: a pending invitation that
+                    // WOULD still be accepted is a real duplicate and stays a conflict, because
+                    // re-issuing it silently invalidates a link the invitee may already be holding.
+                    existingPendingInvite.Status = InvitationStatus.REVOKED.ToString();
+                    _unitOfWork.WorkspaceInvitationRepository.Update(existingPendingInvite);
+                    await _unitOfWork.SaveChangesAsync(ct);
+                }
                 else
                 {
                     return Result.Failure<InviteMemberResponse>("An active pending invitation already exists for this email address.", ErrorCodes.Conflict);
@@ -162,6 +184,16 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             if (!capacityCheck.IsSuccess)
             {
                 return Result.Failure<InviteMemberResponse>(capacityCheck.Error!, capacityCheck.ErrorCode);
+            }
+
+            var targetUser = await _authIdentity.GetUserByEmailAsync(emailAddress.Value, ct);
+            if (targetUser != null && targetUser.Id != inviterUserId)
+            {
+                var activeMembers = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+                if (activeMembers != null && activeMembers.Any(m => m.UserId == targetUser.Id))
+                {
+                    return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.InvalidState);
+                }
             }
 
             var membershipType = membershipTypeEnum.ToString();
@@ -179,7 +211,7 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             await _unitOfWork.WorkspaceInvitationRepository.AddAsync(newInvitation, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var inviterUser = await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
+            inviterUser ??= await _authIdentity.GetUserByIdAsync(inviterUserId, ct);
             var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
 
             // Attempt transactional email send via Resend
@@ -316,32 +348,53 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
 
             var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
             var invitationToken = WorkspaceInvitationTokenGenerator.Generate();
-            invitation.TokenHash = TokenHasher.Hash(invitationToken);
+
+            // BR-34 — a resend SUPERSEDES rather than overwrites.
+            //
+            // This used to write the new token hash straight onto the existing row. The old token
+            // did stop working, so the security property held, but the SRS status REPLACED had no
+            // row to live on and nothing recorded that a second email had gone out under different
+            // token material. One row cannot be both the superseded invitation and its replacement.
+            //
+            // Order matters: the old row is marked before the new one is added, so a reader that
+            // catches the transaction mid-flight never sees two PENDING invitations for the same
+            // address. Both writes commit together.
+            var now = DateTime.UtcNow;
+            invitation.Status = InvitationStatus.REPLACED.ToString();
             _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+
+            // The same source the create path reads, so a workspace that shortened its invitation
+            // window gets that window on a resend too rather than the default.
+            var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
+            var replacement = invitation.ToReplacementInvitation(
+                TokenHasher.Hash(invitationToken),
+                config.InvitationExpiryDays,
+                now);
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(replacement, ct);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            var inviterUser = await _authIdentity.GetUserByIdAsync(invitation.InvitedBy, ct);
+            var inviterUser = await _authIdentity.GetUserByIdAsync(replacement.InvitedBy, ct);
             var inviterName = inviterUser != null ? inviterUser.FullName : "A Workspace Admin";
-            var emailResult = await _emailComposer.SendInvitationEmailAsync(invitation, workspace, inviterName, roleName, invitationToken, ct);
+            var emailResult = await _emailComposer.SendInvitationEmailAsync(replacement, workspace, inviterName, roleName, invitationToken, ct);
 
-            invitation.LastSentAt = DateTime.UtcNow;
-            invitation.SentCount++;
+            replacement.LastSentAt = DateTime.UtcNow;
+            replacement.SentCount++;
 
             if (emailResult.IsSuccess)
             {
-                invitation.DeliveryStatus = "Sent";
-                invitation.ProviderMessageId = emailResult.MessageId;
+                replacement.DeliveryStatus = "Sent";
+                replacement.ProviderMessageId = emailResult.MessageId;
             }
             else
             {
-                invitation.DeliveryStatus = "Failed";
-                _logger.LogWarning("Retry delivery failed for invitation {InvitationId}: {Error}", invitation.Id, emailResult.ErrorMessage);
+                replacement.DeliveryStatus = "Failed";
+                _logger.LogWarning("Retry delivery failed for invitation {InvitationId}: {Error}", replacement.Id, emailResult.ErrorMessage);
             }
 
-            _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
+            _unitOfWork.WorkspaceInvitationRepository.Update(replacement);
             await _unitOfWork.SaveChangesAsync(ct);
 
-            return Result.Success(invitation.ToDto(roleName));
+            return Result.Success(replacement.ToDto(roleName));
         }
         catch (Exception ex)
         {
@@ -821,9 +874,20 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
                     ErrorCodes.ValidationError);
             }
 
+            // ANY row for this pair, removed or not. WT-416.
+            //
+            // This used to filter on RemovedAt == null, which made a departed member invisible
+            // here — and then AddAsync below inserted a second row for the same
+            // (workspace_id, user_id). That pair carries a UNIQUE constraint with NO
+            // `WHERE removed_at IS NULL` predicate, so the insert threw, the catch-all turned it
+            // into "An unexpected error occurred", and the owner got a 500. Three members of one
+            // production workspace could not be let back in.
+            //
+            // Leaving is a soft delete, so the slot is still occupied by the row that recorded
+            // the departure. Approving a rejoin has to REUSE it.
             var existingMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
-                m => m.WorkspaceId == workspaceId && m.UserId == requesterId && m.RemovedAt == null, "", ct);
-            if (existingMember != null)
+                m => m.WorkspaceId == workspaceId && m.UserId == requesterId, "", ct);
+            if (existingMember != null && existingMember.RemovedAt == null)
             {
                 return Result.Failure<ApproveJoinRequestResponse>(WorkspaceConstants.Errors.AlreadyMember, ErrorCodes.Conflict);
             }
@@ -842,14 +906,27 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             invitation.ReviewedBy = adminUserId;
             invitation.ReviewedAt = reviewedAt;
 
-            var newMember = WorkspaceMemberMapper.CreateInvitationMember(
-                workspaceId,
-                requesterId,
-                memberRoleId.Value,
-                membershipType.ToString(),
-                reviewedAt);
+            if (existingMember != null)
+            {
+                // A returning member. Their row already holds the slot the unique constraint
+                // guards, so it is revived rather than duplicated. ReviveAsMember sets exactly
+                // what CreateInvitationMember sets, from the same helpers, so somebody rejoining
+                // does not quietly get different defaults from somebody joining for the first
+                // time.
+                existingMember.ReviveAsMember(memberRoleId.Value, membershipType.ToString(), reviewedAt);
+                _unitOfWork.WorkspaceMemberRepository.Update(existingMember);
+            }
+            else
+            {
+                var newMember = WorkspaceMemberMapper.CreateInvitationMember(
+                    workspaceId,
+                    requesterId,
+                    memberRoleId.Value,
+                    membershipType.ToString(),
+                    reviewedAt);
 
-            await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
+                await _unitOfWork.WorkspaceMemberRepository.AddAsync(newMember, ct);
+            }
             _unitOfWork.WorkspaceInvitationRepository.Update(invitation);
             await _unitOfWork.SaveChangesAsync(ct);
 
@@ -933,6 +1010,215 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             _logger.LogError(ex, "Error occurred while rejecting join request.");
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
+    }
+
+    public async Task<Result<WorkspaceInvitationDto>> CreateLeaveRequestAsync(
+        Guid workspaceId,
+        Guid userId,
+        string userEmail,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            if (roleName.IsOwner())
+            {
+                var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+                if (ownerRoleId != null)
+                {
+                    var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
+                    if (activeOwnersCount <= 1)
+                    {
+                        return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.CannotLeaveAsLastOwner, ErrorCodes.ValidationError);
+                    }
+                }
+            }
+
+            var existingPendingLeave = await _unitOfWork.WorkspaceInvitationRepository.FirstOrDefaultAsync(
+                i => i.WorkspaceId == workspaceId && i.RequestedBy == userId && i.Status == InvitationStatus.LEAVE_REQUESTED.ToString(), "", ct);
+
+            if (existingPendingLeave != null)
+            {
+                return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, existingPendingLeave, roleName, ct));
+            }
+
+            var defaultMemberRoleId = await _authIdentity.GetRoleIdByNameAsync("Member", ct) ?? member.RoleId;
+
+            var request = new InviteMemberRequest(userEmail, roleName, member.MembershipType);
+            var leaveRequest = WorkspaceInvitationMapper.CreateInvitation(
+                workspaceId,
+                request,
+                defaultMemberRoleId,
+                roleName,
+                userId,
+                TokenHasher.Hash($"leave-request:{userId:N}:{Guid.NewGuid():N}"),
+                member.MembershipType);
+            leaveRequest.Status = InvitationStatus.LEAVE_REQUESTED.ToString();
+            leaveRequest.RequestedBy = userId;
+            leaveRequest.Workspace = workspace;
+
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(leaveRequest, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, leaveRequest, roleName, ct));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while creating leave request for workspace {WorkspaceId}, user {UserId}", workspaceId, userId);
+            return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ApproveLeaveRequestAsync(
+        Guid workspaceId,
+        Guid leaveRequestId,
+        Guid adminUserId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var adminRoleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!adminRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanReviewLeaveRequest, ErrorCodes.Forbidden);
+            }
+
+            var leaveRequest = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(leaveRequestId, ct);
+            if (leaveRequest == null || leaveRequest.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.NotFound);
+            }
+
+            if (leaveRequest.Status != InvitationStatus.LEAVE_REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.InvalidState);
+            }
+
+            var targetUserId = leaveRequest.RequestedBy ?? leaveRequest.InvitedBy;
+            var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == targetUserId && m.RemovedAt == null, "", ct);
+
+            var reviewedAt = DateTime.UtcNow;
+            leaveRequest.Status = InvitationStatus.ACCEPTED.ToString();
+            leaveRequest.ReviewedBy = adminUserId;
+            leaveRequest.ReviewedAt = reviewedAt;
+            _unitOfWork.WorkspaceInvitationRepository.Update(leaveRequest);
+
+            if (targetMember != null)
+            {
+                targetMember.RemovedAt = reviewedAt;
+                targetMember.RemovedBy = adminUserId;
+                targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
+                _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while approving leave request {LeaveRequestId}.", leaveRequestId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> RejectLeaveRequestAsync(
+        Guid workspaceId,
+        Guid leaveRequestId,
+        Guid adminUserId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var adminRoleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!adminRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanReviewLeaveRequest, ErrorCodes.Forbidden);
+            }
+
+            var leaveRequest = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(leaveRequestId, ct);
+            if (leaveRequest == null || leaveRequest.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.NotFound);
+            }
+
+            if (leaveRequest.Status != InvitationStatus.LEAVE_REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.InvalidState);
+            }
+
+            leaveRequest.Status = InvitationStatus.REJECTED.ToString();
+            leaveRequest.ReviewedBy = adminUserId;
+            leaveRequest.ReviewedAt = DateTime.UtcNow;
+            _unitOfWork.WorkspaceInvitationRepository.Update(leaveRequest);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while rejecting leave request {LeaveRequestId}.", leaveRequestId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Whether a PENDING invitation would now be refused at acceptance.
+    ///
+    /// Asked against the same policy acceptance asks, so the two can never disagree about which
+    /// invitations are dead — an invitation this says is fine but acceptance refuses would be
+    /// stuck all over again, which is the WT-375 defect itself.
+    /// </summary>
+    private async Task<bool> IsNoLongerAcceptableAsync(
+        WorkspaceInvitation invitation,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        if (!Enum.TryParse<MembershipType>(invitation.MembershipType, ignoreCase: true, out var storedType))
+        {
+            // A membership type nothing can parse is not a live invitation to protect.
+            return true;
+        }
+
+        var roleName = await _authIdentity.GetRoleNameByIdAsync(invitation.RoleId, ct);
+        var policyResult = await WorkspaceInvitationPolicy.ValidateAsync(
+            _unitOfWork,
+            workspace,
+            invitation.Email,
+            storedType,
+            roleName,
+            ct);
+
+        return !policyResult.IsSuccess;
     }
 
     private async Task<Result> EnsureTrialInviteCapacityAsync(Guid workspaceId, CancellationToken ct)

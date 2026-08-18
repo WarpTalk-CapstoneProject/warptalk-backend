@@ -33,6 +33,15 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
 
     private const string StreamKey = "workspace-document-events";
     private const string ConsumerGroup = "workspace-document-ingestion";
+
+    /// <summary>
+    /// Entries deliberately left unacknowledged by <see cref="ProcessDocumentUploadAsync"/> — it
+    /// returns false when even the fail-safe write did not land — used to sit here forever,
+    /// because nothing reclaimed them and <c>"&gt;"</c> never returns them again. An upload whose
+    /// scan never completed stayed invisible instead of being retried.
+    /// </summary>
+    private const long ReclaimIdleMilliseconds = 60_000;
+
     private readonly string _consumerName = $"workspace-ingestion-{Environment.MachineName}-{Guid.NewGuid():N}";
 
     public DocumentSecurityGuardrailConsumerService(
@@ -63,7 +72,23 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
         {
             try
             {
-                var messages = await db.StreamReadGroupAsync(StreamKey, ConsumerGroup, _consumerName, count: 5);
+                // Reclaim before reading new work. Leaving an entry pending is this consumer's
+                // deliberate retry signal, and without a reclaim that signal had no receiver.
+                var reclaimed = await db.StreamAutoClaimAsync(
+                    StreamKey,
+                    ConsumerGroup,
+                    _consumerName,
+                    ReclaimIdleMilliseconds,
+                    "0-0",
+                    count: 5);
+                var messages = reclaimed.ClaimedEntries;
+
+                if (messages.Length == 0)
+                {
+                    messages = await db.StreamReadGroupAsync(
+                        StreamKey, ConsumerGroup, _consumerName, position: ">", count: 5);
+                }
+
                 if (messages.Length == 0)
                 {
                     await Task.Delay(2000, stoppingToken);
@@ -84,8 +109,10 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                             if (!handled)
                             {
                                 _logger.LogWarning(
-                                    "Document event {MessageId} remains pending because processing and fail-safe persistence did not complete.",
-                                    message.Id);
+                                    "Document event {MessageId} remains pending because processing and fail-safe persistence did not complete. "
+                                    + "It will be reclaimed and retried after {ReclaimIdleMilliseconds}ms.",
+                                    message.Id,
+                                    ReclaimIdleMilliseconds);
                                 continue;
                             }
                         }
@@ -278,6 +305,23 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     documentId);
             }
 
+            // WT-411: a refusal the scan actually reached is a different fact from a scan that
+            // never answered, and the fail-safe below records the other one.
+            if (scanResult.DlpDetected)
+            {
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.DlpDetected;
+            }
+            else if (scanResult.PiiDetected && !hasMaskedContent)
+            {
+                document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.PiiUnmasked;
+            }
+            else
+            {
+                // Cleared on every clean pass, so a stale reason from an earlier attempt cannot
+                // outlive the failure it described.
+                document.IngestionFailureReason = null;
+            }
+
             var textToIngest = scanResult.PiiDetected
                 ? scanResult.MaskedContent!
                 : content.FullText;
@@ -312,6 +356,8 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                 {
                     _logger.LogError(ex, "Failed to publish embedding index request for document {DocumentId}", documentId);
                     document.AiEligible = false;
+                    document.IngestionFailureReason =
+                        WorkspaceDocumentIngestionFailureReasons.EmbeddingPublishFailed;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
                 }
             }
@@ -351,6 +397,25 @@ public class DocumentSecurityGuardrailConsumerService : BackgroundService
                     document.ConfidentialityLevel = WorkspaceDocumentConstants.SensitiveConfidentialityLevel;
                     document.AiEligible = false;
                     document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+                    // WT-411: still fail closed — we genuinely do not know what is in this file —
+                    // but record that we FAILED TO LOOK rather than that we FOUND something. The
+                    // two produced an identical row before, so a document hidden by a timeout was
+                    // indistinguishable from one hidden because it contains PII, and neither the
+                    // owner nor a retry could tell which.
+                    //
+                    // The three causes are separated because they point at different components,
+                    // and telling them apart is exactly what was missing when five production
+                    // documents failed with nothing on record: the audit trail showed the
+                    // guardrail reading each file and then no SecurityScanCompleted row at all,
+                    // which proves ScanAsync threw but not WHICH way. A timeout blames the
+                    // security worker or the queue; scan_failed blames that worker's own upstream;
+                    // anything else is ours, here on the ingestion path.
+                    document.IngestionFailureReason = ex switch
+                    {
+                        TimeoutException => WorkspaceDocumentIngestionFailureReasons.SecurityScanTimeout,
+                        InvalidOperationException => WorkspaceDocumentIngestionFailureReasons.SecurityScanFailed,
+                        _ => WorkspaceDocumentIngestionFailureReasons.IngestionError,
+                    };
                     document.UpdatedAt = DateTime.UtcNow;
 
                     unitOfWork.WorkspaceDocumentRepository.Update(document);

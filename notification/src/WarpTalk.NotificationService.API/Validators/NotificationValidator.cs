@@ -32,9 +32,34 @@ public static class NotificationValidator
             }
         },
         {
+            // room_id + room_title are exactly what TranslationRoomService.NotifyInvitedUserAsync
+            // puts in Metadata. Same shape as MEETING_STARTED on purpose: the web client reads an
+            // invitation and a live-meeting notice through the same payload reader, and an invite
+            // whose room cannot be identified has no Accept button to offer.
+            NotificationConstants.TypeMeetingInvited, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
             NotificationConstants.TypeMeetingReminder, new PayloadSchema
             {
                 RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String }, { "minutes_until_start", JsonValueKind.String } }
+            }
+        },
+        {
+            // room_id + room_title are exactly what TranslationRoomService.NotifyInviteesAsync
+            // and ArtifactsFinalizationWorker put in Metadata. Registered as REQUIRED because a
+            // notification about a meeting with no meeting on it is not worth delivering.
+            NotificationConstants.TypeMeetingStarted, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
+            }
+        },
+        {
+            NotificationConstants.TypeMeetingSummaryReady, new PayloadSchema
+            {
+                RequiredFields = { { "room_id", JsonValueKind.String }, { "room_title", JsonValueKind.String } }
             }
         },
         {

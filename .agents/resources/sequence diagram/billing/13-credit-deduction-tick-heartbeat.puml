@@ -10,8 +10,12 @@ sequenceDiagram {
 </style>
 skinparam maxMessageSize 150
 
+box "API Gateway" #LightGray
+control "API Gateway" as Gateway
+boundary ":MeetingHub\n(SignalR)" as Hub <<boundary>>
+end box
+
 box "Meeting Service" #PaleGreen
-participant ":MeetingHub\n(SignalR)" as Hub <<boundary>>
 participant ":BillingServiceClient" as BillingClient <<boundary>>
 end box
 

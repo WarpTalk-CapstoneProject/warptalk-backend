@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 using Amazon.S3;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -114,7 +115,10 @@ public static class DependencyInjection
 
             vectorDbUrl = "http://localhost:6333";
         }
-        services.AddHttpClient<IKnowledgeChunkReader, QdrantKnowledgeChunkReader>(client =>
+        // One configuration, two clients. The reader and the writer talk to the same Qdrant with
+        // the same credentials; declaring the address twice is how they end up pointing at
+        // different instances after somebody edits one of them.
+        void ConfigureVectorDbClient(HttpClient client)
         {
             // A trailing slash keeps the relative request path from replacing the last
             // segment of the base address.
@@ -126,6 +130,27 @@ public static class DependencyInjection
             {
                 client.DefaultRequestHeaders.Add("api-key", vectorDbApiKey);
             }
+        }
+
+        services.AddHttpClient<IKnowledgeChunkReader, QdrantKnowledgeChunkReader>(ConfigureVectorDbClient);
+        services.AddHttpClient<IKnowledgeChunkWriter, QdrantKnowledgeChunkWriter>(ConfigureVectorDbClient);
+
+        // The admin System Health screen. Unconfigured is a supported state — every other
+        // environment than production runs without a Prometheus, and the screen is built to say
+        // "monitoring is unavailable" rather than to render an outage. Throwing here instead
+        // would take the whole workspace service down for want of a dashboard.
+        var prometheusUrl = configuration["Monitoring:PrometheusUrl"];
+        services.AddHttpClient<IPlatformMetricsSource, PrometheusMetricsSource>(client =>
+        {
+            // A trailing slash keeps the relative request path from replacing the last segment
+            // of the base address.
+            var configured = string.IsNullOrWhiteSpace(prometheusUrl)
+                ? "http://localhost:9090"
+                : prometheusUrl.TrimEnd('/');
+            client.BaseAddress = new Uri(configured + "/");
+            // Short on purpose. An admin opening this screen while the monitoring host is wedged
+            // should be told so in seconds, not hold a request thread for the default 100.
+            client.Timeout = TimeSpan.FromSeconds(8);
         });
         services.AddScoped<IDocumentEmbeddingResultProcessor, DocumentEmbeddingResultProcessor>();
         services.AddScoped<WorkspaceOutboxWriter>();

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using WarpTalk.WorkspaceService.Application.DTOs.Workspace;
 using WarpTalk.WorkspaceService.Application.Helpers;
+using WarpTalk.WorkspaceService.Domain.Constants;
 using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
@@ -120,17 +121,26 @@ public static class WorkspaceMapper
         };
     }
 
-    public static WorkspaceVerifiedDomain ToVerifiedDomainEntity(Guid workspaceId, string domain, Guid userId, string status = "verified", string verificationMethod = "system", DateTime? utcNow = null)
+    /// <summary>
+    /// The domain a workspace claims at creation time. Always <c>owner_email</c>: create only ever
+    /// claims the founder's own email domain, and the founder's account is the evidence.
+    ///
+    /// The tier used to be the string "system" here and "trusted" in VerifiedDomainMapper — two
+    /// names for the same idea, neither of which appeared in any vocabulary, so nothing could tell
+    /// a self-evidencing claim from an asserted one.
+    /// </summary>
+    public static WorkspaceVerifiedDomain ToVerifiedDomainEntity(Guid workspaceId, string domain, Guid userId, string status = "verified", string? verificationMethod = null, DateTime? utcNow = null)
     {
         var now = utcNow ?? DateTime.UtcNow;
+        var method = verificationMethod ?? VerifiedDomainVerificationMethods.OwnerEmail;
         return new WorkspaceVerifiedDomain
         {
             Id = Guid.NewGuid(),
             WorkspaceId = workspaceId,
             Domain = domain,
             Status = status,
-            VerificationMethod = verificationMethod,
-            VerificationToken = Guid.NewGuid().ToString(),
+            VerificationMethod = method,
+            VerificationToken = method,
             VerifiedAt = now,
             VerifiedBy = userId,
             CreatedAt = now,

@@ -69,7 +69,7 @@ public class RoomOccupancyCountTests : IAsyncLifetime
 
         var meetingPolicy = new Mock<IWorkspaceMeetingPolicy>();
         meetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
         // ...and the tenant itself is live unless a test suspends it.
         meetingPolicy.Setup(p => p.EnsureWorkspaceCanHostMeetingsAsync(

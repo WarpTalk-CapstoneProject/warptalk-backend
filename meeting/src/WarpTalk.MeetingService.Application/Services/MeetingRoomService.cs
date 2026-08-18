@@ -52,7 +52,11 @@ public class MeetingRoomService : IMeetingRoomService
         var userIdString = userId.ToString();
 
         // 1. Verify Room Exists via gRPC & Cache
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        //
+        // v2 (WT-428): entries cached before requires_approval existed deserialize with proto3's
+        // default — FALSE — which fails OPEN for a gate whose room-settings default is TRUE. The
+        // key bump orphans those entries (24h TTL cleans them up) instead of trusting them.
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -232,47 +236,51 @@ public class MeetingRoomService : IMeetingRoomService
             }
 
             // 5. Lobby / Waiting Room Logic
-            if (meetingRoom.Status == "SCHEDULED" || meetingRoom.Status == "WAITING")
+            //
+            // WT-428 (Linear): gated on the room's OWN requires_approval setting, for every
+            // non-host, in every room status. This used to be keyed on Status ==
+            // SCHEDULED/WAITING — so the moment a room went IN_PROGRESS, every join bypassed the
+            // lobby entirely, and an invitee in a requires-approval meeting was handed a LiveKit
+            // token the host never approved. Admission truth stays where it always was: the
+            // translation-room participant row (WAITING until the host admits → CONNECTED, which
+            // gRPC exposes as IsActive).
+            if (isHost)
             {
-                if (isHost)
+                if (meetingRoom.ActiveHostId == null
+                    || meetingRoom.Status == "SCHEDULED"
+                    || meetingRoom.Status == "WAITING")
                 {
                     meetingRoom.ActiveHostId = userId;
                     _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
                     await _unitOfWork.SaveChangesAsync();
                 }
-                else
-                {
-                    if (participantsResponse == null)
-                    {
-                        var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
-                        if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
-                            participantsResponse = grpcPartsResult.Value;
-                    }
-
-                    var isAdmittedParticipant = participantsResponse?.Participants
-                        .Any(p => p.Id == userIdString && p.IsActive) == true;
-
-                    if (!isAdmittedParticipant)
-                    {
-                        await _unitOfWork.CommitTransactionAsync();
-                        return Result.Success(new JoinMeetingResponse
-                        {
-                            Token = string.Empty,
-                            ProviderRoomName = meetingRoom.ProviderRoomName,
-                            ParticipantIdentity = providerIdentity,
-                            IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry,
-                            Locked = meetingRoom.IsLocked,
-                            Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
-                        });
-                    }
-                }
             }
-            else if (isHost && meetingRoom.ActiveHostId == null)
+            else if (roomDetails.RequiresApproval)
             {
-                meetingRoom.ActiveHostId = userId;
-                _unitOfWork.MeetingRoomRepository.Update(meetingRoom);
-                await _unitOfWork.SaveChangesAsync();
+                if (participantsResponse == null)
+                {
+                    var grpcPartsResult = await _grpcService.GetParticipantsAsync(translationRoomId);
+                    if (grpcPartsResult.IsSuccess && grpcPartsResult.Value != null)
+                        participantsResponse = grpcPartsResult.Value;
+                }
+
+                var isAdmittedParticipant = participantsResponse?.Participants
+                    .Any(p => p.Id == userIdString && p.IsActive) == true;
+
+                if (!isAdmittedParticipant)
+                {
+                    await _unitOfWork.CommitTransactionAsync();
+                    return Result.Success(new JoinMeetingResponse
+                    {
+                        Token = string.Empty,
+                        ProviderRoomName = meetingRoom.ProviderRoomName,
+                        ParticipantIdentity = providerIdentity,
+                        IsWaitingRoom = true,
+                        MuteOnEntry = meetingRoom.MuteOnEntry,
+                        Locked = meetingRoom.IsLocked,
+                        Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
+                    });
+                }
             }
 
             // 6. Resolve participant display name for LiveKit token
@@ -298,21 +306,10 @@ public class MeetingRoomService : IMeetingRoomService
                     var translationParticipant = participantsResponse?.Participants
                         .FirstOrDefault(p => p.Id == userIdString);
 
-                    if (translationParticipant?.IsActive != true)
-                    {
-                        await _unitOfWork.CommitTransactionAsync();
-                        return Result.Success(new JoinMeetingResponse
-                        {
-                            Token = string.Empty,
-                            ProviderRoomName = meetingRoom.ProviderRoomName,
-                            ParticipantIdentity = providerIdentity,
-                            IsWaitingRoom = true,
-                            MuteOnEntry = meetingRoom.MuteOnEntry,
-                            Locked = meetingRoom.IsLocked,
-                            Recording = !string.IsNullOrEmpty(meetingRoom.ActiveEgressId)
-                        });
-                    }
-
+                    // WT-428: this branch used to hold ANOTHER waiting-room return — an admission
+                    // check reachable only when the caller sent no display name, which the web
+                    // never does. Admission is decided once, unconditionally, in step 5; this
+                    // block is only about what to call the participant.
                     if (!string.IsNullOrEmpty(translationParticipant?.DisplayName))
                         participantName = translationParticipant.DisplayName;
                 }
@@ -488,7 +485,7 @@ public class MeetingRoomService : IMeetingRoomService
         var hostIdString = hostUserId.ToString();
 
         // 1. Verify Host Authorization
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -566,7 +563,7 @@ public class MeetingRoomService : IMeetingRoomService
             return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
 
         // Check if the current user is the Active Host OR the Original Host
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -659,7 +656,7 @@ public class MeetingRoomService : IMeetingRoomService
             return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
 
         // Authorization
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -740,7 +737,7 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Failure<bool>("Meeting room not found.", ErrorCodes.NotFound);
 
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -771,7 +768,7 @@ public class MeetingRoomService : IMeetingRoomService
     public async Task<Result<bool>> EndMeetingAsync(Guid translationRoomId, Guid hostUserId)
     {
         // 1. Fetch Room Details for Authorization
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -895,8 +892,33 @@ public class MeetingRoomService : IMeetingRoomService
         if (meetingRoom == null)
             return Result.Failure<RecordingStateDto>("Meeting room not found.", ErrorCodes.NotFound);
 
-        if (!await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
-            return Result.Failure<RecordingStateDto>("Only the host can control recording.", ErrorCodes.Forbidden);
+        // Anyone IN the meeting may start or stop the recording — not only the host.
+        //
+        // The host-only rule here did not match anything else in the product. The web client has
+        // shown the record button to workspace Owners/Admins since WT-188 (isHost in
+        // persistent-meeting-session includes role === "owner" | "admin"), and the auto-start
+        // effect fires on that same flag — so a workspace Owner joining a meeting somebody else
+        // booked got an automatic, unprompted 403 and a "Could not start recording." toast on
+        // every single join. The gateway hub (RoomHostAuthority) and the translation-room service
+        // (RoomHostAccess) had both already been widened past host-only for exactly this reason;
+        // this method was the one that never was.
+        //
+        // Widened to every participant rather than to Owner/Admin because recording a meeting is
+        // not a governance action over a tenant — it is a thing the people in the room do, and
+        // whoever needs the transcript to have timestamps is usually not whoever booked it.
+        // Participation is still REQUIRED: a stranger holding a room id must not be able to spin
+        // up an Egress against a room they are not in, which is a billable action.
+        //
+        // Everyone in the room is told either way — SetRecordingAsync broadcasts
+        // RecordingStateChanged below, and the client raises a toast for every participant on
+        // receipt. Nobody is recorded without being told; that notice is what makes this rule
+        // acceptable rather than the permission check.
+        if (!await IsInMeetingAsync(translationRoomId, meetingRoom, callerUserId))
+        {
+            return Result.Failure<RecordingStateDto>(
+                "Only someone in this meeting can control recording.",
+                ErrorCodes.Forbidden);
+        }
 
         var normalizedAction = action?.Trim().ToLowerInvariant();
 
@@ -985,7 +1007,7 @@ public class MeetingRoomService : IMeetingRoomService
 
     private async Task<bool> IsHostAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
     {
-        var roomCacheKey = $"meeting:room:{translationRoomId}";
+        var roomCacheKey = $"meeting:room:v2:{translationRoomId}";
         var roomDetailsResult = await _redisService.GetCacheAsync<Shared.Protos.GetTranslationRoomResponse>(roomCacheKey);
         var roomDetails = roomDetailsResult.Value;
 
@@ -1000,6 +1022,36 @@ public class MeetingRoomService : IMeetingRoomService
         bool isOriginalHost = roomDetails.HostId == callerUserId.ToString();
         bool isActiveHost = meetingRoom.ActiveHostId == callerUserId;
         return isOriginalHost || isActiveHost;
+    }
+
+    /// <summary>
+    /// Whether this caller is actually in this meeting — the host, or a participant who has
+    /// joined and not left.
+    ///
+    /// Deliberately weaker than <see cref="IsHostAsync"/> and used only where the action belongs
+    /// to the room rather than to whoever booked it (recording). It is still a real check: the
+    /// room id travels in a shareable link, so "authenticated" is not "present", and starting an
+    /// Egress costs money against the workspace.
+    ///
+    /// The host is admitted without a participant row because a host who has opened the room but
+    /// whose LiveKit join has not landed yet is unambiguously in the meeting, and the recording
+    /// auto-start fires in exactly that window.
+    /// </summary>
+    private async Task<bool> IsInMeetingAsync(Guid translationRoomId, MeetingRoom meetingRoom, Guid callerUserId)
+    {
+        if (await IsHostAsync(translationRoomId, meetingRoom, callerUserId))
+            return true;
+
+        var participant = await _unitOfWork.MeetingParticipantRepository.FirstOrDefaultAsync(
+            p => p.MeetingRoomId == meetingRoom.Id
+                 && p.UserId == callerUserId
+                 && p.DeletedAt == null);
+
+        // IsActive OR LeftAt == null: the two are written by different paths (the disconnect
+        // handler flips IsActive, the leave endpoint stamps LeftAt) and a participant who is
+        // present according to either one is present. Requiring both would make a brief
+        // reconnect look like an intruder.
+        return participant != null && (participant.IsActive || participant.LeftAt == null);
     }
 
     private Task<Result> PublishGatewayCommandAsync(string command, Guid translationRoomId, object extraFields)

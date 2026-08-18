@@ -30,6 +30,7 @@ public class VoiceCloneConsentGateTests
     private readonly Mock<ITranslationRoomParticipantRepository> _participants = new();
     private readonly Mock<ITranslationRoomAudioRouteRepository> _routes = new();
     private readonly Mock<IVoiceConsentDirectory> _consent = new();
+    private readonly Mock<IUserSettingsDirectory> _settings = new();
     private readonly TranslationRoomAudioRouteService _service;
 
     private readonly Guid _roomId = Guid.NewGuid();
@@ -81,6 +82,8 @@ public class VoiceCloneConsentGateTests
             new Mock<IAudioRouteEventProcessor>().Object,
             new Mock<ILanguagePolicy>().Object,
             _consent.Object,
+            _settings.Object,
+            Mock.Of<IRedisStateRepository>(),
             NullLogger<TranslationRoomAudioRouteService>.Instance);
     }
 

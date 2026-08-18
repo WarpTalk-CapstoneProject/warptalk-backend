@@ -36,6 +36,9 @@ public interface IWorkspaceDirectoryService
         Guid workspaceId,
         Guid userId,
         IReadOnlyCollection<string> targetLanguages,
+        // WT-466: the room's source language, checked against the same workspace whitelist as the
+        // targets. Null or empty means "not stated" and is never a violation.
+        string? sourceLanguage = null,
         CancellationToken ct = default);
 
     Task<Result<WorkspaceSettingsSnapshotDto>> GetSettingsAsync(

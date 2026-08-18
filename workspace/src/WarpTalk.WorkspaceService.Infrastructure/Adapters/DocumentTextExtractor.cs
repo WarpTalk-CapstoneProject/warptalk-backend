@@ -150,12 +150,15 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         }
         else if (ext == "csv")
         {
-            using var reader = new StreamReader(fileStream, Encoding.UTF8);
+            // Same encoding problem as the plain-text branch below — a CSV exported from Excel
+            // on Windows is one of the likeliest BOM-less UTF-16 files anyone will upload here.
+            var csvText = await TextEncodingDetector.ReadAllTextAsync(fileStream, ct);
+            using var reader = new StringReader(csvText);
             var fullTextBuilder = new StringBuilder();
             var sheet = new ExtractedSheet { SheetName = "CSV Data" };
 
             string? line;
-            while ((line = await reader.ReadLineAsync()) != null)
+            while ((line = await reader.ReadLineAsync(ct)) != null)
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 fullTextBuilder.AppendLine(line);
@@ -178,9 +181,14 @@ public class DocumentTextExtractor : IDocumentTextExtractor
         }
         else
         {
-            // Plain text (txt, md, json) UTF-8 fallback
-            using var reader = new StreamReader(fileStream, Encoding.UTF8);
-            var fullText = await reader.ReadToEndAsync(ct);
+            // Plain text (txt, md, json).
+            //
+            // WT-409/WT-410: this was `new StreamReader(fileStream, Encoding.UTF8)`. That does
+            // honour a byte-order mark, but a UTF-16 file saved WITHOUT one has no mark to find,
+            // so every second byte of it — a NUL — survived into the extracted text. One
+            // production .md produced "#\0 \0R\0e\0f\0a…", which broke the Markdown preview
+            // and failed ingestion into the vector database. See TextEncodingDetector.
+            var fullText = await TextEncodingDetector.ReadAllTextAsync(fileStream, ct);
             result.FullText = fullText;
             result.Pages.Add(new ExtractedPage { PageNumber = 1, Text = fullText });
             return result;

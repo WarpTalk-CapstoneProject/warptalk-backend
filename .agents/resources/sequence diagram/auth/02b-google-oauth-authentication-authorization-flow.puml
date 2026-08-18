@@ -1,4 +1,4 @@
-﻿@startuml
+@startuml
 title WarpTalk - Google OAuth Authentication & Authorization Flow
 
 autonumber
@@ -21,20 +21,12 @@ boundary "LoginPage" as Web
 control "API Gateway" as Gateway
 participant "Google OAuth API" as Google
 
-box "Workspace Service" #LightBlue
-participant ":WorkspaceGrpcService" as WorkspaceGrpcService <<boundary>>
-participant ":WorkspaceMemberService" as WorkspaceMemberService <<service>>
-participant ":WorkspaceMemberRepository" as WorkspaceMemberRepository <<control>>
-database "Workspace Database" as WorkspaceDb
-end box
-
 box "Auth Service" #LightPink
 participant ":GoogleAuthController" as GoogleAuthController <<boundary>>
 participant ":GoogleAuthService" as GoogleAuthService <<service>>
 participant ":UserRepository" as UserRepository <<control>>
 participant ":RefreshTokenRepository" as RefreshTokenRepository <<control>>
 participant ":UserSettingRepository" as UserSettingRepository <<control>>
-participant ":WorkspaceService\nGrpcClient" as WorkspaceServiceClient <<boundary>>
 database "Auth Database" as AuthDb
 end box
 
@@ -58,10 +50,10 @@ activate Web
 Gateway -> GoogleAuthController : Forward Google Login Request
 activate GoogleAuthController
 
-GoogleAuthController -> GoogleAuthService : LoginWithGoogleAsync(googleIdToken)
+GoogleAuthController -> GoogleAuthService : GoogleLoginAsync(request)
 activate GoogleAuthService
 
-GoogleAuthService -> Google : Validate Google ID Token (HTTP GET/POST)
+GoogleAuthService -> Google : VerifyGoogleTokenAsync(idToken)
 activate Google
 Google --> GoogleAuthService : Token Payload (GoogleId, Email, Name, AvatarUrl)
 deactivate Google
@@ -76,7 +68,7 @@ alt Google Token invalid
     Web --> Actor : Display Google authentication failure
     deactivate Web
 else Google Token valid
-    GoogleAuthService -> UserRepository : GetByEmailAsync(email)
+    GoogleAuthService -> UserRepository : GetByEmailWithRolesAsync(email)
     activate UserRepository
     UserRepository -> AuthDb : SELECT * FROM Users WHERE Email = email
     activate AuthDb
@@ -91,7 +83,7 @@ else Google Token valid
         UserRepository --> GoogleAuthService : Done
         deactivate UserRepository
         
-        GoogleAuthService -> UserSettingRepository : AddAsync(default UserSetting)
+        GoogleAuthService -> UserSettingRepository : Add(default UserSetting)
         activate UserSettingRepository
         UserSettingRepository --> GoogleAuthService : Done
         deactivate UserSettingRepository
@@ -104,33 +96,9 @@ else Google Token valid
         deactivate AuthDb
         UserRepository --> GoogleAuthService : Saved (User ID)
         deactivate UserRepository
-        
-        GoogleAuthService -> GoogleAuthService : Set Status = SUSPENDED_NO_ACTIVE_WORKSPACE
-        activate GoogleAuthService
-        GoogleAuthService -> GoogleAuthService : Generate limited-scope JWT & Refresh Token
-        
-        GoogleAuthService -> RefreshTokenRepository : AddAsync(new RefreshToken)
-        activate RefreshTokenRepository
-        RefreshTokenRepository --> GoogleAuthService : Done
-        deactivate RefreshTokenRepository
-        
-        GoogleAuthService -> RefreshTokenRepository : SaveChangesAsync()
-        activate RefreshTokenRepository
-        RefreshTokenRepository -> AuthDb : Save Refresh Token
-        activate AuthDb
-        AuthDb --> RefreshTokenRepository : Saved
-        deactivate AuthDb
-        RefreshTokenRepository --> GoogleAuthService : Saved
-        deactivate RefreshTokenRepository
-        
-        GoogleAuthService --> GoogleAuthController : Success (Tokens + Status)
-        deactivate GoogleAuthService
-        GoogleAuthController --> Gateway : 200 OK (Tokens + Status = SUSPENDED_NO_ACTIVE_WORKSPACE)
-        Gateway --> Web : 200 OK
-        Web --> Actor : Route to Workspace Creation onboarding screen
     else User exists
         opt GoogleId not linked
-            GoogleAuthService -> UserRepository : UpdateUserGoogleId(userId, googleId, avatarUrl)
+            GoogleAuthService -> UserRepository : Update(user with GoogleId & AvatarUrl)
             activate UserRepository
             UserRepository --> GoogleAuthService : Done
             deactivate UserRepository
@@ -144,77 +112,32 @@ else Google Token valid
             UserRepository --> GoogleAuthService : Saved
             deactivate UserRepository
         end
-        
-        GoogleAuthService -> WorkspaceServiceClient : HasActiveWorkspaceMembership(UserId)
-        activate WorkspaceServiceClient
-        WorkspaceServiceClient -> WorkspaceGrpcService : gRPC: HasActiveWorkspaceMembership(UserId)
-        activate WorkspaceGrpcService
-        WorkspaceGrpcService -> WorkspaceMemberService : HasActiveMembershipAsync(userId)
-        activate WorkspaceMemberService
-        WorkspaceMemberService -> WorkspaceMemberRepository : GetActiveMembershipsCountAsync(userId)
-        activate WorkspaceMemberRepository
-        WorkspaceMemberRepository -> WorkspaceDb : SELECT COUNT(*) FROM WorkspaceMembers WHERE UserId = userId AND IsActive = true
-        activate WorkspaceDb
-        WorkspaceDb --> WorkspaceMemberRepository : Count
-        deactivate WorkspaceDb
-        WorkspaceMemberRepository --> WorkspaceMemberService : Count
-        deactivate WorkspaceMemberRepository
-        WorkspaceMemberService --> WorkspaceGrpcService : HasActiveMembership (true/false)
-        deactivate WorkspaceMemberService
-        WorkspaceGrpcService --> WorkspaceServiceClient : HasActiveMembership (true/false)
-        deactivate WorkspaceGrpcService
-        WorkspaceServiceClient --> GoogleAuthService : HasActiveMembership (true/false)
-        deactivate WorkspaceServiceClient
-        
-        alt No Active Workspace
-            GoogleAuthService -> GoogleAuthService : Set Status = SUSPENDED_NO_ACTIVE_WORKSPACE
-            activate GoogleAuthService
-            GoogleAuthService -> GoogleAuthService : Generate limited-scope JWT & Refresh Token
-            
-            GoogleAuthService -> RefreshTokenRepository : AddAsync(new RefreshToken)
-            activate RefreshTokenRepository
-            RefreshTokenRepository --> GoogleAuthService : Done
-            deactivate RefreshTokenRepository
-            
-            GoogleAuthService -> RefreshTokenRepository : SaveChangesAsync()
-            activate RefreshTokenRepository
-            RefreshTokenRepository -> AuthDb : Save Refresh Token
-            activate AuthDb
-            AuthDb --> RefreshTokenRepository : Saved
-            deactivate AuthDb
-            RefreshTokenRepository --> GoogleAuthService : Saved
-            deactivate RefreshTokenRepository
-            
-            GoogleAuthService --> GoogleAuthController : Success (Tokens + Status)
-            deactivate GoogleAuthService
-            GoogleAuthController --> Gateway : 200 OK (Tokens + Status = SUSPENDED_NO_ACTIVE_WORKSPACE)
-            Gateway --> Web : 200 OK
-            Web --> Actor : Route Onboarding
-        else Has Active Workspace
-            GoogleAuthService -> GoogleAuthService : Set Status = ACTIVE
-            activate GoogleAuthService
-            GoogleAuthService -> GoogleAuthService : Generate standard JWT & Refresh Token
-            
-            GoogleAuthService -> RefreshTokenRepository : AddAsync(new RefreshToken)
-            activate RefreshTokenRepository
-            RefreshTokenRepository --> GoogleAuthService : Done
-            deactivate RefreshTokenRepository
-            
-            GoogleAuthService -> RefreshTokenRepository : SaveChangesAsync()
-            activate RefreshTokenRepository
-            RefreshTokenRepository -> AuthDb : Save Refresh Token
-            activate AuthDb
-            AuthDb --> RefreshTokenRepository : Saved
-            deactivate AuthDb
-            RefreshTokenRepository --> GoogleAuthService : Saved
-            deactivate RefreshTokenRepository
-            
-            GoogleAuthService --> GoogleAuthController : Success (Tokens + Status = ACTIVE + Profile)
-            deactivate GoogleAuthService
-            GoogleAuthController --> Gateway : 200 OK (Tokens + Status = ACTIVE + Profile)
-            Gateway --> Web : 200 OK
-            Web --> Actor : Route to Workspace Rooms Page (/[workspaceSlug]/rooms)
-        end
     end
+
+    GoogleAuthService -> GoogleAuthService : CheckUserStatus & reset failed login attempts
+    GoogleAuthService -> GoogleAuthService : Generate JWT Access Token & Refresh Token
+    
+    GoogleAuthService -> RefreshTokenRepository : AddAsync(new RefreshToken)
+    activate RefreshTokenRepository
+    RefreshTokenRepository --> GoogleAuthService : Tracked
+    deactivate RefreshTokenRepository
+    
+    GoogleAuthService -> RefreshTokenRepository : SaveChangesAsync()
+    activate RefreshTokenRepository
+    RefreshTokenRepository -> AuthDb : Save Refresh Token
+    activate AuthDb
+    AuthDb --> RefreshTokenRepository : Saved
+    deactivate AuthDb
+    RefreshTokenRepository --> GoogleAuthService : Saved
+    deactivate RefreshTokenRepository
+    
+    GoogleAuthService --> GoogleAuthController : Success (AuthResponse with Tokens & UserDto)
+    deactivate GoogleAuthService
+    GoogleAuthController --> Gateway : 200 OK (AccessToken, RefreshToken, UserProfile)
+    deactivate GoogleAuthController
+    Gateway --> Web : 200 OK (AccessToken, RefreshToken, UserProfile)
+    deactivate Gateway
+    Web --> Actor : Store JWT tokens & route user to Workspace Dashboard
+    deactivate Web
 end
 @enduml

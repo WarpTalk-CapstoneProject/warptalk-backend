@@ -45,6 +45,26 @@ public static class ArtifactAccessHelper
     }
 
     /// <summary>
+    /// Why this caller was refused, in words for the person who was refused.
+    ///
+    /// "Unauthorized to download this artifact." was the whole answer, and it is the wrong
+    /// sentence for the case that actually happens. Room artifacts default to HOST_ONLY, so the
+    /// overwhelmingly common denial is a person who WAS in the meeting reading the summary of the
+    /// meeting they attended — and telling them they are unauthorized reads as a bug in the
+    /// product rather than as a setting the host can change. summary-absence.ts on the web side
+    /// already drew this distinction for the Summary tab (SummaryAbsence.withheld); the download
+    /// endpoint kept answering with the flat denial, so the same meeting said two different
+    /// things depending on which control you touched.
+    ///
+    /// The two cases need different sentences because they need different next actions: one is
+    /// "ask the host", the other is "you were not there".
+    /// </summary>
+    public static string DescribeArtifactDenial(bool isParticipant) =>
+        isParticipant
+            ? "The host has not shared this meeting's outputs. Only the host can read them until they change who this meeting is shared with."
+            : "This meeting's outputs are only available to the people who took part in it.";
+
+    /// <summary>
     /// Anything unreadable or unrecognised resolves to <see cref="ArtifactAccessLevels.HostOnly"/>.
     /// Malformed settings JSON used to escape this helper as an unhandled exception; a room whose
     /// blob cannot be parsed now denies non-hosts rather than 500-ing, which is the direction an

@@ -9,6 +9,7 @@ using Stripe.Checkout;
 using WarpTalk.BillingService.Application.DTOs;
 using WarpTalk.BillingService.Application.Interfaces;
 using WarpTalk.BillingService.Domain.Constants;
+using WarpTalk.BillingService.Domain.Services;
 using WarpTalk.Shared;
 
 namespace WarpTalk.BillingService.Infrastructure.Services;
@@ -62,6 +63,14 @@ public class StripePaymentService : IStripePaymentService
             if (!string.IsNullOrWhiteSpace(request.BillingCycle))
                 metadata[PaymentConstants.StripeMetadata.BillingCycle] = request.BillingCycle;
 
+            // WT-429: the credit count rides on the session so both completion paths — the
+            // webhook and the return-page read — grant the SAME number without re-deriving it
+            // from the amount. Written for top-ups only; the value was already validated and
+            // priced server-side by PaymentAppService.
+            if (request.Credits > 0)
+                metadata[PaymentConstants.StripeMetadata.Credits] =
+                    request.Credits.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
             SessionCreateOptions options = new SessionCreateOptions
             {
                 PaymentMethodTypes = new List<string> { PaymentConstants.PaymentMethods.Card },
@@ -83,9 +92,26 @@ public class StripePaymentService : IStripePaymentService
                             },
                             Recurring = isSubscription ? new SessionLineItemPriceDataRecurringOptions
                             {
-                                Interval = string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
-                                    ? (request.Amount >= 1000000m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month)
-                                    : (request.Amount > 50m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month)
+                                // The CALLER's billing cycle, not a guess from the price. This
+                                // used to infer the interval from the amount — "VND and ≥1,000,000
+                                // must be yearly" — which bills the 1,900,000 VND/month Enterprise
+                                // plan ANNUALLY at the monthly price. The request already carries
+                                // BillingCycle, chosen by the person on the Monthly/Yearly toggle;
+                                // inferring it from a number meant the plans page and the
+                                // subscription could disagree, silently, about what was bought.
+                                //
+                                // WT-370: that fix was inert. It compared BillingCycle against
+                                // PriceIntervals ("month"/"year"), and the plans page sends
+                                // "monthly"/"yearly" — so NEITHER branch ever matched and every
+                                // request fell through to the heuristic below. BillingCycleResolver
+                                // now owns the comparison and knows both vocabularies.
+                                //
+                                // The heuristic stays only as the fallback for a request that
+                                // names no cycle, so nothing that relied on it starts failing.
+                                Interval = BillingCycleResolver.ToPriceInterval(request.BillingCycle)
+                                    ?? (string.Equals(request.Currency, PaymentConstants.Currencies.Vnd, StringComparison.OrdinalIgnoreCase)
+                                            ? (request.Amount >= 1000000m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month)
+                                            : (request.Amount > 50m ? PaymentConstants.PriceIntervals.Year : PaymentConstants.PriceIntervals.Month))
                             } : null
                         },
                         Quantity = 1,

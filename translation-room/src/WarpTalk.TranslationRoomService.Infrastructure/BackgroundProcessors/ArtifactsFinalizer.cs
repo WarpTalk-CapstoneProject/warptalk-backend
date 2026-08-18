@@ -15,6 +15,7 @@ using WarpTalk.TranslationRoomService.Application.Helpers;
 using WarpTalk.TranslationRoomService.Application.Mappers;
 using WarpTalk.TranslationRoomService.Application.DTOs;
 using WarpTalk.TranslationRoomService.Domain.Configuration;
+using WarpTalk.TranslationRoomService.Domain.Constants;
 using WarpTalk.TranslationRoomService.Domain.Entities;
 using WarpTalk.TranslationRoomService.Domain.Enums;
 using WarpTalk.TranslationRoomService.Domain.Interfaces;
@@ -233,56 +234,132 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
                 // Process segments for each transcript
                 foreach (var transcript in response.Transcripts)
                 {
-                    var segmentsReq = CreateGetTranscriptSegmentsRequest(transcript.Id);
-                    var segmentsRes = await _transcriptClient.GetTranscriptSegmentsAsync(segmentsReq, cancellationToken: ct);
-
-                    if (segmentsRes != null && segmentsRes.Segments.Any())
-                    {
-                        foreach (var seg in segmentsRes.Segments.OrderBy(s => s.SequenceOrder))
-                        {
-                            segmentsList.Add($"**[{seg.SpeakerName} ({seg.OriginalLanguage.ToUpper()})]**: {seg.OriginalText}");
-                        }
-                    }
+                    segmentsList.AddRange(await ReadAllSegmentsAsync(transcript.Id, roomId, ct));
                 }
             }
 
+            // Reached only when the RPC answered. An empty list here is a real answer — the
+            // meeting genuinely produced no speech — and is worth saying plainly.
             var fullTranscript = FormatTranscriptText(roomId, segmentsList);
-            long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
 
-            return BuildArtifactRequest(
-                roomId,
-                ArtifactType.TRANSCRIPT_EXPORT,
-                null,
-                "text/markdown",
-                sizeBytes,
-                false,
-                false,
-                false,
-                content: fullTranscript)
-                .ToEntity();
+            return BuildTranscriptArtifact(roomId, fullTranscript);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to retrieve real transcript from TranscriptService via gRPC. Falling back to local cache assembly.");
+            _logger.LogError(
+                ex,
+                "Could not read the transcript for room {RoomId} from TranscriptService. Trying the local cache.",
+                roomId);
 
-            // Graceful fallback to local cache assembly so that the system doesn't break if TranscriptService is not running
-            var redisKey = CacheKeyHelper.GetTranscriptKey(roomId);
-            string fullTranscript = await _transcriptCacheService.AssembleTranscriptAsync(roomId, redisKey);
-            long sizeBytes = Encoding.UTF8.GetByteCount(fullTranscript);
+            // WT-431. This fallback used to end the story: it assembled from
+            // translationRoom:{roomId}:transcript, and when that key was missing it emitted
+            // "*No speech transcription recorded.*" — the SAME sentence a genuinely silent
+            // meeting produces. Nothing has ever written that key (it appears twice in this
+            // codebase, both times being deleted), so the fallback could only ever produce that
+            // sentence, and a refused connection was published to the user as a confident
+            // statement that nobody had spoken. 135 of 135 transcript exports in production said
+            // it, including meetings with 405 stored segments.
+            //
+            // The cache read stays — it costs one LRANGE and would be the right answer if
+            // anything ever populated it — but it is no longer allowed to speak for a failure.
+            var cachedSegments = await _transcriptCacheService.ReadCachedSegmentsAsync(
+                CacheKeyHelper.GetTranscriptKey(roomId));
 
-            return BuildArtifactRequest(
-                roomId,
-                ArtifactType.TRANSCRIPT_EXPORT,
-                null,
-                "text/markdown",
-                sizeBytes,
-                false,
-                false,
-                false,
-                content: fullTranscript)
-                .ToEntity();
+            if (cachedSegments.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Recovered {Count} transcript lines for room {RoomId} from the local cache.",
+                    cachedSegments.Count,
+                    roomId);
+
+                return BuildTranscriptArtifact(roomId, FormatTranscriptText(roomId, [.. cachedSegments]));
+            }
+
+            _logger.LogError(
+                "No transcript could be produced for room {RoomId}: TranscriptService was unreachable and nothing was cached. "
+                + "Writing an explicit unavailable artifact — the stored segments, if any, are still in TranscriptService and are not lost.",
+                roomId);
+
+            return BuildTranscriptArtifact(roomId, FormatUnavailableTranscriptText(roomId, ex));
         }
     }
+
+    /// <summary>
+    /// Every segment of a transcript, in order — paging until the service says there are no more.
+    ///
+    /// This used to be a single call with Take = 1000 and no check against the reported total, so
+    /// a meeting longer than 1000 segments had its tail dropped with nothing said. That is a small
+    /// number for this product: production already holds a 405-segment meeting, and segments run
+    /// at roughly one per utterance. A transcript that silently stops two thirds of the way
+    /// through is worse than one that fails, because it looks complete.
+    /// </summary>
+    private async Task<List<string>> ReadAllSegmentsAsync(string transcriptId, Guid roomId, CancellationToken ct)
+    {
+        const int pageSize = 1000;
+
+        var lines = new List<string>();
+        var skip = 0;
+
+        while (true)
+        {
+            var segmentsRes = await _transcriptClient.GetTranscriptSegmentsAsync(
+                CreateGetTranscriptSegmentsRequest(transcriptId, skip, pageSize),
+                cancellationToken: ct);
+
+            if (segmentsRes == null || segmentsRes.Segments.Count == 0) break;
+
+            foreach (var seg in segmentsRes.Segments.OrderBy(s => s.SequenceOrder))
+            {
+                lines.Add($"**[{seg.SpeakerName} ({seg.OriginalLanguage.ToUpper()})]**: {seg.OriginalText}");
+            }
+
+            skip += segmentsRes.Segments.Count;
+
+            // TotalCount is authoritative; the page-size comparison is the belt-and-braces exit so
+            // a service that reports a wrong total cannot spin this loop forever.
+            if (skip >= segmentsRes.TotalCount || segmentsRes.Segments.Count < pageSize) break;
+        }
+
+        if (lines.Count > pageSize)
+        {
+            _logger.LogInformation(
+                "Read {Count} transcript segments across {Pages} pages for room {RoomId}.",
+                lines.Count,
+                (lines.Count + pageSize - 1) / pageSize,
+                roomId);
+        }
+
+        return lines;
+    }
+
+    private static TranslationRoomArtifact BuildTranscriptArtifact(Guid roomId, string content) =>
+        BuildArtifactRequest(
+            roomId,
+            ArtifactType.TRANSCRIPT_EXPORT,
+            null,
+            ArtifactFileFormats.Markdown,
+            Encoding.UTF8.GetByteCount(content),
+            false,
+            false,
+            false,
+            content: content)
+            .ToEntity();
+
+    /// <summary>
+    /// WT-369 — HOW LONG THE SUMMARY IS GIVEN TO SHOW UP.
+    ///
+    /// The transcript half of this finalization already waits up to 30s for its `final_processed`
+    /// signal. The summary was given nothing at all: one Redis read, immediately. But the summary
+    /// is produced by ai_assistant_worker, triggered independently from
+    /// MeetingService.EndMeetingAsync — the comment at the top of ProcessRoomFinalizationAsync
+    /// says in as many words that there is "no strict ordering guarantee" — and it is an LLM call
+    /// over a whole meeting transcript, which is not instant.
+    ///
+    /// Longer than the transcript's window because it is waiting on generation, not on a flush.
+    /// It exits the moment content appears, so a summary that is already there costs one read.
+    /// </summary>
+    private static readonly TimeSpan SummaryWaitTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan SummaryPollInterval = TimeSpan.FromSeconds(2);
 
     private async Task<TranslationRoomArtifact> FinalizeSummaryAsync(Guid roomId, CancellationToken ct)
     {
@@ -293,49 +370,121 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
             // Try to fetch AI-generated summary from Redis hash key "meeting:{roomId}:summary"
             string summaryKey = $"meeting:{roomId}:summary";
 
-            var summaryContent = await _redisStateRepo.HashGetAsync(summaryKey, "content");
-            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
             // WT-13: ai_assistant_worker also writes a structured JSON version of the same
             // summary/decisions/action-items when it can (see MeetingAssistant.generate_structured_summary).
-            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
+            var (summaryContent, actionItems, structuredJson) =
+                await WaitForSummaryAsync(summaryKey, roomId, ct);
 
-            var summaryText = FormatSummaryText(roomId, summaryContent, actionItems);
-            long sizeBytes = Encoding.UTF8.GetByteCount(summaryText);
-            string content = BuildStructuredSummaryContent(structuredJson, summaryContent, actionItems);
+            string content = SummaryContentBuilder.Build(structuredJson, summaryContent, actionItems);
 
-            // Clean up meeting summary key from Redis
-            await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            // DELETE ONLY WHAT WE ACTUALLY READ.
+            //
+            // This used to delete unconditionally, which is what made the race permanent rather
+            // than merely unlucky: the finalizer read an empty key, wrote an "insufficient data"
+            // artifact, and then removed the key — so when the AI worker finished a few seconds
+            // later it wrote a real summary into a key nobody would ever read again. Leaving the
+            // key alone on the empty path means a late summary is still there to be recovered.
+            bool foundSomething =
+                !string.IsNullOrWhiteSpace(summaryContent)
+                || !string.IsNullOrWhiteSpace(actionItems)
+                || !string.IsNullOrWhiteSpace(structuredJson);
 
-            return BuildArtifactRequest(
-                roomId,
-                ArtifactType.SUMMARY_EXPORT,
-                null,
-                "text/markdown",
-                sizeBytes,
-                false,
-                false,
-                false,
-                content: content)
-                .ToEntity();
+            if (foundSomething)
+            {
+                await _redisStateRepo.KeyDeleteAsync(summaryKey);
+            }
+            else
+            {
+                _logger.LogError(
+                    "No AI summary appeared for room {RoomId} within {Seconds}s. Saving an insufficient-data summary artifact and KEEPING {SummaryKey} so a late result is not lost.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds,
+                    summaryKey);
+            }
+
+            return BuildSummaryArtifact(roomId, content);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to retrieve summary from Redis. Saving an explicit insufficient-data result.");
 
-            string fallbackText = FormatSummaryText(roomId, null, null);
-            long sizeBytes = Encoding.UTF8.GetByteCount(fallbackText);
+            return BuildSummaryArtifact(roomId, SummaryContentBuilder.Build(null, null, null));
+        }
+    }
 
-            return BuildArtifactRequest(
-                roomId,
-                ArtifactType.SUMMARY_EXPORT,
-                null,
-                "text/markdown",
-                sizeBytes,
-                false,
-                false,
-                false,
-                content: BuildStructuredSummaryContent(null, null, null))
-                .ToEntity();
+    /// <summary>
+    /// WT-432. Two things were wrong with how this row was written, on all 135 of them in
+    /// production.
+    ///
+    /// SizeBytes measured the wrong string. The old code built a markdown document with
+    /// FormatSummaryText, counted ITS bytes, then stored <c>SummaryContentBuilder.Build(...)</c>
+    /// instead and threw the markdown away — so the size on the row described a document that was
+    /// never saved, and the markdown builder existed solely to be measured.
+    ///
+    /// FileFormat said markdown for a payload that is JSON. The frontend reads this content with
+    /// parseMeetingSummaryContent, so JSON is the correct and intended storage shape — the label
+    /// was the part that was wrong. It also has to be a token the download switch in
+    /// TranslationRoomArtifactService recognises ("json"), not a MIME string; "text/markdown" fell
+    /// through that switch's default and served both artifact kinds as .txt/text-plain.
+    /// </summary>
+    private static TranslationRoomArtifact BuildSummaryArtifact(Guid roomId, string content) =>
+        BuildArtifactRequest(
+            roomId,
+            ArtifactType.SUMMARY_EXPORT,
+            null,
+            ArtifactFileFormats.Json,
+            Encoding.UTF8.GetByteCount(content),
+            false,
+            false,
+            false,
+            content: content)
+            .ToEntity();
+
+    /// <summary>
+    /// Polls the summary hash until the AI worker has written something, or the window closes.
+    ///
+    /// Returns whatever is there at the end — an empty result is a legitimate answer that the
+    /// caller turns into an explicit insufficient-data artifact, because a UI stuck on
+    /// "generating" forever is worse than one that says the summary did not arrive (WT-13).
+    /// </summary>
+    private async Task<(string? Content, string? ActionItems, string? StructuredJson)> WaitForSummaryAsync(
+        string summaryKey,
+        Guid roomId,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + SummaryWaitTimeout;
+        var logged = false;
+
+        while (true)
+        {
+            var content = await _redisStateRepo.HashGetAsync(summaryKey, "content");
+            var actionItems = await _redisStateRepo.HashGetAsync(summaryKey, "action_items");
+            var structuredJson = await _redisStateRepo.HashGetAsync(summaryKey, "structured_json");
+
+            if (!string.IsNullOrWhiteSpace(content)
+                || !string.IsNullOrWhiteSpace(actionItems)
+                || !string.IsNullOrWhiteSpace(structuredJson))
+            {
+                return (content, actionItems, structuredJson);
+            }
+
+            if (DateTime.UtcNow >= deadline || ct.IsCancellationRequested)
+            {
+                return (content, actionItems, structuredJson);
+            }
+
+            if (!logged)
+            {
+                // Once, not every poll: this is the normal case for a meeting that has just
+                // ended, and it should read as "waiting", not as a fault.
+                _logger.LogInformation(
+                    "Summary for room {RoomId} is not in Redis yet — waiting up to {Seconds}s for ai_assistant_worker.",
+                    roomId,
+                    SummaryWaitTimeout.TotalSeconds);
+                logged = true;
+            }
+
+            await Task.Delay(SummaryPollInterval, ct);
         }
     }
 
@@ -386,13 +535,16 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         };
     }
 
-    private static GetTranscriptSegmentsRequest CreateGetTranscriptSegmentsRequest(string transcriptId)
+    private static GetTranscriptSegmentsRequest CreateGetTranscriptSegmentsRequest(
+        string transcriptId,
+        int skip,
+        int take)
     {
         return new GetTranscriptSegmentsRequest
         {
             TranscriptId = transcriptId,
-            Skip = 0,
-            Take = 1000
+            Skip = skip,
+            Take = take
         };
     }
 
@@ -422,24 +574,30 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
         );
     }
 
+    private static string TranscriptHeader(Guid roomId) =>
+        $"# WarpTalk Transcription Room - Room: {roomId}\nGenerated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n---\n";
+
     private static string FormatTranscriptText(Guid roomId, List<string> segments)
     {
-        var header = $"# WarpTalk Transcription Room - Room: {roomId}\nGenerated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n---\n";
-
         return segments.Count > 0
-            ? header + string.Join("\n", segments)
-            : header + "*No speech transcription recorded.*";
+            ? TranscriptHeader(roomId) + string.Join("\n", segments)
+            : TranscriptHeader(roomId) + "*No speech transcription recorded.*";
     }
 
-    private static string FormatSummaryText(Guid roomId, string? summaryContent, string? actionItems)
+    /// <summary>
+    /// The transcript could not be READ — which is not the same as there being nothing to read,
+    /// and must not be written as if it were. Says which of the two happened, and that the
+    /// segments are still held by TranscriptService, so whoever reads this knows there is
+    /// something to recover rather than a meeting to re-run.
+    /// </summary>
+    private static string FormatUnavailableTranscriptText(Guid roomId, Exception cause)
     {
-        var header = $"# WarpTalk AI Meeting Summary\nRoom ID: {roomId}\nGenerated on: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC\n---\n";
-        var summarySection = summaryContent != null ? $"## Summary\n{summaryContent}\n" : string.Empty;
-        var actionItemsSection = actionItems != null ? $"\n## AI Action Items\n{actionItems}\n" : string.Empty;
-
-        return summarySection != string.Empty || actionItemsSection != string.Empty
-            ? header + summarySection + actionItemsSection
-            : header + "## Summary\n*No real-time summary could be generated by the AI Assistant worker.*\n\n## Key Takeaways\n- The meeting ended, but summary generation did not complete.\n- Review the transcript export or retry summary generation when the AI worker is available.";
+        return TranscriptHeader(roomId)
+            + "*The transcript could not be retrieved when this meeting was finalized.*\n\n"
+            + "This is **not** a statement that nobody spoke — the transcript service could not be "
+            + "reached, so the recorded speech could not be read. Any segments captured during the "
+            + "meeting are still stored by the transcript service and are not lost.\n\n"
+            + $"Reason: {cause.GetType().Name}: {cause.Message}\n";
     }
 
     /// <summary>
@@ -451,80 +609,5 @@ public class ArtifactsFinalizer : IArtifactsFinalizer
     /// insufficientData so the UI can show "not enough data" instead of hanging on a
     /// perpetual "generating" state (WT-13 requirement).
     /// </summary>
-    private static string BuildStructuredSummaryContent(string? structuredJson, string? summaryContent, string? actionItemsRaw)
-    {
-        if (!string.IsNullOrWhiteSpace(structuredJson))
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(structuredJson);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object &&
-                    doc.RootElement.TryGetProperty("summary", out _))
-                {
-                    // Already in the shape the frontend expects — pass through verbatim.
-                    return structuredJson;
-                }
-            }
-            catch (JsonException)
-            {
-                // Fall through to the best-effort text-based reconstruction below.
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(summaryContent) && string.IsNullOrWhiteSpace(actionItemsRaw))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                summary = "The AI assistant could not generate a summary for this meeting (no transcript content was available or generation did not complete in time).",
-                decisions = Array.Empty<string>(),
-                actionItems = Array.Empty<object>(),
-                insufficientData = true
-            });
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            summary = summaryContent ?? string.Empty,
-            decisions = Array.Empty<string>(),
-            actionItems = ParseActionItemsMarkdown(actionItemsRaw),
-            insufficientData = false
-        });
-    }
-
-    /// <summary>
-    /// Best-effort parse of MeetingAssistant.extract_action_items's plain-text output
-    /// (format: "[ ] Action item - @assignee") into {owner, task} pairs.
-    /// </summary>
-    private static List<object> ParseActionItemsMarkdown(string? actionItemsRaw)
-    {
-        var result = new List<object>();
-        if (string.IsNullOrWhiteSpace(actionItemsRaw)) return result;
-
-        var lines = actionItemsRaw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        foreach (var rawLine in lines)
-        {
-            var line = rawLine.TrimStart('-', '*', ' ');
-            if (line.StartsWith("[ ]") || line.StartsWith("[x]", StringComparison.OrdinalIgnoreCase))
-            {
-                line = line.Substring(3).Trim();
-            }
-            if (string.IsNullOrWhiteSpace(line)) continue;
-
-            var atIndex = line.LastIndexOf(" - @", StringComparison.Ordinal);
-            if (atIndex >= 0)
-            {
-                var task = line.Substring(0, atIndex).Trim();
-                var owner = line.Substring(atIndex + 4).Trim();
-                result.Add(new { owner, task });
-            }
-            else
-            {
-                result.Add(new { owner = "", task = line });
-            }
-        }
-
-        return result;
-    }
-
     #endregion
 }

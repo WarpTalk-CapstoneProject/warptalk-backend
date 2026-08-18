@@ -30,8 +30,26 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         _logger = logger;
     }
 
+    /// <summary>What RedisEmbeddingIndexPublisher stamps on a workspace-document request.</summary>
+    private const string DocumentSourceType = "document";
+
     public async Task ProcessResultAsync(Dictionary<string, string> values, CancellationToken ct = default)
     {
+        // embedding:index_results is SHARED. Production carried 203 transcript results, 3
+        // meeting summaries and 3 glossary terms in one window and no documents at all, yet this
+        // group is the only consumer on the stream — so nearly everything arriving here belongs
+        // to somebody else. Ignoring it by source_type is quiet and exact; the previous path
+        // looked each id up as a document, failed to find one, and logged a warning per message.
+        //
+        // A missing source_type is treated as ours: every producer sets it today, and dropping a
+        // real document result to tidy up logs would be the worse trade.
+        var sourceType = values.GetValueOrDefault("source_type");
+        if (!string.IsNullOrEmpty(sourceType)
+            && !string.Equals(sourceType, DocumentSourceType, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
         var sourceId = values.GetValueOrDefault("source_id");
         if (!Guid.TryParse(sourceId, out var documentId))
         {
@@ -59,6 +77,9 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
             document.LastIndexedAt = DateTime.UtcNow;
             document.IndexVersion = BuildIndexVersion(provider, model, dimensions);
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.completed.ToString();
+            // Cleared on success so a reason from an earlier attempt cannot outlive the failure
+            // it described — the same rule the guardrail applies on its clean pass.
+            document.IngestionFailureReason = null;
             document.AiEligible =
                 document.IsAiAllowed &&
                 !document.IsRestricted() &&
@@ -84,6 +105,7 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.skipped.ToString();
+            document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.EmbeddingBlocked;
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);
@@ -102,6 +124,12 @@ public class DocumentEmbeddingResultProcessor : IDocumentEmbeddingResultProcesso
         {
             document.AiEligible = false;
             document.IngestionStatus = WorkspaceDocumentIngestionStatus.failed.ToString();
+            // WT-411 gave the guardrail's branches a reason and missed this one. A failure the
+            // embedding worker REPORTED and a failure the guardrail never got past produced an
+            // identical row — ingestion_status='failed', reason NULL — so the owner of a
+            // document could not tell a retryable outage from a policy refusal, and neither
+            // could anyone reading the table afterwards.
+            document.IngestionFailureReason = WorkspaceDocumentIngestionFailureReasons.EmbeddingFailed;
             document.UpdatedAt = DateTime.UtcNow;
             _unitOfWork.WorkspaceDocumentRepository.Update(document);
             await _unitOfWork.SaveChangesAsync(ct);

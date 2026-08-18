@@ -15,6 +15,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
+using WarpTalk.WorkspaceService.Domain.ValueObjects;
 using WarpTalk.Shared;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
@@ -26,19 +27,25 @@ public class WorkspaceMemberService : IWorkspaceMemberService
     private readonly IAuthIdentityClient _authIdentity;
     private readonly IWorkspaceEventPublisher _eventPublisher;
     private readonly IConfiguration _configuration;
+    private readonly WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? _notificationClient;
 
     public WorkspaceMemberService(
         IUnitOfWork unitOfWork,
         ILogger<WorkspaceMemberService> logger,
         IAuthIdentityClient authIdentity,
         IWorkspaceEventPublisher eventPublisher,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        // Optional so every existing construction site — and the whole test suite — keeps
+        // working (same precedent as TranslationRoomService). A workspace service that cannot
+        // reach the notification mesh still changes roles; it just cannot ring the bell.
+        WarpTalk.Shared.Protos.NotificationGrpcService.NotificationGrpcServiceClient? notificationClient = null)
     {
         _unitOfWork = unitOfWork;
         _logger = logger;
         _authIdentity = authIdentity;
         _eventPublisher = eventPublisher;
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _notificationClient = notificationClient;
     }
 
 
@@ -68,6 +75,37 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             if (isExternal)
             {
                 return Result.Failure(WorkspaceConstants.Errors.CannotTransferToExternal, ErrorCodes.Forbidden);
+            }
+
+            // The new owner's address must be on one of this workspace's verified domains.
+            //
+            // Stated as one rule with no branch on the workspace's policy: a workspace that
+            // verifies no domains has an empty set here, so the condition is vacuous and only the
+            // External check above applies. Branching on RequireVerifiedDomainForInternal instead
+            // would reintroduce a second source for a fact the domain list already answers.
+            //
+            // "Not External" is not enough on its own. That reads the stored MembershipType, and
+            // members keep the type they were given — a workspace that switched to domain-verified
+            // afterwards still has Internal members on other domains. Without this, a workspace
+            // holding acme.com, verified on the strength of its owner's own @acme.com address,
+            // could be handed to someone outside acme.com, and they would inherit the power to
+            // classify every @acme.com joiner as Internal.
+            //
+            // When nobody qualifies, the way out is to revoke the verified domains: that returns
+            // the workspace to manually-assigned membership and empties this rule.
+            var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+            if (activeVerifiedDomains.Count > 0)
+            {
+                var newOwner = await _authIdentity.GetUserByIdAsync(newOwnerId, ct);
+                if (newOwner == null || !EmailAddress.TryParse(newOwner.Email, out var newOwnerEmail) || newOwnerEmail == null)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
+                }
+
+                if (!await WorkspaceHelper.IsEmailDomainVerifiedAsync(_unitOfWork, workspace, newOwnerEmail.Domain, ct))
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustShareVerifiedDomain, ErrorCodes.Forbidden);
+                }
             }
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();
@@ -153,7 +191,9 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 List<WorkspaceMember> membersForSearch;
                 if (isOwnerOrAdmin)
                 {
-                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(m => m.WorkspaceId == workspaceId, "", ct);
+                    // Owner/Admin searches may include suspended members, but never tombstones.
+                    var allMembers = await _unitOfWork.WorkspaceMemberRepository.FindAsync(
+                        m => m.WorkspaceId == workspaceId && m.RemovedAt == null, "", ct);
                     membersForSearch = allMembers.OrderByDescending(m => m.JoinedAt).ToList();
                 }
                 else
@@ -428,12 +468,63 @@ public class WorkspaceMemberService : IWorkspaceMemberService
                 committedEventId, request?.CorrelationId, targetMember.MembershipType,
                 "next-request-or-session", DateTime.UtcNow, request?.IdempotencyKey, ct);
             await _unitOfWork.SaveChangesAsync(ct);
+
+            // WT-431 (Linear): after the commit, never before — a failed save must not announce a
+            // role change that did not happen. The outbox event above is published and consumed by
+            // nothing; the person whose permissions just changed found out by reloading the page.
+            await NotifyMemberRoleChangedAsync(workspaceId, memberUserId, targetRoleName, roleName, ct);
+
             return Result.Success();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while changing member role. WorkspaceId: {WorkspaceId}, TargetUserId: {TargetUserId}", workspaceId, memberUserId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>
+    /// Rings the bell for the person whose permissions just moved — a Notification Center row and
+    /// the realtime toast in one call (NotificationGrpcServiceImpl persists and Redis-publishes).
+    ///
+    /// Best-effort by design: an unreachable notification mesh must not fail a role change that is
+    /// already committed, and a null client (tests, degraded config) means the change simply goes
+    /// unannounced — which is exactly the pre-WT-431 behaviour, not a new failure mode.
+    /// </summary>
+    private async Task NotifyMemberRoleChangedAsync(
+        Guid workspaceId,
+        Guid memberUserId,
+        string previousRole,
+        string newRole,
+        CancellationToken ct)
+    {
+        if (_notificationClient == null) return;
+
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            var workspaceName = workspace?.Name ?? "your workspace";
+
+            var request = new WarpTalk.Shared.Protos.SendNotificationRequest
+            {
+                UserId = memberUserId.ToString(),
+                Type = "WORKSPACE_ROLE_CHANGED",
+                Title = $"Your role in {workspaceName} changed",
+                Body = $"You are now {newRole} (previously {previousRole}). Your permissions apply from your next request.",
+                ActionUrl = workspace?.Slug is { Length: > 0 } slug ? $"/{slug}" : "/",
+            };
+            request.Metadata.Add("workspace_id", workspaceId.ToString());
+            request.Metadata.Add("old_role", previousRole);
+            request.Metadata.Add("new_role", newRole);
+
+            await _notificationClient.SendNotificationAsync(request, cancellationToken: ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not notify user {UserId} about their role change in workspace {WorkspaceId}; the change itself is committed.",
+                memberUserId, workspaceId);
         }
     }
 

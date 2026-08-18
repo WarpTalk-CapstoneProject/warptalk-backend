@@ -1,22 +1,22 @@
 @startuml
-title 3.1 Auth Module Class Diagram
+title 3.1 Auth Module Class Diagram (Report 4 Embedded Version)
 
 top to bottom direction
 hide circle
-hide empty members
 
 skinparam monochrome true
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam linetype ortho
-skinparam nodesep 35
-skinparam ranksep 45
 skinparam dpi 140
+skinparam titleFontSize 18
+skinparam packageFontSize 16
 skinparam classFontSize 14
 skinparam classAttributeFontSize 12
-skinparam packageFontSize 16
-skinparam titleFontSize 18
 skinparam ArrowFontSize 11
+skinparam nodesep 42
+skinparam ranksep 48
+skinparam packageTitleAlignment left
 skinparam packageStyle rectangle
 skinparam packageBackgroundColor White
 skinparam packageBorderColor Black
@@ -26,275 +26,222 @@ skinparam ArrowColor Black
 
 package "API Layer" as ApiLayer {
   class AuthController <<boundary>> {
-    +Register(request)
-    +RegisterInvited(request)
-    +Login(request)
-    +VerifyEmail(request)
-    +ResetPassword(request)
+    - authService: IAuthService
+    --
+    + Register(request: RegisterRequest): Task<Result>
+    + Login(request: LoginRequest): Task<Result>
+    + VerifyEmail(token: String): Task<Result>
+    + ResetPassword(request: ResetPasswordRequest): Task<Result>
   }
 
   class GoogleAuthController <<boundary>> {
-    +GoogleLogin(request)
-    +LinkGoogle(request)
-    +UnlinkGoogle()
+    - googleAuthService: IGoogleAuthService
+    --
+    + GoogleLogin(request: GoogleLoginRequest): Task<Result>
+    + LinkGoogle(request: LinkGoogleRequest): Task<Result>
   }
 
   class TokenController <<boundary>> {
-    +Refresh(request)
-    +Logout(request)
-  }
-
-  class ProfileController <<boundary>> {
-    +GetProfile()
-    +UpdateProfile(request)
-    +ChangePassword(request)
-  }
-
-  class UserSettingsController <<boundary>> {
-    +GetSettings()
-    +UpdateSettings(request)
-  }
-
-  class VoiceProfilesController <<boundary>> {
-    +CreateVoiceProfile(request)
-    +UploadVoiceSample(request)
-    +SetDefaultProfile(id)
+    - tokenService: ITokenService
+    --
+    + Refresh(request: RefreshTokenRequest): Task<Result>
+    + Logout(request: LogoutRequest): Task<Result>
   }
 
   AuthController -[hidden]right- GoogleAuthController
   GoogleAuthController -[hidden]right- TokenController
-  AuthController -[hidden]down- ProfileController
-  ProfileController -[hidden]right- UserSettingsController
-  UserSettingsController -[hidden]right- VoiceProfilesController
 }
 
 package "Application Layer" as ApplicationLayer {
   class AuthService <<control>> {
-    +RegisterAsync(request)
-    +RegisterInvitedAsync(request)
-    +LoginAsync(request)
-    +VerifyEmailAsync(request)
-    +ResetPasswordAsync(request)
+    - userRepository: IUserRepository
+    - passwordHasher: IPasswordHasher
+    - tokenService: ITokenService
+    - unitOfWork: IUnitOfWork
+    --
+    + RegisterAsync(request: RegisterRequest): Task<Result>
+    + LoginAsync(request: LoginRequest): Task<Result>
+    + VerifyEmailAsync(token: String): Task<Result>
   }
 
   class GoogleAuthService <<control>> {
-    +GoogleLoginAsync(request)
-    +LinkGoogleAsync(userId, request)
-    +UnlinkGoogleAsync(userId)
+    - userRepository: IUserRepository
+    - tokenService: ITokenService
+    - unitOfWork: IUnitOfWork
+    --
+    + GoogleLoginAsync(idToken: String): Task<Result>
+    + LinkGoogleAsync(userId: Guid, idToken: String): Task<Result>
   }
 
   class TokenService <<control>> {
-    +RefreshTokenAsync(request)
-    +LogoutAsync(userId, refreshToken)
-  }
-
-  class ProfileService <<control>> {
-    +GetProfileAsync(userId)
-    +UpdateProfileAsync(userId, request)
-    +ChangePasswordAsync(userId, request)
-  }
-
-  class UserSettingsService <<control>> {
-    +GetSettingsAsync(userId)
-    +UpdateSettingsAsync(userId, request)
-  }
-
-  class VoiceProfileService <<control>> {
-    +CreateAsync(userId, request)
-    +AddSampleAsync(userId, profileId, file)
-    +SetDefaultAsync(userId, profileId)
+    - refreshTokenRepository: IRefreshTokenRepository
+    - tokenGenerator: IJwtTokenGenerator
+    - unitOfWork: IUnitOfWork
+    --
+    + RefreshTokenAsync(refreshToken: String): Task<Result>
+    + LogoutAsync(userId: Guid, refreshToken: String): Task<Result>
   }
 
   AuthService -[hidden]right- GoogleAuthService
   GoogleAuthService -[hidden]right- TokenService
-  AuthService -[hidden]down- ProfileService
-  ProfileService -[hidden]right- UserSettingsService
-  UserSettingsService -[hidden]right- VoiceProfileService
 }
 
 package "Infrastructure Layer" as InfrastructureLayer {
+  class AuthDbContext <<control>> {
+    + Users: DbSet<User>
+    + UserSettings: DbSet<UserSetting>
+    + Roles: DbSet<Role>
+    + Permissions: DbSet<Permission>
+    + RefreshTokens: DbSet<RefreshToken>
+    + VoiceProfiles: DbSet<VoiceProfile>
+    --
+    + SaveChangesAsync(): Task<Int>
+  }
+
   class UnitOfWork <<control>> {
-    +SaveChangesAsync()
+    - dbContext: AuthDbContext
+    --
+    + SaveChangesAsync(): Task<Int>
+    + BeginTransactionAsync(): Task
+    + CommitTransactionAsync(): Task
   }
 
   class UserRepository <<control>> {
-    +GetByEmailWithRolesAsync(email)
-    +GetByIdWithRolesAsync(userId)
-    +Update(user)
+    - dbContext: AuthDbContext
+    --
+    + GetByEmailAsync(email: String): Task<User>
+    + GetByIdWithRolesAsync(id: Guid): Task<User>
+    + AddAsync(user: User): Task
   }
 
   class RefreshTokenRepository <<control>> {
-    +GetByTokenHashAsync(tokenHash)
-    +RevokeFamilyAsync(familyId)
-    +Update(token)
-  }
-
-  class UserSettingRepository <<control>> {
-    +GetByUserIdAsync(userId)
-    +Add(settings)
-  }
-
-  class VoiceProfileRepository <<control>> {
-    +GetByUserIdAsync(userId)
-    +Add(profile)
-    +Update(profile)
+    - dbContext: AuthDbContext
+    --
+    + GetByTokenHashAsync(hash: String): Task<RefreshToken>
+    + AddAsync(token: RefreshToken): Task
+    + RevokeFamilyAsync(familyId: Guid): Task
   }
 
   class PasswordHasher <<control>> {
-    +Hash(password)
-    +Verify(password, hash)
+    --
+    + HashPassword(password: String): String
+    + VerifyPassword(password: String, hash: String): Boolean
   }
 
   class JwtTokenGenerator <<control>> {
-    +GenerateToken(user, roles)
+    - jwtOptions: JwtOptions
+    --
+    + GenerateAccessToken(user: User, roles: List<String>): String
+    + GenerateRefreshToken(): String
   }
 
-  class GoogleTokenVerifier <<control>> {
-    +VerifyGoogleTokenAsync(idToken)
-  }
-
-  class ResendAuthEmailSender <<control>> {
-    +SendVerificationEmailAsync(user, token)
-    +SendPasswordResetEmailAsync(user, token)
-  }
-
-  class WorkspaceInvitationGrpcClient <<control>> {
-    +VerifyInvitationTokenAsync(token)
-    +AcceptInvitationAsync(token, userId, email)
-  }
-
-  class RedisVoiceCatalogDirectory <<control>> {
-    +GetAvailableVoicesAsync()
-  }
-
-  UnitOfWork -[hidden]right- UserRepository
   UserRepository -[hidden]right- RefreshTokenRepository
-  UnitOfWork -[hidden]down- UserSettingRepository
-  UserSettingRepository -[hidden]right- VoiceProfileRepository
-  VoiceProfileRepository -[hidden]right- PasswordHasher
-  UserSettingRepository -[hidden]down- JwtTokenGenerator
-  JwtTokenGenerator -[hidden]right- GoogleTokenVerifier
-  GoogleTokenVerifier -[hidden]right- ResendAuthEmailSender
-  JwtTokenGenerator -[hidden]down- WorkspaceInvitationGrpcClient
-  WorkspaceInvitationGrpcClient -[hidden]right- RedisVoiceCatalogDirectory
-
-  UnitOfWork o-- UserRepository
-  UnitOfWork o-- RefreshTokenRepository
-  UnitOfWork o-- UserSettingRepository
-  UnitOfWork o-- VoiceProfileRepository
+  RefreshTokenRepository -[hidden]right- PasswordHasher
+  PasswordHasher -[hidden]right- JwtTokenGenerator
+  AuthDbContext -[hidden]right- UnitOfWork
+  UserRepository -[hidden]down- AuthDbContext
 }
 
 package "Domain Layer" as DomainLayer {
   class User <<entity>> {
-    -Id: Guid
-    -Email: String
-    -PasswordHash: String
-    -FullName: String
-    -PreferredLanguage: String
-    -Timezone: String
-    -IsActive: Boolean
-    -IsLocked: Boolean
-    -EmailVerified: Boolean
-    -GoogleId: String
-  }
-
-  class RefreshToken <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -FamilyId: Guid
-    -TokenHash: String
-    -DeviceInfo: String
-    -IpAddress: String
-    -ExpiresAt: DateTime
-    -RevokedAt: DateTime
+    - Id: Guid
+    - Email: String
+    - PasswordHash: String
+    - FullName: String
+    - PreferredLanguage: String
+    - IsActive: Boolean
+    - EmailVerifiedAt: DateTime?
+    - GoogleId: String
+    --
   }
 
   class UserSetting <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -DefaultSpeakLanguage: String
-    -DefaultListenLanguage: String
-    -VoiceCloneEnabled: Boolean
-    -MicNoiseSuppression: Boolean
-    -Theme: String
-    -TranscriptFontSize: Int
+    - Id: Guid
+    - UserId: Guid
+    - DefaultSpeakLanguage: String
+    - DefaultListenLanguage: String
+    - VoiceCloneEnabled: Boolean
+    - Theme: String
+    --
+  }
+
+  class Role <<entity>> {
+    - Id: Guid
+    - Name: String
+    - Description: String
+    - IsSystem: Boolean
+    --
+  }
+
+  class Permission <<entity>> {
+    - Id: Guid
+    - Code: String
+    - Description: String
+    - GroupName: String
+    --
+  }
+
+  class RefreshToken <<entity>> {
+    - Id: Guid
+    - UserId: Guid
+    - FamilyId: Guid
+    - TokenHash: String
+    - ExpiresAt: DateTime
+    - RevokedAt: DateTime?
+    --
   }
 
   class VoiceProfile <<entity>> {
-    -Id: Guid
-    -UserId: Guid
-    -DisplayName: String
-    -ProviderVoiceId: String
-    -IsDefault: Boolean
+    - Id: Guid
+    - UserId: Guid
+    - DisplayName: String
+    - Provider: String
+    - Status: String
+    --
   }
 
-  class VoiceSample <<entity>> {
-    -Id: Guid
-    -VoiceProfileId: Guid
-    -StorageKey: String
-    -DurationSeconds: Int
-  }
-
-  User "1" *-- "0..*" RefreshToken : owns sessions
-  User "1" *-- "0..1" UserSetting : has preferences
-  User "1" *-- "0..*" VoiceProfile : owns voices
-  VoiceProfile "1" *-- "0..*" VoiceSample : contains samples
+  User -[hidden]right- Role
+  Role -[hidden]right- Permission
+  User -[hidden]down- UserSetting
+  UserSetting -[hidden]right- RefreshToken
+  RefreshToken -[hidden]right- VoiceProfile
 }
 
 package "External Systems" as ExternalSystems {
   class GoogleOAuthApi <<external system>> {
-    +VerifyToken(idToken)
+    --
+    + ValidateIdTokenAsync(idToken: String): Task<GoogleUserPayload>
   }
-
-  class ResendMailServer <<external system>> {
-    +SendEmail(payload)
-  }
-
-  class WorkspaceServiceGrpcServer <<external system>> {
-    +VerifyInvitation(token)
-  }
-
-  class RedisVoiceCatalog <<external system>> {
-    +ReadAvailableVoices()
-  }
-
-  GoogleOAuthApi -[hidden]right- ResendMailServer
-  ResendMailServer -[hidden]right- WorkspaceServiceGrpcServer
-  GoogleOAuthApi -[hidden]down- RedisVoiceCatalog
 }
 
 AuthController --> AuthService
 GoogleAuthController --> GoogleAuthService
 TokenController --> TokenService
-ProfileController --> ProfileService
-UserSettingsController --> UserSettingsService
-VoiceProfilesController --> VoiceProfileService
 
+AuthService ..> UserRepository
 AuthService ..> PasswordHasher
-AuthService ..> JwtTokenGenerator
+AuthService ..> TokenService
+AuthService ..> UnitOfWork
+
+GoogleAuthService ..> UserRepository
+GoogleAuthService ..> TokenService
+GoogleAuthService ..> GoogleOAuthApi
+
+TokenService ..> RefreshTokenRepository
 TokenService ..> JwtTokenGenerator
-GoogleAuthService ..> GoogleTokenVerifier
-AuthService ..> ResendAuthEmailSender
-AuthService ..> WorkspaceInvitationGrpcClient
-VoiceProfileService ..> RedisVoiceCatalogDirectory
+TokenService ..> UnitOfWork
+
+UserRepository ..> AuthDbContext
+RefreshTokenRepository ..> AuthDbContext
+UnitOfWork ..> AuthDbContext
 
 UserRepository ..> User : persists
 RefreshTokenRepository ..> RefreshToken : persists
-UserSettingRepository ..> UserSetting : persists
-VoiceProfileRepository ..> VoiceProfile : persists
 
-GoogleTokenVerifier ..> GoogleOAuthApi : validates token
-ResendAuthEmailSender ..> ResendMailServer : sends email
-WorkspaceInvitationGrpcClient ..> WorkspaceServiceGrpcServer : verifies invitation
-RedisVoiceCatalogDirectory ..> RedisVoiceCatalog : reads voices
+User *-- "0..*" UserSetting
+User *-- "0..*" Role
+User *-- "0..*" RefreshToken
+User *-- "0..*" VoiceProfile
+Role *-- "0..*" Permission
 
-ApiLayer -[hidden]down- ApplicationLayer
-ApplicationLayer -[hidden]down- InfrastructureLayer
-InfrastructureLayer -[hidden]down- DomainLayer
-DomainLayer -[hidden]down- ExternalSystems
-
-ApiLayer -down..> ApplicationLayer : delegates requests
-ApplicationLayer -down..> InfrastructureLayer : uses repositories and adapters
-InfrastructureLayer -down..> DomainLayer : persists entities
-InfrastructureLayer -down..> ExternalSystems : integrates APIs
 @enduml

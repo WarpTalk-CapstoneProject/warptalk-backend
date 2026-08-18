@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WarpTalk.AuthService.Application.DTOs;
@@ -29,7 +31,10 @@ public class VoiceProfileServiceTests
     private readonly IUnitOfWork _unitOfWork = Substitute.For<IUnitOfWork>();
     private readonly IVoiceProfileRepository _profiles = Substitute.For<IVoiceProfileRepository>();
     private readonly IVoiceSampleRepository _samples = Substitute.For<IVoiceSampleRepository>();
+    private readonly IVoiceConsentRepository _consents = Substitute.For<IVoiceConsentRepository>();
     private readonly IVoiceSampleStorage _storage = Substitute.For<IVoiceSampleStorage>();
+    private readonly IVoiceCloneRequestQueue _cloneQueue;
+    private readonly IVoicePreviewQueue _previewQueue;
     private readonly IVoiceCatalogDirectory _catalog = Substitute.For<IVoiceCatalogDirectory>();
     private readonly VoiceProfileService _service;
 
@@ -37,14 +42,23 @@ public class VoiceProfileServiceTests
     {
         _unitOfWork.VoiceProfileRepository.Returns(_profiles);
         _unitOfWork.VoiceSampleRepository.Returns(_samples);
+        _unitOfWork.VoiceConsentRepository.Returns(_consents);
         _profiles.GetByUserIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(Array.Empty<VoiceProfile>());
         StubCatalog(
             new VoiceCatalogItemDto(LinhVoiceId, "Linh - Soft Presence", "feminine"),
             new VoiceCatalogItemDto(MinhVoiceId, "Minh - Conversational Partner", "masculine"));
 
+        // Silent by default: the clone hand-off is pinned in UploadCloneHandoffTests, and a
+        // queue that answered here would change what every assertion below is testing.
+        _cloneQueue = Substitute.For<IVoiceCloneRequestQueue>();
+        // Silent for the same reason, and it matters more here: an unstubbed WaitAsync answers
+        // null, so a preview test that forgot to arrange one fails on the timeout branch rather
+        // than passing on a substitute's default.
+        _previewQueue = Substitute.For<IVoicePreviewQueue>();
         _service = new VoiceProfileService(
-            _unitOfWork, _storage, _catalog, Substitute.For<ILogger<VoiceProfileService>>());
+            _unitOfWork, _storage, _catalog, _cloneQueue, _previewQueue,
+            Substitute.For<ILogger<VoiceProfileService>>());
     }
 
     private void StubCatalog(params VoiceCatalogItemDto[] voices) =>
@@ -226,6 +240,197 @@ public class VoiceProfileServiceTests
         Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
         Assert.Contains("sample", result.Error!, StringComparison.OrdinalIgnoreCase);
         _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRejectUploadedSample_WhenConsentIsIncomplete()
+    {
+        var userId = Guid.NewGuid();
+        var sample = ValidVoiceSample();
+
+        var result = await _service.CreateProfileAsync(
+            userId,
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = sample,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = false,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains("consent", result.Error!, StringComparison.OrdinalIgnoreCase);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldStoreConsentContract_WhenUploadedSampleConsentIsComplete()
+    {
+        var userId = Guid.NewGuid();
+        VoiceProfile? addedProfile = null;
+        VoiceConsent? addedConsent = null;
+        _profiles.When(r => r.Add(Arg.Any<VoiceProfile>())).Do(c => addedProfile = c.Arg<VoiceProfile>());
+        _consents
+            .When(r => r.AddAsync(Arg.Any<VoiceConsent>(), Arg.Any<CancellationToken>()))
+            .Do(c => addedConsent = c.Arg<VoiceConsent>());
+
+        var result = await _service.CreateProfileAsync(
+            userId,
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = "vi-VN",
+                Sample = ValidVoiceSample(),
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Value);
+        var dto = result.Value!;
+        Assert.NotNull(addedProfile);
+        Assert.NotNull(addedConsent);
+        Assert.Equal(userId, addedConsent!.UserId);
+        Assert.Equal(addedProfile!.Id, addedConsent.VoiceProfileId);
+        Assert.Equal("VOICE_PROFILE_UPLOAD", addedConsent.ConsentType);
+        Assert.Equal("GRANTED", addedConsent.ConsentStatus);
+        Assert.StartsWith("voice-v1:", addedConsent.ConsentTextVersion);
+        Assert.NotNull(addedConsent.GrantedAt);
+        Assert.Equal("granted", dto.ConsentStatus);
+        Assert.StartsWith("voice-v1:", dto.ConsentTextVersion);
+        Assert.NotNull(dto.ConsentGrantedAt);
+        await _unitOfWork.Received(1).SaveChangesAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CreateProfileAsync_ShouldRejectSample_WhenMagicBytesAreInvalid()
+    {
+        var invalidFile = Substitute.For<IFormFile>();
+        invalidFile.ContentType.Returns("audio/wav");
+        invalidFile.Length.Returns(100);
+        invalidFile.FileName.Returns("malicious.wav");
+        // Script or executable payload starting with 'MZ' (Windows EXE)
+        invalidFile.OpenReadStream().Returns(_ => new MemoryStream(new byte[] { 0x4D, 0x5A, 0x90, 0x00 }));
+
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = invalidFile,
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        Assert.Contains("signature", result.Error!, StringComparison.OrdinalIgnoreCase);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    private static FormFile ValidVoiceSample() => new(
+        new MemoryStream(new byte[] { 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00 }),
+        0,
+        8,
+        "sample",
+        "voice.wav")
+    {
+        Headers = new HeaderDictionary(),
+        ContentType = "audio/wav",
+    };
+
+    // ── The sample's media type (WT-372) ────────────────────────────────────────────────────
+    //
+    // Nothing here touched Sample.ContentType before, which is exactly why the recorded-sample
+    // path could be broken for every browser at once and stay broken: the only samples the suite
+    // had ever seen were the null one above.
+
+    /// <summary>
+    /// The reported WT-372 failure, verbatim from the browser.
+    ///
+    /// `MediaRecorder` is constructed with "audio/webm;codecs=opus" and reports that string back
+    /// as its `mimeType`, so the File the page builds — and therefore the part's Content-Type —
+    /// carries the codecs parameter. Against a bare-type allowlist that misses by the suffix, and
+    /// the owner sees "Failed to create voice profile" with no way to tell why.
+    /// </summary>
+    [Theory]
+    [InlineData("audio/webm;codecs=opus")]        // Chrome / Edge — the reported case
+    [InlineData("audio/ogg;codecs=opus")]         // Firefox
+    [InlineData("audio/mp4;codecs=mp4a.40.2")]    // Safari
+    [InlineData("audio/webm; codecs=opus")]       // a space after the separator is equally legal
+    [InlineData("audio/wav")]                     // the upload path, which always worked
+    public async Task CreateProfileAsync_ShouldAcceptSample_WhenMediaTypeCarriesParameters(string contentType)
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = Sample(contentType),
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.True(result.IsSuccess, $"'{contentType}' was rejected: {result.Error}");
+        _profiles.Received(1).Add(Arg.Any<VoiceProfile>());
+    }
+
+    /// <summary>
+    /// Stripping the parameters must not turn the allowlist off. A parameter on a type that was
+    /// never allowed is still not allowed, and neither is a type that merely starts with one.
+    /// </summary>
+    [Theory]
+    [InlineData("video/mp4;codecs=avc1")]
+    [InlineData("application/octet-stream")]
+    [InlineData("audio/webmsomethingelse")]
+    [InlineData("")]
+    public async Task CreateProfileAsync_ShouldStillRejectSample_WhenMediaTypeIsNotAllowed(string contentType)
+    {
+        var result = await _service.CreateProfileAsync(
+            Guid.NewGuid(),
+            new CreateVoiceProfileRequest
+            {
+                DisplayName = "My voice",
+                Language = Vi,
+                Sample = Sample(contentType),
+                OwnVoiceConfirmed = true,
+                AiUseConfirmed = true,
+                SyntheticVoiceAcknowledged = true,
+                NoImpersonationConfirmed = true,
+                RetentionAcknowledged = true,
+            });
+
+        Assert.False(result.IsSuccess, $"'{contentType}' was accepted");
+        Assert.Equal(ErrorCodes.ValidationError, result.ErrorCode);
+        _profiles.DidNotReceive().Add(Arg.Any<VoiceProfile>());
+    }
+
+    /// <summary>One non-empty audio part, described by <paramref name="contentType"/>.</summary>
+    private static IFormFile Sample(string contentType, long length = 64 * 1024)
+    {
+        var file = Substitute.For<IFormFile>();
+        file.ContentType.Returns(contentType);
+        file.Length.Returns(length);
+        file.FileName.Returns("voice-sample.webm");
+        // RIFF header for valid audio magic bytes
+        file.OpenReadStream().Returns(_ => new MemoryStream(new byte[] { 0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00 }));
+        return file;
     }
 
     private VoiceProfile ProfileWithSamples(Guid userId, params string[] fileUrls)

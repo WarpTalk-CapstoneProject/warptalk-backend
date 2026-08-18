@@ -43,6 +43,15 @@ public partial class TranslationRoomParticipant
 
     public bool IsUsingVoiceClone { get; set; }
 
+    /// <summary>
+    /// WT-446: this participant was not an active member of the room's workspace when they joined.
+    /// Resolved once, on join, through IWorkspaceMemberDirectory — never recomputed on read, because
+    /// the roster is polled every few seconds and externality is a fact about admission, not a live
+    /// property. Defaults to false, which is both the common case and the safe answer for the rows
+    /// that predate the column.
+    /// </summary>
+    public bool IsExternal { get; set; }
+
     public DateTime? JoinedAt { get; set; }
 
     public DateTime? LeftAt { get; set; }

@@ -46,6 +46,7 @@ public class AdminWorkspaceService : IAdminWorkspaceService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentityClient;
     private readonly IAdminAuditLogRepository _adminAuditLogRepository;
+    private readonly IWorkspaceEventPublisher _eventPublisher;
     private readonly ILogger<AdminWorkspaceService> _logger;
     private readonly TimeProvider _timeProvider;
 
@@ -53,12 +54,14 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         IUnitOfWork unitOfWork,
         IAuthIdentityClient authIdentityClient,
         IAdminAuditLogRepository adminAuditLogRepository,
+        IWorkspaceEventPublisher eventPublisher,
         ILogger<AdminWorkspaceService> logger,
         TimeProvider? timeProvider = null)
     {
         _unitOfWork = unitOfWork;
         _authIdentityClient = authIdentityClient;
         _adminAuditLogRepository = adminAuditLogRepository;
+        _eventPublisher = eventPublisher;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -151,6 +154,166 @@ public class AdminWorkspaceService : IAdminWorkspaceService
         string? correlationId,
         CancellationToken ct = default)
         => ChangeLifecycleAsync(workspaceId, reason, actorId, correlationId, suspend: false, ct);
+
+    public async Task<Result<AdminWorkspaceDetailDto>> DeleteAsync(
+        Guid workspaceId,
+        string reason,
+        Guid actorId,
+        string? correlationId,
+        CancellationToken ct = default)
+    {
+        var trimmedReason = reason?.Trim() ?? string.Empty;
+        if (trimmedReason.Length == 0)
+        {
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceAdminErrors.ReasonRequired, ErrorCodes.ValidationError);
+        }
+
+        if (trimmedReason.Length > MaxReasonLength)
+        {
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceAdminErrors.ReasonTooLong, ErrorCodes.ValidationError);
+        }
+
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace is null)
+            {
+                return Result.Failure<AdminWorkspaceDetailDto>(
+                    WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            if (workspace.DeletedAt != null)
+            {
+                return Result.Failure<AdminWorkspaceDetailDto>(
+                    WorkspaceAdminErrors.DeletedWorkspaceIsImmutable, ErrorCodes.Conflict);
+            }
+
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+
+            workspace.DeletedAt = now;
+            workspace.UpdatedAt = now;
+            workspace.UpdatedBy = actorId;
+
+            // WT-417 semantics, same as the Owner's own delete: the membership rows go with the
+            // workspace. Unlike that path there is no tracked `executingMember` here — the actor
+            // is a platform admin, not a member — so every row from the AsNoTracking read can be
+            // Update()d without colliding with the identity map.
+            var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+            foreach (var member in members)
+            {
+                member.RemovedAt = now;
+                member.RemovedBy = actorId;
+                _unitOfWork.WorkspaceMemberRepository.Update(member);
+            }
+
+            _unitOfWork.WorkspaceRepository.Update(workspace);
+
+            await _adminAuditLogRepository.AppendAsync(
+                new WorkspaceAdminAction
+                {
+                    Id = Guid.NewGuid(),
+                    SourceService = AdminAuditSources.WorkspaceService,
+                    WorkspaceId = workspaceId,
+                    EntityType = AdminAuditEntityTypes.Workspace,
+                    EntityId = workspaceId,
+                    Action = WorkspaceAdminActionTypes.Delete,
+                    Reason = trimmedReason,
+                    Result = AdminAuditResults.Succeeded,
+                    PerformedBy = actorId,
+                    PerformedAt = now,
+                    CorrelationId = correlationId,
+                    BeforeSummary = JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["status"] = workspace.IsActive ? "active" : "suspended" }),
+                    AfterSummary = JsonSerializer.Serialize(
+                        new Dictionary<string, string?> { ["status"] = "deleted" }),
+                },
+                ct);
+
+            await _eventPublisher.PublishWorkspaceDeletedAsync(workspaceId, actorId, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            _logger.LogInformation(
+                "System admin {ActorId} deleted workspace {WorkspaceId}. CorrelationId: {CorrelationId}",
+                actorId, workspaceId, correlationId);
+
+            var detail = await BuildDetailAsync(workspaceId, ct);
+            return detail is null
+                ? Result.Failure<AdminWorkspaceDetailDto>(
+                    WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound)
+                : Result.Success(detail);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin workspace delete failed. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<AdminWorkspaceDetailDto>(
+                WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<AdminWorkspaceMemberDto>>> GetMembersAsync(
+        Guid workspaceId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace is null)
+            {
+                return Result.Failure<IReadOnlyList<AdminWorkspaceMemberDto>>(
+                    WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var members = await _unitOfWork.WorkspaceMemberRepository.GetActiveMembersByWorkspaceAsync(workspaceId, ct);
+
+            // Role ids repeat across the roster (three roles, N members) — resolve each id once.
+            var roleNames = new Dictionary<Guid, string>();
+            foreach (var roleId in members.Select(m => m.RoleId).Distinct())
+            {
+                var role = await _authIdentityClient.GetRoleByIdAsync(roleId, ct);
+                roleNames[roleId] = role?.Name ?? "unknown";
+            }
+
+            var users = await ResolveOwnersAsync(members.Select(m => m.UserId), ct);
+
+            var rows = members
+                .Select(member =>
+                {
+                    users.TryGetValue(member.UserId, out var user);
+                    return new AdminWorkspaceMemberDto(
+                        member.UserId,
+                        user?.FullName,
+                        user?.Email,
+                        user?.AvatarUrl,
+                        Resolved: user is not null,
+                        Role: roleNames[member.RoleId],
+                        MembershipType: member.MembershipType,
+                        Status: member.Status,
+                        CanCreateMeetings: member.CanCreateMeetings,
+                        JoinedAt: member.JoinedAt);
+                })
+                .OrderBy(row => RoleRank(row.Role))
+                .ThenBy(row => row.JoinedAt)
+                .ToList();
+
+            return Result.Success<IReadOnlyList<AdminWorkspaceMemberDto>>(rows);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Admin workspace members query failed. WorkspaceId: {WorkspaceId}", workspaceId);
+            return Result.Failure<IReadOnlyList<AdminWorkspaceMemberDto>>(
+                WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    /// <summary>Owner first, then Admins, then everyone else — the order a roster is read in.</summary>
+    private static int RoleRank(string role) => role.ToLowerInvariant() switch
+    {
+        "owner" => 0,
+        "admin" => 1,
+        _ => 2,
+    };
 
     private async Task<Result<AdminWorkspaceDetailDto>> ChangeLifecycleAsync(
         Guid workspaceId,

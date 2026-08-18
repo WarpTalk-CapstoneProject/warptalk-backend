@@ -98,10 +98,67 @@ public class AuthServiceTests
 
         // Assert
         Assert.True(result.IsSuccess);
+        // BR-02: register no longer returns a session, so the created user's id is read from
+        // what was persisted rather than from a response that deliberately no longer carries it.
+        await _userRepository.Received(1).AddAsync(
+            Arg.Any<User>(),
+            Arg.Any<CancellationToken>());
         await _userSettingRepository.Received(1).AddAsync(
-            Arg.Is<UserSetting>(s => s.UserId == result.Value!.User.Id),
+            Arg.Any<UserSetting>(),
             Arg.Any<CancellationToken>()
         );
+    }
+
+    /// <summary>
+    /// The sign-up wizard's third step has to land somewhere, and this is the only place it can.
+    ///
+    /// Registration returns no session (BR-02), so there is no authenticated moment between
+    /// "account created" and "first meeting" in which the client could save these. Before the
+    /// wizard existed, every new account's first meeting ran on the platform default speak/listen
+    /// pair — TranslationRoomService reads exactly this row when somebody joins — and the only way
+    /// to discover that was to notice it mid-meeting.
+    /// </summary>
+    [Fact]
+    public async Task RegisterAsync_ShouldPersistTheLanguagesTheWizardAskedFor()
+    {
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        UserSetting? persisted = null;
+        await _userSettingRepository.AddAsync(
+            Arg.Do<UserSetting>(setting => persisted = setting),
+            Arg.Any<CancellationToken>());
+
+        var result = await _authService.RegisterAsync(new RegisterRequest(
+            "vi-user@warptalk.vn", "Password123!", "Vi User", "vi-VN", "en-US"));
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(persisted);
+        Assert.Equal("vi-VN", persisted!.DefaultSpeakLanguage);
+        Assert.Equal("en-US", persisted.DefaultListenLanguage);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_ShouldFallBackToPlatformDefaults_WhenNoLanguagesWereAsked()
+    {
+        // The Google path and any older client send no languages at all. A missing answer is not
+        // an invalid one — it must produce a usable row, not an empty column.
+        _userRepository.ExistsByEmailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        _passwordHasher.Hash(Arg.Any<string>()).Returns("hashed_password");
+
+        UserSetting? persisted = null;
+        await _userSettingRepository.AddAsync(
+            Arg.Do<UserSetting>(setting => persisted = setting),
+            Arg.Any<CancellationToken>());
+
+        await _authService.RegisterAsync(
+            new RegisterRequest("plain@warptalk.vn", "Password123!", "Plain User"));
+
+        Assert.NotNull(persisted);
+        Assert.Equal(UserConstants.DefaultSpeakLanguage, persisted!.DefaultSpeakLanguage);
+        Assert.Equal(UserConstants.DefaultListenLanguage, persisted.DefaultListenLanguage);
     }
 
     /// <summary>
@@ -127,7 +184,11 @@ public class AuthServiceTests
             new RegisterRequest("unproven@warptalk.vn", "Password123!", "Unproven"));
 
         Assert.True(result.IsSuccess);
-        Assert.False(result.Value!.User.EmailVerified);
+        // BR-02 — the stronger claim, and the one this bug was about: an unverified registration
+        // hands back NO session at all. Asserting `EmailVerified == false` on a response that also
+        // contained working tokens is exactly the state that let register bypass the login gate.
+        Assert.True(result.Value!.EmailVerificationRequired);
+        Assert.Null(result.Value.Auth);
 
         // And the address must actually be challenged rather than just left unflagged.
         await _userRepository.Received(1).AddAsync(
@@ -157,7 +218,11 @@ public class AuthServiceTests
             new RegisterRequest("auto-verified@warptalk.vn", "Password123!", "Auto Verified"));
 
         Assert.True(result.IsSuccess);
-        Assert.True(result.Value!.User.EmailVerified);
+        // AutoVerifySelfRegistration on: the address is already proven, so a session is correct
+        // and BR-02 must not withhold it.
+        Assert.False(result.Value!.EmailVerificationRequired);
+        Assert.NotNull(result.Value.Auth);
+        Assert.True(result.Value.Auth!.User.EmailVerified);
         await _authEmailSender.DidNotReceive().SendVerificationEmailAsync(
             Arg.Any<User>(),
             Arg.Any<string>(),

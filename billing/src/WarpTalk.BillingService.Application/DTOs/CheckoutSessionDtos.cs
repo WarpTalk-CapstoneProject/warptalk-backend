@@ -14,7 +14,13 @@ public record CreateCheckoutSessionRequest(
     string Currency = PaymentConstants.Currencies.Usd,
     string PaymentType = "",
     string PlanSlug = "",
-    string BillingCycle = ""
+    string BillingCycle = "",
+    /// <summary>
+    /// WT-429, top-ups only: how many credits the buyer asked for. The PRICE is computed from
+    /// this server-side against billing_pricing_config, and <see cref="Amount"/> is overwritten
+    /// with the result — a client that names its own price would be naming its own exchange rate.
+    /// </summary>
+    int Credits = 0
 ) : IWorkspaceScopedRequest;
 public record StripePaymentEventRequest(
     string StripeSessionId,
@@ -29,7 +35,9 @@ public record StripePaymentEventRequest(
     string InvoiceUrl = "",
     string InvoicePdf = "",
     string PlanSlug = "",
-    string BillingCycle = ""
+    string BillingCycle = "",
+    /// <summary>WT-429: credits to grant, read back off the Stripe session metadata.</summary>
+    int Credits = 0
 );
 
 public record CheckoutSessionDto(

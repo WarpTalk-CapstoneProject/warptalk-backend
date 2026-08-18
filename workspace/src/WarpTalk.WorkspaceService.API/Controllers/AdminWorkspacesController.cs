@@ -78,6 +78,36 @@ public class AdminWorkspacesController : ControllerBase
         return ToActionResult(result);
     }
 
+    /// <summary>
+    /// Soft delete. POST rather than HTTP DELETE because it carries a mandatory reason body and
+    /// is not idempotent in the audit trail — every acceptance appends a row.
+    /// </summary>
+    [HttpPost("{id:guid}/delete")]
+    public async Task<IActionResult> Delete(
+        Guid id,
+        [FromBody] AdminWorkspaceLifecycleRequest request,
+        CancellationToken ct)
+    {
+        if (!AdminActorContext.TryResolve(User, HttpContext, out var actor))
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+
+        var result = await _adminWorkspaceService.DeleteAsync(
+            id, request?.Reason ?? string.Empty, actor.ActorId, actor.CorrelationId, ct);
+        return ToActionResult(result);
+    }
+
+    /// <summary>
+    /// The roster: membership facts only. The tenant's content — documents, knowledge, meeting
+    /// artifacts — is deliberately NOT exposed to the admin portal; membership is platform
+    /// bookkeeping the admin needs to operate suspensions, deletions and support requests.
+    /// </summary>
+    [HttpGet("{id:guid}/members")]
+    public async Task<IActionResult> GetMembers(Guid id, CancellationToken ct)
+    {
+        var result = await _adminWorkspaceService.GetMembersAsync(id, ct);
+        return ToActionResult(result);
+    }
+
     private IActionResult ToActionResult<T>(Result<T> result)
     {
         if (result.IsSuccess) return Ok(result.Value);

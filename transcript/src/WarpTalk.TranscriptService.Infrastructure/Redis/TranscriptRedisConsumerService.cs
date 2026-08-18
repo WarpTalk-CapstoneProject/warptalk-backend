@@ -270,6 +270,9 @@ public class TranscriptRedisConsumerService : BackgroundService
             values, TranscriptConsumerPollingPolicy.SttConfidenceField);
         var startMs = int.TryParse(values.GetValueOrDefault("start_ms"), out var sMs) ? sMs : 0;
         var endMs = int.TryParse(values.GetValueOrDefault("end_ms"), out var eMs) ? eMs : 0;
+        // WT-473: the wall-clock instant startMs is measured FROM, published by stt_worker as unix
+        // ms. 0 means "not stated" — an older worker, or a message written before the field existed.
+        var anchorMs = long.TryParse(values.GetValueOrDefault("anchor_ms"), out var aMs) ? aMs : 0L;
         // shared/schemas.py STTResultMessage.to_redis() serializes this as "1"/"0", default false.
         var isFinal = values.GetValueOrDefault("is_final_chunk") == "1";
 
@@ -373,6 +376,27 @@ public class TranscriptRedisConsumerService : BackgroundService
 
                 await unitOfWork.TranscriptSegments.AddAsync(segment, cancellationToken);
 
+                // WT-473: stamp the transcript's timeline anchor, ONCE.
+                //
+                // Set-once mirrors the SET NX the STT worker uses for the same value in Redis, and
+                // it is the important half: the offsets already stored were measured against the
+                // first anchor, so overwriting it would silently re-time the whole transcript.
+                //
+                // Redis is not durable enough to be the only home for this — the key carries a 6h
+                // TTL on an instance running allkeys-lru, which evicts live meeting state rather
+                // than erroring. Without this write the transcript's origin is gone once the
+                // meeting is over, and its offsets can no longer be aligned with a recording.
+                //
+                // Updating the tracked entity is safe here, unlike total_segments/total_duration_ms
+                // above: those are advanced by an atomic UPDATE ... RETURNING and would be reverted
+                // by a tracked write, while this column is touched nowhere else.
+                if (anchorMs > 0 && transcript.TimelineAnchorAt is null)
+                {
+                    transcript.TimelineAnchorAt =
+                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime;
+                    unitOfWork.Transcripts.Update(transcript);
+                }
+
                 // total_segments/total_duration_ms were already advanced atomically inside
                 // AdvanceTranscriptForNewSegmentAsync above — do not also call
                 // unitOfWork.Transcripts.Update(transcript) here (see that method's doc comment
@@ -450,6 +474,21 @@ public class TranscriptRedisConsumerService : BackgroundService
         var sourceSttConfidence = TranscriptConsumerPollingPolicy.ResolveConfidence(
             values, TranscriptConsumerPollingPolicy.SourceSttConfidenceField);
 
+        // How long the translation of this sentence took, as measured by translation_worker.
+        //
+        // The column and the entity property have both existed since this table was designed and
+        // nothing ever wrote them: NULL on every row, 3803 of them. So the single most common
+        // report about this pipeline — "translation is fast sometimes and slow other times" — had
+        // no recorded evidence anywhere, and neither a dashboard nor an investigation could say
+        // whether a given meeting was slow at all.
+        //
+        // Absent parses to NULL rather than 0, deliberately: an empty-sentence flush and a
+        // speculative cache hit do no translation work and have no honest duration to claim, and a
+        // zero among real measurements would drag every average it appears in.
+        var latencyMs = int.TryParse(values.GetValueOrDefault("latency_ms"), out var parsedLatency)
+            ? parsedLatency
+            : (int?)null;
+
         if (string.IsNullOrWhiteSpace(translatedText))
         {
             return true; // flush/empty messages carry no translation to persist
@@ -496,6 +535,11 @@ public class TranscriptRedisConsumerService : BackgroundService
                     TranslatedText = translatedText,
                     TranslatorModel = translatorModel,
                     SourceSttConfidence = sourceSttConfidence,
+                    // Only on the row that is actually created. A dedup HIT reuses an existing
+                    // row, and overwriting its latency with a later occurrence's would describe
+                    // one measurement with another sentence's timing — the stored number belongs
+                    // to the translation that produced the text.
+                    LatencyMs = latencyMs,
                     IsRetranslated = false,
                     Status = "done"
                 };

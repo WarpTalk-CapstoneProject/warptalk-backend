@@ -1,0 +1,95 @@
+@startuml
+title WarpTalk - Post-Meeting AI RAG Chat & Artifact Query
+
+autonumber
+
+<style>
+sequenceDiagram {
+  participant {
+    Margin 10
+  }
+  box {
+    Margin 10
+  }
+}
+</style>
+
+skinparam maxMessageSize 150
+
+actor "Workspace Member" as Actor
+boundary "MeetingSummaryUI" as Web
+control "API Gateway" as Gateway
+
+box "Assistant Service" #LightSalmon
+participant ":AssistantController" as Controller <<boundary>>
+participant ":AssistantService" as Service <<service>>
+participant ":AssistantRepository" as AssistantRepo <<control>>
+database "Assistant DB" as AssistantDb
+end box
+
+box "AI Assistant Microservices (warptalk-ai)" #LightYellow
+participant ":AiAssistantWorker" as AiWorker <<boundary>>
+end box
+
+database "Qdrant Vector DB" as VectorDb
+participant "OpenAI API" as OpenAI <<external system>>
+
+Actor -> Web : Open completed meeting summary & ask question in WarpBot Chat
+activate Web
+
+Web -> Gateway : POST /api/v1/assistant/chat\n[MeetingId, WorkspaceId, Question]
+activate Gateway
+
+Gateway -> Controller : PostMeetingChatQuery(request)
+activate Controller
+
+Controller -> Service : AskPostMeetingQuestionAsync(request, ct)
+activate Service
+
+Service -> AssistantRepo : SaveRequestAsync(requestEntity)
+activate AssistantRepo
+AssistantRepo -> AssistantDb : INSERT INTO assistant_requests
+activate AssistantDb
+AssistantDb --> AssistantRepo : Saved
+deactivate AssistantDb
+AssistantRepo --> Service : Saved
+deactivate AssistantRepo
+
+Service -> AiWorker : QueryRAGContextAsync(meetingId, prompt)
+activate AiWorker
+
+AiWorker -> VectorDb : SearchSimilarTranscriptChunksAsync(meetingId, promptVector)
+activate VectorDb
+VectorDb --> AiWorker : Top-K relevant transcript & summary chunks
+deactivate VectorDb
+
+AiWorker -> OpenAI : POST /v1/chat/completions\n(Prompt + Transcript Chunks + Action Items)
+activate OpenAI
+OpenAI --> AiWorker : LLM Generated Response
+deactivate OpenAI
+
+AiWorker --> Service : Formatted Answer with Citations
+deactivate AiWorker
+
+Service -> AssistantRepo : SaveResponseAsync(requestId, responseEntity)
+activate AssistantRepo
+AssistantRepo -> AssistantDb : INSERT INTO assistant_responses
+activate AssistantDb
+AssistantDb --> AssistantRepo : Saved
+deactivate AssistantDb
+AssistantRepo --> Service : Saved
+deactivate AssistantRepo
+
+Service --> Controller : Result.Success(AssistantResponseDto)
+deactivate Service
+
+Controller --> Gateway : 200 OK (AssistantResponseDto)
+deactivate Controller
+
+Gateway --> Web : 200 OK (AssistantResponseDto)
+deactivate Gateway
+
+Web --> Actor : Display AI answer with timestamped transcript citations
+deactivate Web
+
+@enduml

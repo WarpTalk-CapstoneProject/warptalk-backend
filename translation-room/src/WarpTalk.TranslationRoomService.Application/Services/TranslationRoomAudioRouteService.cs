@@ -27,7 +27,39 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
     private readonly IAudioRouteEventProcessor _eventProcessor;
     private readonly ILanguagePolicy _languagePolicy;
     private readonly IVoiceConsentDirectory _voiceConsentDirectory;
+    private readonly IUserSettingsDirectory _userSettingsDirectory;
+    private readonly IRedisStateRepository _redisState;
     private readonly ILogger<TranslationRoomAudioRouteService> _logger;
+
+    /// <summary>
+    /// What each participant asked for IN THIS ROOM: "1" they want their own voice cloned, "0"
+    /// they turned it off. Absent means they never touched the switch here. WT-528.
+    ///
+    /// WHY THIS KEY HAD TO EXIST
+    ///     SetVoiceCloneConsentAsync wrote the answer onto the caller's EXISTING routes and
+    ///     nowhere else. Routes are created when translation starts, so somebody who pressed
+    ///     "My voice" beforehand had no route to write to: changedRoutes came back empty, nothing
+    ///     was saved, and the method returned Success. The choice was discarded in silence.
+    ///
+    ///     When translation then started, the new routes were seeded from the ACCOUNT preference
+    ///     (auth.user_settings.voice_clone_enabled) — which the in-meeting switch does not write.
+    ///     So the in-meeting answer had no way at all to survive into the routes it was meant to
+    ///     govern, and the user had to press the same button a second time with nothing telling
+    ///     them so.
+    ///
+    /// WHY A ROOM KEY RATHER THAN THE ACCOUNT PREFERENCE
+    ///     An in-meeting clone is meeting-scoped by design; it is not reused in the next meeting.
+    ///     Writing the account preference from a button inside one room would quietly change how
+    ///     that person is dubbed in every future meeting, which nobody asked for.
+    /// </summary>
+    private static string CloneIntentKey(Guid roomId) => $"translationRoom:{roomId}:clone_intent";
+
+    /// <summary>
+    /// Long enough to outlive any real meeting, short enough that the key does not accumulate.
+    /// Nothing depends on it surviving: an expired key simply falls back to the account
+    /// preference, which is the behaviour that existed before this key did.
+    /// </summary>
+    private static readonly TimeSpan CloneIntentTtl = TimeSpan.FromHours(12);
 
     public TranslationRoomAudioRouteService(
         IUnitOfWork unitOfWork,
@@ -35,6 +67,8 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         IAudioRouteEventProcessor eventProcessor,
         ILanguagePolicy languagePolicy,
         IVoiceConsentDirectory voiceConsentDirectory,
+        IUserSettingsDirectory userSettingsDirectory,
+        IRedisStateRepository redisState,
         ILogger<TranslationRoomAudioRouteService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -45,7 +79,140 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         _eventProcessor = eventProcessor;
         _languagePolicy = languagePolicy;
         _voiceConsentDirectory = voiceConsentDirectory;
+        _userSettingsDirectory = userSettingsDirectory;
+        _redisState = redisState;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Remember what this participant asked for in this room, so a route created LATER can honour
+    /// it. See <see cref="CloneIntentKey"/> for why the answer needs somewhere to live at all.
+    ///
+    /// Best-effort. Failing to record the intent must not fail the caller's request: the routes
+    /// that exist right now have already been updated by the time this runs, so the switch still
+    /// did what the user watched it do. The cost of a lost write is the pre-WT-528 behaviour for
+    /// routes created after it, which is what this replaces rather than something it breaks.
+    /// </summary>
+    private async Task RecordCloneIntentAsync(Guid roomId, Guid userId, bool enabled)
+    {
+        var key = CloneIntentKey(roomId);
+        try
+        {
+            await _redisState.HashSetAsync(
+                key,
+                new Dictionary<string, string> { [userId.ToString()] = enabled ? "1" : "0" });
+            await _redisState.KeyExpireAsync(key, CloneIntentTtl);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not record the in-room voice clone choice for user {UserId} in room {RoomId}. "
+                + "Routes that already exist were still updated; ones created later will fall back "
+                + "to the account preference.",
+                userId, roomId);
+        }
+    }
+
+    /// <summary>
+    /// What this participant asked for in this room, or null when they never touched the switch.
+    ///
+    /// Three-valued on purpose. "Off in this room" has to be tellable from "said nothing here",
+    /// because only the first should override an account preference that says on — somebody who
+    /// deliberately turned their own voice off in one meeting must not have it turned back on by
+    /// a setting they last looked at weeks ago.
+    /// </summary>
+    private async Task<bool?> CloneIntentAsync(Guid roomId, Guid userId)
+    {
+        try
+        {
+            var stored = await _redisState.HashGetAsync(CloneIntentKey(roomId), userId.ToString());
+            return stored switch
+            {
+                "1" => true,
+                "0" => false,
+                _ => null,
+            };
+        }
+        catch (Exception ex)
+        {
+            // Unreadable is not "off": falling back to the account preference is the behaviour
+            // that existed before this key, and it is the safe direction here because the legal
+            // consent gate in ShouldSeedVoiceCloneAsync still has to pass either way.
+            _logger.LogWarning(
+                ex,
+                "Could not read the in-room voice clone choice for user {UserId} in room {RoomId}; "
+                + "falling back to the account preference.",
+                userId, roomId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// WT-401 — whether a NEW route for this speaker starts with voice cloning already on.
+    ///
+    /// TWO ANSWERS, BOTH REQUIRED, AND THEY ARE NOT THE SAME QUESTION.
+    ///   * IVoiceConsentDirectory — may we process this person's voice biometrically? A legal
+    ///     gate. It fails closed when AuthService is unreachable, by its own contract.
+    ///   * IUserSettingsDirectory — do they WANT to be dubbed in their own voice? A preference,
+    ///     the one the switch in Settings writes and that nothing used to read.
+    ///
+    /// Before this, the answer was the literal `false` and the preference reached nothing. A
+    /// user with "Enable Voice Cloning" showing ON in Settings heard a stock catalogue voice and
+    /// reasonably concluded the cloning was poor, when it had never been switched on at all.
+    ///
+    /// Nothing here widens consent: without a live grant the route stays off however the
+    /// preference reads. A guest has no user id and therefore no preference — off, as before.
+    ///
+    /// Answers are cached per call because the mesh is O(n^2) in participants and this is asked
+    /// per PAIR; without it a six-person room would make sixty RPCs to learn six facts.
+    /// </summary>
+    private async Task<bool> ShouldSeedVoiceCloneAsync(
+        Guid roomId,
+        Guid? speakerUserId,
+        IDictionary<Guid, bool> cache,
+        CancellationToken ct)
+    {
+        if (speakerUserId is not { } userId) return false;
+        if (cache.TryGetValue(userId, out var cached)) return cached;
+
+        var seed = false;
+        try
+        {
+            if (await _voiceConsentDirectory.HasVoiceCloneConsentAsync(userId, ct))
+            {
+                // WT-528: what they asked for IN THIS ROOM wins, in both directions.
+                //
+                // Without this, a "My voice" pressed before translation started reached nothing —
+                // there were no routes to write it to — and the routes created a moment later were
+                // seeded from an account preference the in-meeting switch never writes. The answer
+                // had no way to survive into the routes it was meant to govern.
+                //
+                // Three-valued, so "off in this room" is not confused with "said nothing here":
+                // only an explicit answer overrides the account preference, and turning it off in
+                // one meeting must not be undone by a setting last touched weeks ago.
+                var inRoom = await CloneIntentAsync(roomId, userId);
+                if (inRoom is { } answered)
+                {
+                    seed = answered;
+                }
+                else
+                {
+                    var preference = await _userSettingsDirectory.GetVoicePreferenceAsync(userId, ct);
+                    seed = preference?.VoiceCloneEnabled ?? false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // A room that cannot be translated is a worse outcome than a dub in the default
+            // voice, and the participant can still turn cloning on from the meeting itself.
+            _logger.LogWarning(ex, "Could not resolve voice clone seed for user {UserId}; leaving the route off", userId);
+            seed = false;
+        }
+
+        cache[userId] = seed;
+        return seed;
     }
 
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> GenerateRoutesAsync(Guid roomId, CancellationToken ct = default)
@@ -75,7 +242,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             var newRoutes = new List<TranslationRoomAudioRoute>();
 
             var sourceLanguage = room.SourceLanguage;
-            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var targetLanguagesList = LanguageHelper.ParseTargetLanguages(room.TargetLanguages).ToArray();
+            var voiceCloneSeeds = new Dictionary<Guid, bool>();
+
+            // WT-433: pairs that turned out NOT to need translation. Their routes, if any exist
+            // from an earlier language configuration, are stale and must go — see below.
+            var unneededPairs = new List<(Guid SpeakerId, Guid ListenerId)>();
 
             // Generate full-mesh audio routing pathways
             foreach (var speaker in participants)
@@ -87,7 +259,14 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                     var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
                     var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
 
-                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue; // Direct audio routing handles same languages bypasses MT
+                    // Direct audio routing handles same languages and bypasses MT — but a route
+                    // may already EXIST for this pair from when they did need translation, and
+                    // this `continue` used to abandon it. See the sweep after the loop.
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang))
+                    {
+                        unneededPairs.Add((speaker.Id, listener.Id));
+                        continue;
+                    }
 
                     var existingRoute = existingRoutes.FirstOrDefault(r =>
                         r.SourceParticipantId == speaker.Id &&
@@ -114,11 +293,11 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                             TargetParticipantId = listener.Id,
                             SourceLanguage = sourceLang,
                             TargetLanguage = targetLang,
-                            // Default to false per policy — matches TranslationRoomAudioRouteMapper.
-                            // ToEntity's documented default. Voice cloning is opt-in (biometric
-                            // data): the speaker must explicitly enable it via ToggleVoiceCloneAsync
-                            // before tts_worker is allowed to clone their voice.
-                            VoiceCloneEnabled = false,
+                            // Voice cloning is still opt-in (biometric data) — but the opt-in the
+                            // speaker already gave now reaches the route. See
+                            // ShouldSeedVoiceCloneAsync: a live consent grant AND the account
+                            // preference, or this stays false exactly as it did before.
+                            VoiceCloneEnabled = await ShouldSeedVoiceCloneAsync(roomId, speaker.UserId, voiceCloneSeeds, ct),
                             Status = AudioRouteStatus.PENDING.ToString(),
                             CreatedAt = DateTime.UtcNow,
                             UpdatedAt = DateTime.UtcNow
@@ -129,9 +308,30 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             }
 
             // Remove obsolete routes (e.g. participants left the room)
+            //
+            // WT-433 — and pairs that no longer need translating at all.
+            //
+            // The staleness check above only ever ran for a pair that STILL needs translation.
+            // A pair whose languages converged hit the `continue` and kept its old row verbatim,
+            // permanently. In production this left a route saying en→vi for a speaker who had
+            // switched to Vietnamese and a listener already on Vietnamese, in the same batch that
+            // wrote a correct vi→en row for that same speaker — one participant, two contradictory
+            // source languages.
+            //
+            // Three visible symptoms, one cause. The AI pipeline reads SourceLanguage as the STT
+            // hint, so Vietnamese speech was transcribed as English and came back as Whisper's
+            // usual hallucinations on a wrong-language hint ("Hello.", "Um."). It reads
+            // TargetLanguage to decide which dub to synthesize, so a speaker whose only remaining
+            // routes pointed at one language got exactly one interpreter track — and the listener
+            // on the other language, whose client subscribes by
+            // `ai-interpreter-{theirLanguage}-{speaker}`, heard nothing at all while everyone else
+            // heard the dub.
             var activeParticipantIds = participants.Select(p => p.Id).ToHashSet();
+            var unneededPairSet = unneededPairs.ToHashSet();
             var obsoleteRoutes = existingRoutes
-                .Where(r => !activeParticipantIds.Contains(r.SourceParticipantId) || !activeParticipantIds.Contains(r.TargetParticipantId))
+                .Where(r => !activeParticipantIds.Contains(r.SourceParticipantId)
+                            || !activeParticipantIds.Contains(r.TargetParticipantId)
+                            || unneededPairSet.Contains((r.SourceParticipantId, r.TargetParticipantId)))
                 .ToList();
 
             if (newRoutes.Any())
@@ -212,10 +412,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
 
             var existingRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
             var sourceLanguage = room.SourceLanguage;
-            var targetLanguagesList = room.TargetLanguages.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var targetLanguagesList = LanguageHelper.ParseTargetLanguages(room.TargetLanguages).ToArray();
+            var unneededPairs = new List<(Guid SpeakerId, Guid ListenerId)>();
 
             var newRoutes = new List<TranslationRoomAudioRoute>();
             var updatedRoutes = new List<TranslationRoomAudioRoute>();
+            var voiceCloneSeeds = new Dictionary<Guid, bool>();
 
             // Only the pairs this participant is one half of: they speak to everyone already
             // here, and everyone already here speaks to them.
@@ -226,7 +428,15 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                     var sourceLang = speaker.SpeakLanguage ?? sourceLanguage;
                     var targetLang = listener.ListenLanguage ?? targetLanguagesList.FirstOrDefault(l => l != sourceLang) ?? sourceLanguage;
 
-                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang)) continue;
+                    // WT-433: the rejoin case below is exactly why this cannot simply `continue`.
+                    // If the pair no longer needs translation, a route left over from the last
+                    // time they were here is now WRONG, not merely unnecessary, and the AI reads
+                    // it as the STT hint and the dub target.
+                    if (!_languagePolicy.IsTranslationRequired(sourceLang, targetLang))
+                    {
+                        unneededPairs.Add((speaker.Id, listener.Id));
+                        continue;
+                    }
 
                     var existingRoute = existingRoutes.FirstOrDefault(r =>
                         r.SourceParticipantId == speaker.Id &&
@@ -254,13 +464,25 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                         TargetParticipantId = listener.Id,
                         SourceLanguage = sourceLang,
                         TargetLanguage = targetLang,
-                        VoiceCloneEnabled = SpeakerHasConsentedInRoom(existingRoutes, speaker.Id),
+                        // Their answer in THIS room wins — they may have turned it off here on
+                        // purpose. Only a speaker with no route to inherit from falls back to
+                        // what they asked for in Settings (WT-401).
+                        VoiceCloneEnabled = SpeakerHasConsentedInRoom(existingRoutes, speaker.Id)
+                            || (!SpeakerHasAnyRouteInRoom(existingRoutes, speaker.Id)
+                                && await ShouldSeedVoiceCloneAsync(roomId, speaker.UserId, voiceCloneSeeds, ct)),
                         Status = AudioRouteStatus.PENDING.ToString(),
                         CreatedAt = DateTime.UtcNow,
                         UpdatedAt = DateTime.UtcNow
                     });
                 }
             }
+
+            // WT-433: only this participant's own pairs — this method deliberately never touches
+            // anyone else's, and a pair it did not evaluate must not be deleted here.
+            var unneededPairSet = unneededPairs.ToHashSet();
+            var staleRoutes = existingRoutes
+                .Where(r => unneededPairSet.Contains((r.SourceParticipantId, r.TargetParticipantId)))
+                .ToList();
 
             if (newRoutes.Any())
             {
@@ -272,7 +494,12 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 await _translationRoomAudioRouteRepository.UpdateRoutesAsync(updatedRoutes, ct);
             }
 
-            if (newRoutes.Any() || updatedRoutes.Any())
+            if (staleRoutes.Any())
+            {
+                await _translationRoomAudioRouteRepository.RemoveRoutesAsync(staleRoutes, ct);
+            }
+
+            if (newRoutes.Any() || updatedRoutes.Any() || staleRoutes.Any())
             {
                 await _unitOfWork.SaveChangesAsync(ct);
                 // The AI workers' only source of route rows. Without this publish the rows exist
@@ -314,6 +541,19 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
             r.SourceParticipantId == speakerParticipantId &&
             r.Status != AudioRouteStatus.COMPLETED.ToString() &&
             r.VoiceCloneEnabled);
+    }
+
+    /// <summary>
+    /// Whether this speaker already has ANY outgoing route in this room — consented or not.
+    ///
+    /// This is what keeps the Settings preference (WT-401) from overriding a decision the person
+    /// made inside the meeting. A speaker who switched cloning OFF here has routes that say
+    /// false; seeding from their account preference when a new listener joins would silently
+    /// turn it back on, which is the worse direction to be wrong in for biometric data.
+    /// </summary>
+    private static bool SpeakerHasAnyRouteInRoom(List<TranslationRoomAudioRoute> existingRoutes, Guid speakerParticipantId)
+    {
+        return existingRoutes.Any(r => r.SourceParticipantId == speakerParticipantId);
     }
 
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> GetRoutesAsync(Guid roomId, CancellationToken ct = default)
@@ -426,6 +666,45 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
         }
     }
 
+    public async Task<Result<List<TranslationRoomAudioRouteDto>>> RefreshDubVoiceAsync(Guid roomId, Guid userId, CancellationToken ct = default)
+    {
+        try
+        {
+            // The same participant gate SetVoiceCloneConsentAsync applies. This publishes a
+            // snapshot of the whole room and re-reads every speaker's voice on the way, so it is
+            // not a read a stranger may trigger.
+            var participant = await _translationRoomParticipantRepository.GetByRoomAndUserAsync(roomId, userId, ct);
+            if (participant == null)
+            {
+                return Result.Failure<List<TranslationRoomAudioRouteDto>>(
+                    AudioRouteConstants.ErrorParticipantNotInRoom, ErrorCodes.NotFound);
+            }
+
+            // Nothing is written here. PublishRoutesUpdateAsync re-reads each speaker's chosen
+            // voice from AuthService as it builds the payload, so republishing IS the refresh —
+            // and it stays the single place that knowledge enters the pipeline.
+            await _audioRouteCacheService.PublishRoutesUpdateAsync(roomId, ct);
+
+            var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
+            var myOutgoingRoutes = allRoutes
+                .Where(r => r.SourceParticipantId == participant.Id
+                    && r.Status != AudioRouteStatus.COMPLETED.ToString())
+                .Select(TranslationRoomAudioRouteMapper.ToDto)
+                .ToList();
+
+            _logger.LogInformation(
+                "Republished routes for room {RoomId} after user {UserId} changed their dub voice.",
+                roomId, userId);
+
+            return Result.Success(myOutgoingRoutes);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while refreshing the dub voice for user {UserId} in room {RoomId}", userId, roomId);
+            return Result.Failure<List<TranslationRoomAudioRouteDto>>(AudioRouteConstants.ErrorUnexpected, ErrorCodes.InternalServerError);
+        }
+    }
+
     public async Task<Result<List<TranslationRoomAudioRouteDto>>> SetVoiceCloneConsentAsync(Guid roomId, Guid userId, bool enabled, CancellationToken ct = default)
     {
         try
@@ -450,6 +729,24 @@ public class TranslationRoomAudioRouteService : ITranslationRoomAudioRouteServic
                 return Result.Failure<List<TranslationRoomAudioRouteDto>>(
                     AudioRouteConstants.ErrorVoiceCloneConsentMissing, ErrorCodes.Forbidden);
             }
+
+            // Recorded BEFORE the routes are touched, and recorded whether or not any exist.
+            // WT-528.
+            //
+            // This is the whole point of the room key. Everything below writes the answer onto
+            // routes, so pressing "My voice" before translation started reached nothing at all:
+            // `myOutgoingRoutes` was empty, `changedRoutes` was empty, the save was skipped and
+            // the method returned Success over a choice it had thrown away. The routes created a
+            // moment later were then seeded from the account preference, which this switch does
+            // not write — so the answer could never arrive where it was aimed.
+            //
+            // Production, 18 Aug, room 01a01542: three participants pressed it while translation
+            // was off and got `no_routes` ("Translation is not running"); once translation was
+            // running all four read `not_opted_in` for the rest of the evening.
+            //
+            // Before, not after, so a failure further down still leaves the intent stored — the
+            // next route generation will honour it, which is the case this exists to serve.
+            await RecordCloneIntentAsync(roomId, userId, enabled);
 
             var allRoutes = await _translationRoomAudioRouteRepository.GetRoutesByRoomIdAsync(roomId, ct);
             // Every route where THIS caller is the speaker — a participant consents once

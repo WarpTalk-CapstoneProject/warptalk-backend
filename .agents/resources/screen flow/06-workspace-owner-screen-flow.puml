@@ -1,6 +1,7 @@
 @startuml
 skinparam monochrome true
 skinparam shadowing false
+skinparam linetype ortho
 skinparam defaultFontName Arial
 skinparam defaultFontSize 12
 skinparam rectangle {
@@ -11,40 +12,46 @@ left to right direction
 
 rectangle "Workspace Home Page" as WorkspaceHomePage
 rectangle "Rooms Page" as RoomsPage
+rectangle "Schedules Page" as SchedulesPage
 rectangle "Room Information Page" as RoomInformationPage
 rectangle "Documents Page" as DocumentsPage
 rectangle "Document Details Page" as DocumentDetailsPage
 rectangle "Members Page" as MembersPage
 rectangle "Billing Page" as BillingPage
-rectangle "Payment Plans Page" as PaymentPlansPage
+rectangle "Plans Page" as PaymentPlansPage
 rectangle "Payment Success Page" as PaymentSuccessPage
 rectangle "Payment Cancelled Page" as PaymentCancelledPage
-rectangle "Settings Page" as SettingsPage
+rectangle "Workspace Settings Page" as SettingsPage
 rectangle "Advanced Workspace Page" as AdvancedWorkspacePage
-rectangle "Dashboard Page" as DashboardPage
+rectangle "Workspace Dashboard Page" as DashboardPage
 rectangle "Account Preferences Page" as AccountPreferencesPage
 rectangle "Account Profile Page" as AccountProfilePage
 rectangle "Voice Profiles Page" as VoiceProfilesPage
 
-WorkspaceHomePage --> RoomsPage : Click "Meetings"
-WorkspaceHomePage --> DocumentsPage : Click "Documents"
-WorkspaceHomePage --> MembersPage : Click "Members"
-WorkspaceHomePage --> BillingPage : Click "Billing"
-WorkspaceHomePage --> SettingsPage : Click "Settings"
-WorkspaceHomePage --> DashboardPage : Click "Dashboard"
-WorkspaceHomePage --> VoiceProfilesPage : Click "Voice Profiles"
-WorkspaceHomePage --> AccountPreferencesPage : Click "Preferences"
-WorkspaceHomePage --> AccountProfilePage : Click "Profile"
+WorkspaceHomePage --> RoomsPage
+WorkspaceHomePage --> SchedulesPage
+WorkspaceHomePage --> DocumentsPage
+WorkspaceHomePage --> MembersPage
+WorkspaceHomePage --> SettingsPage
+WorkspaceHomePage --> DashboardPage
+WorkspaceHomePage --> VoiceProfilesPage
+WorkspaceHomePage --> AccountPreferencesPage
+WorkspaceHomePage --> AccountProfilePage
 
-RoomsPage --> RoomInformationPage : Click Meeting Row
-DocumentsPage --> DocumentDetailsPage : Click Document Row
+RoomsPage --> RoomInformationPage
+SchedulesPage --> RoomInformationPage
+DocumentsPage --> DocumentDetailsPage
 
-BillingPage --> PaymentPlansPage : Click "Manage Plan & Credits"
-PaymentPlansPage --> PaymentSuccessPage : Complete Checkout
-PaymentPlansPage --> PaymentCancelledPage : Cancel Checkout
-PaymentSuccessPage --> BillingPage : Click "Go to Billing"
-PaymentCancelledPage --> BillingPage : Click "Back to Billing"
+DashboardPage --> BillingPage
+DashboardPage --> PaymentPlansPage
 
-SettingsPage --> AdvancedWorkspacePage : Click "Advanced"
+SettingsPage --> BillingPage
+SettingsPage --> AdvancedWorkspacePage
+
+BillingPage --> PaymentPlansPage
+PaymentPlansPage --> PaymentSuccessPage
+PaymentPlansPage --> PaymentCancelledPage
+PaymentSuccessPage --> BillingPage
+PaymentCancelledPage --> PaymentPlansPage
 
 @enduml

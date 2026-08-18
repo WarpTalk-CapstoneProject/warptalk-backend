@@ -15,7 +15,8 @@ public static class TranslationRoomParticipantMapper
         string speakLanguage,
         string listenLanguage,
         bool requiresApproval,
-        bool isHost)
+        bool isHost,
+        bool isExternal = false)
     {
         var role = isHost ? nameof(TranslationRoomParticipantRole.HOST) : nameof(TranslationRoomParticipantRole.PARTICIPANT);
         var initialStatus = (requiresApproval && !isHost)
@@ -32,6 +33,7 @@ public static class TranslationRoomParticipantMapper
             ListenLanguage = listenLanguage,
             SpeakLanguage = speakLanguage,
             Status = initialStatus,
+            IsExternal = isExternal,
             JoinedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -41,13 +43,18 @@ public static class TranslationRoomParticipantMapper
         this TranslationRoomParticipant participant, 
         JoinTranslationRoomRequest request, 
         string speakLanguage, 
-        string listenLanguage, 
-        bool requiresApproval, 
-        bool isHost)
+        string listenLanguage,
+        bool requiresApproval,
+        bool isHost,
+        bool isExternal = false)
     {
         participant.DisplayName = request.DisplayName;
         participant.ListenLanguage = listenLanguage;
         participant.SpeakLanguage = speakLanguage;
+        // WT-446: refreshed on every admission rather than frozen at the first one. Someone who
+        // has since been added to the workspace is no longer a guest, and a roster that kept
+        // calling them one would be stating something that stopped being true.
+        participant.IsExternal = isExternal;
         
         // LEFT/DISCONNECTED means this participant was already admitted and later lost or
         // closed their live connection. Admission belongs to the participant's room
@@ -100,7 +107,8 @@ public static class TranslationRoomParticipantMapper
             participant.SpeakLanguage,
             participant.Status,
             participant.IsTranslationAudioEnabled,
-            participant.JoinedAt
+            participant.JoinedAt,
+            participant.IsExternal
         );
     }
 }

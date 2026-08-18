@@ -42,7 +42,7 @@ public class WorkspaceInvitationEmailComposer : IWorkspaceInvitationEmailCompose
         var fromName = _configuration["Resend:FromName"] ?? "WarpTalk";
         var from = $"{fromName} <{fromEmail}>";
 
-        var joinUrl = $"{appBaseUrl}/invitations/{Uri.EscapeDataString(invitationToken)}";
+        var joinUrl = $"{appBaseUrl}/login?token={Uri.EscapeDataString(invitationToken)}";
         var subject = $"You've been invited to join {workspace.Name} on WarpTalk";
 
         var htmlTemplate = await _templateProvider.GetTemplateAsync("workspace-invitation-email", ct);

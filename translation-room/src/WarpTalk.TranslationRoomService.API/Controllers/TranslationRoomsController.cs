@@ -145,6 +145,94 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    /// <summary>
+    /// WT-468: the languages the pre-join screen may offer for this room code.
+    ///
+    /// The rule is the room OWNER's: a joiner sees what the workspace that owns the room permits,
+    /// not what their own currently-selected workspace permits. The screen could not apply that
+    /// rule before because it holds a code and nothing else, so it read the joiner's own workspace
+    /// settings — and someone in workspace A joining a room in workspace B got A's language list.
+    ///
+    /// Always 200. An unknown or half-typed code answers with empty lists, which every consumer
+    /// reads as "no restriction", because this is called while the user is still typing. It is
+    /// therefore not a room-existence probe either. The join endpoint remains the one place a bad
+    /// code is reported.
+    ///
+    /// WT-490 added <c>roomLanguages</c>: the set the ROOM declares. The workspace policy alone was
+    /// never enough — a workspace permitting four languages and a room declaring two offered four,
+    /// so a joiner could pick a language nobody in the room would speak. The two limits are sent
+    /// separately and intersected by the caller, because an empty list has to keep meaning
+    /// "unrestricted from this source" rather than "offer nothing".
+    /// </summary>
+    /// <summary>
+    /// WT-480: share this meeting's record with the people who took part, or take it back.
+    ///
+    /// Writes the room's <c>ArtifactAccess</c> policy, which already governs the transcript, the AI
+    /// summary and the recording together — so this one control shares all three, and the button
+    /// that calls it says so.
+    ///
+    /// Its own route rather than a field on the settings PUT, because that endpoint refuses any
+    /// room past WAITING and this act only makes sense after the meeting has ended.
+    /// </summary>
+    [HttpPut("{id:guid}/artifact-access")]
+    public async Task<IActionResult> SetArtifactAccess(Guid id, [FromBody] SetArtifactAccessRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.SetArtifactAccessAsync(id, userId.Value, request.Level, ct);
+        if (result.IsSuccess)
+            return NoContent();
+
+        return result.ErrorCode switch
+        {
+            ErrorCodes.NotFound => NotFound(new ApiErrorResponse(result.Error, result.ErrorCode)),
+            ErrorCodes.Unauthorized => StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode)),
+            _ => BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode)),
+        };
+    }
+
+    [HttpGet("join-language-policy/{code}")]
+    public async Task<IActionResult> GetJoinLanguagePolicy(string code, CancellationToken ct)
+    {
+        var result = await _translationRoomService.GetJoinLanguagePolicyByCodeAsync(code, ct);
+        // Spelled out rather than returning the record, so the wire names are pinned here: the
+        // pre-join screen reads exactly these two keys and `allowedTargetLanguages` predates this.
+        return Ok(new
+        {
+            allowedTargetLanguages = result.Value?.AllowedTargetLanguages ?? Array.Empty<string>(),
+            roomLanguages = result.Value?.RoomLanguages ?? Array.Empty<string>(),
+        });
+    }
+
+    /// <summary>
+    /// WT-433 (Linear): join by room id — what a shared LINK produces. A workspace member who was
+    /// never invited used to dead-end on "Room information is unavailable" (the detail read
+    /// correctly refuses them); this endpoint is their path into the waiting room instead.
+    /// </summary>
+    [HttpPost("{id:guid}/join")]
+    public async Task<IActionResult> JoinTranslationRoomById(Guid id, [FromBody] JoinTranslationRoomRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var userEmail = User.FindFirstValue(ClaimTypes.Email);
+
+        var result = await _translationRoomService.JoinTranslationRoomByIdAsync(id, request, userId.Value, userEmail, ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Conflict)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
     [HttpPost("{id}/waiting")]
     public async Task<IActionResult> OpenWaitingRoom(Guid id, CancellationToken ct)
     {
@@ -284,6 +372,34 @@ public class TranslationRoomsController : ControllerBase
         return Ok(result.Value!);
     }
 
+    /// <summary>
+    /// WT-333 — UC 25. The caller's own meetings in one workspace, past and upcoming together.
+    ///
+    /// Separate action rather than a <c>?scope=mine</c> flag on <c>history</c> because the two
+    /// answer different questions and default differently (this one carries no status filter and
+    /// orders by the booked slot). A <c>scope</c> sent to this route is ignored — the service pins
+    /// it — so no caller can widen a personal read back to the whole tenant by guessing a value.
+    /// </summary>
+    [HttpGet("my-meetings")]
+    public async Task<IActionResult> GetMyMeetings([FromQuery] GetTranslationRoomsRequest request, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.GetMyMeetingsAsync(request, userId.Value, User.GetEmail(), ct);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.Unauthorized) return Unauthorized(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
     [HttpGet("{id}/artifacts")]
     public async Task<IActionResult> GetTranslationRoomArtifacts(Guid id, CancellationToken ct)
     {
@@ -316,6 +432,30 @@ public class TranslationRoomsController : ControllerBase
         {
             if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
             if (result.ErrorCode == ErrorCodes.Forbidden) return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+            return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value!);
+    }
+
+    /// <summary>
+    /// The invitee accepts their own invitation. Not a join: the meeting is usually still ahead,
+    /// and this is the only action the invitation notification can offer when it arrives.
+    /// </summary>
+    [HttpPost("{id}/invitations/accept")]
+    public async Task<IActionResult> AcceptTranslationRoomInvitation(Guid id, CancellationToken ct)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+            return Unauthorized();
+
+        var result = await _translationRoomService.AcceptTranslationRoomInvitationAsync(
+            id, userId.Value, User.GetEmail(), ct);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound) return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+            if (result.ErrorCode == ErrorCodes.InvalidState) return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
         }
 

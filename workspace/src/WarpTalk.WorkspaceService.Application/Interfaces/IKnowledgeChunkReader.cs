@@ -31,6 +31,23 @@ public interface IKnowledgeChunkReader
         int limit,
         string? cursor,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// One chunk by id, or null if this workspace has no such chunk.
+    ///
+    /// Exists for the edit and delete paths, which must not act on a chunk id the caller
+    /// merely guessed. Ids are globally unique in a store shared by every workspace, so
+    /// "not found" and "belongs to somebody else" have to be the same answer here — an
+    /// implementation that returned another workspace's chunk would turn one route into a
+    /// cross-tenant read and, through the writer, a cross-tenant delete.
+    ///
+    /// Returns null rather than throwing when nothing matches: a row deleted by a colleague
+    /// while this page was open is an ordinary race, not a fault.
+    /// </summary>
+    Task<KnowledgeChunkRecord?> FindAsync(
+        Guid workspaceId,
+        string chunkId,
+        CancellationToken ct = default);
 }
 
 /// <summary>
@@ -78,4 +95,13 @@ public record KnowledgeChunkRecord(
     /// transcript — a meeting's name on its summary, the term on a glossary entry. Trailing
     /// and defaulted so the positional construction in existing callers still compiles.
     /// </summary>
-    string? SourceTitle = null);
+    string? SourceTitle = null,
+    /// <summary>
+    /// When this chunk was written to the store, in epoch milliseconds, or null for a chunk
+    /// indexed before the producer stamped one.
+    ///
+    /// The only ordering signal a chunk carries. Qdrant's scroll returns points in point-id
+    /// order, which is meaningless to a reader, so without this the listing could only be
+    /// sorted by something a human typed — and it was, alphabetically by source name.
+    /// </summary>
+    long? IndexedAtMs = null);
