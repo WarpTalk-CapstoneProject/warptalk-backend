@@ -42,6 +42,16 @@ message GetTranslationRoomResponse {
   // must treat a response from an older server (or a stale cached proto) as fail-open and
   // re-fetch rather than trust the default.
   bool requires_approval = 11;
+  // WT-525: which kind of meeting this is (TranslationRoomTypes). Meeting Service needs it to
+  // gate the bridge-token endpoint, which mints a LiveKit token for a participant identity that
+  // is NOT the caller — something no other endpoint does, and something that must be impossible
+  // in an ordinary room. Deriving "is this a bridge" from anything softer than the room's own
+  // stored type would make that gate guessable.
+  //
+  // proto3 defaults this to "" on a response from an older server, and readers MUST treat empty
+  // as "not a bridge" rather than falling back to a permissive default: the failure this guards
+  // is minting a second identity into someone else's meeting.
+  string translation_room_type = 12;
 }
 
 // WT-359. Carries the requester because THIS service decides whether they may transfer: host

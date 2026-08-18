@@ -48,6 +48,42 @@ public class MeetingsController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>
+    /// WT-525. A publish-only LiveKit token for the stand-in seat of an EXTERNAL_BRIDGE room, so
+    /// the host's client can join a second connection that carries the far side of a Google Meet
+    /// call into the meeting.
+    ///
+    /// POST rather than GET despite reading nothing: it mints a credential, and a credential in a
+    /// URL ends up in browser history, proxy logs and Referer headers.
+    /// </summary>
+    [HttpPost("rooms/{translationRoomId}/bridge-token")]
+    public async Task<IActionResult> GenerateBridgeToken(Guid translationRoomId)
+    {
+        var userId = User.GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized(new ApiErrorResponse("Invalid or missing user identity.", ErrorCodes.Unauthorized));
+        }
+
+        var result = await _meetingRoomService.GenerateBridgeTokenAsync(translationRoomId, userId.Value);
+
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorCode == ErrorCodes.NotFound)
+                return NotFound(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.Forbidden)
+                return StatusCode(403, new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            if (result.ErrorCode == ErrorCodes.InvalidState)
+                return Conflict(new ApiErrorResponse(result.Error, result.ErrorCode));
+
+            return StatusCode(500, new ApiErrorResponse(result.Error, result.ErrorCode));
+        }
+
+        return Ok(result.Value);
+    }
+
     [HttpPost("rooms/{translationRoomId}/trigger-ai")]
     public async Task<IActionResult> TriggerAi(Guid translationRoomId, [FromBody] TriggerAiRequest req)
     {

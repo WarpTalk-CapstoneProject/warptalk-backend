@@ -47,7 +47,11 @@ public class TranslationRoomGrpcService : Shared.Protos.TranslationRoomService.T
             ScheduledStartTime = result.Value!.ScheduledAt?.ToString("O") ?? string.Empty,
             // WT-428: Meeting Service gates its lobby on this. The DTO's Settings already carry
             // the resolved value (ReadSettings defaults it TRUE when absent from the JSON).
-            RequiresApproval = result.Value!.Settings.RequiresApproval
+            RequiresApproval = result.Value!.Settings.RequiresApproval,
+            // WT-525: Meeting Service gates the bridge-token endpoint on this. Sent as the stored
+            // string rather than a normalized one — the consumer compares against the same
+            // TranslationRoomTypes constants this service writes.
+            TranslationRoomType = result.Value!.TranslationRoomType ?? string.Empty
         };
     }
 

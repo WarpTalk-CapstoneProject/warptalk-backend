@@ -7,6 +7,11 @@ public interface IMeetingRoomService
 {
     Task<Result<JoinMeetingResponse>> JoinMeetingAsync(Guid translationRoomId, Guid userId, string? displayName = null);
     Task<Result<bool>> TriggerAiAsync(Guid translationRoomId, TriggerAiRequest request);
+
+    // WT-525: a LiveKit token for the EXTERNAL_BRIDGE stand-in seat. The ONLY method here that
+    // mints a token for an identity other than the caller's, which is why it takes the caller
+    // separately and refuses unless they host the room AND the room is a bridge.
+    Task<Result<BridgeTokenResponse>> GenerateBridgeTokenAsync(Guid translationRoomId, Guid callerUserId);
     Task<Result<bool>> RejectParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId);
     Task<Result<bool>> TransferHostAsync(Guid translationRoomId, Guid currentHostUserId, Guid newHostUserId);
     Task<Result<bool>> KickParticipantAsync(Guid translationRoomId, Guid hostUserId, Guid participantUserId);
