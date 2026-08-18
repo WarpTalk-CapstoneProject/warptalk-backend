@@ -526,6 +526,13 @@ public partial class AuthDbContext : DbContext
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
+            entity.Property(e => e.Source)
+                .HasMaxLength(20)
+                .HasDefaultValueSql("'upload'::character varying")
+                .HasColumnName("source");
+            entity.Property(e => e.QualityScore)
+                .HasPrecision(4, 3)
+                .HasColumnName("quality_score");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("now()")
                 .HasColumnName("created_at");
