@@ -28,6 +28,15 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
     internal const string WorkspaceSuspendedMessage =
         "This workspace is suspended. Contact your administrator to restore it.";
 
+    /// <summary>
+    /// WT-515. The workspace exists, is live, and has never been paid for.
+    ///
+    /// Worded as an instruction rather than a refusal because the person reading it is almost
+    /// always the buyer who abandoned checkout, and the thing they need is the way back to it.
+    /// </summary>
+    internal const string NoActiveSubscriptionMessage =
+        "This workspace has no active plan. Choose a plan in Settings → Billing to start meetings.";
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAuthIdentityClient _authIdentity;
     private readonly ITranslationRoomClient _translationRoomClient;
@@ -149,6 +158,36 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         var entitlements = snapshot == null
             ? WorkspaceEntitlements.Unknown
             : WorkspaceEntitlements.FromSnapshot(snapshot.EntitlementsJson, snapshot.HasActiveSubscription);
+
+        // WT-515 — NO PLAN, NO MEETINGS. The gate the workspace never had.
+        //
+        // A workspace is created before Stripe is opened, because `Subscription.WorkspaceId` is
+        // non-nullable and there is nothing to attach a subscription to until the row exists. That
+        // ordering is fine; what was not fine is that abandoning the checkout left behind a
+        // complete, usable workspace with no plan and nothing anywhere that cared. Pressing Back
+        // on Stripe was, in effect, the free tier.
+        //
+        // This is deliberately the OPPOSITE of the WT-262/WT-263 reading directly below, where "no
+        // live subscription" means "no plan QUOTA in force" and the workspace's own policy governs
+        // instead. That reading is right for a limit — an unpriced workspace should not inherit
+        // the free tier's two languages — and wrong for the question of whether the product runs
+        // at all. Both now coexist: this decides IF, the code below decides HOW MUCH.
+        //
+        // `IsKnown` is what keeps it safe. A workspace with no snapshot yet has never been
+        // resolved (see WorkspaceEntitlements), and denying on that would lock out a workspace in
+        // the seconds between paying and the entitlements event landing — refusing service to
+        // somebody who has just paid. Only a snapshot that POSITIVELY reports no live subscription
+        // denies here.
+        //
+        // OPERATIONAL NOTE, and it is not optional: the snapshot is only rewritten when billing
+        // publishes `billing.entitlements_changed`. Repairing a subscription row directly in the
+        // database does NOT refresh it, so a workspace whose subscription was fixed by hand will
+        // still be refused here until something republishes. Saving workspace settings is the
+        // easiest trigger (ApplyWorkspaceEntitlementOverrides).
+        if (entitlements.IsKnown && !entitlements.HasActiveSubscription)
+        {
+            return Decision(MeetingCreationDecisionDto.Denied(NoActiveSubscriptionMessage));
+        }
 
         var activeRooms = ResolveMaxActiveRooms(entitlements, config);
         if (activeRooms.Limit > 0)

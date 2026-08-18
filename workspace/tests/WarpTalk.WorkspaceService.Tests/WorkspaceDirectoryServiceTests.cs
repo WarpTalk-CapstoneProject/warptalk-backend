@@ -425,12 +425,20 @@ public class WorkspaceDirectoryServiceTests
     }
 
     /// <summary>
-    /// A workspace with no live plan has no max_languages in force. The workspace's own
-    /// AllowedTargetLanguages policy still governs it — this must not become "no subscription, no
-    /// meetings".
+    /// WT-515 REVERSES THIS CASE, and the old assertion is left in the history on purpose.
+    ///
+    /// This test used to assert the opposite — that a workspace with no live plan may still open
+    /// meetings, on the reasoning that "no subscription" must not become "no meetings" for a
+    /// LIMIT. That reasoning still holds for limits and is unchanged below: max_languages is not
+    /// in force here. What changed is that the product now answers the prior question — whether
+    /// there is anything to run at all — with no.
+    ///
+    /// The behaviour it protected is what made abandoning Stripe checkout a free tier: the
+    /// workspace was created before payment (it has to be — Subscription.WorkspaceId is
+    /// non-nullable), the buyer pressed Back, and nothing anywhere cared.
     /// </summary>
     [Fact]
-    public async Task ValidateMeetingCreationAsync_ShouldAllow_WhenWorkspaceHasNoActiveSubscription()
+    public async Task ValidateMeetingCreationAsync_ShouldDeny_WhenWorkspaceHasNoActiveSubscription()
     {
         var workspaceId = Guid.NewGuid();
         var userId = ArrangePermittedMember(workspaceId);
@@ -441,6 +449,51 @@ public class WorkspaceDirectoryServiceTests
 
         var result = await _service.ValidateMeetingCreationAsync(
             workspaceId, userId, new[] { "vi", "en", "ja" });
+
+        Assert.False(result.Value!.IsAllowed);
+        Assert.Contains("no active plan", result.Value.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// WT-515, and the reason the gate reads `IsKnown` first: a single target language is not the
+    /// point here — nothing about the request matters. A workspace that has not paid is refused
+    /// whatever it asks for.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldDeny_WithoutSubscription_EvenForOneLanguage()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+        ArrangeSnapshot(
+            workspaceId,
+            SnapshotJson(("max_languages", "50", "plan")),
+            hasActiveSubscription: false);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
+
+        Assert.False(result.Value!.IsAllowed);
+    }
+
+    /// <summary>
+    /// The other half of the same gate, and the one that keeps it from being dangerous: a
+    /// workspace whose snapshot has not arrived yet is NOT refused. Denying on an absent snapshot
+    /// would lock out a buyer in the seconds between paying and `billing.entitlements_changed`
+    /// landing — refusing service to somebody who has just paid.
+    ///
+    /// Covered separately from the cold-start test above because they now protect different
+    /// things: that one is about quotas not applying, this one is about the paywall not firing.
+    /// </summary>
+    [Fact]
+    public async Task ValidateMeetingCreationAsync_ShouldAllow_OnColdStart_EvenThoughNoSubscriptionIsKnown()
+    {
+        var workspaceId = Guid.NewGuid();
+        var userId = ArrangePermittedMember(workspaceId);
+
+        _unitOfWork.WorkspaceEntitlementSnapshotRepository
+            .GetForWorkspaceAsync(workspaceId, Arg.Any<CancellationToken>())
+            .Returns((WorkspaceEntitlementSnapshot?)null);
+
+        var result = await _service.ValidateMeetingCreationAsync(workspaceId, userId, new[] { "vi" });
 
         Assert.True(result.Value!.IsAllowed);
     }
