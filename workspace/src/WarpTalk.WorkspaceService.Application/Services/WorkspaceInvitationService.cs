@@ -93,23 +93,16 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
             var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
             // The inviter decides the access class; the domain only decides which choices are
-            // legal. Inferring it from the email instead made External unreachable through this
-            // endpoint whenever the invitee's domain happened to be verified — and unreachable
-            // outright while RequireVerifiedDomainForInternal was off, since the inference
-            // returns Internal for every address in that case (BR-140-011).
+            // legal. MembershipType is therefore required, not inferred.
             //
-            // An omitted MembershipType still falls back to the inference so older clients that
-            // never sent the field keep working.
-            MembershipType membershipTypeEnum;
-            if (string.IsNullOrWhiteSpace(request.MembershipType))
-            {
-                membershipTypeEnum = await WorkspaceHelper.DetermineMembershipTypeAsync(
-                    _unitOfWork,
-                    emailAddress.Value,
-                    workspace,
-                    ct);
-            }
-            else if (!Enum.TryParse(request.MembershipType, ignoreCase: true, out membershipTypeEnum))
+            // The fallback that used to stand here inferred it from the invitee's email, and the
+            // inference could not express what an inviter might want: External was unreachable
+            // whenever the invitee's domain happened to be verified, and unreachable outright in a
+            // workspace with no domain policy, where the inference answers Internal for every
+            // address (BR-140-011). Keeping it "for older clients" meant those clients silently
+            // got a decision nobody made; refusing is the honest answer.
+            if (string.IsNullOrWhiteSpace(request.MembershipType)
+                || !Enum.TryParse<MembershipType>(request.MembershipType, ignoreCase: true, out var membershipTypeEnum))
             {
                 return Result.Failure<InviteMemberResponse>(WorkspaceConstants.Errors.InvalidMembershipType, ErrorCodes.ValidationError);
             }
@@ -997,6 +990,185 @@ public class WorkspaceInvitationService : IWorkspaceInvitationService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error occurred while rejecting join request.");
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result<WorkspaceInvitationDto>> CreateLeaveRequestAsync(
+        Guid workspaceId,
+        Guid userId,
+        string userEmail,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var workspace = await _unitOfWork.WorkspaceRepository.GetByIdAsync(workspaceId, ct);
+            if (workspace == null || !workspace.IsActive || workspace.DeletedAt != null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.WorkspaceNotFound, ErrorCodes.NotFound);
+            }
+
+            var member = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == userId && m.RemovedAt == null, "", ct);
+            if (member == null)
+            {
+                return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var roleName = await _authIdentity.GetRoleNameByIdAsync(member.RoleId, ct);
+            if (roleName.IsOwner())
+            {
+                var ownerRoleId = await _authIdentity.GetRoleIdByNameAsync(WorkspaceMemberRole.Owner.ToRoleName(), ct);
+                if (ownerRoleId != null)
+                {
+                    var activeOwnersCount = await _unitOfWork.WorkspaceMemberRepository.CountActiveOwnersAsync(workspaceId, ownerRoleId.Value, ct);
+                    if (activeOwnersCount <= 1)
+                    {
+                        return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.CannotLeaveAsLastOwner, ErrorCodes.ValidationError);
+                    }
+                }
+            }
+
+            var existingPendingLeave = await _unitOfWork.WorkspaceInvitationRepository.FirstOrDefaultAsync(
+                i => i.WorkspaceId == workspaceId && i.RequestedBy == userId && i.Status == InvitationStatus.LEAVE_REQUESTED.ToString(), "", ct);
+
+            if (existingPendingLeave != null)
+            {
+                return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, existingPendingLeave, roleName, ct));
+            }
+
+            var defaultMemberRoleId = await _authIdentity.GetRoleIdByNameAsync("Member", ct) ?? member.RoleId;
+
+            var request = new InviteMemberRequest(userEmail, roleName, member.MembershipType);
+            var leaveRequest = WorkspaceInvitationMapper.CreateInvitation(
+                workspaceId,
+                request,
+                defaultMemberRoleId,
+                roleName,
+                userId,
+                TokenHasher.Hash($"leave-request:{userId:N}:{Guid.NewGuid():N}"),
+                member.MembershipType);
+            leaveRequest.Status = InvitationStatus.LEAVE_REQUESTED.ToString();
+            leaveRequest.RequestedBy = userId;
+            leaveRequest.Workspace = workspace;
+
+            await _unitOfWork.WorkspaceInvitationRepository.AddAsync(leaveRequest, ct);
+            await _unitOfWork.SaveChangesAsync(ct);
+
+            return Result.Success(await WorkspaceInvitationDtoAdapter.ToJoinRequestAwareDtoAsync(_unitOfWork, leaveRequest, roleName, ct));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while creating leave request for workspace {WorkspaceId}, user {UserId}", workspaceId, userId);
+            return Result.Failure<WorkspaceInvitationDto>(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> ApproveLeaveRequestAsync(
+        Guid workspaceId,
+        Guid leaveRequestId,
+        Guid adminUserId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var adminRoleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!adminRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanReviewLeaveRequest, ErrorCodes.Forbidden);
+            }
+
+            var leaveRequest = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(leaveRequestId, ct);
+            if (leaveRequest == null || leaveRequest.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.NotFound);
+            }
+
+            if (leaveRequest.Status != InvitationStatus.LEAVE_REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.InvalidState);
+            }
+
+            var targetUserId = leaveRequest.RequestedBy ?? leaveRequest.InvitedBy;
+            var targetMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == targetUserId && m.RemovedAt == null, "", ct);
+
+            var reviewedAt = DateTime.UtcNow;
+            leaveRequest.Status = InvitationStatus.ACCEPTED.ToString();
+            leaveRequest.ReviewedBy = adminUserId;
+            leaveRequest.ReviewedAt = reviewedAt;
+            _unitOfWork.WorkspaceInvitationRepository.Update(leaveRequest);
+
+            if (targetMember != null)
+            {
+                targetMember.RemovedAt = reviewedAt;
+                targetMember.RemovedBy = adminUserId;
+                targetMember.Status = WorkspaceMemberStatus.Removed.ToStorageValue();
+                _unitOfWork.WorkspaceMemberRepository.Update(targetMember);
+            }
+
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while approving leave request {LeaveRequestId}.", leaveRequestId);
+            return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
+        }
+    }
+
+    public async Task<Result> RejectLeaveRequestAsync(
+        Guid workspaceId,
+        Guid leaveRequestId,
+        Guid adminUserId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var adminMember = await _unitOfWork.WorkspaceMemberRepository.FirstOrDefaultAsync(
+                m => m.WorkspaceId == workspaceId && m.UserId == adminUserId && m.RemovedAt == null, "", ct);
+
+            if (adminMember == null)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.UserNotMember, ErrorCodes.Forbidden);
+            }
+
+            var adminRoleName = await _authIdentity.GetRoleNameByIdAsync(adminMember.RoleId, ct);
+            if (!adminRoleName.IsOwnerOrAdmin())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.OnlyOwnerAdminCanReviewLeaveRequest, ErrorCodes.Forbidden);
+            }
+
+            var leaveRequest = await _unitOfWork.WorkspaceInvitationRepository.GetByIdAsync(leaveRequestId, ct);
+            if (leaveRequest == null || leaveRequest.WorkspaceId != workspaceId)
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.NotFound);
+            }
+
+            if (leaveRequest.Status != InvitationStatus.LEAVE_REQUESTED.ToString())
+            {
+                return Result.Failure(WorkspaceConstants.Errors.LeaveRequestNotFound, ErrorCodes.InvalidState);
+            }
+
+            leaveRequest.Status = InvitationStatus.REJECTED.ToString();
+            leaveRequest.ReviewedBy = adminUserId;
+            leaveRequest.ReviewedAt = DateTime.UtcNow;
+            _unitOfWork.WorkspaceInvitationRepository.Update(leaveRequest);
+
+            await _unitOfWork.SaveChangesAsync(ct);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error occurred while rejecting leave request {LeaveRequestId}.", leaveRequestId);
             return Result.Failure(WorkspaceConstants.Errors.UnexpectedError, ErrorCodes.InternalServerError);
         }
     }

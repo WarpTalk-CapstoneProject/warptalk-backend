@@ -32,6 +32,7 @@ public static class ErrorCodes
 
     public const string BillingPlanInvalid = "BILLING_PLAN_INVALID";
     public const string BillingDuplicatePlanSlug = "BILLING_DUPLICATE_PLAN_SLUG";
+    public const string BillingPlanCommercialTermsLocked = "BILLING_PLAN_COMMERCIAL_TERMS_LOCKED";
     public const string BillingInsufficientCredits = "BILLING_INSUFFICIENT_CREDITS";
     public const string BillingCreditsOperationFailed = "BILLING_CREDITS_OPERATION_FAILED";
     public const string BillingWorkspaceNotFound = "BILLING_WORKSPACE_NOT_FOUND";

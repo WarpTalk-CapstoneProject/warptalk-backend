@@ -270,6 +270,9 @@ public class TranscriptRedisConsumerService : BackgroundService
             values, TranscriptConsumerPollingPolicy.SttConfidenceField);
         var startMs = int.TryParse(values.GetValueOrDefault("start_ms"), out var sMs) ? sMs : 0;
         var endMs = int.TryParse(values.GetValueOrDefault("end_ms"), out var eMs) ? eMs : 0;
+        // WT-473: the wall-clock instant startMs is measured FROM, published by stt_worker as unix
+        // ms. 0 means "not stated" — an older worker, or a message written before the field existed.
+        var anchorMs = long.TryParse(values.GetValueOrDefault("anchor_ms"), out var aMs) ? aMs : 0L;
         // shared/schemas.py STTResultMessage.to_redis() serializes this as "1"/"0", default false.
         var isFinal = values.GetValueOrDefault("is_final_chunk") == "1";
 
@@ -372,6 +375,27 @@ public class TranscriptRedisConsumerService : BackgroundService
                 };
 
                 await unitOfWork.TranscriptSegments.AddAsync(segment, cancellationToken);
+
+                // WT-473: stamp the transcript's timeline anchor, ONCE.
+                //
+                // Set-once mirrors the SET NX the STT worker uses for the same value in Redis, and
+                // it is the important half: the offsets already stored were measured against the
+                // first anchor, so overwriting it would silently re-time the whole transcript.
+                //
+                // Redis is not durable enough to be the only home for this — the key carries a 6h
+                // TTL on an instance running allkeys-lru, which evicts live meeting state rather
+                // than erroring. Without this write the transcript's origin is gone once the
+                // meeting is over, and its offsets can no longer be aligned with a recording.
+                //
+                // Updating the tracked entity is safe here, unlike total_segments/total_duration_ms
+                // above: those are advanced by an atomic UPDATE ... RETURNING and would be reverted
+                // by a tracked write, while this column is touched nowhere else.
+                if (anchorMs > 0 && transcript.TimelineAnchorAt is null)
+                {
+                    transcript.TimelineAnchorAt =
+                        DateTimeOffset.FromUnixTimeMilliseconds(anchorMs).UtcDateTime;
+                    unitOfWork.Transcripts.Update(transcript);
+                }
 
                 // total_segments/total_duration_ms were already advanced atomically inside
                 // AdvanceTranscriptForNewSegmentAsync above — do not also call

@@ -15,6 +15,7 @@ using WarpTalk.WorkspaceService.Domain.Entities;
 using WarpTalk.WorkspaceService.Domain.Enums;
 using WarpTalk.WorkspaceService.Domain.Extensions;
 using WarpTalk.WorkspaceService.Domain.Interfaces;
+using WarpTalk.WorkspaceService.Domain.ValueObjects;
 using WarpTalk.Shared;
 
 namespace WarpTalk.WorkspaceService.Application.Services;
@@ -74,6 +75,37 @@ public class WorkspaceMemberService : IWorkspaceMemberService
             if (isExternal)
             {
                 return Result.Failure(WorkspaceConstants.Errors.CannotTransferToExternal, ErrorCodes.Forbidden);
+            }
+
+            // The new owner's address must be on one of this workspace's verified domains.
+            //
+            // Stated as one rule with no branch on the workspace's policy: a workspace that
+            // verifies no domains has an empty set here, so the condition is vacuous and only the
+            // External check above applies. Branching on RequireVerifiedDomainForInternal instead
+            // would reintroduce a second source for a fact the domain list already answers.
+            //
+            // "Not External" is not enough on its own. That reads the stored MembershipType, and
+            // members keep the type they were given — a workspace that switched to domain-verified
+            // afterwards still has Internal members on other domains. Without this, a workspace
+            // holding acme.com, verified on the strength of its owner's own @acme.com address,
+            // could be handed to someone outside acme.com, and they would inherit the power to
+            // classify every @acme.com joiner as Internal.
+            //
+            // When nobody qualifies, the way out is to revoke the verified domains: that returns
+            // the workspace to manually-assigned membership and empties this rule.
+            var activeVerifiedDomains = await WorkspaceHelper.GetActiveVerifiedDomainsAsync(_unitOfWork, workspaceId, ct);
+            if (activeVerifiedDomains.Count > 0)
+            {
+                var newOwner = await _authIdentity.GetUserByIdAsync(newOwnerId, ct);
+                if (newOwner == null || !EmailAddress.TryParse(newOwner.Email, out var newOwnerEmail) || newOwnerEmail == null)
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.InvalidUserEmail, ErrorCodes.ValidationError);
+                }
+
+                if (!await WorkspaceHelper.IsEmailDomainVerifiedAsync(_unitOfWork, workspace, newOwnerEmail.Domain, ct))
+                {
+                    return Result.Failure(WorkspaceConstants.Errors.NewOwnerMustShareVerifiedDomain, ErrorCodes.Forbidden);
+                }
             }
 
             var ownerRoleName = WorkspaceMemberRole.Owner.ToRoleName();

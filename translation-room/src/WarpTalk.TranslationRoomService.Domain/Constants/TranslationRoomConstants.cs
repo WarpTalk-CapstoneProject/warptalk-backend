@@ -49,6 +49,14 @@ public static class TranslationRoomConstants
     public const string ErrorSettingsLocked = "Room settings cannot be updated after the room has entered IN_PROGRESS status.";
 
     /// <summary>
+    /// WT-480. Deliberately its own message rather than <see cref="ErrorUnauthorizedUpdateRoom"/>:
+    /// sharing a finished meeting's transcript, summary and recording is a different act from
+    /// editing a room's settings, and the person refused should be told which one they were
+    /// refused.
+    /// </summary>
+    public const string ErrorUnauthorizedShareRecord = "Unauthorized. Only the meeting host can change who this meeting's record is shared with.";
+
+    /// <summary>
     /// Covers both "no such room" and "no invitation for you" on purpose — an uninvited caller
     /// must not be able to tell those two apart, or this endpoint becomes a room-id oracle.
     /// </summary>

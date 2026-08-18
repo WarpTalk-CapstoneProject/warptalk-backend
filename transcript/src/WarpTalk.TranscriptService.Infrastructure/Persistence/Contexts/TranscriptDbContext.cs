@@ -326,6 +326,9 @@ public partial class TranscriptDbContext : DbContext
                 .HasColumnName("is_current");
             entity.Property(e => e.PreviousTranscriptId).HasColumnName("previous_transcript_id");
             entity.Property(e => e.EngineVersion).HasMaxLength(50).HasColumnName("engine_version");
+            // WT-473. Explicit like every column in this context; a missing HasColumnName 500s
+            // every SELECT over the table instead of failing at startup.
+            entity.Property(e => e.TimelineAnchorAt).HasColumnName("timeline_anchor_at");
             entity.Property(e => e.LastSequenceOrder)
                 .HasDefaultValue(0)
                 .HasColumnName("last_sequence_order");

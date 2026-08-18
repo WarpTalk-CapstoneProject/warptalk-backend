@@ -11,5 +11,6 @@ public enum InvitationStatus
     EXPIRED,
     REPLACED,
     REQUESTED,
-    REJECTED
+    REJECTED,
+    LEAVE_REQUESTED
 }

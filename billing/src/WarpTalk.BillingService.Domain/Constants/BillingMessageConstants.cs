@@ -296,6 +296,20 @@ public static class BillingMessageConstants
         public const string BillingAiServiceSuspended = "Workspace AI service is suspended.";
         public const string BillingAiServiceNotSuspended = "Workspace AI service is not suspended.";
         public const string BillingAiServiceResumed = "Workspace AI service has been resumed.";
+
+        /// <summary>
+        /// WT-471: reactivating a subscription that was never cancelled. Distinct from
+        /// <see cref="BillingAiServiceNotSuspended"/>, which is about ServiceState — a different
+        /// axis entirely. A subscription can be healthy AND cancelled, or suspended AND renewing.
+        /// </summary>
+        public const string BillingSubscriptionNotCancelled = "This subscription is not cancelled, so there is nothing to reactivate.";
+
+        /// <summary>
+        /// The cancellation already took effect: the paid period is over, so there is no live
+        /// subscription left to switch renewal back on for. The workspace has to buy again, which
+        /// is a Checkout flow and not this endpoint.
+        /// </summary>
+        public const string BillingSubscriptionPeriodAlreadyEnded = "This subscription's period has already ended. Choose a plan to subscribe again.";
         public const string BillingWorkspaceMeetingQuotaExceeded = "Workspace has exceeded its active meeting quota.";
         public const string BillingContractTermsInvalid = "Subscription contract terms are invalid.";
         public const string BillingContractPriceBelowFloor = "Effective contract price per credit is below the billing floor.";

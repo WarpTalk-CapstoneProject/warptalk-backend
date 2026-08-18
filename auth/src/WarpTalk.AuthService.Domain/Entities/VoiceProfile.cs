@@ -36,4 +36,6 @@ public partial class VoiceProfile
     public Guid? DeletedBy { get; set; }
 
     public virtual ICollection<VoiceSample> VoiceSamples { get; set; } = new List<VoiceSample>();
+
+    public virtual ICollection<VoiceConsent> VoiceConsents { get; set; } = new List<VoiceConsent>();
 }

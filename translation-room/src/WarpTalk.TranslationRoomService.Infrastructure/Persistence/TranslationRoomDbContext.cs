@@ -369,6 +369,10 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("created_by");
             entity.Property(e => e.DeletedAt).HasColumnName("deleted_at");
+            // WT-473. Explicit, like every other column here: this context hand-maps each one, and
+            // a missing HasColumnName 500s every SELECT over the table rather than failing loudly
+            // at startup.
+            entity.Property(e => e.RecordingStartedAt).HasColumnName("recording_started_at");
             entity.Property(e => e.DeletedBy)
                 .HasComment("External AuthService user id. No physical FK.")
                 .HasColumnName("deleted_by");
@@ -377,6 +381,10 @@ public partial class TranslationRoomDbContext : DbContext
                 .HasMaxLength(20)
                 .HasColumnName("file_format");
             entity.Property(e => e.FileSizeBytes).HasColumnName("file_size_bytes");
+            // WT-473. Explicit, like every other column here: this context hand-maps each one, and
+            // a missing HasColumnName 500s every SELECT over the table rather than failing loudly
+            // at startup.
+            entity.Property(e => e.RecordingStartedAt).HasColumnName("recording_started_at");
             entity.Property(e => e.FileUrl)
                 .HasMaxLength(500)
                 .HasColumnName("file_url");

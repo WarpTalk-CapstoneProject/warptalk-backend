@@ -34,7 +34,8 @@ public class WorkspaceVerifiedDomainsController : ControllerBase
         var userId = User.GetUserId();
         if (userId == null) return Unauthorized(new ApiErrorResponse("Unauthorized", ErrorCodes.Unauthorized));
 
-        var result = await _verifiedDomainService.AddDomainAsync(workspaceId, request.Domain, userId.Value, ct);
+        var result = await _verifiedDomainService.AddDomainAsync(
+            workspaceId, request.Domain, userId.Value, request.ConsentVersion, ct);
         if (!result.IsSuccess)
             return BadRequest(new ApiErrorResponse(result.Error, result.ErrorCode));
 

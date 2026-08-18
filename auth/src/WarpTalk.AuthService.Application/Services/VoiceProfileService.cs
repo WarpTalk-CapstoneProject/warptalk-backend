@@ -375,11 +375,13 @@ public class VoiceProfileService : IVoiceProfileService
         {
             var profiles = await _unitOfWork.VoiceProfileRepository.GetByUserIdAsync(userId, ct);
             var collected = await CollectFinishedClonesAsync(profiles, ct);
+            var activeConsent = await _unitOfWork.VoiceConsentRepository.GetCurrentAsync(
+                userId, VoiceProfileConsentContract.UploadConsentType, ct);
 
             var dtos = new List<VoiceProfileDto>();
             foreach (var profile in profiles)
             {
-                dtos.Add(VoiceProfileMapper.ToDto(profile));
+                dtos.Add(VoiceProfileMapper.ToDto(profile, activeConsent));
             }
 
             if (collected > 0)
@@ -432,6 +434,28 @@ public class VoiceProfileService : IVoiceProfileService
             }
         }
 
+        if (!VoiceProfileConsentContract.IsValidConsentRequest(request))
+        {
+            return Result.Failure<VoiceProfileDto>(
+                "Voice consent is required before saving this voice profile.",
+                ErrorCodes.ValidationError);
+        }
+
+        byte[] audioBytes;
+        using (var ms = new MemoryStream())
+        {
+            using var readStream = request.Sample!.OpenReadStream();
+            await readStream.CopyToAsync(ms, ct);
+            audioBytes = ms.ToArray();
+        }
+
+        if (!VoiceProfileConsentContract.ValidateAudioMagicBytes(audioBytes))
+        {
+            return Result.Failure<VoiceProfileDto>(
+                "Invalid or corrupted audio file signature.",
+                ErrorCodes.ValidationError);
+        }
+
         try
         {
             var profile = new VoiceProfile
@@ -447,16 +471,18 @@ public class VoiceProfileService : IVoiceProfileService
             };
 
             VoiceSample? sample = null;
+            VoiceConsent? consent = null;
             string? storageKey = null;
+            var now = DateTime.UtcNow;
 
             if (request.Sample != null)
             {
                 var extension = Path.GetExtension(request.Sample.FileName);
                 storageKey = $"{userId}/{profile.Id}{extension}";
 
-                using (var stream = request.Sample.OpenReadStream())
+                using (var writeStream = new MemoryStream(audioBytes))
                 {
-                    await _storage.SaveAsync(storageKey, stream, ct);
+                    await _storage.SaveAsync(storageKey, writeStream, ct);
                 }
 
                 sample = new VoiceSample
@@ -468,6 +494,18 @@ public class VoiceProfileService : IVoiceProfileService
                     Language = request.Language,
                     ContainsRawAudio = true,
                 };
+
+                consent = new VoiceConsent
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    VoiceProfileId = profile.Id,
+                    ConsentType = VoiceProfileConsentContract.UploadConsentType,
+                    ConsentStatus = VoiceProfileConsentContract.GrantedStatus,
+                    ConsentTextVersion = VoiceProfileConsentContract.ComputeVersionWithAudioHash(audioBytes),
+                    GrantedAt = now,
+                    CreatedAt = now,
+                };
             }
 
             try
@@ -476,6 +514,10 @@ public class VoiceProfileService : IVoiceProfileService
                 if (sample != null)
                 {
                     await _unitOfWork.VoiceSampleRepository.AddAsync(sample, ct);
+                }
+                if (consent != null)
+                {
+                    await _unitOfWork.VoiceConsentRepository.AddAsync(consent, ct);
                 }
                 await _unitOfWork.SaveChangesAsync(ct);
             }
@@ -489,6 +531,7 @@ public class VoiceProfileService : IVoiceProfileService
             }
 
             profile.VoiceSamples = sample != null ? new List<VoiceSample> { sample } : new List<VoiceSample>();
+            profile.VoiceConsents = consent != null ? new List<VoiceConsent> { consent } : new List<VoiceConsent>();
 
             // WT-396 — hand the recording over to be turned into an actual voice.
             //
@@ -509,7 +552,7 @@ public class VoiceProfileService : IVoiceProfileService
                 await QueueForCloningAsync(profile, userId, request.Sample, ct);
             }
 
-            return Result.Success(VoiceProfileMapper.ToDto(profile));
+            return Result.Success(VoiceProfileMapper.ToDto(profile, consent));
         }
         catch (Exception ex)
         {

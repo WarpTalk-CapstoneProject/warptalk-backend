@@ -1,7 +1,7 @@
-# DRAFT — chưa tạo trên Linear
+# WT-360 — platform policy config (đã tạo trên Linear)
 
-> Bản nháp để review. Không tạo/sửa gì trên Linear cho tới khi được duyệt.
-> Ngày soạn: 2026-08-13. Backend ở branch `fix/workspace-verified-domain-mode`.
+> https://linear.app/fpt-sep490-su26/issue/WT-360
+> Bản nháp gốc giữ lại làm hồ sơ. Nội dung đã tạo trên Linear khớp với phần từ "## Problem" trở xuống.
 
 **Module / labels**: `[system admin]`, `[platform policy]`
 **Priority**: High

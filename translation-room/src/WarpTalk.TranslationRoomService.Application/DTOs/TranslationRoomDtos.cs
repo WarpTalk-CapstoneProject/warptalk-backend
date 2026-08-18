@@ -329,7 +329,17 @@ public record TranslationRoomArtifactDto(
     DateTime CreatedAt,
     // WT-13: inline payload (e.g. AI meeting-summary JSON) for artifact types that don't
     // need external file storage.
-    string? Content = null
+    string? Content = null,
+    /// <summary>
+    /// WT-473: when the recording BEGAN, in UTC. Null for non-recordings, and for recordings made
+    /// before the column existed.
+    ///
+    /// <c>CreatedAt</c> is not a substitute — it is stamped when egress FINISHED. A client that
+    /// wants to seek a recording to a transcript position needs this, and must treat null as NOT
+    /// SEEKABLE rather than as zero: substituting zero produces a plausible-looking, silently wrong
+    /// position on every click.
+    /// </summary>
+    DateTime? RecordingStartedAt = null
 );
 
 public record CreateArtifactRequest(
@@ -386,3 +396,12 @@ public record TranslationRoomFeedbackStateDto(
     bool HasSubmitted,
     TranslationRoomFeedbackDto? Feedback
 );
+
+/// <summary>
+/// WT-480: who a finished meeting's record is shared with.
+///
+/// One field, and it carries a stored token rather than a boolean: a boolean would read as
+/// "shared: yes/no" and could not grow a third audience without changing every caller, while the
+/// level is already the vocabulary the guard enforces (<c>ArtifactAccessLevels</c>).
+/// </summary>
+public record SetArtifactAccessRequest(string Level);

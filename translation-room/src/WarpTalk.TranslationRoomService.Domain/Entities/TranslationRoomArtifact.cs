@@ -43,6 +43,20 @@ public partial class TranslationRoomArtifact
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
+    /// WT-473: when the recording BEGAN, in UTC. Null for artifacts that are not recordings, and
+    /// for recordings made before this column existed.
+    ///
+    /// <see cref="CreatedAt"/> is not a substitute: the processor sets it from the event's
+    /// OccurredAt, which is the moment egress FINISHED. Seeking a video to a transcript line needs
+    /// the recording's own origin, because transcript offsets are measured from the first audio
+    /// chunk the STT pipeline saw and a recording starts whenever the host switched it on.
+    ///
+    /// A null here means NOT SEEKABLE. It must never be read as zero — a historical recording would
+    /// then seek to a plausible-looking, silently wrong position on every click.
+    /// </summary>
+    public DateTime? RecordingStartedAt { get; set; }
+
+    /// <summary>
     /// External AuthService user id. No physical FK.
     /// </summary>
     public Guid? CreatedBy { get; set; }

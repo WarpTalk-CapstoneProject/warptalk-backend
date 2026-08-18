@@ -92,8 +92,8 @@ public sealed class AdminUserActionsTests : IAsyncLifetime
             new UserSettingRepository(_context),
             tokens,
             new VoiceProfileRepository(_context),
-            new VoiceConsentRepository(_context),
-            new VoiceSampleRepository(_context));
+            new VoiceSampleRepository(_context),
+            new VoiceConsentRepository(_context));
 
         _audit = Substitute.For<IAdminAuditRecorder>();
         AuditSucceeds();

@@ -81,6 +81,7 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
         Guid workspaceId,
         Guid userId,
         IReadOnlyCollection<string> targetLanguages,
+        string? sourceLanguage = null,
         CancellationToken ct = default)
     {
         var member = await FindActiveMembershipAsync(workspaceId, userId, ct);
@@ -107,16 +108,35 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
 
         var config = WorkspaceHelper.GetWorkspaceConfig(workspace);
 
-        if (targetLanguages.Count > 0
-            && config.AllowedTargetLanguages != null
-            && config.AllowedTargetLanguages.Any())
+        // WT-466: the SOURCE language is checked here too, and its absence was the bug.
+        //
+        // A workspace that narrowed itself to vi/en/ja still accepted a room created IN Spanish:
+        // the whitelist was applied to target_languages and the host's own speaking language was
+        // never compared against anything but the platform catalogue. The owner's setting looked
+        // like it had no effect, because on the one language that mattered most it had none.
+        //
+        // Both checks share the "empty policy ⇒ unrestricted" reading. That is not a defensive
+        // default — WorkspaceGrpcService and the web picker both depend on it, and reading empty
+        // as "nothing permitted" would lock every workspace that never set a policy out of
+        // creating a room at all.
+        if (config.AllowedTargetLanguages != null && config.AllowedTargetLanguages.Any())
         {
-            var unsupported = targetLanguages.FirstOrDefault(lang =>
-                !config.AllowedTargetLanguages.Contains(lang, StringComparer.OrdinalIgnoreCase));
-            if (unsupported != null)
+            if (targetLanguages.Count > 0)
+            {
+                var unsupported = targetLanguages.FirstOrDefault(lang =>
+                    !config.AllowedTargetLanguages.Contains(lang, StringComparer.OrdinalIgnoreCase));
+                if (unsupported != null)
+                {
+                    return Decision(MeetingCreationDecisionDto.Denied(
+                        $"Target language '{unsupported}' is not allowed by the workspace policy."));
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(sourceLanguage)
+                && !config.AllowedTargetLanguages.Contains(sourceLanguage, StringComparer.OrdinalIgnoreCase))
             {
                 return Decision(MeetingCreationDecisionDto.Denied(
-                    $"Target language '{unsupported}' is not allowed by the workspace policy."));
+                    $"Source language '{sourceLanguage}' is not allowed by the workspace policy."));
             }
         }
 
@@ -316,7 +336,8 @@ public class WorkspaceDirectoryService : IWorkspaceDirectoryService
             // DocumentSecurityGuardrailConsumerService.ResolvePolicySettingsAsync already
             // applies for documents.
             config.AiUsagePolicy?.AllowExternalLlm ?? true,
-            config.AiUsagePolicy?.UseGlobalGlossary ?? true));
+            config.AiUsagePolicy?.UseGlobalGlossary ?? true,
+            config.AllowedTargetLanguages?.ToArray() ?? Array.Empty<string>()));
     }
 
     public async Task<Result<WorkspacePreflightDto>> GetPreflightAsync(

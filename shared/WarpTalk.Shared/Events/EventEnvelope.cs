@@ -68,7 +68,21 @@ public sealed record MeetingRecordingCompletedEventPayload(
     [property: JsonPropertyName("file_format")] string FileFormat,
     [property: JsonPropertyName("file_size_bytes")] long? FileSizeBytes,
     [property: JsonPropertyName("contains_raw_audio")] bool ContainsRawAudio,
-    [property: JsonPropertyName("contains_raw_video")] bool ContainsRawVideo
+    [property: JsonPropertyName("contains_raw_video")] bool ContainsRawVideo,
+    /// <summary>
+    /// WT-473: when the recording actually STARTED, in UTC.
+    ///
+    /// Without it the artifact's only timestamp is CreatedAt, which the processor sets from
+    /// <c>envelope.OccurredAt</c> — the moment egress FINISHED. That is the wrong end of the
+    /// interval, and it makes "seek the video to this transcript line" unbuildable: transcript
+    /// offsets are measured from the first audio chunk the STT pipeline saw, so aligning the two
+    /// clocks needs the recording's own origin. See TranslationRoomArtifact.RecordingStartedAt.
+    ///
+    /// OPTIONAL, and that is deliberate. An event already sitting on meeting:domain-events when
+    /// this ships must not be dropped for lacking a field that did not exist when it was written —
+    /// the processor stores null and the UI treats a recording with no start as un-seekable.
+    /// </summary>
+    [property: JsonPropertyName("started_at")] DateTime? StartedAt = null
 );
 
 public sealed record MeetingStartedEventPayload(

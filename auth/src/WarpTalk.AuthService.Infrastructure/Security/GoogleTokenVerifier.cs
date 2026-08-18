@@ -52,8 +52,22 @@ public class GoogleTokenVerifier : IGoogleTokenVerifier
         IHttpClientFactory httpClientFactory,
         ILogger<GoogleTokenVerifier> logger)
     {
-        _clientId = configuration["Authentication:Google:ClientId"]
+        // Trimmed, and that is not cosmetic tidying.
+        //
+        // This value arrives as `Authentication__Google__ClientId: ${GOOGLE_CLIENT_ID:?}` from a
+        // .env file on the production host. A trailing space, a quote left around the value, or a
+        // CRLF line ending from a file edited on Windows all survive into the string — and
+        // IsOurClient compares with StringComparison.Ordinal, exactly, against the `aud` Google
+        // reports. So a client id that is visibly identical to the web bundle's rejects every
+        // token, and the operator comparing the two by eye sees no difference at all.
+        //
+        // Trimming cannot cause a false accept: an OAuth client id contains no leading or
+        // trailing whitespace, so anything removed here was never part of the identifier.
+        _clientId = configuration["Authentication:Google:ClientId"]?.Trim()
             ?? throw new InvalidOperationException("Google ClientId is not configured.");
+
+        if (string.IsNullOrWhiteSpace(_clientId))
+            throw new InvalidOperationException("Google ClientId is configured but empty.");
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }

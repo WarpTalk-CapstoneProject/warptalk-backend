@@ -94,6 +94,51 @@ public interface ITranslationRoomService
     Task<Result<JoinTranslationRoomResponse>> JoinTranslationRoomAsync(JoinTranslationRoomRequest request, Guid userId, string? userEmail = null, CancellationToken ct = default);
 
     /// <summary>
+    /// WT-468: which languages the pre-join screen may offer for a room identified by CODE.
+    ///
+    /// The rule is the owner's: a joiner is offered the languages the workspace that OWNS THE ROOM
+    /// permits. The pre-join screen had no way to ask that — it has only a room code, and the room
+    /// is not resolved until the join itself — so it fell back to the settings of whatever
+    /// workspace the joiner happened to have selected. Someone in workspace A joining a room in
+    /// workspace B was therefore offered A's languages: too few (B allows more) or too many
+    /// (options B forbids, refused by the server only after they were picked).
+    ///
+    /// Returns an EMPTY list for a room whose workspace sets no policy, and for an external-bridge
+    /// room, which belongs to no workspace. Empty means unrestricted everywhere this list travels.
+    ///
+    /// Deliberately NOT a preflight route. An earlier screen called a `preflight` endpoint that did
+    /// not exist, 404'd on every request, and turned /join into a dead end blaming the room. This
+    /// answers one question and returns nothing else about the room.
+    /// </summary>
+    Task<Result<JoinLanguagePolicyDto>> GetJoinLanguagePolicyByCodeAsync(
+        string roomCode,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// WT-480: who this meeting's record is shared with — its transcript, AI summary and recording.
+    ///
+    /// The visibility axis, and it is NOT the same as finalizing. Finalize
+    /// (<c>TranscriptCorrectionService.FinalizeTranscriptAsync</c>) locks the wording so no more
+    /// corrections land; this decides who may read it. A meeting can be shared and still editable,
+    /// or locked and still private, and the two controls stay independent on purpose — folding
+    /// them together would mean a typo could never be fixed once the record was shared.
+    ///
+    /// Deliberately NOT routed through <see cref="UpdateTranslationRoomSettingsAsync"/>, even
+    /// though that method also writes <c>ArtifactAccess</c>: it refuses any room past WAITING, and
+    /// sharing a record can only happen once the meeting is over and the artifacts exist. The
+    /// feature would have been refused in exactly the state it is for.
+    ///
+    /// Host only, matching Finalize. <paramref name="level"/> must be one of
+    /// <c>ArtifactAccessLevels.All</c>; anything else is rejected rather than stored, because an
+    /// unrecognised level reads as HOST_ONLY at the guard and would silently deny everyone.
+    /// </summary>
+    Task<Result> SetArtifactAccessAsync(
+        Guid translationRoomId,
+        Guid hostId,
+        string level,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// WT-433: join by room ID — the shape a shared LINK produces — gated on membership of the
     /// room's workspace, then identical to the by-code join (a requires-approval room lands the
     /// caller in the waiting room). Non-members get NotFound, indistinguishable from a missing room.

@@ -988,19 +988,14 @@ cả hai policy. Đăng nhập bằng Admin → không thấy control nào của
 | Q7 | Transfer ownership ràng buộc trong cùng verified domain → D-11, nên domain của workspace không đổi qua flow transfer. |
 | Q8 | Không có hai rule. D-11 là **một câu** áp dụng đồng nhất; workspace manual có tập verified domain rỗng nên ràng buộc rỗng theo nghĩa toán học. Không viết nhánh `if` theo loại workspace. |
 | Q11 | Giữ nguyên cột `allow_subdomains` trong DB, **không thêm logic BE** trong branch này. Mục 3.14 gỡ bỏ. Ghi nhận là nợ kỹ thuật ở §8, kèm điều kiện phải thoả khi mở lại. |
-| — | Dropdown invite: `Member` / `Admin` / `External`, bỏ chữ "guest", hiển thị policy "External luôn ở role Member" → §4.6. |
-
 | Q6 | Chặn Admin sửa verified domain ở **cả BE lẫn FE** → D-14. Admin vẫn xem được. |
+| Q9 | D-11 giữ **nghiêm**, không suy giảm. Không ai đủ điều kiện → transfer bị từ chối, error nêu cách gỡ. Lối gỡ: Owner revoke verified domain → workspace về manual (D-10) → transfer tự do. **Không** thêm ràng buộc "≥2 internal member" và **không** buộc xoá workspace. Xem phần đính chính bên dưới. |
+| Q10 | Hạ tầng platform config tách ticket riêng: **[WT-360](https://linear.app/fpt-sep490-su26/issue/WT-360/system-admin-configure-djuoc-platform-policy-bang-platform-dja-co)** — High, label `Feature`, assign Tú Huỳnh. Branch này chỉ giữ seam `IPublicEmailDomainProvider` (mục 3.12); WT-360 thay implementation. **OQ-8 của WT-360 phụ thuộc thứ tự merge với branch này.** |
+| Q11 | Giữ nguyên cột `allow_subdomains` trong DB, **không thêm logic BE** trong branch này. Mục 3.14 gỡ bỏ. Ghi nhận là nợ kỹ thuật ở §8, kèm điều kiện phải thoả khi mở lại. |
+| — | Dropdown invite: `Member` / `Admin` / `External`, bỏ chữ "guest", hiển thị policy "External luôn ở role Member" → §4.6. |
 | — | Bất biến "một domain một workspace" phải kín ở cả 4 khe hở → D-15, RC-7. |
 
 ### Còn treo
-- **Q10** *(mới, từ §4.8)* — Hạ tầng platform config: mở ticket riêng ngay, hay để sau capstone?
-  Bốn bảng `platform.*` và `privacy.policy_versions` đã có trong schema nhưng chưa có code. Nếu
-  làm, phạm vi tối thiểu là: đọc `system_configurations` cho danh sách public domain, đọc
-  `policy_versions` cho văn bản consent (`policy_type = verified_domain_assertion`), một trang
-  admin để sửa, và ghi `config_change_logs` mỗi lần đổi. Cache và invalidation xuyên service là
-  phần khó nhất — danh sách public domain được đọc trên đường create workspace và invite, nên
-  không thể query DB mỗi lần.
 - **Q9** *(thu hẹp)* — **Ở vòng đời bình thường D-11 không bao giờ fire.** Mọi Internal member của
   workspace domain-verified đều có domain thuộc list, vì `WorkspaceInvitationPolicy.ValidateAsync:126-146`
   chặn ở create và accept path re-check lại. Tập ứng viên = toàn bộ Internal member.
@@ -1020,8 +1015,29 @@ cả hai policy. Đăng nhập bằng Admin → không thấy control nào của
   |---|---|---|
   | **A — Bỏ D-11** | Giữ nguyên check "không External". | Ở trạng thái khoẻ mạnh D-11 vốn đã là no-op, nên bỏ đi không mất gì *ở đó*. Nhưng mất luôn tác dụng bảo mật ở (a)/(b): workspace claim `acme.com` với nhãn `owner_email` của `alice@acme.com` mà chuyển được cho `bob@evil.com` thì nhãn đó thành lời nói dối, và bob thừa hưởng quyền tự động xếp Internal cho mọi người `@acme.com`. |
   | **B — Suy giảm thay vì khoá** *(đề xuất)* | Nếu có ≥1 member thuộc verified domain → chỉ được chuyển cho nhóm đó. Nếu **không có ai** → cho chuyển cho bất kỳ Internal member nào, kèm audit row ghi rõ đã đi đường suy giảm. | Fire đúng lúc nó bảo vệ được thứ gì đó, nhường đúng lúc nó chỉ còn khoá cửa. Không tạo trạng thái kẹt nào. |
-  | **C — Giữ nghiêm + lối thoát** | Giữ D-11 nghiêm, nới guard revoke để Owner revoke hết domain về manual rồi transfer. | Đường thoát dài và khó hiểu, lại phải nới một guard khác đang làm đúng việc. |
+  | **C — Giữ nghiêm + lối thoát** ✅ **CHỐT** | Giữ D-11 nghiêm. Tập ứng viên rỗng → transfer bị từ chối, error nêu cách gỡ. Owner revoke verified domain → D-10 đưa workspace về manual → transfer tự do. | Không tạo trạng thái kẹt, và không phải nới guard nào. |
 
-  Đề xuất **B**. Kèm hai việc để (a) đừng xảy ra ngay từ đầu: cảnh báo ở dialog consent khi domain
-  sắp add không khớp email của bất kỳ member nào, và dry-run của 5.4 liệt kê sẵn workspace sẽ rơi
-  vào trạng thái này.
+  #### Đính chính: C không đắt như bản trước mô tả
+
+  Bản trước ghi *"nới guard revoke"* và xếp C là đắt nhất. **Sai.** Đọc lại
+  `VerifiedDomainService.cs:200-229`: guard "active internal members" chỉ fire khi **có member nào
+  đó mang email domain trùng đúng domain đang revoke**. Ở trạng thái kẹt thì theo định nghĩa không
+  ai thuộc domain đó, nên guard không fire. Guard còn lại (`CannotRevokeLastDomain`, `:187-198`) đã
+  bị D-10 gỡ ở mục 3.4.
+
+  ⇒ Lối thoát tồn tại sẵn, không phá gì, không nới gì. C là phương án rẻ nhất chứ không phải đắt nhất.
+
+  #### Hai đề xuất bị loại
+
+  - **"Workspace luôn có ≥2 internal member"** — không cài được như bất biến:
+    `CreateWorkspaceAsync:182-185` thêm đúng một member (Owner), nên mọi workspace vi phạm ngay
+    giây đầu tiên. Và nó không giải quyết case thật: ở tình huống (a) workspace có thể có 6 internal
+    member mà vẫn 0 người thuộc verified domain.
+  - **"Owner buộc deactivate workspace"** — Owner không có quyền đó. `SuspendAsync` chỉ tồn tại ở
+    `AdminWorkspaceService:139` / `AdminWorkspacesController:62`, gate bằng `SystemAdminAuthorization`.
+    Owner chỉ có `SoftDeleteWorkspaceAsync`, và nó là cuối đường (`ChangeLifecycleAsync:187-191`).
+    "Deactivate" ở đây thực chất là xoá vĩnh viễn — nặng hơn hẳn ý định.
+
+  Vẫn giữ hai việc để (a) đừng xảy ra ngay từ đầu: cảnh báo ở dialog consent khi domain sắp add
+  không khớp email của bất kỳ member nào, và dry-run của 5.4 liệt kê sẵn workspace sẽ rơi vào
+  trạng thái này.

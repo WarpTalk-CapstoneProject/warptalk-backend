@@ -71,7 +71,7 @@ public class WorkspaceSuspensionTests
         // Default: a live tenant that permits creation. Each test overrides only what it is about.
         ArrangeWorkspaceIsLive();
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Success());
 
         _service = new WarpTalk.TranslationRoomService.Application.Services.TranslationRoomService(
@@ -139,7 +139,7 @@ public class WorkspaceSuspensionTests
     public async Task Create_IsDenied_WhenTheWorkspaceIsSuspended()
     {
         _mockWorkspaceMeetingPolicy.Setup(p => p.ValidateMeetingCreationAsync(
-                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<CancellationToken>()))
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<IEnumerable<string>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result.Failure(SuspendedMessage, ErrorCodes.Forbidden));
 
         var result = await _service.CreateTranslationRoomAsync(

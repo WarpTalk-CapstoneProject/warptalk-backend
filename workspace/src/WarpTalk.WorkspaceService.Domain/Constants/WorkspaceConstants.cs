@@ -18,6 +18,7 @@ public static class WorkspaceConstants
     public const int MaxWorkspaceInvitationExpiryDays = 365;
     public const int TrialWorkspaceMemberLimit = 5;
 
+
     // Error Messages
     public static class Errors
     {
@@ -30,6 +31,8 @@ public static class WorkspaceConstants
         public const string CannotVerifyPublicDomain = "Cannot verify public domains (like Gmail, Yahoo, etc.) for a workspace.";
         public const string PublicEmailDomainCannotCreateWorkspace = "A public email domain cannot create a workspace. Use a business email address, or join an existing workspace by invitation.";
         public const string CannotVerifyUnownedDomain = "A workspace can only verify the email domain of the account creating it.";
+        public const string ConsentRequiredForSelfAssertedDomain = "Claiming a domain other than your own account's requires confirming that your organization owns it.";
+        public const string NewOwnerMustShareVerifiedDomain = "The new owner's email must be on one of this workspace's verified domains. Revoke the verified domains first if you need to hand the workspace to someone outside them.";
         public const string RequiredOwnerRoleNotFound = "Required owner role not found.";
         public const string UnexpectedErrorCreatingWorkspace = "An unexpected error occurred while creating the workspace.";
         public const string UnexpectedErrorFetchingWorkspaces = "An unexpected error occurred while fetching workspaces.";
@@ -48,6 +51,7 @@ public static class WorkspaceConstants
         public const string InvitationExpiryDaysOutOfRange = "Invitation expiry days must be between 1 and 365.";
         public const string OnlyOwnerCanModifyExternalCollaboration = "Only the workspace owner can modify AllowExternalCollaboration setting.";
         public const string OnlyOwnerCanModifyPolicySettings = "Only the workspace owner can modify this workspace policy setting.";
+        public const string RequireVerifiedDomainIsDerived = "Whether internal members must use a verified domain is decided by the workspace's verified domains, not set directly. Add a verified domain to require one, or revoke every verified domain to stop requiring one.";
         public const string OnlyOwnerCanDeleteWorkspace = "Only the workspace owner can delete the workspace.";
 
         public const string OnlyOwnerCanTransferOwnership = "Only the workspace owner can transfer ownership.";
@@ -55,6 +59,9 @@ public static class WorkspaceConstants
         public const string CannotTransferToExternal = "Cannot transfer ownership to an external member.";
         public const string RequiredRolesNotFound = "Required roles not found.";
         public const string CannotLeaveAsLastOwner = "Cannot leave the workspace as the last owner. Please transfer ownership first.";
+        public const string LeaveRequestNotFound = "Leave request not found or invalid.";
+        public const string AlreadyPendingLeaveRequest = "A pending leave request already exists for this member.";
+        public const string OnlyOwnerAdminCanReviewLeaveRequest = "Only Owner or Admin can review leave requests.";
         public const string OnlyOwnerAdminCanRemoveMembers = "Only Owner or Admin can remove members.";
         public const string TargetMemberNotFoundOrRemoved = "Target member not found or already removed.";
         public const string CannotRemoveOwner = "Cannot remove the Owner of the workspace.";

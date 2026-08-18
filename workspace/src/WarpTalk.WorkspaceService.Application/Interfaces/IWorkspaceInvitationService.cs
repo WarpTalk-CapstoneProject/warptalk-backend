@@ -24,4 +24,7 @@ public interface IWorkspaceInvitationService
     Task<Result<WorkspaceInvitationDto>> CreateJoinRequestAsync(CreateJoinRequestCommand command, Guid userId, string userEmail, CancellationToken ct = default);
     Task<Result<ApproveJoinRequestResponse>> ApproveJoinRequestAsync(Guid workspaceId, Guid invitationId, Guid adminUserId, ApproveJoinRequestRequest? request = null, CancellationToken ct = default);
     Task<Result> RejectJoinRequestAsync(Guid workspaceId, Guid invitationId, Guid adminUserId, CancellationToken ct = default);
+    Task<Result<WorkspaceInvitationDto>> CreateLeaveRequestAsync(Guid workspaceId, Guid userId, string userEmail, CancellationToken ct = default);
+    Task<Result> ApproveLeaveRequestAsync(Guid workspaceId, Guid leaveRequestId, Guid adminUserId, CancellationToken ct = default);
+    Task<Result> RejectLeaveRequestAsync(Guid workspaceId, Guid leaveRequestId, Guid adminUserId, CancellationToken ct = default);
 }
